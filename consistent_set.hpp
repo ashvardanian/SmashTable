@@ -2,6 +2,7 @@
 #include <functional>    // `std::less`
 #include <set>           // `std::set`
 #include <unordered_map> // `std::unordered_map`
+#include <optional>      // `std::optional`
 
 #include "status.hpp"
 
@@ -116,7 +117,7 @@ class consistent_set_gt {
         using is_transparent = void;
 
         template <typename at>
-        decltype(auto) ref_comparable(at const& object) const noexcept {
+        decltype(auto) comparable(at const& object) const noexcept {
             using t = std::remove_reference_t<at>;
             if constexpr (std::is_same<t, entry_t>())
                 return (element_t const&)object.element;
@@ -126,17 +127,15 @@ class consistent_set_gt {
                 return (t const&)object;
         }
 
-        template <typename first_at, typename second_at>
-        bool dated_compare(first_at const& a, second_at const& b) const noexcept {
+        bool dated_compare(auto const& a, auto const& b) const noexcept {
             comparator_t less;
-            auto a_less_b = less(ref_comparable(a), ref_comparable(b));
-            auto b_less_a = less(ref_comparable(b), ref_comparable(a));
+            auto a_less_b = less(comparable(a), comparable(b));
+            auto b_less_a = less(comparable(b), comparable(a));
             return !a_less_b && !b_less_a ? a.generation < b.generation : a_less_b;
         }
 
-        template <typename first_at, typename second_at>
-        bool native_compare(first_at const& a, second_at const& b) const noexcept {
-            return comparator_t {}(ref_comparable(a), ref_comparable(b));
+        bool native_compare(auto const& a, auto const& b) const noexcept {
+            return comparator_t {}(comparable(a), comparable(b));
         }
 
         template <typename first_at, typename second_at>
@@ -149,15 +148,8 @@ class consistent_set_gt {
                 return native_compare(a, b);
         }
 
-        template <typename first_at, typename second_at>
-        bool operator()(first_at const& a, second_at const& b) const noexcept {
-            return less(a, b);
-        }
-
-        template <typename first_at, typename second_at>
-        bool same(first_at const& a, second_at const& b) const noexcept {
-            return !less(a, b) && !less(b, a);
-        }
+        bool operator()(auto const& a, auto const& b) const noexcept { return less(a, b); }
+        bool same(auto const& a, auto const& b) const noexcept { return !less(a, b) && !less(b, a); }
     };
 
     using entry_allocator_t = typename allocator_t::template rebind<entry_t>::other;
@@ -280,14 +272,8 @@ class consistent_set_gt {
                 if (internal_iterator == changes_.end())
                     return callback_found(external_element);
 
-                entry_less_t less;
                 element_t const& internal_element = internal_iterator->element;
-                auto internal_is_smaller = less(internal_element, external_element);
-                auto external_is_smaller = less(external_element, internal_element);
-                auto same = !internal_is_smaller && //
-                            !external_is_smaller;
-
-                if (internal_is_smaller || same)
+                if (!entry_less_t {}(external_element, internal_element))
                     return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
@@ -312,15 +298,11 @@ class consistent_set_gt {
 
             // Iterate until we find the a non-deleted external value
             auto& store = store_ref();
+            auto status = status_t {};
             do {
-                auto status = store.find_next( //
-                    external_previous_id,
-                    callback_external_found,
-                    callback_external_missing);
-                if (!status)
-                    return status;
-            } while (!faced_deleted_entry);
-            return {success_k};
+                status = store.find_next(external_previous_id, callback_external_found, callback_external_missing);
+            } while (faced_deleted_entry && status);
+            return status;
         }
 
         [[nodiscard]] status_t stage() noexcept {
