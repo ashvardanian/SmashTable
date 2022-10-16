@@ -117,7 +117,7 @@ class avl_node_gt {
     template <typename comparable_at>
     static node_t* upper_bound(node_t* node, comparable_at&& comparable) noexcept;
 
-    struct node_range_t {
+    struct node_interval_t {
         node_t* lower_bound = nullptr;
         node_t* upper_bound = nullptr;
         node_t* lowest_common_ancestor = nullptr;
@@ -125,40 +125,43 @@ class avl_node_gt {
 
     /**
      * @brief Complex method, that detects the left-most and right-most nodes
-     * containing keys in a provided ranges, as well as their lowest common ancestors.
+     * containing keys in a provided intervals, as well as their lowest common ancestors.
      * ! Has a recursive implementation for now.
      */
     template <typename lower_at, typename upper_at, typename callback_at>
-    static node_range_t find_range(node_t* node, lower_at&& low, upper_at&& high, callback_at&& callback) noexcept {
+    static node_interval_t find_interval(node_t* node,
+                                         lower_at&& low,
+                                         upper_at&& high,
+                                         callback_at&& callback) noexcept {
         if (!node)
             return {};
 
-        // If this node fits into the range - analyze its children.
+        // If this node fits into the interval - analyze its children.
         // The first call to reach this branch in the call-stack
         // will be by definition the Lowest Common Ancestor.
         auto less = comparator_t {};
         if (!less(high, node->element) && !less(node->element, low)) {
             callback(node);
-            auto left_subrange = find_range(node->left, low, high, callback);
-            auto right_subrange = find_range(node->right, low, high, callback);
+            auto left_subinterval = find_interval(node->left, low, high, callback);
+            auto right_subinterval = find_interval(node->right, low, high, callback);
 
-            auto result = node_range_t {};
-            result.lower_bound = left_subrange.lower_bound ?: node;
-            result.upper_bound = right_subrange.upper_bound ?: node;
+            auto result = node_interval_t {};
+            result.lower_bound = left_subinterval.lower_bound ?: node;
+            result.upper_bound = right_subinterval.upper_bound ?: node;
             result.lowest_common_ancestor = node;
             return result;
         }
 
         else if (less(node->element, low))
-            return find_range(node->right, low, high, callback);
+            return find_interval(node->right, low, high, callback);
 
         else
-            return find_range(node->left, low, high, callback);
+            return find_interval(node->left, low, high, callback);
     }
 
     template <typename comparable_at>
-    static node_range_t equal_range(node_t* node, comparable_at&& comparable) noexcept {
-        return find_range(node, comparable, comparable);
+    static node_interval_t equal_interval(node_t* node, comparable_at&& comparable) noexcept {
+        return find_interval(node, comparable, comparable);
     }
 
     /**
@@ -424,7 +427,7 @@ class avl_node_gt {
         return {};
     }
 
-    static node_t* remove_range(node_t* node, node_range_t&& range) noexcept {
+    static node_t* remove_interval(node_t* node, node_interval_t&& interval) noexcept {
         return node;
     }
 };
@@ -436,40 +439,82 @@ class avl_tree_gt {
   public:
     using node_t = avl_node_gt<element_at, comparator_at>;
     using node_allocator_t = node_allocator_at;
+    using comparator_t = comparator_at;
     using element_t = element_at;
 
   private:
     node_t* root_ = nullptr;
     std::size_t size_ = 0;
+    node_allocator_t allocator_;
 
   public:
+    avl_tree_gt() noexcept = default;
+    avl_tree_gt(avl_tree_gt&& other) noexcept
+        : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)) {}
+    avl_tree_gt& operator=(avl_tree_gt& other) noexcept {
+        std::swap(root_, other.root_);
+        std::swap(size_, other.size_);
+        return *this;
+    }
+
+    ~avl_tree_gt() { clear(); }
+    std::size_t size() const noexcept { return size_; }
+
     template <typename comparable_at>
     node_t* find(comparable_at&& comparable) noexcept {
-        return node_t::find(root_, comparable);
+        return node_t::find(root_, std::forward<comparable_at>(comparable));
     }
 
     template <typename comparable_at>
     node_t* find_next(comparable_at&& comparable) noexcept {
-        return node_t::find_next(root_, comparable);
+        return node_t::find_next(root_, std::forward<comparable_at>(comparable));
     }
 
-    struct node_element_ref_t {
+    struct upsert_result_t {
         node_t* node = nullptr;
         bool inserted = false;
 
-        node_element_ref_t& operator=(element_t&& element) noexcept {
+        upsert_result_t& operator=(element_t&& element) noexcept {
             node->element = element;
             return *this;
         }
     };
 
     template <typename comparable_at>
-    node_element_ref_t upsert(comparable_at&& comparable) noexcept {
-        auto result = node_t::find_or_make(root_, std::forward<comparable_at>(comparable), [] {
-            return node_allocator_t {}.allocate(1);
+    upsert_result_t upsert(comparable_at&& comparable) noexcept {
+        auto result = node_t::find_or_make(root_, std::forward<comparable_at>(comparable), [&] {
+            return allocator_.allocate(1);
         });
         root_ = result.root;
+        size_ += result.inserted;
         return {result.match, result.inserted};
+    }
+
+    struct pop_result_t {
+        avl_tree_gt* tree_ = nullptr;
+        node_t* node_ptr_ = nullptr;
+
+        ~pop_result_t() noexcept { return tree_->allocator_.deallocate(node_ptr_); }
+        explicit operator bool() const noexcept { return node_ptr_; }
+    };
+
+    template <typename comparable_at>
+    pop_result_t pop(comparable_at&& comparable) noexcept {
+        auto result = node_t::pop(root_, std::forward(comparable));
+        root_ = result.root;
+        size_ -= result.popped != nullptr;
+        return pop_result_t {this, result.popped.release()};
+    }
+
+    template <typename comparable_at>
+    bool erase(comparable_at&& comparable) noexcept {
+        return pop(std::forward(comparable));
+    }
+
+    void clear() noexcept {
+        node_t::for_each(root_, [&](node_t* node) { return allocator_.deallocate(node, 1); });
+        root_ = nullptr;
+        size_ = 0;
     }
 };
 
@@ -500,7 +545,7 @@ template <typename key_at,
           typename key_comparator_at = std::less<>,
           typename key_hash_at = std::hash<key_at>,
           typename allocator_at = std::allocator<std::pair<key_at, value_at>>>
-class acid_gt {
+class consistent_avl_gt {
   public:
     using key_t = key_at;
     using value_t = value_at;
@@ -509,7 +554,7 @@ class acid_gt {
     using key_hash_t = key_hash_at;
     using allocator_t = allocator_at;
     using allocator_traits_t = std::allocator_traits<allocator_t>;
-    using acid_t = acid_gt;
+    using acid_t = consistent_avl_gt;
 
     static_assert(std::is_trivially_copy_constructible<key_t>());
     static_assert(std::is_trivially_copy_assignable<key_t>());
@@ -620,10 +665,10 @@ class acid_gt {
         return true;
     }
 
-    bool remove_range(key_t const&, key_t const&) noexcept;
+    bool remove_interval(key_t const&, key_t const&) noexcept;
 
     template <typename callback_at>
-    void for_range(key_t const&, key_t const&, callback_at&&) noexcept;
+    void for_interval(key_t const&, key_t const&, callback_at&&) noexcept;
 
     template <typename callback_found_at, typename callback_missing_at>
     void for_one(key_t const& key, callback_found_at&& callback_found, callback_missing_at& callback_missing) noexcept {
