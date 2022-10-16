@@ -1,6 +1,52 @@
 #pragma once
 #include <array>      // `std::array`
+#include <optional>   // `std::optional`
 #include <functional> // `std::hash`
+
+namespace av::helpers {
+
+template <typename at, std::size_t count_ak, std::size_t... sequence_ak>
+constexpr std::array<at, count_ak> move_to_array_impl(at (&a)[count_ak], std::index_sequence<sequence_ak...>) noexcept {
+    return {{std::move(a[sequence_ak])...}};
+}
+
+/**
+ * @brief This is a slightly tweaked implementation of `std::to_array` coming in C++20.
+ * https://en.cppreference.com/w/cpp/container/array/to_array
+ */
+template <typename at, std::size_t count_ak>
+constexpr std::array<at, count_ak> move_to_array(at (&a)[count_ak]) noexcept {
+    return move_to_array_impl(a, std::make_index_sequence<count_ak> {});
+}
+
+/**
+ * @brief Takes a generator that produces `bool`-convertible and dereference-able objects like `std::optional`,
+ * and builds up fixed-size of array of such object, but only if all were successfully built. If at least one
+ * generator call fails, the entire resulting `std::optional` is returned to NULL state.
+ */
+template <typename at, std::size_t count_ak, typename generator_at>
+static std::optional<std::array<at, count_ak>> generate_array_safely(generator_at&& generator) noexcept {
+    constexpr std::size_t count_k = count_ak;
+    using element_t = at;
+    using raw_array_t = element_t[count_ak];
+    char raw_parts_mem[count_k * sizeof(element_t)];
+    element_t* raw_parts = reinterpret_cast<element_t*>(raw_parts_mem);
+    for (std::size_t part_idx = 0; part_idx != count_k; ++part_idx) {
+
+        if (auto new_part = generator(part_idx); new_part)
+            new (raw_parts + part_idx) element_t(std::move(new_part).value());
+        else {
+            // Destruct all the previous parts.
+            for (std::size_t destructed_idx = 0; destructed_idx != part_idx; ++destructed_idx)
+                raw_parts[destructed_idx].~element_t();
+            return {};
+        }
+    }
+
+    return helpers::move_to_array<element_t, count_k>((raw_array_t&)raw_parts_mem);
+}
+
+} // namespace av::helpers
 
 namespace av {
 
@@ -10,15 +56,23 @@ namespace av {
  */
 template <typename collection_at,
           typename hash_at = std::hash<typename collection_at::identifier_t>,
+          typename shared_mutex_at = std::shared_mutex,
           std::size_t parts_ak = 16>
 class partitioned_gt {
 
   public:
+    static constexpr std::size_t parts_k = parts_ak;
     using partitioned_t = partitioned_gt;
     using hash_t = hash_at;
     using part_t = collection_at;
     using part_transaction_t = typename part_t::transaction_t;
-    static constexpr std::size_t parts_k = parts_ak;
+    using shared_mutex_t = shared_mutex_at;
+    using shared_lock_t = std::shared_lock<shared_mutex_t>;
+    using unique_lock_t = std::unique_lock<shared_mutex_t>;
+
+    using mutexes_t = std::array<shared_mutex_t, parts_k>;
+    using parts_t = std::array<part_t, parts_k>;
+    using part_transactions_t = std::array<part_transaction_t, parts_k>;
 
     using element_t = typename part_t::element_t;
     using comparator_t = typename part_t::comparator_t;
@@ -26,55 +80,160 @@ class partitioned_gt {
     using generation_t = typename part_t::generation_t;
     using status_t = typename part_t::status_t;
 
+  private:
     static std::size_t bucket(identifier_t const& id) noexcept { return hash_t {}(id) % parts_k; }
 
+    template <typename lock_at, typename mutexes_at>
+    static void lock_out_of_order(mutexes_at& mutexes) noexcept {
+        status_t status;
+        std::array<bool, parts_k> finished {false};
+        std::size_t remaining_count = parts_k;
+
+        constexpr bool make_shared = std::is_same<lock_at, shared_lock_t>();
+        constexpr bool make_unique = std::is_same<lock_at, unique_lock_t>();
+        static_assert(make_shared || make_unique);
+
+    cycle:
+        // We may need to cycle multiple times, attempting to acquire locks,
+        // until the `remaining_count == 0`.
+        // This can also be implemented via `do {} while`, but becomes to
+        // cumbersome with more complex conditions in cases like `find_next`
+        // implemented via `for_all_next_lookups`.
+        for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
+            if (finished[part_idx])
+                continue;
+            auto& mutex = mutexes[part_idx];
+            if constexpr (make_unique)
+                remaining_count -= finished[part_idx] = mutex.try_lock();
+            else
+                remaining_count -= finished[part_idx] = mutex.try_lock_shared();
+        }
+
+        if (remaining_count)
+            goto cycle;
+    }
+
+    /**
+     * @brief Walks around all the parts, trying to perform operations on them,
+     * until all the tasks are exhausted.
+     */
+    template <typename parts_at, typename mutexes_at, typename callable_at>
+    static status_t for_all_updates(parts_at& parts, mutexes_at& mutexes, callable_at&& callable) noexcept {
+        status_t status;
+        std::array<bool, parts_k> finished {false};
+        std::size_t remaining_count = parts_k;
+
+    cycle:
+        for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
+            if (finished[part_idx])
+                continue;
+            std::unique_lock lock {mutexes[part_idx], std::try_to_lock_t {}};
+            if (!lock)
+                continue;
+
+            auto& part = parts[part_idx];
+            status = callable(part);
+            if (!status)
+                return status;
+
+            finished[part_idx] = true;
+            --remaining_count;
+        }
+
+        if (remaining_count)
+            goto cycle;
+
+        return status;
+    }
+
+    template <typename parts_at,
+              typename mutexes_at,
+              typename comparable_at,
+              typename callback_found_at,
+              typename callback_missing_at>
+    static status_t for_all_next_lookups(parts_at& parts,
+                                         mutexes_at& mutexes,
+                                         comparable_at&& comparable,
+                                         callback_found_at&& callback_found,
+                                         callback_missing_at&& callback_missing) noexcept {
+
+        status_t status;
+        std::array<bool, parts_k> finished;
+        std::size_t remaining_count;
+        identifier_t smallest_id;
+        std::size_t smallest_idx;
+        constexpr std::size_t not_found_idx = std::numeric_limits<std::size_t>::max();
+
+    restart:
+        remaining_count = parts_k;
+        std::fill_n(finished.begin(), parts_k, false);
+
+    cycle:
+        for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
+            if (finished[part_idx])
+                continue;
+            std::shared_lock lock {mutexes[part_idx], std::try_to_lock_t {}};
+            if (!lock)
+                continue;
+
+            auto& part = parts[part_idx];
+            status = part.find_next(comparable, [&](element_t const& element) {
+                if (smallest_idx != not_found_idx && !comparator_t {}(element, smallest_id))
+                    return;
+                smallest_id = identifier_t(element);
+                smallest_idx = part_idx;
+            });
+            if (!status)
+                return status;
+
+            finished[part_idx] = true;
+            --remaining_count;
+        }
+        if (remaining_count)
+            goto cycle;
+
+        if (smallest_idx == not_found_idx)
+            return invoke_safely(std::forward<callback_missing_at>(callback_missing));
+
+        // Unless the underlying the engine implements Snapshot Isolation,
+        // the repeated lookup of the entry in the underlying store can fail
+        // and we will have to `restart` all over.
+        bool should_restart = false;
+        status = parts[smallest_idx].find(smallest_id, std::forward<callback_found_at>(callback_found), [&] {
+            should_restart = true;
+        });
+        if (should_restart)
+            goto restart;
+        return status;
+    }
+
+  public:
     class transaction_t {
         friend partitioned_gt;
         partitioned_gt& store_;
-        std::array<part_transaction_t, parts_k> parts_;
+        part_transactions_t parts_;
         static_assert(std::is_nothrow_move_constructible<part_transaction_t>());
 
-        /**
-         * @brief Walks around all the parts, trying to perform operations on them,
-         * until all the tasks are exhausted.
-         */
         template <typename callable_at>
-        status_t for_all(callable_at&& callable) noexcept {
-            status_t status;
-            std::array<bool, parts_k> finished {false};
-            std::size_t remaining = parts_k;
-            do {
-                for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
-                    if (finished[part_idx])
-                        continue;
-                    std::unique_lock lock {store_.mutexes_[part_idx], std::try_to_lock_t {}};
-                    if (!lock)
-                        continue;
-
-                    status = parts_.stage();
-                    if (!status)
-                        break;
-
-                    finished[part_idx] = true;
-                    --remaining;
-                }
-            } while (status && remaining);
-            return status;
+        status_t for_parts(callable_at&& callable) noexcept {
+            return partitioned_t::for_all_updates(parts_, store_.mutexes_, std::forward<callable_at>(callable));
         }
 
       public:
-        transaction_t(partitioned_gt& db, part_transaction_t&& unlocked) noexcept
+        transaction_t(partitioned_gt& db, part_transactions_t&& unlocked) noexcept
             : store_(db), parts_(std::move(unlocked)) {}
         transaction_t(transaction_t&&) noexcept = default;
         transaction_t& operator=(transaction_t&&) noexcept = default;
 
         [[nodiscard]] status_t watch(identifier_t const& id) noexcept { return parts_[bucket(id)].watch(id); }
-        [[nodiscard]] status_t upsert(element_t&& element) noexcept { return parts_[bucket(id)].upsert(element); }
+        [[nodiscard]] status_t upsert(element_t&& element) noexcept {
+            return parts_[bucket(identifier_t(element))].upsert(std::move(element));
+        }
         [[nodiscard]] status_t erase(identifier_t const& id) noexcept { return parts_[bucket(id)].erase(id); }
-        [[nodiscard]] status_t stage() noexcept { return for_all(std::mem_fn(&part_transaction_t::stage)); }
-        [[nodiscard]] status_t reset() noexcept { return for_all(std::mem_fn(&part_transaction_t::stage)); }
-        [[nodiscard]] status_t rollback() noexcept { return for_all(std::mem_fn(&part_transaction_t::stage)); }
-        [[nodiscard]] status_t commit() noexcept { return for_all(std::mem_fn(&part_transaction_t::stage)); }
+        [[nodiscard]] status_t stage() noexcept { return for_parts(std::mem_fn(&part_transaction_t::stage)); }
+        [[nodiscard]] status_t reset() noexcept { return for_parts(std::mem_fn(&part_transaction_t::reset)); }
+        [[nodiscard]] status_t rollback() noexcept { return for_parts(std::mem_fn(&part_transaction_t::rollback)); }
+        [[nodiscard]] status_t commit() noexcept { return for_parts(std::mem_fn(&part_transaction_t::commit)); }
 
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
@@ -82,10 +241,11 @@ class partitioned_gt {
         [[nodiscard]] status_t find(comparable_at&& comparable,
                                     callback_found_at&& callback_found,
                                     callback_missing_at&& callback_missing = {}) const noexcept {
-            std::shared_lock _ {store_.mutexes_[bucket(id)]};
-            return parts_.find(std::forward<comparable_at>(comparable),
-                               std::forward<callback_found_at>(callback_found),
-                               std::forward<callback_missing_at>(callback_missing));
+            std::size_t part_idx = bucket(identifier_t(comparable));
+            std::shared_lock _ {store_.mutexes_[part_idx]};
+            return parts_[part_idx].find(std::forward<comparable_at>(comparable),
+                                         std::forward<callback_found_at>(callback_found),
+                                         std::forward<callback_missing_at>(callback_missing));
         }
 
         template <typename comparable_at = identifier_t,
@@ -94,64 +254,78 @@ class partitioned_gt {
         [[nodiscard]] status_t find_next(comparable_at&& comparable,
                                          callback_found_at&& callback_found,
                                          callback_missing_at&& callback_missing = {}) const noexcept {
-            std::shared_lock _ {store_.mutexes_[bucket(id)]};
-            return parts_.find_next(std::forward<comparable_at>(comparable),
-                                    std::forward<callback_found_at>(callback_found),
-                                    std::forward<callback_missing_at>(callback_missing));
+            return partitioned_t::for_all_next_lookups(parts_,
+                                                       store_.mutexes_,
+                                                       std::forward<comparable_at>(comparable),
+                                                       std::forward<callback_found_at>(callback_found),
+                                                       std::forward<callback_missing_at>(callback_missing));
         }
     };
 
   private:
-    mutable std::array<std::shared_mutex, parts_k> mutexes_;
-    std::array<part_t, parts_k> parts_;
+    mutable mutexes_t mutexes_;
+    parts_t parts_;
 
-    partitioned_gt(part_t&& unlocked) noexcept : parts_(std::move(unlocked)) {}
+    partitioned_gt(parts_t&& unlocked) noexcept : parts_(std::move(unlocked)) {}
     partitioned_gt& operator=(partitioned_gt&& other) noexcept {
-        std::unique_lock _ {mutex_};
+        lock_out_of_order<unique_lock_t>(mutexes_);
         parts_ = std::move(other.parts_);
+        for (auto& mutex : mutexes_)
+            mutex.unlock();
         return *this;
     }
 
-    std::array<part_t, parts_k> new_parts() const noexcept {
-        std::array<part_t, parts_k> new_parts;
-        for (auto& part : new_parts)
-            if (auto new_part = part_t::make(); new_part)
-                part = std::move(new_part).value();
-        return parts_;
+    static std::optional<parts_t> new_parts() noexcept {
+        return helpers::generate_array_safely<part_t, parts_k>([](std::size_t) { return part_t::make(); });
     }
 
   public:
     partitioned_gt(partitioned_gt&& other) noexcept : parts_(std::move(other.parts_)) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
-        std::shared_lock _ {mutex_};
-        return parts_.size();
+        std::size_t total = 0;
+        lock_out_of_order<shared_lock_t>(mutexes_);
+        for (auto const& part : parts_)
+            total += parts_.size();
+        for (auto& mutex : mutexes_)
+            mutex.unlock_shared();
+        return total;
     }
 
     [[nodiscard]] static std::optional<partitioned_gt> make() noexcept {
         std::optional<partitioned_gt> result;
-        if (std::optional<part_t> unlocked = part_t::make(); unlocked)
+        if (std::optional<parts_t> unlocked = new_parts(); unlocked)
             result.emplace(partitioned_gt {std::move(unlocked).value()});
         return result;
     }
 
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
-        std::optional<transaction_t> result;
-        std::unique_lock _ {mutex_};
-        if (auto unlocked = parts_.transaction(); unlocked)
-            result.emplace(transaction_t {*this, std::move(unlocked).value()});
-        return result;
+        auto maybe = helpers::generate_array_safely<part_transaction_t, parts_k>(
+            [&](std::size_t part_idx) { return parts_[part_idx].transaction(); });
+        if (!maybe)
+            return {};
+
+        return transaction_t(*this, std::move(maybe).value());
     }
 
     [[nodiscard]] status_t upsert(element_t&& element) noexcept {
-        std::unique_lock _ {mutexes_[bucket(element)]};
-        return parts_.upsert(std::forward<element_t>(element));
+        std::size_t part_idx = bucket(identifier_t(element));
+        std::unique_lock _ {mutexes_[part_idx]};
+        return parts_[part_idx].upsert(std::move(element));
     }
 
     template <typename elements_begin_at, typename elements_end_at = elements_begin_at>
     [[nodiscard]] status_t upsert(elements_begin_at begin, elements_end_at end) noexcept {
-        std::unique_lock _ {mutex_};
-        return parts_.upsert(begin, end);
+        // This might be implemented more efficiently, but using
+        // a transaction beneath looks like the most straightforward approach.
+        auto maybe = transaction();
+        if (!maybe)
+            return {consistency_k};
+        while (begin != end)
+            maybe->upsert(*begin);
+        if (auto status = maybe->stage(); !status)
+            return status;
+        return maybe->commit();
     }
 
     template <typename comparable_at = identifier_t,
@@ -160,10 +334,11 @@ class partitioned_gt {
     [[nodiscard]] status_t find(comparable_at&& comparable,
                                 callback_found_at&& callback_found,
                                 callback_missing_at&& callback_missing = {}) const noexcept {
-        std::shared_lock _ {mutexes_[bucket(comparable)]};
-        return parts_.find(std::forward<comparable_at>(comparable),
-                           std::forward<callback_found_at>(callback_found),
-                           std::forward<callback_missing_at>(callback_missing));
+        std::size_t part_idx = bucket(identifier_t(comparable));
+        std::shared_lock _ {mutexes_[part_idx]};
+        return parts_[part_idx].find(std::forward<comparable_at>(comparable),
+                                     std::forward<callback_found_at>(callback_found),
+                                     std::forward<callback_missing_at>(callback_missing));
     }
 
     template <typename comparable_at = identifier_t,
@@ -172,40 +347,51 @@ class partitioned_gt {
     [[nodiscard]] status_t find_next(comparable_at&& comparable,
                                      callback_found_at&& callback_found,
                                      callback_missing_at&& callback_missing = {}) const noexcept {
-        std::shared_lock _ {mutexes_[bucket(comparable)]};
-        return parts_.find_next(std::forward<comparable_at>(comparable),
-                                std::forward<callback_found_at>(callback_found),
-                                std::forward<callback_missing_at>(callback_missing));
+        return for_all_next_lookups(parts_,
+                                    mutexes_,
+                                    std::forward<comparable_at>(comparable),
+                                    std::forward<callback_found_at>(callback_found),
+                                    std::forward<callback_missing_at>(callback_missing));
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals(comparable_at&& comparable, callback_at&& callback) const noexcept {
-        std::shared_lock _ {mutexes_[bucket(comparable)]};
-        return parts_.find_equals(std::forward<comparable_at>(comparable), std::forward<callback_at>(callback));
+    [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
+        lock_out_of_order<shared_lock_t>(mutexes_);
+        for (auto& part : parts_)
+            if (auto status = part.find_interval(comparable, callback); !status)
+                return status;
+        return {success_k};
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals(comparable_at&& comparable, callback_at&& callback) noexcept {
-        std::shared_lock _ {mutexes_[bucket(comparable)]};
-        return parts_.find_equals(std::forward<comparable_at>(comparable), std::forward<callback_at>(callback));
+    [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
+        lock_out_of_order<unique_lock_t>(mutexes_);
+        for (auto& part : parts_)
+            if (auto status = part.find_interval(comparable, callback); !status)
+                return status;
+        return {success_k};
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equals(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
-        std::unique_lock _ {mutex_};
-        return parts_.erase_equals(std::forward<comparable_at>(comparable), std::forward<callback_at>(callback));
+    [[nodiscard]] status_t erase_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+        lock_out_of_order<unique_lock_t>(mutexes_);
+        for (auto& part : parts_)
+            if (auto status = part.erase_interval(comparable, callback); !status)
+                return status;
+        return {success_k};
     }
 
     [[nodiscard]] status_t clear() noexcept {
 
-        std::array<part_t, parts_k> new_parts;
-        for (auto& part : new_parts)
-            if (auto new_part = part_t::make(); new_part)
-                part = std::move(new_part).value();
+        auto maybe = new_parts();
+        if (!maybe)
+            return {unknown_k};
 
+        lock_out_of_order<unique_lock_t>(mutexes_);
+        parts_ = std::move(maybe).value();
         for (auto& mutex : mutexes_)
-            mutex.lock();
-        auto parts_.clear();
+            mutex.unlock();
+        return {success_k};
     }
 };
 
