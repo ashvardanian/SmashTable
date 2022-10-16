@@ -127,14 +127,16 @@ class consistent_set_gt {
                 return (t const&)object;
         }
 
-        bool dated_compare(auto const& a, auto const& b) const noexcept {
+        template <typename first_at, typename second_at>
+        bool dated_compare(first_at const& a, second_at const& b) const noexcept {
             comparator_t less;
             auto a_less_b = less(comparable(a), comparable(b));
             auto b_less_a = less(comparable(b), comparable(a));
             return !a_less_b && !b_less_a ? a.generation < b.generation : a_less_b;
         }
 
-        bool native_compare(auto const& a, auto const& b) const noexcept {
+        template <typename first_at, typename second_at>
+        bool native_compare(first_at const& a, second_at const& b) const noexcept {
             return comparator_t {}(comparable(a), comparable(b));
         }
 
@@ -148,8 +150,15 @@ class consistent_set_gt {
                 return native_compare(a, b);
         }
 
-        bool operator()(auto const& a, auto const& b) const noexcept { return less(a, b); }
-        bool same(auto const& a, auto const& b) const noexcept { return !less(a, b) && !less(b, a); }
+        template <typename first_at, typename second_at>
+        bool operator()(first_at const& a, second_at const& b) const noexcept {
+            return less(a, b);
+        }
+
+        template <typename first_at, typename second_at>
+        bool same(first_at const& a, second_at const& b) const noexcept {
+            return !less(a, b) && !less(b, a);
+        }
     };
 
     using entry_allocator_t = typename allocator_t::template rebind<entry_t>::other;
@@ -226,14 +235,14 @@ class consistent_set_gt {
             return store_ref().find(
                 id,
                 [&](entry_t const& entry) {
-                    watches_.insert_or_assign(entry.element, watch_t {entry.generation, entry.deleted});
+                    watches_.insert_or_assign(identifier_t(entry.element), watch_t {entry.generation, entry.deleted});
                 },
                 [&] { watches_.insert_or_assign(id, missing_watch()); });
         }
 
         [[nodiscard]] status_t watch(entry_t const& entry) noexcept {
             return invoke_safely([&] {
-                watches_.insert_or_assign(entry.element, watch_t {entry.generation, entry.deleted});
+                watches_.insert_or_assign(identifier_t(entry.element), watch_t {entry.generation, entry.deleted});
             });
         }
 
@@ -331,7 +340,7 @@ class consistent_set_gt {
             // No new memory allocations or failures are possible after that.
             // It is all safe.
             for (auto const& entry : changes_)
-                watches_.insert_or_assign(entry.element, watch_t {generation_, entry.deleted});
+                watches_.insert_or_assign(identifier_t(entry.element), watch_t {generation_, entry.deleted});
 
             // Than just merge our current nodes.
             // The visibility will be updated later in the `commit`.
@@ -559,7 +568,7 @@ class consistent_set_gt {
      * @brief Implements a heterogeneous lookup for all the entries falling into the `equal_range`.
      */
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals(comparable_at&& comparable, callback_at&& callback) const noexcept {
+    [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
         for (; range.first != range.second; ++range.first)
             if (range.first->visible)
@@ -574,7 +583,7 @@ class consistent_set_gt {
      * for all the entries falling into the `equal_range`.
      */
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals(comparable_at&& comparable, callback_at&& callback) noexcept {
+    [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
         generation_t generation = new_generation();
         auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
         for (; range.first != range.second; ++range.first)
@@ -591,7 +600,7 @@ class consistent_set_gt {
      * @brief Removes one or more objects from the collection, that fall into the `equal_range`.
      */
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equals(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    [[nodiscard]] status_t erase_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         return invoke_safely([&] {
             auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
             erase_visible(range.first, range.second, std::forward<callback_at>(callback));
