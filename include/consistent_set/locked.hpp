@@ -8,13 +8,14 @@ namespace av {
  * The collection itself becomes @b thread-safe, but the transaction don't!
  * Detects dead-locks and reports `operation_would_block`.
  */
-template <typename collection_at>
+template <typename collection_at, typename shared_mutex_at = std::shared_mutex>
 class locked_gt {
 
   public:
     using locked_t = locked_gt;
     using unlocked_t = collection_at;
     using unlocked_transaction_t = typename unlocked_t::transaction_t;
+    using shared_mutex_t = shared_mutex_at;
 
     using element_t = typename unlocked_t::element_t;
     using comparator_t = typename unlocked_t::comparator_t;
@@ -84,7 +85,7 @@ class locked_gt {
     };
 
   private:
-    mutable std::shared_mutex mutex_;
+    mutable shared_mutex_t mutex_;
     unlocked_t unlocked_;
 
     locked_gt(unlocked_t&& unlocked) noexcept : unlocked_(std::move(unlocked)) {}
