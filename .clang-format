@@ -1,5 +1,5 @@
 Language: Cpp
-BasedOnStyle:  LLVM
+BasedOnStyle: LLVM
 IndentWidth: 4
 TabWidth: 4
 NamespaceIndentation: None
@@ -25,7 +25,6 @@ AllowShortLambdasOnASingleLine: Inline
 AllowShortLoopsOnASingleLine: false
 AlwaysBreakBeforeMultilineStrings: true
 AlwaysBreakTemplateDeclarations: Yes
-AlwaysBreakBeforeMultilineStrings: true
 AlwaysBreakAfterReturnType: None
 PenaltyReturnTypeOnItsOwnLine: 200
 
@@ -47,9 +46,8 @@ BraceWrapping:
   SplitEmptyNamespace: false
   IndentBraces: false
 
-
 SortIncludes: false
-SortUsingDeclarations: true 
+SortUsingDeclarations: true
 
 SpaceAfterCStyleCast: false
 SpaceAfterLogicalNot: false

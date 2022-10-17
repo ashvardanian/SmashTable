@@ -127,7 +127,7 @@ class partitioned_gt {
         for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
             if (finished[part_idx])
                 continue;
-            std::unique_lock lock {mutexes[part_idx], std::try_to_lock_t {}};
+            unique_lock_t lock {mutexes[part_idx], std::try_to_lock_t {}};
             if (!lock)
                 continue;
 
@@ -165,6 +165,7 @@ class partitioned_gt {
         constexpr std::size_t not_found_idx = std::numeric_limits<std::size_t>::max();
 
     restart:
+        smallest_idx = not_found_idx;
         remaining_count = parts_k;
         std::fill_n(finished.begin(), parts_k, false);
 
@@ -172,7 +173,7 @@ class partitioned_gt {
         for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
             if (finished[part_idx])
                 continue;
-            std::shared_lock lock {mutexes[part_idx], std::try_to_lock_t {}};
+            shared_lock_t lock {mutexes[part_idx], std::try_to_lock_t {}};
             if (!lock)
                 continue;
 
@@ -242,7 +243,7 @@ class partitioned_gt {
                                     callback_found_at&& callback_found,
                                     callback_missing_at&& callback_missing = {}) const noexcept {
             std::size_t part_idx = bucket(identifier_t(comparable));
-            std::shared_lock _ {store_.mutexes_[part_idx]};
+            shared_lock_t _ {store_.mutexes_[part_idx]};
             return parts_[part_idx].find(std::forward<comparable_at>(comparable),
                                          std::forward<callback_found_at>(callback_found),
                                          std::forward<callback_missing_at>(callback_missing));
@@ -310,7 +311,7 @@ class partitioned_gt {
 
     [[nodiscard]] status_t upsert(element_t&& element) noexcept {
         std::size_t part_idx = bucket(identifier_t(element));
-        std::unique_lock _ {mutexes_[part_idx]};
+        unique_lock_t _ {mutexes_[part_idx]};
         return parts_[part_idx].upsert(std::move(element));
     }
 
@@ -321,8 +322,9 @@ class partitioned_gt {
         auto maybe = transaction();
         if (!maybe)
             return {consistency_k};
-        while (begin != end)
-            maybe->upsert(*begin);
+        for (; begin != end; ++begin)
+            if (auto status = maybe->upsert(*begin); !status)
+                return status;
         if (auto status = maybe->stage(); !status)
             return status;
         return maybe->commit();
@@ -335,7 +337,7 @@ class partitioned_gt {
                                 callback_found_at&& callback_found,
                                 callback_missing_at&& callback_missing = {}) const noexcept {
         std::size_t part_idx = bucket(identifier_t(comparable));
-        std::shared_lock _ {mutexes_[part_idx]};
+        shared_lock_t _ {mutexes_[part_idx]};
         return parts_[part_idx].find(std::forward<comparable_at>(comparable),
                                      std::forward<callback_found_at>(callback_found),
                                      std::forward<callback_missing_at>(callback_missing));
@@ -357,28 +359,37 @@ class partitioned_gt {
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
     [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
         lock_out_of_order<shared_lock_t>(mutexes_);
+        status_t status;
         for (auto& part : parts_)
-            if (auto status = part.find_interval(comparable, callback); !status)
-                return status;
-        return {success_k};
+            if (status = part.find_interval(comparable, callback); !status)
+                break;
+        for (auto& mutex : mutexes_)
+            mutex.unlock_shared();
+        return status;
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
     [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
+        status_t status;
         for (auto& part : parts_)
-            if (auto status = part.find_interval(comparable, callback); !status)
-                return status;
-        return {success_k};
+            if (status = part.find_interval(comparable, callback); !status)
+                break;
+        for (auto& mutex : mutexes_)
+            mutex.unlock_shared();
+        return status;
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
     [[nodiscard]] status_t erase_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
+        status_t status;
         for (auto& part : parts_)
-            if (auto status = part.erase_interval(comparable, callback); !status)
-                return status;
-        return {success_k};
+            if (status = part.erase_interval(comparable, callback); !status)
+                break;
+        for (auto& mutex : mutexes_)
+            mutex.unlock_shared();
+        return status;
     }
 
     [[nodiscard]] status_t clear() noexcept {

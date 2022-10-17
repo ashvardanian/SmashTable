@@ -17,14 +17,14 @@ void api() {
     _ = container.upsert(element_t {});
     _ = container.find(
         identifier_t {},
-        [](element_t const&) {},
-        [] {});
+        [](element_t const&) noexcept {},
+        []() noexcept {});
     _ = container.find_next(
         identifier_t {},
-        [](element_t const&) {},
-        [] {});
-    _ = container.find_interval(identifier_t {}, [](element_t const&) {});
-    _ = container.erase_interval(identifier_t {}, [](element_t const&) {});
+        [](element_t const&) noexcept {},
+        []() noexcept {});
+    _ = container.find_interval(identifier_t {}, [](element_t const&) noexcept {});
+    _ = container.erase_interval(identifier_t {}, [](element_t const&) noexcept {});
     _ = container.clear();
     _ = container.size();
 
@@ -34,12 +34,12 @@ void api() {
     _ = txn.erase(identifier_t {});
     _ = txn.find(
         identifier_t {},
-        [](element_t const&) {},
-        [] {});
+        [](element_t const&) noexcept {},
+        []() noexcept {});
     _ = txn.find_next(
         identifier_t {},
-        [](element_t const&) {},
-        [] {});
+        [](element_t const&) noexcept {},
+        []() noexcept {});
     _ = txn.stage();
     _ = txn.rollback();
     _ = txn.commit();
@@ -63,9 +63,15 @@ struct pair_compare_t {
 
 int main() {
     using namespace av;
+
     using stl_t = consistent_set_gt<pair_t, pair_compare_t>;
     api<stl_t>();
     api<locked_gt<stl_t>>();
     api<partitioned_gt<stl_t>>();
+
+    using avl_t = consistent_avl_gt<pair_t, pair_compare_t>;
+    api<avl_t>();
+    api<locked_gt<avl_t>>();
+    api<partitioned_gt<avl_t>>();
     return 0;
 }
