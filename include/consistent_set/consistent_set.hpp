@@ -4,6 +4,7 @@
 #include <optional>   // `std::optional` for "expected"
 #include <set>        // `std::set` for entries
 #include <vector>     // `std::vector` for watches
+#include <random>     // `std::uniform_int_distribution` fir sampling
 
 #include "status.hpp"
 
@@ -132,8 +133,12 @@ class consistent_set_gt {
             });
         }
 
+        [[nodiscard]] status_t reserve(std::size_t size) noexcept {
+            return invoke_safely([&] { watches_.reserve(size); });
+        }
+
         [[nodiscard]] status_t watch(identifier_t const& id) noexcept {
-            return store_ref().find(
+            return store_ref().find_first_of(
                 id,
                 [&](entry_t const& entry) {
                     watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
@@ -152,16 +157,16 @@ class consistent_set_gt {
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find(comparable_at&& comparable,
-                                    callback_found_at&& callback_found,
-                                    callback_missing_at&& callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
+                                             callback_found_at&& callback_found,
+                                             callback_missing_at&& callback_missing = {}) const noexcept {
             if (auto iterator = changes_.find(std::forward<comparable_at>(comparable)); iterator != changes_.end())
                 return !iterator->deleted ? invoke_safely([&callback_found, &iterator] { callback_found(*iterator); })
                                           : invoke_safely(callback_missing);
             else
-                return store_ref().find(std::forward<comparable_at>(comparable),
-                                        std::forward<callback_found_at>(callback_found),
-                                        std::forward<callback_missing_at>(callback_missing));
+                return store_ref().find_first_of(std::forward<comparable_at>(comparable),
+                                                 std::forward<callback_found_at>(callback_found),
+                                                 std::forward<callback_missing_at>(callback_missing));
         }
 
         template <typename comparable_at = identifier_t,
@@ -223,7 +228,7 @@ class consistent_set_gt {
             auto entry_missing = missing_watch();
             for (auto const& id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find(
+                auto status = store.find_first_of(
                     id_and_watch.id,
                     [&](entry_t const& entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
@@ -323,6 +328,7 @@ class consistent_set_gt {
   private:
     entry_set_t entries_;
     generation_t generation_ {0};
+    std::size_t visible_count_ {0};
 
     consistent_set_gt() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
@@ -334,6 +340,7 @@ class consistent_set_gt {
             if (current->visible) {
                 callback(*current);
                 current = entries_.erase(current);
+                --visible_count_;
             }
             else
                 ++current;
@@ -344,26 +351,70 @@ class consistent_set_gt {
         entry_iterator_t last_visible_entry = end;
         for (; current != end; ++current) {
             auto keep_this = current->generation == generation_to_unmask;
-            current->visible |= keep_this;
+            if (keep_this) {
+                visible_count_ += !current->visible;
+                current->visible = true;
+            }
+
             if (!current->visible)
                 continue;
 
             // Older revisions must die
-            if (last_visible_entry != end)
+            if (last_visible_entry != end) {
                 entries_.erase(last_visible_entry);
+                --visible_count_;
+            }
             last_visible_entry = current;
         }
     }
 
-  public:
-    [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+    /**
+     * @brief Atomically @b updates-or-inserts a collection of entries.
+     * Either all entries will be inserted, or all will fail.
+     * This operation is identical to creating and committing
+     * a transaction with all the same elements put into it.
+     *
+     * @section Why not take R-Value?
+     * We want this operation to be consistent, as the rest of the container,
+     * so we need a place to return all the objects, if the operation fails.
+     * With R-Value, the batch would be lost.
+     *
+     * @param[inout] sources   Collection of entries to import.
+     * @return status_t        Can fail, if out of memory.
+     */
+    [[nodiscard]] status_t upsert(entry_set_t& sources) noexcept {
+        for (auto source = sources.begin(); source != sources.end();) {
+            bool should_compact = source->visible;
+            auto source_node = sources.extract(source++);
+            auto range_end = entries_.insert(std::move(source_node)).position;
+            ++visible_count_;
+            if (should_compact) {
+                auto range_start = entries_.lower_bound(range_end->element);
+                erase_visible(range_start, range_end);
+            }
+        }
+        return {success_k};
+    }
 
+  public:
+    [[nodiscard]] std::size_t size() const noexcept { return visible_count_; }
+    [[nodiscard]] bool empty() const noexcept { return !visible_count_; }
+
+    /**
+     * @brief Creates a new collection of this type without throwing exceptions.
+     * If fails, an empty @class std::optional is returned.
+     */
     [[nodiscard]] static std::optional<store_t> make() noexcept {
         std::optional<store_t> result;
         invoke_safely([&] { result.emplace(store_t {}); });
         return result;
     }
 
+    /**
+     * @brief Starts a transaction with a new sequence number.
+     * If succeeded, that transaction can later be reset to reuse the memory.
+     * If fails, an empty @class std::optional is returned.
+     */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
         generation_t generation = new_generation();
         std::optional<transaction_t> result;
@@ -371,6 +422,14 @@ class consistent_set_gt {
         return result;
     }
 
+    /**
+     * @brief Moves a single new @param element into the container.
+     * This operation is identical to creating and committing
+     * a single upsert transaction.
+     *
+     * @param[in] element   The element to import.
+     * @return status_t     Can fail, if out of memory.
+     */
     [[nodiscard]] status_t upsert(element_t&& element) noexcept {
         generation_t generation = new_generation();
         return invoke_safely([&] {
@@ -380,34 +439,22 @@ class consistent_set_gt {
             entry.visible = true;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
+            ++visible_count_;
             erase_visible(range_start, range_end);
         });
     }
 
     /**
-     * @brief
+     * @brief Atomically @b updates-or-inserts a batch of entries.
+     * Either all entries will be inserted, or all will fail.
      *
-     * @section Why not take R-Value?
-     * As this operation must be consistent, as the rest of the container,
-     * we need a place to return all the objects, if the operation fails.
-     * With R-Value, the batch would be lost.
+     * The dereferencing operator of the passed @param iterator
+     * should return R-Value references of @class element_t.
+     * @see std::make_move_iterator.
      *
-     * @param sources
-     * @return status_t
+     * @param begin
+     * @param end
      */
-    [[nodiscard]] status_t upsert(entry_set_t& sources) noexcept {
-        for (auto source = sources.begin(); source != sources.end();) {
-            bool should_compact = source->visible;
-            auto source_node = sources.extract(source++);
-            auto range_end = entries_.insert(std::move(source_node)).position;
-            if (should_compact) {
-                auto range_start = entries_.lower_bound(range_end->element);
-                erase_visible(range_start, range_end);
-            }
-        }
-        return {success_k};
-    }
-
     template <typename elements_begin_at, typename elements_end_at = elements_begin_at>
     [[nodiscard]] status_t upsert(elements_begin_at begin, elements_end_at end) noexcept {
         generation_t generation = new_generation();
@@ -426,12 +473,18 @@ class consistent_set_gt {
         return upsert(batch.value());
     }
 
+    /**
+     * @brief Similar to @b lower_bound, finds the smallest member,
+     * that compares @b equal to @param comparable. Calls @param callback_found
+     * on the matched @class element_t, or @param callback_missing if nothing
+     * was found.
+     */
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find(comparable_at&& comparable,
-                                callback_found_at&& callback_found,
-                                callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
+                                         callback_found_at&& callback_found,
+                                         callback_missing_at&& callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
         if (range.first == entries_.end())
             return invoke_safely(std::forward<callback_missing_at>(callback_missing));
@@ -448,6 +501,12 @@ class consistent_set_gt {
             return invoke_safely([&] { callback_found(*range.first); });
     }
 
+    /**
+     * @brief Similar to @b upper_bound, finds the smallest member,
+     * that compares @b greater to @param comparable. Calls @param callback_found
+     * on the matched @class element_t, or @param callback_missing if nothing
+     * was found.
+     */
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
@@ -471,10 +530,10 @@ class consistent_set_gt {
 
     /**
      * @brief Implements a heterogeneous lookup for all the entries falling into
-     * the `equal_range`.
+     * the `equal_range` compared to @param comparable.
      */
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
+    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
         for (; range.first != range.second; ++range.first)
             if (range.first->visible)
@@ -485,12 +544,12 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Implements a heterogeneous lookup, allowing in-place @b
-     * modification of the object, for all the entries falling into the
-     * `equal_range`.
+     * @brief Implements a heterogeneous lookup, allowing in-place
+     * @b modification of the object, for all the entries falling
+     * into the `equal_range` compared to @param comparable.
      */
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
+    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
         generation_t generation = new_generation();
         auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
         for (; range.first != range.second; ++range.first)
@@ -504,21 +563,105 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Removes one or more objects from the collection, that fall into
-     * the `equal_range`.
+     * @brief Removes one or more objects from the collection,
+     * that fall into the `equal_range` compared to @param comparable.
      */
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    [[nodiscard]] status_t erase_equals_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         return invoke_safely([&] {
             auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
             erase_visible(range.first, range.second, std::forward<callback_at>(callback));
         });
     }
 
+    /**
+     * @brief Removes all the data from the container.
+     */
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
         generation_ = 0;
         return {success_k};
+    }
+
+    /**
+     * @brief Optimization, that informs container to pre-allocate memory in-advance.
+     * Doesn't guarantee, that the following upserts won't fail with "out of memory".
+     */
+    [[nodiscard]] status_t reserve(std::size_t) noexcept { return {}; }
+
+    /**
+     * @brief Uniformly Random-Samples just one entry from the container.
+     * Searches within entries that compare equal to the provided @param comparable.
+     *
+     * ! This implementation is extremely inefficient and requires a two-pass approach.
+     * ! On the first run we estimate the number of entries matching the @param comparable.
+     * ! On the second run we choose a random integer below the number of matched entries
+     * ! and loop until we advance the STL iterator enough.
+     *
+     * ! Depends on the `find_equals_interval`. Use the Reservoir Sampling overload with
+     * ! temporary memory if you want to sample more than one entry.
+     *
+     * @param[in] comparable
+     * @param[in] generator     Random generator to be invoked on the internal distribution.
+     * @param[in] callback      Callback to receive the sampled @class element_t entry.
+     */
+    template <typename comparable_at, typename generator_at, typename callback_at = no_op_t>
+    [[nodiscard]] status_t sample_equals_interval(comparable_at&& comparable,
+                                                  generator_at&& generator,
+                                                  callback_at&& callback) const noexcept {
+
+        std::size_t count = 0;
+        auto status = find_equals_interval(comparable, [&](element_t const&) noexcept { ++count; });
+        if (!status)
+            return status;
+
+        if (!count)
+            return {};
+
+        std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
+        std::size_t matches_to_skip = distribution(generator);
+        status = find_equals_interval(comparable, [&](element_t const& element) noexcept {
+            if (matches_to_skip)
+                --matches_to_skip;
+            else
+                callback(element);
+        });
+        return status;
+    }
+
+    /**
+     * @brief Implements Uniform Reservoir Sampling into the provided output buffer.
+     * Searches within entries that compare equal to the provided @param comparable.
+     *
+     * @param[in] comparable
+     * @param[in] generator             Random generator to be invoked on the internal distribution.
+     * @param[inout] seen               The number of previously seen entries. Zero, by default.
+     * @param[in] reservoir_capacity    The number of entries that can fit in `reservoir`.
+     * @param[in] reservoir             Iterator to the beginning of the output reservoir.
+     */
+    template <typename comparable_at, typename generator_at, typename output_iterator_at>
+    [[nodiscard]] status_t sample_equals_interval(comparable_at&& comparable,
+                                                  generator_at&& generator,
+                                                  std::size_t& seen,
+                                                  std::size_t reservoir_capacity,
+                                                  output_iterator_at&& reservoir) const noexcept {
+
+        using output_category_t = typename std::iterator_traits<output_iterator_at>::iterator_category;
+        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
+        auto status = find_equals_interval(comparable, [&](element_t const& element) noexcept {
+            if (seen < reservoir_capacity)
+                reservoir[seen] = element;
+
+            else {
+                std::uniform_int_distribution<std::size_t> distribution {0, seen};
+                auto slot_to_replace = distribution(generator);
+                if (slot_to_replace < reservoir_capacity)
+                    reservoir[slot_to_replace] = element;
+            }
+
+            ++seen;
+        });
+        return status;
     }
 };
 
