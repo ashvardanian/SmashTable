@@ -99,7 +99,7 @@ class partitioned_gt {
         // We may need to cycle multiple times, attempting to acquire locks,
         // until the `remaining_count == 0`.
         // This can also be implemented via `do {} while`, but becomes to
-        // cumbersome with more complex conditions in cases like `find_next`
+        // cumbersome with more complex conditions in cases like `upper_bound`
         // implemented via `for_all_next_lookups`.
         for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
             if (finished[part_idx])
@@ -180,7 +180,7 @@ class partitioned_gt {
                 continue;
 
             auto& part = parts[part_idx];
-            status = part.find_next(comparable, [&](element_t const& element) {
+            status = part.upper_bound(comparable, [&](element_t const& element) {
                 if (smallest_idx != not_found_idx && !comparator_t {}(element, smallest_id))
                     return;
                 smallest_id = identifier_t(element);
@@ -202,7 +202,7 @@ class partitioned_gt {
         // the repeated lookup of the entry in the underlying store can fail
         // and we will have to `restart` all over.
         bool should_restart = false;
-        status = parts[smallest_idx].find_first_of(smallest_id, std::forward<callback_found_at>(callback_found), [&] {
+        status = parts[smallest_idx].find(smallest_id, std::forward<callback_found_at>(callback_found), [&] {
             should_restart = true;
         });
         if (should_restart)
@@ -241,22 +241,22 @@ class partitioned_gt {
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
-                                             callback_found_at&& callback_found,
-                                             callback_missing_at&& callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t find(comparable_at&& comparable,
+                                    callback_found_at&& callback_found,
+                                    callback_missing_at&& callback_missing = {}) const noexcept {
             std::size_t part_idx = bucket(identifier_t(comparable));
             shared_lock_t _ {store_.mutexes_[part_idx]};
-            return parts_[part_idx].find_first_of(std::forward<comparable_at>(comparable),
-                                                  std::forward<callback_found_at>(callback_found),
-                                                  std::forward<callback_missing_at>(callback_missing));
+            return parts_[part_idx].find(std::forward<comparable_at>(comparable),
+                                         std::forward<callback_found_at>(callback_found),
+                                         std::forward<callback_missing_at>(callback_missing));
         }
 
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find_next(comparable_at&& comparable,
-                                         callback_found_at&& callback_found,
-                                         callback_missing_at&& callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
+                                           callback_found_at&& callback_found,
+                                           callback_missing_at&& callback_missing = {}) const noexcept {
             return partitioned_t::for_all_next_lookups(parts_,
                                                        store_.mutexes_,
                                                        std::forward<comparable_at>(comparable),
@@ -335,22 +335,22 @@ class partitioned_gt {
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
-                                         callback_found_at&& callback_found,
-                                         callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t find(comparable_at&& comparable,
+                                callback_found_at&& callback_found,
+                                callback_missing_at&& callback_missing = {}) const noexcept {
         std::size_t part_idx = bucket(identifier_t(comparable));
         shared_lock_t _ {mutexes_[part_idx]};
-        return parts_[part_idx].find_first_of(std::forward<comparable_at>(comparable),
-                                              std::forward<callback_found_at>(callback_found),
-                                              std::forward<callback_missing_at>(callback_missing));
+        return parts_[part_idx].find(std::forward<comparable_at>(comparable),
+                                     std::forward<callback_found_at>(callback_found),
+                                     std::forward<callback_missing_at>(callback_missing));
     }
 
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find_next(comparable_at&& comparable,
-                                     callback_found_at&& callback_found,
-                                     callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
+                                       callback_found_at&& callback_found,
+                                       callback_missing_at&& callback_missing = {}) const noexcept {
         return for_all_next_lookups(parts_,
                                     mutexes_,
                                     std::forward<comparable_at>(comparable),
@@ -359,11 +359,11 @@ class partitioned_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
+    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) const noexcept {
         lock_out_of_order<shared_lock_t>(mutexes_);
         status_t status;
         for (auto& part : parts_)
-            if (status = part.find_equals_interval(comparable, callback); !status)
+            if (status = part.equal_range(comparable, callback); !status)
                 break;
         for (auto& mutex : mutexes_)
             mutex.unlock_shared();
@@ -371,11 +371,11 @@ class partitioned_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
+    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
         status_t status;
         for (auto& part : parts_)
-            if (status = part.find_equals_interval(comparable, callback); !status)
+            if (status = part.equal_range(comparable, callback); !status)
                 break;
         for (auto& mutex : mutexes_)
             mutex.unlock_shared();
@@ -383,11 +383,11 @@ class partitioned_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equals_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    [[nodiscard]] status_t erase_equal_range(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
         status_t status;
         for (auto& part : parts_)
-            if (status = part.erase_equals_interval(comparable, callback); !status)
+            if (status = part.erase_equal_range(comparable, callback); !status)
                 break;
         for (auto& mutex : mutexes_)
             mutex.unlock_shared();
@@ -395,27 +395,27 @@ class partitioned_gt {
     }
 
     template <typename comparable_at, typename generator_at, typename callback_at = no_op_t>
-    [[nodiscard]] status_t sample_equals_interval(comparable_at&& comparable,
-                                                  generator_at&& generator,
-                                                  callback_at&& callback) const noexcept {
+    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
+                                              generator_at&& generator,
+                                              callback_at&& callback) const noexcept {
         // Here the assumption is that every part will have a somewhat equal number of
         // entries that compare equal to the provided range.
         std::size_t part_idx = generator() % parts_k;
         shared_lock_t _ {mutexes_[part_idx]};
-        return parts_[part_idx].sample_equals_interval(std::forward<comparable_at>(comparable),
-                                                       std::forward<generator_at>(generator),
-                                                       std::forward<callback_at>(callback));
+        return parts_[part_idx].sample_equal_range(std::forward<comparable_at>(comparable),
+                                                   std::forward<generator_at>(generator),
+                                                   std::forward<callback_at>(callback));
     }
 
     template <typename comparable_at, typename generator_at, typename output_iterator_at>
-    [[nodiscard]] status_t sample_equals_interval(comparable_at&& comparable,
-                                                  generator_at&& generator,
-                                                  std::size_t& seen,
-                                                  std::size_t reservoir_capacity,
-                                                  output_iterator_at&& reservoir) const noexcept {
+    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
+                                              generator_at&& generator,
+                                              std::size_t& seen,
+                                              std::size_t reservoir_capacity,
+                                              output_iterator_at&& reservoir) const noexcept {
 
         return for_all<shared_lock_t>(parts_, mutexes_, [&](part_t const& part) {
-            return part.sample_equals_interval(comparable, generator, seen, reservoir_capacity, reservoir);
+            return part.sample_equal_range(comparable, generator, seen, reservoir_capacity, reservoir);
         });
     }
 

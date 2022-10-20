@@ -63,25 +63,25 @@ class locked_gt {
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
-                                             callback_found_at&& callback_found,
-                                             callback_missing_at&& callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t find(comparable_at&& comparable,
+                                    callback_found_at&& callback_found,
+                                    callback_missing_at&& callback_missing = {}) const noexcept {
             std::shared_lock _ {store_.mutex_};
-            return unlocked_.find_first_of(std::forward<comparable_at>(comparable),
-                                           std::forward<callback_found_at>(callback_found),
-                                           std::forward<callback_missing_at>(callback_missing));
+            return unlocked_.find(std::forward<comparable_at>(comparable),
+                                  std::forward<callback_found_at>(callback_found),
+                                  std::forward<callback_missing_at>(callback_missing));
         }
 
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find_next(comparable_at&& comparable,
-                                         callback_found_at&& callback_found,
-                                         callback_missing_at&& callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
+                                           callback_found_at&& callback_found,
+                                           callback_missing_at&& callback_missing = {}) const noexcept {
             std::shared_lock _ {store_.mutex_};
-            return unlocked_.find_next(std::forward<comparable_at>(comparable),
-                                       std::forward<callback_found_at>(callback_found),
-                                       std::forward<callback_missing_at>(callback_missing));
+            return unlocked_.upper_bound(std::forward<comparable_at>(comparable),
+                                         std::forward<callback_found_at>(callback_found),
+                                         std::forward<callback_missing_at>(callback_missing));
         }
     };
 
@@ -138,46 +138,44 @@ class locked_gt {
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
-                                         callback_found_at&& callback_found,
-                                         callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t find(comparable_at&& comparable,
+                                callback_found_at&& callback_found,
+                                callback_missing_at&& callback_missing = {}) const noexcept {
         std::shared_lock _ {mutex_};
-        return unlocked_.find_first_of(std::forward<comparable_at>(comparable),
-                                       std::forward<callback_found_at>(callback_found),
-                                       std::forward<callback_missing_at>(callback_missing));
+        return unlocked_.find(std::forward<comparable_at>(comparable),
+                              std::forward<callback_found_at>(callback_found),
+                              std::forward<callback_missing_at>(callback_missing));
     }
 
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find_next(comparable_at&& comparable,
-                                     callback_found_at&& callback_found,
-                                     callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
+                                       callback_found_at&& callback_found,
+                                       callback_missing_at&& callback_missing = {}) const noexcept {
         std::shared_lock _ {mutex_};
-        return unlocked_.find_next(std::forward<comparable_at>(comparable),
-                                   std::forward<callback_found_at>(callback_found),
-                                   std::forward<callback_missing_at>(callback_missing));
+        return unlocked_.upper_bound(std::forward<comparable_at>(comparable),
+                                     std::forward<callback_found_at>(callback_found),
+                                     std::forward<callback_missing_at>(callback_missing));
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
+    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) const noexcept {
         std::shared_lock _ {mutex_};
-        return unlocked_.find_equals_interval(std::forward<comparable_at>(comparable),
-                                              std::forward<callback_at>(callback));
+        return unlocked_.equal_range(std::forward<comparable_at>(comparable), std::forward<callback_at>(callback));
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
+    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) noexcept {
         std::shared_lock _ {mutex_};
-        return unlocked_.find_equals_interval(std::forward<comparable_at>(comparable),
-                                              std::forward<callback_at>(callback));
+        return unlocked_.equal_range(std::forward<comparable_at>(comparable), std::forward<callback_at>(callback));
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equals_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    [[nodiscard]] status_t erase_equal_range(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         std::unique_lock _ {mutex_};
-        return unlocked_.erase_equals_interval(std::forward<comparable_at>(comparable),
-                                               std::forward<callback_at>(callback));
+        return unlocked_.erase_equal_range(std::forward<comparable_at>(comparable),
+                                           std::forward<callback_at>(callback));
     }
 
     [[nodiscard]] status_t clear() noexcept {
@@ -191,27 +189,27 @@ class locked_gt {
     }
 
     template <typename comparable_at, typename generator_at, typename callback_at = no_op_t>
-    [[nodiscard]] status_t sample_equals_interval(comparable_at&& comparable,
-                                                  generator_at&& generator,
-                                                  callback_at&& callback) const noexcept {
+    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
+                                              generator_at&& generator,
+                                              callback_at&& callback) const noexcept {
         std::shared_lock _ {mutex_};
-        return unlocked_.find_equals_interval(std::forward<comparable_at>(comparable),
-                                              std::forward<generator_at>(generator),
-                                              std::forward<callback_at>(callback));
+        return unlocked_.equal_range(std::forward<comparable_at>(comparable),
+                                     std::forward<generator_at>(generator),
+                                     std::forward<callback_at>(callback));
     }
 
     template <typename comparable_at, typename generator_at, typename output_iterator_at>
-    [[nodiscard]] status_t sample_equals_interval(comparable_at&& comparable,
-                                                  generator_at&& generator,
-                                                  std::size_t& seen,
-                                                  std::size_t reservoir_capacity,
-                                                  output_iterator_at&& reservoir) const noexcept {
+    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
+                                              generator_at&& generator,
+                                              std::size_t& seen,
+                                              std::size_t reservoir_capacity,
+                                              output_iterator_at&& reservoir) const noexcept {
         std::shared_lock _ {mutex_};
-        return unlocked_.find_equals_interval(std::forward<comparable_at>(comparable),
-                                              std::forward<generator_at>(generator),
-                                              seen,
-                                              reservoir_capacity,
-                                              std::forward<output_iterator_at>(reservoir));
+        return unlocked_.equal_range(std::forward<comparable_at>(comparable),
+                                     std::forward<generator_at>(generator),
+                                     seen,
+                                     reservoir_capacity,
+                                     std::forward<output_iterator_at>(reservoir));
     }
 };
 

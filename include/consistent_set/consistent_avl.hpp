@@ -12,7 +12,7 @@ namespace av {
  * memory management.
  *
  * > Never throws! Even if new node allocation had failed.
- * > Implements `find_next` for faster and lighter iterators.
+ * > Implements `upper_bound` for faster and lighter iterators.
  *   Alternative would be - Binary Threaded Search Tree.
  * > Implements sampling methods.
  *
@@ -114,18 +114,6 @@ class avl_node_gt {
             return node;
     }
 
-    /**
-     * @brief Searches for the first/smallest content that compares equal to the provided content.
-     */
-    template <typename comparable_at>
-    static node_t* lower_bound(node_t* node, comparable_at&& comparable) noexcept;
-
-    /**
-     * @brief Searches for the last/biggest content that compares equal to the provided content.
-     */
-    template <typename comparable_at>
-    static node_t* upper_bound(node_t* node, comparable_at&& comparable) noexcept;
-
     struct node_interval_t {
         node_t* lower_bound = nullptr;
         node_t* upper_bound = nullptr;
@@ -138,10 +126,7 @@ class avl_node_gt {
      * ! Has a recursive implementation for now.
      */
     template <typename lower_at, typename upper_at, typename callback_at>
-    static node_interval_t find_equals_interval(node_t* node,
-                                                lower_at&& low,
-                                                upper_at&& high,
-                                                callback_at&& callback) noexcept {
+    static node_interval_t equal_range(node_t* node, lower_at&& low, upper_at&& high, callback_at&& callback) noexcept {
         if (!node)
             return {};
 
@@ -151,8 +136,8 @@ class avl_node_gt {
         auto less = comparator_t {};
         if (!less(high, node->content) && !less(node->content, low)) {
             callback(node);
-            auto left_sub_interval = find_equals_interval(node->left, low, high, callback);
-            auto right_sub_interval = find_equals_interval(node->right, low, high, callback);
+            auto left_sub_interval = equal_range(node->left, low, high, callback);
+            auto right_sub_interval = equal_range(node->right, low, high, callback);
 
             auto result = node_interval_t {};
             result.lower_bound = left_sub_interval.lower_bound ?: node;
@@ -162,15 +147,15 @@ class avl_node_gt {
         }
 
         else if (less(node->content, low))
-            return find_equals_interval(node->right, low, high, callback);
+            return equal_range(node->right, low, high, callback);
 
         else
-            return find_equals_interval(node->left, low, high, callback);
+            return equal_range(node->left, low, high, callback);
     }
 
     template <typename comparable_at>
     static node_interval_t equal_interval(node_t* node, comparable_at&& comparable) noexcept {
-        return find_equals_interval(node, comparable, comparable);
+        return equal_range(node, comparable, comparable);
     }
 
     /**
@@ -185,7 +170,7 @@ class avl_node_gt {
      * This implementation has no recursion and no
      */
     template <typename comparable_at>
-    static node_t* find_next(node_t* node, comparable_at&& comparable) noexcept {
+    static node_t* upper_bound(node_t* node, comparable_at&& comparable) noexcept {
         node_t* succ = nullptr;
         auto less = comparator_t {};
         while (node) {
@@ -484,12 +469,12 @@ class avl_tree_gt {
 
     template <typename comparable_at>
     node_t* find(comparable_at&& comparable) noexcept {
-        return node_t::find_first_of(root_, std::forward<comparable_at>(comparable));
+        return node_t::find(root_, std::forward<comparable_at>(comparable));
     }
 
     template <typename comparable_at>
-    node_t* find_next(comparable_at&& comparable) noexcept {
-        return node_t::find_next(root_, std::forward<comparable_at>(comparable));
+    node_t* upper_bound(comparable_at&& comparable) noexcept {
+        return node_t::upper_bound(root_, std::forward<comparable_at>(comparable));
     }
 
     struct upsert_result_t {
@@ -549,7 +534,7 @@ class avl_tree_gt {
     }
 
     template <typename comparable_at>
-    std::size_t erase_equals_interval(comparable_at&& comparable) noexcept {
+    std::size_t erase_equal_range(comparable_at&& comparable) noexcept {
         return 0;
     }
 
@@ -664,7 +649,7 @@ class consistent_avl_gt {
         }
 
         [[nodiscard]] status_t watch(identifier_t const& id) noexcept {
-            return store_ref().find_first_of(
+            return store_ref().find(
                 id,
                 [&](entry_t const& entry) {
                     watches_.insert_or_assign(identifier_t(entry.element), watch_t {entry.generation, entry.deleted});
@@ -681,25 +666,24 @@ class consistent_avl_gt {
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
-                                             callback_found_at&& callback_found,
-                                             callback_missing_at&& callback_missing = {}) const noexcept {
-            if (auto iterator = changes_.find_first_of(std::forward<comparable_at>(comparable));
-                iterator != changes_.end())
+        [[nodiscard]] status_t find(comparable_at&& comparable,
+                                    callback_found_at&& callback_found,
+                                    callback_missing_at&& callback_missing = {}) const noexcept {
+            if (auto iterator = changes_.find(std::forward<comparable_at>(comparable)); iterator != changes_.end())
                 return !iterator->deleted ? invoke_safely([&callback_found, &iterator] { callback_found(*iterator); })
                                           : invoke_safely(callback_missing);
             else
-                return store_ref().find_first_of(std::forward<comparable_at>(comparable),
-                                                 std::forward<callback_found_at>(callback_found),
-                                                 std::forward<callback_missing_at>(callback_missing));
+                return store_ref().find(std::forward<comparable_at>(comparable),
+                                        std::forward<callback_found_at>(callback_found),
+                                        std::forward<callback_missing_at>(callback_missing));
         }
 
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
                   typename callback_missing_at = no_op_t>
-        [[nodiscard]] status_t find_next(comparable_at&& comparable,
-                                         callback_found_at&& callback_found,
-                                         callback_missing_at&& callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
+                                           callback_found_at&& callback_found,
+                                           callback_missing_at&& callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_at>(comparable));
             while (internal_iterator != changes_.end() && internal_iterator->deleted)
@@ -720,7 +704,7 @@ class consistent_avl_gt {
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
-                auto external_element_internal_state = changes_.find_first_of(external_element);
+                auto external_element_internal_state = changes_.find(external_element);
                 if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
@@ -742,7 +726,7 @@ class consistent_avl_gt {
             auto& store = store_ref();
             auto status = status_t {};
             do {
-                status = store.find_next(external_previous_id, callback_external_found, callback_external_missing);
+                status = store.upper_bound(external_previous_id, callback_external_found, callback_external_missing);
             } while (faced_deleted_entry && status);
             return status;
         }
@@ -753,7 +737,7 @@ class consistent_avl_gt {
             auto entry_missing = missing_watch();
             for (auto const& [id, watch] : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find_first_of(
+                auto status = store.find(
                     id,
                     [&](entry_t const& entry) noexcept { consistency_violated = entry != watch; },
                     [&]() noexcept { consistency_violated = entry_missing != watch; });
@@ -795,7 +779,7 @@ class consistent_avl_gt {
             if (stage_ == stage_t::staged_k)
                 for (auto const& [id, watch] : watches_)
                     // Heterogeneous `erase` is only coming in C++23.
-                    if (auto iterator = store.entries_.find_first_of(dated_identifier_t {id, watch.generation});
+                    if (auto iterator = store.entries_.find(dated_identifier_t {id, watch.generation});
                         iterator != store.entries_.end())
                         store.entries_.erase(iterator);
 
@@ -820,7 +804,7 @@ class consistent_avl_gt {
             auto& store = store_ref();
             if (stage_ == stage_t::staged_k)
                 for (auto const& [id, watch] : watches_) {
-                    auto source = store.entries_.find_first_of(dated_identifier_t {id, watch.generation});
+                    auto source = store.entries_.find(dated_identifier_t {id, watch.generation});
                     auto node = store.entries_.extract(source);
                     changes_.insert(std::move(node));
                 }
@@ -932,12 +916,12 @@ class consistent_avl_gt {
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find_first_of(comparable_at&& comparable,
-                                         callback_found_at&& callback_found,
-                                         callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t find(comparable_at&& comparable,
+                                callback_found_at&& callback_found,
+                                callback_missing_at&& callback_missing = {}) const noexcept {
 
         entry_node_t* largest_visible = nullptr;
-        entry_node_t::find_equals_interval(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
+        entry_node_t::equal_range(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
             if ((node->content.visible) &&
                 (!largest_visible || node->content.generation > largest_visible->content.generation))
                 largest_visible = node;
@@ -952,14 +936,14 @@ class consistent_avl_gt {
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
               typename callback_missing_at = no_op_t>
-    [[nodiscard]] status_t find_next(comparable_at&& comparable,
-                                     callback_found_at&& callback_found,
-                                     callback_missing_at&& callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
+                                       callback_found_at&& callback_found,
+                                       callback_missing_at&& callback_missing = {}) const noexcept {
 
         // Skip all the invisible entries
-        entry_node_t* next_visible = entry_node_t::find_next(entries_.root(), comparable);
+        entry_node_t* next_visible = entry_node_t::upper_bound(entries_.root(), comparable);
         while (next_visible && !next_visible->content.visible) {
-            next_visible = entry_node_t::find_next(entries_.root(), next_visible->content);
+            next_visible = entry_node_t::upper_bound(entries_.root(), next_visible->content);
             // The logic is more complex if we start doing multi-versioning
             // TODO:
         }
@@ -971,8 +955,8 @@ class consistent_avl_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) const noexcept {
-        entry_node_t::find_equals_interval(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
+    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) const noexcept {
+        entry_node_t::equal_range(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
             if (node->content.visible)
                 callback(node->content.element);
             static_assert(noexcept(callback(node->content.element)));
@@ -981,9 +965,9 @@ class consistent_avl_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t find_equals_interval(comparable_at&& comparable, callback_at&& callback) noexcept {
+    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) noexcept {
         generation_t generation = new_generation();
-        entry_node_t::find_equals_interval(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
+        entry_node_t::equal_range(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
             if (node->content.visible)
                 callback(node->content.element), node->content.generation = generation;
             static_assert(noexcept(callback(node->content.element)));
@@ -992,7 +976,7 @@ class consistent_avl_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equals_interval(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    [[nodiscard]] status_t erase_equal_range(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         // TODO:
         return {success_k};
     }

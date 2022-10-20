@@ -8,26 +8,30 @@
 #define macro_concat(prefix, suffix) macro_concat_(prefix, suffix)
 #define _ [[maybe_unused]] auto macro_concat(_, __LINE__)
 
+using namespace av;
+
 template <typename container_at>
 void api() {
     using element_t = typename container_at::element_t;
     using identifier_t = typename container_at::identifier_t;
 
+    // Head state
     auto container = *container_at::make();
     _ = container.upsert(element_t {});
     _ = container.find(
         identifier_t {},
         [](element_t const&) noexcept {},
         []() noexcept {});
-    _ = container.find_next(
+    _ = container.upper_bound(
         identifier_t {},
         [](element_t const&) noexcept {},
         []() noexcept {});
-    _ = container.find_interval(identifier_t {}, [](element_t const&) noexcept {});
-    _ = container.erase_interval(identifier_t {}, [](element_t const&) noexcept {});
+    _ = container.equal_range(identifier_t {}, [](element_t const&) noexcept {});
+    _ = container.erase_equal_range(identifier_t {}, [](element_t const&) noexcept {});
     _ = container.clear();
     _ = container.size();
 
+    // Transactions
     auto txn = *container.transaction();
     _ = txn.upsert(element_t {});
     _ = txn.watch(identifier_t {});
@@ -36,7 +40,7 @@ void api() {
         identifier_t {},
         [](element_t const&) noexcept {},
         []() noexcept {});
-    _ = txn.find_next(
+    _ = txn.upper_bound(
         identifier_t {},
         [](element_t const&) noexcept {},
         []() noexcept {});
@@ -44,6 +48,10 @@ void api() {
     _ = txn.rollback();
     _ = txn.commit();
     _ = txn.reset();
+
+    // Exports
+    element_t result;
+    _ = container.find(identifier_t {}, copy_to(result), no_op_t {});
 }
 
 struct pair_t {
@@ -62,16 +70,21 @@ struct pair_compare_t {
 };
 
 int main() {
-    using namespace av;
 
     using stl_t = consistent_set_gt<pair_t, pair_compare_t>;
     api<stl_t>();
     api<locked_gt<stl_t>>();
     api<partitioned_gt<stl_t>>();
 
-    using avl_t = consistent_avl_gt<pair_t, pair_compare_t>;
-    api<avl_t>();
-    api<locked_gt<avl_t>>();
-    api<partitioned_gt<avl_t>>();
+    // using avl_t = consistent_avl_gt<pair_t, pair_compare_t>;
+    // api<avl_t>();
+    // api<locked_gt<avl_t>>();
+    // api<partitioned_gt<avl_t>>();
+
+    // using mvcc_t = consistent_set_gt<pair_t, pair_compare_t>;
+    // api<mvcc_t>();
+    // api<locked_gt<mvcc_t>>();
+    // api<partitioned_gt<mvcc_t>>();
+
     return 0;
 }

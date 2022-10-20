@@ -46,6 +46,20 @@ struct no_op_t {
     constexpr void operator()(at&&) const noexcept {}
 };
 
+template <typename element_at>
+struct copy_to_gt {
+    element_at& target;
+    template <typename at>
+    void operator()(at&& source) const noexcept {
+        target = std::forward<at>(source);
+    }
+};
+
+template <typename element_at>
+copy_to_gt<element_at> copy_to(element_at& element) noexcept {
+    return {element};
+}
+
 template <typename element_at, typename comparator_at>
 struct element_versioning_gt {
 
