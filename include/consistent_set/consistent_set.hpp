@@ -475,7 +475,7 @@ class consistent_set_gt {
      * Either all entries will be inserted, or all will fail.
      *
      * The dereferencing operator of the passed @param iterator
-     * should return R-Value references of @c element_t.
+     * should return R-Value references of @c `element_t`.
      * @see `std::make_move_iterator()`.
      *
      * @param begin
@@ -557,33 +557,36 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Implements a heterogeneous lookup for all the entries falling into
-     * the `equal_range` compared to @ref `comparable`.
+     * @brief Implements a heterogeneous lookup for all the entries falling in
+     * between the @ref `lower` and the @ref `upper`. Degrades to `equal_range()`,
+     * if they are the same.
      */
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) const noexcept {
-        auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
-        for (; range.first != range.second; ++range.first)
-            if (range.first->visible)
-                if (auto status = invoke_safely([&] { callback(range.first->element); }); !status)
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) const noexcept {
+        auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
+        auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+        for (; lower_iterator != upper_iterator; ++lower_iterator)
+            if (lower_iterator->visible)
+                if (auto status = invoke_safely([&] { callback(lower_iterator->element); }); !status)
                     return status;
 
         return {success_k};
     }
 
     /**
-     * @brief Implements a heterogeneous lookup, allowing in-place
-     * @b modification of the object, for all the entries falling
-     * into the `equal_range` compared to @ref `comparable`.
+     * @brief Implements a heterogeneous lookup for all the entries falling in
+     * between the @ref `lower` and the @ref `upper`. Degrades to `equal_range()`,
+     * if they are the same. Allows in-place @b modification.
      */
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) noexcept {
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         generation_t generation = new_generation();
-        auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
-        for (; range.first != range.second; ++range.first)
-            if (range.first->visible)
-                if (auto status =
-                        invoke_safely([&] { callback(range.first->element), range.first->generation = generation; });
+        auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
+        auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+        for (; lower_iterator != upper_iterator; ++lower_iterator)
+            if (lower_iterator->visible)
+                if (auto status = invoke_safely(
+                        [&] { callback(lower_iterator->element), lower_iterator->generation = generation; });
                     !status)
                     return status;
 
@@ -591,14 +594,14 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Removes one or more objects from the collection,
-     * that fall into the `equal_range` compared to @ref `comparable`.
+     * @brief Erases all the entries falling in between the @ref `lower` and the @ref `upper`.
      */
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equal_range(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t erase_range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         return invoke_safely([&] {
-            auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
-            erase_visible(range.first, range.second, std::forward<callback_at>(callback));
+            auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
+            auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+            erase_visible(lower_iterator, upper_iterator, std::forward<callback_at>(callback));
         });
     }
 
@@ -629,17 +632,17 @@ class consistent_set_gt {
      * ! Depends on the `equal_range`. Use the Reservoir Sampling overload with
      * ! temporary memory if you want to sample more than one entry.
      *
-     * @param[in] comparable
      * @param[in] generator     Random generator to be invoked on the internal distribution.
-     * @param[in] callback      Callback to receive the sampled @c element_t entry.
+     * @param[in] callback      Callback to receive the sampled @c `element_t` entry.
      */
-    template <typename comparable_at, typename generator_at, typename callback_at = no_op_t>
-    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
-                                              generator_at&& generator,
-                                              callback_at&& callback) const noexcept {
+    template <typename lower_at, typename upper_at, typename generator_at, typename callback_at = no_op_t>
+    [[nodiscard]] status_t sample_range(lower_at&& lower,
+                                        upper_at&& upper,
+                                        generator_at&& generator,
+                                        callback_at&& callback) const noexcept {
 
         std::size_t count = 0;
-        auto status = equal_range(comparable, [&](element_t const&) noexcept { ++count; });
+        auto status = range(lower, upper, [&](element_t const&) noexcept { ++count; });
         if (!status)
             return status;
 
@@ -648,35 +651,36 @@ class consistent_set_gt {
 
         std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
         std::size_t matches_to_skip = distribution(generator);
-        status = equal_range(comparable, [&](element_t const& element) noexcept {
+        return range(lower, upper, [&](element_t const& element) noexcept {
             if (matches_to_skip)
                 --matches_to_skip;
             else
                 callback(element);
         });
-        return status;
     }
 
     /**
      * @brief Implements Uniform Reservoir Sampling into the provided output buffer.
      * Searches within entries that compare equal to the provided @ref `comparable`.
      *
-     * @param[in] comparable
      * @param[in] generator             Random generator to be invoked on the internal distribution.
      * @param[inout] seen               The number of previously seen entries. Zero, by default.
-     * @param[in] reservoir_capacity    The number of entries that can fit in @ref reservoir.
+     * @param[in] reservoir_capacity    The number of entries that can fit in @ref `reservoir`.
      * @param[in] reservoir             Iterator to the beginning of the output reservoir.
      */
-    template <typename comparable_at, typename generator_at, typename output_iterator_at>
-    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
-                                              generator_at&& generator,
-                                              std::size_t& seen,
-                                              std::size_t reservoir_capacity,
-                                              output_iterator_at&& reservoir) const noexcept {
+    template <typename lower_at, typename upper_at, typename generator_at, typename output_iterator_at>
+    [[nodiscard]] status_t sample_range(lower_at&& lower,
+                                        upper_at&& upper,
+                                        generator_at&& generator,
+                                        std::size_t& seen,
+                                        std::size_t reservoir_capacity,
+                                        output_iterator_at&& reservoir) const noexcept {
 
-        using output_category_t = typename std::iterator_traits<output_iterator_at>::iterator_category;
+        using output_iterator_t = std::remove_reference_t<output_iterator_at>;
+        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
         static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
-        auto status = equal_range(comparable, [&](element_t const& element) noexcept {
+
+        auto sampler = [&](element_t const& element) noexcept {
             if (seen < reservoir_capacity)
                 reservoir[seen] = element;
 
@@ -688,8 +692,8 @@ class consistent_set_gt {
             }
 
             ++seen;
-        });
-        return status;
+        };
+        return range(std::forward<lower_at>(lower), std::forward<upper_at>(upper), sampler);
     }
 };
 

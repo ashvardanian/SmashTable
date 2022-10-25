@@ -766,12 +766,6 @@ class consistent_avl_gt {
             return {success_k};
         }
 
-        /**
-         * @brief Resets the state of the transaction.
-         * > All the updates staged in DB will be reverted.
-         * > All the updates will in this Transaction will be lost.
-         * > All the watches will be lost.
-         */
         [[nodiscard]] status_t reset() noexcept {
             // If the transaction was "staged",
             // we must delete all the entries.
@@ -789,12 +783,6 @@ class consistent_avl_gt {
             return {success_k};
         }
 
-        /**
-         * @brief Rolls-back a previously "staged" transaction.
-         * > All the updates will be reverted in the DB.
-         * > All the updates will re-emerge in this Transaction.
-         * > All the watches will be lost.
-         */
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k)
                 return {operation_not_permitted_k};
@@ -976,7 +964,7 @@ class consistent_avl_gt {
     }
 
     template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equal_range(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    [[nodiscard]] status_t erase(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
         // TODO:
         return {success_k};
     }

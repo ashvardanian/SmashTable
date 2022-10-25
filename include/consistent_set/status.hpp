@@ -111,7 +111,7 @@ struct element_versioning_gt {
         entry_t& operator=(entry_t const&) noexcept = default;
         entry_t(element_t&& element) noexcept : element(std::move(element)), deleted(false) {}
 
-        operator element_t const&() const& { return element; }
+        operator element_t const&() const& noexcept { return element; }
         bool operator==(watch_t const& watch) const noexcept {
             return watch.deleted == deleted && watch.generation == generation;
         }

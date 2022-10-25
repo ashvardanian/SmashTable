@@ -1,7 +1,8 @@
 #pragma once
-#include <array>      // `std::array`
-#include <optional>   // `std::optional`
-#include <functional> // `std::hash`
+#include <array>        // `std::array`
+#include <optional>     // `std::optional`
+#include <functional>   // `std::hash`
+#include <shared_mutex> // `std::shared_mutex`
 
 namespace av::helpers {
 
@@ -358,64 +359,67 @@ class partitioned_gt {
                                     std::forward<callback_missing_at>(callback_missing));
     }
 
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) const noexcept {
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) const noexcept {
         lock_out_of_order<shared_lock_t>(mutexes_);
         status_t status;
         for (auto& part : parts_)
-            if (status = part.equal_range(comparable, callback); !status)
+            if (status = part.range(lower, upper, callback); !status)
                 break;
         for (auto& mutex : mutexes_)
             mutex.unlock_shared();
         return status;
     }
 
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) noexcept {
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
         status_t status;
         for (auto& part : parts_)
-            if (status = part.equal_range(comparable, callback); !status)
+            if (status = part.range(lower, upper, callback); !status)
                 break;
         for (auto& mutex : mutexes_)
             mutex.unlock_shared();
         return status;
     }
 
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase_equal_range(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t erase_range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
         status_t status;
         for (auto& part : parts_)
-            if (status = part.erase_equal_range(comparable, callback); !status)
+            if (status = part.erase_range(lower, upper, callback); !status)
                 break;
         for (auto& mutex : mutexes_)
             mutex.unlock_shared();
         return status;
     }
 
-    template <typename comparable_at, typename generator_at, typename callback_at = no_op_t>
-    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
-                                              generator_at&& generator,
-                                              callback_at&& callback) const noexcept {
-        // Here the assumption is that every part will have a somewhat equal number of
-        // entries that compare equal to the provided range.
+    template <typename lower_at, typename upper_at, typename generator_at, typename callback_at = no_op_t>
+    [[nodiscard]] status_t sample_range(lower_at&& lower,
+                                        upper_at&& upper,
+                                        generator_at&& generator,
+                                        callback_at&& callback) const noexcept {
+        // ! Here the assumption is that every part will have a somewhat equal
+        // ! number of entries that compare equal to the provided range.
         std::size_t part_idx = generator() % parts_k;
         shared_lock_t _ {mutexes_[part_idx]};
-        return parts_[part_idx].sample_equal_range(std::forward<comparable_at>(comparable),
-                                                   std::forward<generator_at>(generator),
-                                                   std::forward<callback_at>(callback));
+        return parts_[part_idx].sample_range(std::forward<lower_at>(lower),
+                                             std::forward<upper_at>(upper),
+                                             std::forward<generator_at>(generator),
+                                             std::forward<callback_at>(callback));
     }
 
-    template <typename comparable_at, typename generator_at, typename output_iterator_at>
-    [[nodiscard]] status_t sample_equal_range(comparable_at&& comparable,
-                                              generator_at&& generator,
-                                              std::size_t& seen,
-                                              std::size_t reservoir_capacity,
-                                              output_iterator_at&& reservoir) const noexcept {
-
-        return for_all<shared_lock_t>(parts_, mutexes_, [&](part_t const& part) {
-            return part.sample_equal_range(comparable, generator, seen, reservoir_capacity, reservoir);
+    template <typename lower_at, typename upper_at, typename generator_at, typename output_iterator_at>
+    [[nodiscard]] status_t sample_range(lower_at&& lower,
+                                        upper_at&& upper,
+                                        generator_at&& generator,
+                                        std::size_t& seen,
+                                        std::size_t reservoir_capacity,
+                                        output_iterator_at&& reservoir) const noexcept {
+        // ! This function trades consistency for performance!
+        return for_all<shared_lock_t>(parts_, mutexes_, [&](part_t const& part) noexcept {
+            return part.sample_range(lower, upper, generator, seen, reservoir_capacity, reservoir);
         });
     }
 

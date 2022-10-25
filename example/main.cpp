@@ -26,8 +26,8 @@ void api() {
         identifier_t {},
         [](element_t const&) noexcept {},
         []() noexcept {});
-    _ = container.equal_range(identifier_t {}, [](element_t const&) noexcept {});
-    _ = container.erase_equal_range(identifier_t {}, [](element_t const&) noexcept {});
+    _ = container.range(identifier_t {}, identifier_t {}, [](element_t const&) noexcept {});
+    _ = container.erase_range(identifier_t {}, identifier_t {}, [](element_t const&) noexcept {});
     _ = container.clear();
     _ = container.size();
 
@@ -48,6 +48,25 @@ void api() {
     _ = txn.rollback();
     _ = txn.commit();
     _ = txn.reset();
+
+    // Machine Learning
+    std::random_device random_device;
+    std::mt19937 random_generator(random_device());
+    _ = container.sample_range( //
+        identifier_t {},
+        identifier_t {},
+        random_generator,
+        [](element_t const&) noexcept {});
+
+    std::size_t count_seen = 0;
+    std::array<element_t, 16> reservoir;
+    _ = container.sample_range( //
+        identifier_t {},
+        identifier_t {},
+        random_generator,
+        count_seen,
+        reservoir.size(),
+        reservoir.data());
 
     // Exports
     element_t result;
@@ -76,10 +95,10 @@ int main() {
     api<locked_gt<stl_t>>();
     api<partitioned_gt<stl_t>>();
 
-    // using avl_t = consistent_avl_gt<pair_t, pair_compare_t>;
-    // api<avl_t>();
-    // api<locked_gt<avl_t>>();
-    // api<partitioned_gt<avl_t>>();
+    using avl_t = consistent_avl_gt<pair_t, pair_compare_t>;
+    api<avl_t>();
+    api<locked_gt<avl_t>>();
+    api<partitioned_gt<avl_t>>();
 
     // using mvcc_t = consistent_set_gt<pair_t, pair_compare_t>;
     // api<mvcc_t>();
