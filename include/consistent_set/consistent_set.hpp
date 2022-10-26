@@ -512,20 +512,17 @@ class consistent_set_gt {
     [[nodiscard]] status_t find(comparable_at&& comparable,
                                 callback_found_at&& callback_found,
                                 callback_missing_at&& callback_missing = {}) const noexcept {
+
         auto range = entries_.equal_range(std::forward<comparable_at>(comparable));
-        if (range.first == entries_.end())
-            return invoke_safely(std::forward<callback_missing_at>(callback_missing));
 
         // Skip all the invisible entries
         while (range.first != range.second && !range.first->visible)
             ++range.first;
 
         // Check if there are no visible entries at all
-        if (range.first == range.second)
-            return invoke_safely(std::forward<callback_missing_at>(callback_missing));
-
-        else
-            return invoke_safely([&] { callback_found(*range.first); });
+        return range.first != range.second //
+                   ? invoke_safely([&] { callback_found(*range.first); })
+                   : invoke_safely(std::forward<callback_missing_at>(callback_missing));
     }
 
     /**
@@ -541,19 +538,16 @@ class consistent_set_gt {
     [[nodiscard]] status_t upper_bound(comparable_at&& comparable,
                                        callback_found_at&& callback_found,
                                        callback_missing_at&& callback_missing = {}) const noexcept {
-        auto iterator = entries_.upper_bound(comparable);
-        if (iterator == entries_.end())
-            return invoke_safely(std::forward<callback_missing_at>(callback_missing));
+
+        auto iterator = entries_.upper_bound(std::forward<comparable_at>(comparable));
 
         // Skip all the invisible entries
-        identifier_t next_id {iterator->element};
-        while (true)
-            if (iterator == entries_.end() || !entry_comparator_t {}.same(iterator->element, next_id))
-                return invoke_safely(std::forward<callback_missing_at>(callback_missing));
-            else if (!iterator->visible)
-                ++iterator;
-            else
-                return invoke_safely([&] { callback_found(*iterator); });
+        while (iterator != entries_.end() && !iterator->visible)
+            ++iterator;
+
+        return iterator != entries_.end() //
+                   ? invoke_safely([&] { callback_found(*iterator); })
+                   : invoke_safely(std::forward<callback_missing_at>(callback_missing));
     }
 
     /**
@@ -598,11 +592,10 @@ class consistent_set_gt {
      */
     template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
     [[nodiscard]] status_t erase_range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
-        return invoke_safely([&] {
-            auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
-            auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
-            erase_visible(lower_iterator, upper_iterator, std::forward<callback_at>(callback));
-        });
+        auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
+        auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+        erase_visible(lower_iterator, upper_iterator, std::forward<callback_at>(callback));
+        return {success_k};
     }
 
     /**
