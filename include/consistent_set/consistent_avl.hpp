@@ -1,6 +1,7 @@
 #pragma once
 #include <algorithm> // `std::max`
 #include <memory>    // `std::allocator`
+#include <optional>  // `std::optional`
 
 #include "status.hpp"
 
@@ -16,23 +17,27 @@ namespace av {
  *   Alternative would be - Binary Threaded Search Tree.
  * > Implements sampling methods.
  *
- * @tparam content_at       Type of contents to store in this tree.
+ * @tparam entry_at         Type of entries to store in this tree.
  * @tparam comparator_at    A comparator function object, that overload
  *                          @code
- *                              bool operator ()(content_at, content_at) const
+ *                              bool operator ()(entry_at, entry_at) const
  *                          @endcode
  */
-template <typename content_at, typename comparator_at>
+template <typename entry_at, typename comparator_at>
 class avl_node_gt {
   public:
-    using content_t = content_at;
+    using entry_t = entry_at;
     using comparator_t = comparator_at;
     using height_t = std::int16_t;
     using node_t = avl_node_gt;
 
-    content_t content;
+    entry_t entry;
     node_t* left = nullptr;
     node_t* right = nullptr;
+    /**
+     * @brief Root has the biggest `height` in the tree.
+     * Allows you to guess the upper bound of branch size.
+     */
     height_t height = 0;
 
     static height_t get_height(node_t* node) noexcept { return node ? node->height : 0; }
@@ -47,16 +52,16 @@ class avl_node_gt {
         if (!node)
             return;
         callback(node);
-        for_each(node->left, callback);
-        for_each(node->right, callback);
+        for_each_top_down(node->left, callback);
+        for_each_top_down(node->right, callback);
     }
 
     template <typename callback_at>
     static void for_each_bottom_up(node_t* node, callback_at&& callback) noexcept {
         if (!node)
             return;
-        for_each(node->left, callback);
-        for_each(node->right, callback);
+        for_each_bottom_up(node->left, callback);
+        for_each_bottom_up(node->right, callback);
         callback(node);
     }
 
@@ -73,17 +78,17 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Searches for equal content in this subtree.
-     * @param comparable Any key comparable with stored contents.
+     * @brief Searches for equal entry in this subtree.
+     * @param comparable Any key comparable with stored entries.
      * @return NULL if nothing was found.
      */
     template <typename comparable_at>
     static node_t* find(node_t* node, comparable_at&& comparable) noexcept {
         auto less = comparator_t {};
         while (node) {
-            if (less(comparable, node->content))
+            if (less(comparable, node->entry))
                 node = node->left;
-            else if (less(node->content, comparable))
+            else if (less(node->entry, comparable))
                 node = node->right;
             else
                 break;
@@ -92,9 +97,81 @@ class avl_node_gt {
     }
 
     /**
+     * @brief Find the smallest entry, bigger than or equal to the provided one.
+     * @param comparable Any key comparable with stored entries.
+     * @return NULL if nothing was found.
+     */
+    template <typename comparable_at>
+    static node_t* lower_bound(node_t* node, comparable_at&& comparable) noexcept {
+        node_t* succ = nullptr;
+        auto less = comparator_t {};
+        while (node) {
+            // If the given key is less than the root node, visit the left
+            // subtree, taking current node as potential successor.
+            if (less(comparable, node->entry)) {
+                succ = node;
+                node = node->left;
+            }
+
+            // Of the given key is more than the root node, visit the right
+            // subtree.
+            else if (less(node->entry, comparable)) {
+                node = node->right;
+            }
+
+            // If a node with the desired value is found, the successor is the
+            // minimum value node in its right subtree (if any).
+            else {
+                succ = node;
+                node = nullptr;
+            }
+        }
+        return succ;
+    }
+
+    /**
+     * @brief Find the smallest entry, bigger than the provided one.
+     * @param comparable Any key comparable with stored entries.
+     * @return NULL if nothing was found.
+     *
+     * Is used for an atomic implementation of iterators.
+     * Alternatively one can:
+     * > store a stack for path, which is ~O(logN) space.
+     * > store parents in nodes and have complex logic.
+     */
+    template <typename comparable_at>
+    static node_t* upper_bound(node_t* node, comparable_at&& comparable) noexcept {
+        node_t* succ = nullptr;
+        auto less = comparator_t {};
+        while (node) {
+            // If the given key is less than the root node, visit the left
+            // subtree, taking current node as potential successor.
+            if (less(comparable, node->entry)) {
+                succ = node;
+                node = node->left;
+            }
+
+            // Of the given key is more than the root node, visit the right
+            // subtree.
+            else if (less(node->entry, comparable)) {
+                node = node->right;
+            }
+
+            // If a node with the desired value is found, the successor is the
+            // minimum value node in its right subtree (if any).
+            else {
+                if (node->right)
+                    succ = find_min(node->right);
+                break;
+            }
+        }
+        return succ;
+    }
+
+    /**
      * @brief Searches for the shortest node, that is ancestor of both provided keys.
      * @return NULL if nothing was found.
-     * ! Recursive implementation is suboptimal.
+     * @warning Current recursive implementation is suboptimal.
      */
     template <typename comparable_a_at, typename comparable_b_at>
     static node_t* lowest_common_ancestor(node_t* node, comparable_a_at&& a, comparable_b_at&& b) noexcept {
@@ -103,11 +180,11 @@ class avl_node_gt {
 
         auto less = comparator_t {};
         // If both `a` and `b` are smaller than `node`, then LCA lies in left
-        if (less(a, node->content) && less(b, node->content))
+        if (less(a, node->entry) && less(b, node->entry))
             return lowest_common_ancestor(node->left, a, b);
 
         // If both `a` and `b` are greater than `node`, then LCA lies in right
-        else if (less(node->content, a) && less(node->content, b))
+        else if (less(node->entry, a) && less(node->entry, b))
             return lowest_common_ancestor(node->right, a, b);
 
         else
@@ -123,10 +200,10 @@ class avl_node_gt {
     /**
      * @brief Complex method, that detects the left-most and right-most nodes
      * containing keys in a provided intervals, as well as their lowest common ancestors.
-     * ! Has a recursive implementation for now.
+     * @warning Current recursive implementation is suboptimal.
      */
     template <typename lower_at, typename upper_at, typename callback_at>
-    static node_interval_t equal_range(node_t* node, lower_at&& low, upper_at&& high, callback_at&& callback) noexcept {
+    static node_interval_t range(node_t* node, lower_at&& low, upper_at&& high, callback_at&& callback) noexcept {
         if (!node)
             return {};
 
@@ -134,10 +211,10 @@ class avl_node_gt {
         // The first call to reach this branch in the call-stack
         // will be by definition the Lowest Common Ancestor.
         auto less = comparator_t {};
-        if (!less(high, node->content) && !less(node->content, low)) {
+        if (!less(high, node->entry) && !less(node->entry, low)) {
             callback(node);
-            auto left_sub_interval = equal_range(node->left, low, high, callback);
-            auto right_sub_interval = equal_range(node->right, low, high, callback);
+            auto left_sub_interval = range(node->left, low, high, callback);
+            auto right_sub_interval = range(node->right, low, high, callback);
 
             auto result = node_interval_t {};
             result.lower_bound = left_sub_interval.lower_bound ?: node;
@@ -146,56 +223,68 @@ class avl_node_gt {
             return result;
         }
 
-        else if (less(node->content, low))
-            return equal_range(node->right, low, high, callback);
+        else if (less(node->entry, low))
+            return range(node->right, low, high, callback);
 
         else
-            return equal_range(node->left, low, high, callback);
+            return range(node->left, low, high, callback);
     }
 
     template <typename comparable_at>
-    static node_interval_t equal_interval(node_t* node, comparable_at&& comparable) noexcept {
-        return equal_range(node, comparable, comparable);
+    static node_interval_t equal_range(node_t* node, comparable_at&& comparable) noexcept {
+        return range(node, comparable, comparable);
     }
 
     /**
-     * @brief Find the smallest content, bigger than the provided one.
-     * @param comparable Any key comparable with stored contents.
+     * @brief Random samples nodes.
+     * @param generator Any STL-compatible random number generator.
      * @return NULL if nothing was found.
-     *
-     * Is used for an atomic implementation of iterators.
-     * Alternatively one can:
-     * > store a stack for path, which is ~O(logN) space.
-     * > store parents in nodes and have complex logic.
-     * This implementation has no recursion and no
+     * @warning Resulting distribution is inaccurate, as we only have the upper bound of the branch size.
      */
-    template <typename comparable_at>
-    static node_t* upper_bound(node_t* node, comparable_at&& comparable) noexcept {
-        node_t* succ = nullptr;
+    template <typename generator_at>
+    static node_t* sample(node_t* node, generator_at&& generator) noexcept {
         auto less = comparator_t {};
         while (node) {
-            // If the given key is less than the root node, visit the left
-            // subtree, taking current node as potential successor.
-            if (less(comparable, node->content)) {
-                succ = node;
-                node = node->left;
-            }
-
-            // Of the given key is more than the root node, visit the right
-            // subtree.
-            else if (less(node->content, comparable)) {
-                node = node->right;
-            }
-
-            // If a node with the desired value is found, the successor is the
-            // minimum value node in its right subtree (if any).
-            else {
-                if (node->right)
-                    succ = find_min(node->right);
+            auto count_left = node->left ? 1ul << node->left->height : 0ul;
+            auto count_right = node->right ? 1ul << node->right->height : 0ul;
+            auto count_total = count_left + count_right + 1ul;
+            std::uniform_int_distribution<std::size_t> distribution {0, count_total + 1};
+            auto choice = distribution(generator);
+            if (choice == 0)
                 break;
-            }
+
+            node = choice > (count_left + 1ul) ? node->right : node->left;
         }
-        return succ;
+        return node;
+    }
+
+    /**
+     * @brief Random samples nodes within a given range of keys.
+     * @param generator Any STL-compatible random number generator.
+     * @return NULL if nothing was found.
+     * @warning Without additional stored metadata or dynamic memory, this algorithm performs two passes.
+     */
+    template <typename generator_at, typename lower_at, typename upper_at, typename predicate_at>
+    static node_t* sample_range( //
+        node_t* node,
+        lower_at&& low,
+        upper_at&& high,
+        generator_at&& generator,
+        predicate_at&& predicate) noexcept {
+
+        std::size_t count_matches = 0;
+        range(node, low, high, [&](node_t* node) noexcept { count_matches += predicate(node); });
+
+        node_t result = node;
+        std::uniform_int_distribution<std::size_t> distribution {0, count_matches + 1};
+        auto choice = distribution(generator);
+        if (choice != 0)
+            range(node, low, high, [&](node_t* node) noexcept {
+                choice -= predicate(node);
+                result = choice != 0 ? result : node;
+            });
+
+        return result;
     }
 
 #pragma mark - Insertions
@@ -247,20 +336,20 @@ class avl_node_gt {
         auto less = comparator_t {};
 
         // Left Left Case
-        if (balance > 1 && less(comparable, node->left->content))
+        if (balance > 1 && less(comparable, node->left->entry))
             return rotate_right(node);
 
         // Right Right Case
-        else if (balance < -1 && less(node->right->content, comparable))
+        else if (balance < -1 && less(node->right->entry, comparable))
             return rotate_left(node);
 
         // Left Right Case
-        else if (balance > 1 && less(node->left->content, comparable)) {
+        else if (balance > 1 && less(node->left->entry, comparable)) {
             node->left = rotate_left(node->left);
             return rotate_right(node);
         }
         // Right Left Case
-        else if (balance < -1 && less(comparable, node->right->content)) {
+        else if (balance < -1 && less(comparable, node->right->entry)) {
             node->right = rotate_right(node->right);
             return rotate_left(node);
         }
@@ -283,18 +372,18 @@ class avl_node_gt {
         }
 
         auto less = comparator_t {};
-        if (less(comparable, node->content)) {
+        if (less(comparable, node->entry)) {
             auto downstream = find_or_make(node->left, comparable, node_allocator);
             node->left = downstream.root;
             if (downstream.inserted)
-                node = rebalance_after_insert(node);
+                node = rebalance_after_insert(node, comparable);
             return {node, downstream.match, downstream.inserted};
         }
-        else if (less(node->content, comparable)) {
+        else if (less(node->entry, comparable)) {
             auto downstream = find_or_make(node->right, comparable, node_allocator);
             node->right = downstream.root;
             if (downstream.inserted)
-                node = rebalance_after_insert(node);
+                node = rebalance_after_insert(node, comparable);
             return {node, downstream.match, downstream.inserted};
         }
         else {
@@ -304,33 +393,35 @@ class avl_node_gt {
     }
 
     template <typename node_allocator_at>
-    static find_or_make_result_t insert(node_t* node,
-                                        content_t&& content,
-                                        node_allocator_at&& node_allocator) noexcept {
-        auto result = find_or_make(node, content, node_allocator);
+    static find_or_make_result_t insert(node_t* node, entry_t&& entry, node_allocator_at&& node_allocator) noexcept {
+        auto result = find_or_make(node, entry, std::forward<node_allocator_at>(node_allocator));
         if (result.inserted)
-            result.match->content = std::move(content);
-        return result.root;
+            result.match->entry = std::move(entry);
+        return result;
     }
 
     template <typename node_allocator_at>
-    static find_or_make_result_t upsert(node_t* node,
-                                        content_t&& content,
-                                        node_allocator_at&& node_allocator) noexcept {
-        auto result = find_or_make(node, content, node_allocator);
+    static find_or_make_result_t upsert(node_t* node, entry_t&& entry, node_allocator_at&& node_allocator) noexcept {
+        auto result = find_or_make(node, entry, std::forward<node_allocator_at>(node_allocator));
         if (result.match)
-            result.match->content = std::move(content);
-        return result.root;
+            result.match->entry = std::move(entry);
+        return result;
+    }
+
+    static find_or_make_result_t insert(node_t* node, node_t* new_child) noexcept {
+        return find_or_make(node, node->entry, [=]() { return new_child; });
     }
 
 #pragma mark - Removals
 
-    struct pop_result_t {
+    struct extract_result_t {
         node_t* root = nullptr;
-        std::unique_ptr<node_t> popped;
+        std::unique_ptr<node_t> extracted;
+
+        node_t* release() noexcept { return extracted.release(); }
     };
 
-    inline static node_t* rebalance_after_pop(node_t* node) noexcept {
+    inline static node_t* rebalance_after_extract(node_t* node) noexcept {
         node->height = 1 + std::max(get_height(node->left), get_height(node->right));
         auto balance = get_balance(node);
 
@@ -359,66 +450,66 @@ class avl_node_gt {
 
     /**
      * @brief Pops the root replacing it with one of descendants, if present.
-     * @param comparable Any key comparable with stored contents.
+     * @param comparable Any key comparable with stored entries.
      */
-    static pop_result_t pop(node_t* node) noexcept {
+    static extract_result_t extract(node_t* node) noexcept {
 
         // If the node has two children, replace it with the
         // smallest entry in the right branch.
         if (node->left && node->right) {
             node_t* midpoint = find_min(node->right);
-            auto downstream = pop(midpoint->right, midpoint->content);
-            midpoint = downstream.popped.release();
+            auto downstream = extract(midpoint->right, midpoint->entry);
+            midpoint = downstream.extracted.release();
             midpoint->left = node->left;
             midpoint->right = downstream.root;
             // Detach the `node` from the descendants.
             node->left = node->right = nullptr;
-            return {midpoint, {node}};
+            return {midpoint, std::unique_ptr<node_t> {node}};
         }
         // Just one child is present, so it is the natural successor.
         else if (node->left || node->right) {
             node_t* replacement = node->left ? node->left : node->right;
             // Detach the `node` from the descendants.
             node->left = node->right = nullptr;
-            return {replacement, {node}};
+            return {replacement, std::unique_ptr<node_t> {node}};
         }
         // No children are present.
         else {
             // Detach the `node` from the descendants.
             node->left = node->right = nullptr;
-            return {nullptr, {node}};
+            return {nullptr, std::unique_ptr<node_t> {node}};
         }
     }
 
     /**
-     * @brief Searches for a matching ancestor and pops it out.
-     * @param comparable Any key comparable with stored contents.
+     * @brief Searches for a matching ancestor and extracts it out.
+     * @param comparable Any key comparable with stored entries.
      */
     template <typename comparable_at>
-    static pop_result_t pop(node_t* node, comparable_at&& comparable) noexcept {
+    static extract_result_t extract(node_t* node, comparable_at&& comparable) noexcept {
         if (!node)
             return {node, {}};
 
         auto less = comparator_t {};
-        if (less(comparable, node->content)) {
-            auto downstream = pop(node->left, comparable);
-            node->left = downstream.node;
-            if (downstream.popped)
-                node = rebalance_after_pop(node);
-            return {node, std::move(downstream.popped)};
+        if (less(comparable, node->entry)) {
+            auto downstream = extract(node->left, comparable);
+            node->left = downstream.root;
+            if (downstream.extracted)
+                node = rebalance_after_extract(node);
+            return {node, std::move(downstream.extracted)};
         }
 
-        else if (less(node->content, comparable)) {
-            auto downstream = pop(node->right, comparable);
-            node->right = downstream.node;
-            if (downstream.popped)
-                node = rebalance_after_pop(node);
-            return {node, std::move(downstream.popped)};
+        else if (less(node->entry, comparable)) {
+            auto downstream = extract(node->right, comparable);
+            node->right = downstream.root;
+            if (downstream.extracted)
+                node = rebalance_after_extract(node);
+            return {node, std::move(downstream.extracted)};
         }
 
         else
-            // We have found the node to pop!
-            return pop(node);
+            // We have found the node to extract!
+            return extract(node);
     }
 
     struct remove_if_result_t {
@@ -432,21 +523,18 @@ class avl_node_gt {
                                         node_deallocator_at&& node_deallocator) noexcept {
         return {};
     }
-
-    static node_t* remove_interval(node_t* node, node_interval_t&& interval) noexcept {
-        return node;
-    }
 };
 
-template <typename content_at,
+template <typename entry_at,
           typename comparator_at,
-          typename node_allocator_at = std::allocator<avl_node_gt<content_at, comparator_at>>>
+          typename node_allocator_at = std::allocator<avl_node_gt<entry_at, comparator_at>>>
 class avl_tree_gt {
   public:
-    using node_t = avl_node_gt<content_at, comparator_at>;
+    using node_t = avl_node_gt<entry_at, comparator_at>;
     using node_allocator_t = node_allocator_at;
     using comparator_t = comparator_at;
-    using content_t = content_at;
+    using entry_t = entry_at;
+    using avl_tree_t = avl_tree_gt;
 
   private:
     node_t* root_ = nullptr;
@@ -466,6 +554,9 @@ class avl_tree_gt {
     ~avl_tree_gt() { clear(); }
     std::size_t size() const noexcept { return size_; }
     node_t* root() const noexcept { return root_; }
+    node_t* end() const noexcept { return nullptr; }
+    node_allocator_t& allocator() noexcept { return allocator_; }
+    node_allocator_t const& allocator() const noexcept { return allocator_; }
 
     template <typename comparable_at>
     node_t* find(comparable_at&& comparable) noexcept {
@@ -473,7 +564,27 @@ class avl_tree_gt {
     }
 
     template <typename comparable_at>
+    node_t* lower_bound(comparable_at&& comparable) noexcept {
+        return node_t::lower_bound(root_, std::forward<comparable_at>(comparable));
+    }
+
+    template <typename comparable_at>
     node_t* upper_bound(comparable_at&& comparable) noexcept {
+        return node_t::upper_bound(root_, std::forward<comparable_at>(comparable));
+    }
+
+    template <typename comparable_at>
+    node_t const* find(comparable_at&& comparable) const noexcept {
+        return node_t::find(root_, std::forward<comparable_at>(comparable));
+    }
+
+    template <typename comparable_at>
+    node_t const* lower_bound(comparable_at&& comparable) const noexcept {
+        return node_t::lower_bound(root_, std::forward<comparable_at>(comparable));
+    }
+
+    template <typename comparable_at>
+    node_t const* upper_bound(comparable_at&& comparable) const noexcept {
         return node_t::upper_bound(root_, std::forward<comparable_at>(comparable));
     }
 
@@ -485,16 +596,17 @@ class avl_tree_gt {
          * @return True if the allocation of the new node has failed.
          */
         bool failed() const noexcept { return !inserted && !node; }
-        upsert_result_t& operator=(content_t&& content) noexcept {
-            node->content = content;
+        upsert_result_t& operator=(entry_t&& entry) noexcept {
+            node->entry = entry;
             return *this;
         }
     };
 
     template <typename comparable_at>
     upsert_result_t insert(comparable_at&& comparable) noexcept {
-        auto result =
-            node_t::insert(root_, std::forward<comparable_at>(comparable), [&] { return allocator_.allocate(1); });
+        auto result = node_t::insert(root_, std::forward<comparable_at>(comparable), [&]() noexcept {
+            return allocator_.allocate(1);
+        });
         root_ = result.root;
         size_ += result.inserted;
         return {result.match, result.inserted};
@@ -502,46 +614,68 @@ class avl_tree_gt {
 
     template <typename comparable_at>
     upsert_result_t upsert(comparable_at&& comparable) noexcept {
-        auto result =
-            node_t::upsert(root_, std::forward<comparable_at>(comparable), [&] { return allocator_.allocate(1); });
+        auto result = node_t::upsert(root_, std::forward<comparable_at>(comparable), [&]() noexcept {
+            return allocator_.allocate(1);
+        });
         root_ = result.root;
         size_ += result.inserted;
         return {result.match, result.inserted};
     }
 
-    struct pop_result_t {
+    struct extract_result_t {
         avl_tree_gt* tree_ = nullptr;
         node_t* node_ptr_ = nullptr;
 
-        ~pop_result_t() noexcept {
+        ~extract_result_t() noexcept {
             if (node_ptr_)
-                tree_->allocator_.deallocate(node_ptr_);
+                tree_->allocator_.deallocate(node_ptr_, 1);
         }
+        extract_result_t(extract_result_t const&) = delete;
+        extract_result_t& operator=(extract_result_t const&) = delete;
         explicit operator bool() const noexcept { return node_ptr_; }
     };
 
     template <typename comparable_at>
-    pop_result_t pop(comparable_at&& comparable) noexcept {
-        auto result = node_t::pop(root_, std::forward(comparable));
+    extract_result_t extract(comparable_at&& comparable) noexcept {
+        auto result = node_t::extract(root_, std::forward<comparable_at>(comparable));
         root_ = result.root;
-        size_ -= result.popped != nullptr;
-        return pop_result_t {this, result.popped.release()};
+        size_ -= result.extracted != nullptr;
+        return extract_result_t {this, result.extracted.release()};
     }
 
     template <typename comparable_at>
     bool erase(comparable_at&& comparable) noexcept {
-        return pop(std::forward(comparable));
-    }
-
-    template <typename comparable_at>
-    std::size_t erase_equal_range(comparable_at&& comparable) noexcept {
-        return 0;
+        return !!extract(std::forward<comparable_at>(comparable));
     }
 
     void clear() noexcept {
-        node_t::for_each_bottom_up(root_, [&](node_t* node) { return allocator_.deallocate(node, 1); });
+        node_t::for_each_bottom_up(root_, [&](node_t* node) noexcept { return allocator_.deallocate(node, 1); });
         root_ = nullptr;
         size_ = 0;
+    }
+
+    template <typename callback_at>
+    void for_each(callback_at&& callback) noexcept {
+        node_t::for_each_bottom_up(root_, [&](node_t* node) { callback(node->entry); });
+    }
+
+    /**
+     *
+     */
+    void merge(avl_tree_t& other) noexcept {
+        node_t::for_each_bottom_up(other.root_, [&](node_t* node) noexcept {
+            auto result = node_t::insert(root_, node);
+            root_ = result.root;
+            size_ += result.inserted;
+        });
+    }
+
+    void merge(extract_result_t other) noexcept {
+        if (!other.node_ptr_)
+            return;
+        auto result = node_t::insert(root_, other.node_ptr_);
+        root_ = result.root;
+        size_ += result.inserted;
     }
 };
 
@@ -565,7 +699,6 @@ class avl_tree_gt {
  *      2. added in the second transaction.
  *      3. removed in the third transaction.
  * The first transaction will succeed, if we try to commit it.
- *
  */
 template < //
     typename element_at,
@@ -599,6 +732,7 @@ class consistent_avl_gt {
     using watch_iterator_t = typename watches_array_t::iterator;
 
     using store_t = consistent_avl_gt;
+    using extract_result_t = typename entry_set_t::extract_result_t;
 
   public:
     class transaction_t {
@@ -616,7 +750,7 @@ class consistent_avl_gt {
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
 
-        transaction_t(store_t& set) noexcept(false) : store_(&set) {}
+        transaction_t(store_t& set) noexcept : store_(&set) {}
         void date(generation_t generation) noexcept { generation_ = generation; }
         watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
         store_t& store_ref() noexcept { return *store_; }
@@ -648,19 +782,22 @@ class consistent_avl_gt {
             return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
         }
 
+        [[nodiscard]] status_t reserve(std::size_t size) noexcept {
+            return invoke_safely([&] { watches_.reserve(size); });
+        }
+
         [[nodiscard]] status_t watch(identifier_t const& id) noexcept {
-            return store_ref().find(
-                id,
-                [&](entry_t const& entry) {
-                    watches_.insert_or_assign(identifier_t(entry.element), watch_t {entry.generation, entry.deleted});
-                },
-                [&] { watches_.insert_or_assign(id, missing_watch()); });
+            auto found = [&](entry_t const& entry) noexcept {
+                watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+            };
+            auto missing = [&]() noexcept {
+                watches_.push_back({id, missing_watch()});
+            };
+            return store_ref().find(id, found, missing);
         }
 
         [[nodiscard]] status_t watch(entry_t const& entry) noexcept {
-            return invoke_safely([&] {
-                watches_.insert_or_assign(identifier_t(entry.element), watch_t {entry.generation, entry.deleted});
-            });
+            watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
         }
 
         template <typename comparable_at = identifier_t,
@@ -669,9 +806,10 @@ class consistent_avl_gt {
         [[nodiscard]] status_t find(comparable_at&& comparable,
                                     callback_found_at&& callback_found,
                                     callback_missing_at&& callback_missing = {}) const noexcept {
-            if (auto iterator = changes_.find(std::forward<comparable_at>(comparable)); iterator != changes_.end())
-                return !iterator->deleted ? invoke_safely([&callback_found, &iterator] { callback_found(*iterator); })
-                                          : invoke_safely(callback_missing);
+            if (auto iterator = changes_.find(std::forward<comparable_at>(comparable)); iterator != changes_.end()) {
+                !iterator->entry.deleted ? callback_found(iterator->entry) : callback_missing();
+                return {success_k};
+            }
             else
                 return store_ref().find(std::forward<comparable_at>(comparable),
                                         std::forward<callback_found_at>(callback_found),
@@ -686,7 +824,7 @@ class consistent_avl_gt {
                                            callback_missing_at&& callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_at>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->deleted)
+            while (internal_iterator != changes_.end() && internal_iterator->entry.deleted)
                 ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
@@ -698,14 +836,15 @@ class consistent_avl_gt {
                 if (internal_iterator == changes_.end())
                     return callback_found(external_element);
 
-                element_t const& internal_element = internal_iterator->content;
+                element_t const& internal_element = internal_iterator->entry;
                 if (!entry_comparator_t {}(external_element, internal_element))
                     return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
                 auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
+                if (external_element_internal_state != changes_.end() &&
+                    external_element_internal_state->entry.deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                     return;
@@ -717,7 +856,7 @@ class consistent_avl_gt {
                 if (internal_iterator == changes_.end())
                     return callback_missing();
                 else {
-                    element_t const& internal_element = internal_iterator->content;
+                    element_t const& internal_element = internal_iterator->entry;
                     return callback_found(internal_element);
                 }
             };
@@ -735,12 +874,12 @@ class consistent_avl_gt {
             // First, check if we have any collisions.
             auto& store = store_ref();
             auto entry_missing = missing_watch();
-            for (auto const& [id, watch] : watches_) {
+            for (auto const& id_and_watch : watches_) {
                 auto consistency_violated = false;
                 auto status = store.find(
-                    id,
-                    [&](entry_t const& entry) noexcept { consistency_violated = entry != watch; },
-                    [&]() noexcept { consistency_violated = entry_missing != watch; });
+                    id_and_watch.id,
+                    [&](entry_t const& entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
+                    [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated)
                     return {consistent_set_errc_t::consistency_k};
                 if (!status)
@@ -756,8 +895,9 @@ class consistent_avl_gt {
 
             // No new memory allocations or failures are possible after that.
             // It is all safe.
-            for (auto const& entry : changes_)
-                watches_.insert_or_assign(identifier_t(entry.element), watch_t {generation_, entry.deleted});
+            changes_.for_each([&](entry_t const& entry) noexcept {
+                watches_.push_back({identifier_t {entry.element}, watch_t {generation_, entry.deleted}});
+            });
 
             // Than just merge our current nodes.
             // The visibility will be updated later in the `commit`.
@@ -771,11 +911,8 @@ class consistent_avl_gt {
             // we must delete all the entries.
             auto& store = store_ref();
             if (stage_ == stage_t::staged_k)
-                for (auto const& [id, watch] : watches_)
-                    // Heterogeneous `erase` is only coming in C++23.
-                    if (auto iterator = store.entries_.find(dated_identifier_t {id, watch.generation});
-                        iterator != store.entries_.end())
-                        store.entries_.erase(iterator);
+                for (auto const& id_and_watch : watches_)
+                    store.entries_.erase(dated_identifier_t {id_and_watch.id, id_and_watch.watch.generation});
 
             watches_.clear();
             changes_.clear();
@@ -791,11 +928,9 @@ class consistent_avl_gt {
             // we must delete all the entries.
             auto& store = store_ref();
             if (stage_ == stage_t::staged_k)
-                for (auto const& [id, watch] : watches_) {
-                    auto source = store.entries_.find(dated_identifier_t {id, watch.generation});
-                    auto node = store.entries_.extract(source);
-                    changes_.insert(std::move(node));
-                }
+                for (auto const& id_and_watch : watches_)
+                    changes_.insert(
+                        store.entries_.extract(dated_identifier_t {id_and_watch.id, id_and_watch.watch.generation}));
 
             watches_.clear();
             stage_ = stage_t::created_k;
@@ -810,10 +945,8 @@ class consistent_avl_gt {
             // if there are more than one with the same key,
             // the older generation must die.
             auto& store = store_ref();
-            for (auto const& [id, watch] : watches_) {
-                auto range = store.entries_.equal_range(id);
-                store.unmask_and_compact(range.first, range.second, watch.generation);
-            }
+            for (auto const& id_and_watch : watches_)
+                store.unmask_and_compact(id_and_watch.id, id_and_watch.watch.generation);
 
             stage_ = stage_t::created_k;
             return {success_k};
@@ -823,83 +956,110 @@ class consistent_avl_gt {
   private:
     entry_set_t entries_;
     generation_t generation_ {0};
+    std::size_t visible_count_ {0};
 
-    consistent_avl_gt() noexcept(false) {}
+    consistent_avl_gt() noexcept {}
     generation_t new_generation() noexcept { return ++generation_; }
 
-    template <typename callback_at = no_op_t>
-    void erase_visible(entry_iterator_t begin, entry_iterator_t end, callback_at&& callback = {}) noexcept {
-        entry_iterator_t& current = begin;
-        while (current != end)
-            if (current->visible) {
-                callback(*current);
-                current = entries_.erase(current);
-            }
-            else
-                ++current;
-    }
-
-    void unmask_and_compact(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
-        entry_iterator_t& current = begin;
-        entry_iterator_t last_visible_entry = end;
-        for (; current != end; ++current) {
-            auto keep_this = current->generation == generation_to_unmask;
-            current->visible |= keep_this;
-            if (!current->visible)
+    void unmask_and_compact(identifier_t const& id, generation_t generation_to_unmask) noexcept {
+        // This is similar to the public `erase_range()`, but adds generation-matching conditions.
+        auto last = entries_.lower_bound(id);
+        auto less = entry_comparator_t {};
+        auto last_visible_entry = std::optional<identifier_t> {};
+        while (last && less.same(id, last->entry)) {
+            auto next = entries_.upper_bound(last->entry);
+            last->entry.visible |= last->entry.generation == generation_to_unmask;
+            if (!last->entry.visible)
                 continue;
 
             // Older revisions must die
-            if (last_visible_entry != end)
-                entries_.erase(last_visible_entry);
-            last_visible_entry = current;
+            if (last_visible_entry)
+                entries_.extract(*last_visible_entry);
+            last = next;
         }
     }
 
   public:
     [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
 
-    [[nodiscard]] static std::optional<consistent_avl_gt> make() noexcept {
-        std::optional<consistent_avl_gt> result;
-        invoke_safely([&] { result.emplace(consistent_avl_gt {}); });
-        return result;
-    }
+    [[nodiscard]] static std::optional<store_t> make(allocator_t&& allocator = {}) noexcept { return store_t {}; }
 
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
         generation_t generation = new_generation();
-        std::optional<transaction_t> result;
-        invoke_safely([&] { result.emplace(transaction_t {*this}).date(generation); });
-        return result;
+        transaction_t transaction {*this};
+        transaction.date(generation);
+        return std::move(transaction);
     }
 
     [[nodiscard]] status_t upsert(element_t&& element) noexcept {
-        generation_t generation = new_generation();
-        return invoke_safely([&] {
-            auto entry = entry_t {std::move(element)};
-            entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
-            entries_.insert(std::move(entry));
-            // auto range_end = .first;
-            // auto range_start = entries_.lower_bound(range_end->content);
-            // erase_visible(range_start, range_end);
-        });
-    }
+        auto node = entries_.allocator().allocate(1);
+        if (!node)
+            return {out_of_memory_heap_k};
 
-    [[nodiscard]] status_t upsert(entry_set_t& sources) noexcept {
-        for (auto source = sources.begin(); source != sources.end();) {
-            bool should_compact = source->visible;
-            auto source_node = sources.extract(source++);
-            entries_.insert(std::move(source_node));
-            if (should_compact) {
-                // auto range_start = entries_.lower_bound(range_end->content);
-                // erase_visible(range_start, range_end);
-            }
-        }
-        return {success_k};
+        identifier_t id {element};
+        generation_t generation = new_generation();
+        auto& entry = node->entry;
+        new (&entry.element) element_t(std::move(element));
+        entry.generation = generation;
+        entry.deleted = false;
+        entry.visible = true;
+        entries_.merge(extract_result_t {&entries_, node});
+
+        return erase_range(id, dated_identifier_t {id, generation});
     }
 
     template <typename elements_begin_at, typename elements_end_at = elements_begin_at>
-    [[nodiscard]] status_t upsert(elements_begin_at begin, elements_end_at end) noexcept {}
+    [[nodiscard]] status_t upsert(elements_begin_at begin, elements_end_at end) noexcept {
+
+        // To make such batch insertions cheaper and easier until we have fast joins,
+        // we can build a linked-list of pre-allocated nodes. Populate them and insert
+        // one-by-one with the same generation.
+        std::size_t const count = end - begin;
+        std::size_t count_remaining = count;
+        entry_node_t* last_node = nullptr;
+        while (count_remaining) {
+            auto next_node = entries_.allocator().allocate(1);
+            if (!next_node)
+                break;
+            // Reset the state
+            next_node->right = nullptr;
+            // Link for future iteration
+            last_node->right = next_node;
+            next_node->left = last_node;
+            count_remaining--;
+        }
+
+        // We have failed to allocate all the needed nodes.
+        if (count_remaining) {
+            while (count_remaining != count) {
+                auto prev_node = last_node->left;
+                entries_.allocator().deallocate(last_node, 1);
+                last_node = prev_node;
+                ++count_remaining;
+            }
+            return {out_of_memory_heap_k};
+        }
+
+        // Populate the allocated nodes and merge into the tree.
+        generation_t generation = new_generation();
+        while (count_remaining != count) {
+            auto prev_node = last_node->left;
+            last_node->left = nullptr;
+            last_node->right = nullptr;
+
+            auto& entry = last_node->entry;
+            new (&entry.element) element_t(*begin);
+            entry.generation = generation;
+            entry.deleted = false;
+            entry.visible = true;
+            entries_.merge(extract_result_t {&entries_, last_node});
+
+            ++count_remaining;
+            ++begin;
+        }
+
+        return {success_k};
+    }
 
     template <typename comparable_at = identifier_t,
               typename callback_found_at = no_op_t,
@@ -909,15 +1069,15 @@ class consistent_avl_gt {
                                 callback_missing_at&& callback_missing = {}) const noexcept {
 
         entry_node_t* largest_visible = nullptr;
-        entry_node_t::equal_range(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
-            if ((node->content.visible) &&
-                (!largest_visible || node->content.generation > largest_visible->content.generation))
+        entry_node_t::range(entries_.root(), comparable, comparable, [&](entry_node_t* node) noexcept {
+            if ((node->entry.visible) &&
+                (!largest_visible || node->entry.generation > largest_visible->entry.generation))
                 largest_visible = node;
         });
 
-        static_assert(noexcept(callback_found(largest_visible->content.element)));
-        static_assert(noexcept(callback_missing()));
-        largest_visible ? callback_found(largest_visible->content.element) : callback_missing();
+        // static_assert(noexcept(callback_found(largest_visible->entry)));
+        // static_assert(noexcept(callback_missing()));
+        largest_visible ? callback_found(largest_visible->entry) : callback_missing();
         return {success_k};
     }
 
@@ -930,43 +1090,104 @@ class consistent_avl_gt {
 
         // Skip all the invisible entries
         entry_node_t* next_visible = entry_node_t::upper_bound(entries_.root(), comparable);
-        while (next_visible && !next_visible->content.visible) {
-            next_visible = entry_node_t::upper_bound(entries_.root(), next_visible->content);
+        while (next_visible && !next_visible->entry.visible) {
+            next_visible = entry_node_t::upper_bound(entries_.root(), next_visible->entry);
             // The logic is more complex if we start doing multi-versioning
             // TODO:
         }
 
-        static_assert(noexcept(callback_found(next_visible->content.element)));
-        static_assert(noexcept(callback_missing()));
-        next_visible ? callback_found(next_visible->content.element) : callback_missing();
+        // static_assert(noexcept(callback_found(next_visible->entry)));
+        // static_assert(noexcept(callback_missing()));
+        next_visible ? callback_found(next_visible->entry) : callback_missing();
         return {success_k};
     }
 
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) const noexcept {
-        entry_node_t::equal_range(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
-            if (node->content.visible)
-                callback(node->content.element);
-            static_assert(noexcept(callback(node->content.element)));
-        });
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) const noexcept {
+        entry_node_t::range(entries_.root(),
+                            std::forward<lower_at>(lower),
+                            std::forward<upper_at>(upper),
+                            [&](entry_node_t* node) {
+                                if (node->entry.visible)
+                                    callback(node->entry.element);
+                                static_assert(noexcept(callback(node->entry.element)));
+                            });
         return {success_k};
     }
 
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_at&& comparable, callback_at&& callback) noexcept {
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         generation_t generation = new_generation();
-        entry_node_t::equal_range(entries_.root(), comparable, comparable, [&](entry_node_t* node) {
-            if (node->content.visible)
-                callback(node->content.element), node->content.generation = generation;
-            static_assert(noexcept(callback(node->content.element)));
-        });
+        entry_node_t::range(entries_.root(),
+                            std::forward<lower_at>(lower),
+                            std::forward<upper_at>(upper),
+                            [&](entry_node_t* node) {
+                                if (node->entry.visible)
+                                    callback(node->entry.element), node->entry.generation = generation;
+                                static_assert(noexcept(callback(node->entry.element)));
+                            });
         return {success_k};
     }
 
-    template <typename comparable_at = identifier_t, typename callback_at = no_op_t>
-    [[nodiscard]] status_t erase(comparable_at&& comparable, callback_at&& callback = {}) noexcept {
-        // TODO:
+    template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
+    [[nodiscard]] status_t erase_range(lower_at&& lower, upper_at&& upper, callback_at&& callback = {}) noexcept {
+        // Implementing Splits and Joins for AVL can be tricky.
+        // Let's start with deleting them one by one.
+        // TODO: Implement range-removals.
+        auto last = entries_.lower_bound(std::forward<lower_at>(lower));
+        auto less = entry_comparator_t {};
+        while (last != entries_.end() && less(last->entry, upper)) {
+            auto next = entries_.upper_bound(last->entry);
+            if (last->entry.visible)
+                entries_.extract(last->entry);
+            last = next;
+        }
         return {success_k};
+    }
+
+    template <typename lower_at, typename upper_at, typename generator_at, typename callback_at = no_op_t>
+    [[nodiscard]] status_t sample_range(lower_at&& lower,
+                                        upper_at&& upper,
+                                        generator_at&& generator,
+                                        callback_at&& callback) const noexcept {
+
+        auto node = entry_node_t::sample_range( //
+            entries_.root(),
+            std::forward<generator_at>(generator),
+            lower,
+            upper,
+            [](entry_node_t* node) { return node->visible; });
+        if (node)
+            callback(node->entry);
+        return {success_k};
+    }
+
+    template <typename lower_at, typename upper_at, typename generator_at, typename output_iterator_at>
+    [[nodiscard]] status_t sample_range(lower_at&& lower,
+                                        upper_at&& upper,
+                                        generator_at&& generator,
+                                        std::size_t& seen,
+                                        std::size_t reservoir_capacity,
+                                        output_iterator_at&& reservoir) const noexcept {
+
+        using output_iterator_t = std::remove_reference_t<output_iterator_at>;
+        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
+        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
+
+        auto sampler = [&](element_t const& element) noexcept {
+            if (seen < reservoir_capacity)
+                reservoir[seen] = element;
+
+            else {
+                std::uniform_int_distribution<std::size_t> distribution {0, seen};
+                auto slot_to_replace = distribution(generator);
+                if (slot_to_replace < reservoir_capacity)
+                    reservoir[slot_to_replace] = element;
+            }
+
+            ++seen;
+        };
+        return range(std::forward<lower_at>(lower), std::forward<upper_at>(upper), sampler);
     }
 
     [[nodiscard]] status_t clear() noexcept {
