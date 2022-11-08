@@ -558,7 +558,7 @@ class consistent_set_gt {
     template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
     [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
-        auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+        auto const upper_iterator = entries_.lower_bound(std::forward<upper_at>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
             if (lower_iterator->visible)
                 if (auto status = invoke_safely([&] { callback(lower_iterator->element); }); !status)
@@ -576,7 +576,7 @@ class consistent_set_gt {
     [[nodiscard]] status_t range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         generation_t generation = new_generation();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
-        auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+        auto const upper_iterator = entries_.lower_bound(std::forward<upper_at>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
             if (lower_iterator->visible)
                 if (auto status = invoke_safely(
@@ -593,7 +593,7 @@ class consistent_set_gt {
     template <typename lower_at = identifier_t, typename upper_at = identifier_t, typename callback_at = no_op_t>
     [[nodiscard]] status_t erase_range(lower_at&& lower, upper_at&& upper, callback_at&& callback) noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
-        auto const upper_iterator = entries_.upper_bound(std::forward<upper_at>(upper));
+        auto const upper_iterator = entries_.lower_bound(std::forward<upper_at>(upper));
         erase_visible(lower_iterator, upper_iterator, std::forward<callback_at>(callback));
         return {success_k};
     }
