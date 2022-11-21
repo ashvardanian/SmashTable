@@ -368,12 +368,13 @@ class avl_node_gt {
             return node;
     }
 
-    template <typename comparable_at, typename node_allocator_at>
+    template <typename comparable_at, typename callback_found_at, typename callback_make_at>
     static find_or_make_result_t find_or_make(node_t* node,
                                               comparable_at&& comparable,
-                                              node_allocator_at&& node_allocator) noexcept {
+                                              callback_found_at&& callback_found,
+                                              callback_make_at&& callback_make) noexcept {
         if (!node) {
-            node = node_allocator();
+            node = callback_make();
             if (node) {
                 node->left = nullptr;
                 node->right = nullptr;
@@ -384,14 +385,14 @@ class avl_node_gt {
 
         auto less = comparator_t {};
         if (less(comparable, node->entry)) {
-            auto downstream = find_or_make(node->left, comparable, std::forward<node_allocator_at>(node_allocator));
+            auto downstream = find_or_make(node->left, comparable, callback_found, callback_make);
             node->left = downstream.root;
             if (downstream.inserted)
                 node = rebalance_after_insert(node, downstream.match->entry);
             return {node, downstream.match, downstream.inserted};
         }
         else if (less(node->entry, comparable)) {
-            auto downstream = find_or_make(node->right, comparable, std::forward<node_allocator_at>(node_allocator));
+            auto downstream = find_or_make(node->right, comparable, callback_found, callback_make);
             node->right = downstream.root;
             if (downstream.inserted)
                 node = rebalance_after_insert(node, downstream.match->entry);
@@ -399,32 +400,46 @@ class avl_node_gt {
         }
         else {
             // Equal keys are not allowed in BST
+            callback_found(node);
             return {node, node, false};
         }
     }
 
     template <typename node_allocator_at>
     static find_or_make_result_t insert(node_t* node, entry_t&& entry, node_allocator_at&& node_allocator) noexcept {
-        auto result = find_or_make(node, entry, std::forward<node_allocator_at>(node_allocator));
-        if (result.match && result.inserted)
-            new (&result.match->entry) entry_t(std::move(entry));
+        auto found = [&](node_t* node) noexcept {
+        };
+        auto make = [&]() noexcept -> node_t* {
+            auto node = node_allocator();
+            if (node)
+                new (&node->entry) entry_t(std::move(entry));
+            return node;
+        };
+        auto result = find_or_make(node, entry, found, make);
         return result;
     }
 
     template <typename node_allocator_at>
     static find_or_make_result_t upsert(node_t* node, entry_t&& entry, node_allocator_at&& node_allocator) noexcept {
-        auto result = find_or_make(node, entry, std::forward<node_allocator_at>(node_allocator));
-        if (result.match) {
-            if (result.inserted)
-                new (&result.match->entry) entry_t(std::move(entry));
-            else
-                result.match->entry = std::move(entry);
-        }
+        auto found = [&](node_t* node) noexcept {
+            node->entry = std::move(entry);
+        };
+        auto make = [&]() noexcept -> node_t* {
+            auto node = node_allocator();
+            if (node)
+                new (&node->entry) entry_t(std::move(entry));
+            return node;
+        };
+        auto result = find_or_make(node, entry, found, make);
         return result;
     }
 
     static find_or_make_result_t insert(node_t* node, node_t* new_child) noexcept {
-        return find_or_make(node, new_child->entry, [=]() noexcept { return new_child; });
+        return find_or_make(
+            node,
+            new_child->entry,
+            [](node_t*) noexcept {},
+            [=]() noexcept { return new_child; });
     }
 
 #pragma mark - Removals
@@ -996,8 +1011,10 @@ class consistent_avl_gt {
         while (current && less.same(id, current->entry.element)) {
             auto next = entries_.upper_bound(current->entry);
             current->entry.visible |= current->entry.generation == generation_to_unmask;
-            if (!current->entry.visible)
+            if (!current->entry.visible) {
+                current = next;
                 continue;
+            }
 
             // Older revisions must die
             if (last_visible_entry)
@@ -1157,7 +1174,7 @@ class consistent_avl_gt {
         entry_node_t::range(entries_.root(),
                             std::forward<lower_at>(lower),
                             std::forward<upper_at>(upper),
-                            [&](entry_node_t* node) {
+                            [&](entry_node_t* node) noexcept {
                                 if (node->entry.visible)
                                     callback(node->entry.element);
                                 static_assert(noexcept(callback(node->entry.element)));
@@ -1171,7 +1188,7 @@ class consistent_avl_gt {
         entry_node_t::range(entries_.root(),
                             std::forward<lower_at>(lower),
                             std::forward<upper_at>(upper),
-                            [&](entry_node_t* node) {
+                            [&](entry_node_t* node) noexcept {
                                 if (node->entry.visible)
                                     callback(node->entry.element), node->entry.generation = generation;
                                 static_assert(noexcept(callback(node->entry.element)));
@@ -1206,7 +1223,7 @@ class consistent_avl_gt {
             lower,
             upper,
             std::forward<generator_at>(generator),
-            [](entry_node_t* node) { return node->entry.visible; });
+            [](entry_node_t* node) noexcept { return node->entry.visible; });
         if (node)
             callback(node->entry);
         return {success_k};
