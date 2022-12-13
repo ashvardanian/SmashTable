@@ -793,8 +793,7 @@ class consistent_avl_gt {
         stage_t stage_ {stage_t::created_k};
         bool is_snapshot_ {false};
 
-        transaction_t(store_t& set) noexcept : store_(&set) {}
-        void date(generation_t generation) noexcept { generation_ = generation; }
+        transaction_t(store_t& set) noexcept : store_(&set), generation_(set.new_generation()) {}
         watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
         store_t& store_ref() noexcept { return *store_; }
         store_t const& store_ref() const noexcept { return *store_; }
@@ -804,6 +803,7 @@ class consistent_avl_gt {
         transaction_t& operator=(transaction_t&&) noexcept = default;
         transaction_t(transaction_t const&) = delete;
         transaction_t& operator=(transaction_t const&) = delete;
+        generation_t generation() const noexcept { return generation_; }
 
         [[nodiscard]] status_t upsert(element_t&& element) noexcept {
             entry_t entry;
@@ -960,6 +960,7 @@ class consistent_avl_gt {
             watches_.clear();
             changes_.clear();
             stage_ = stage_t::created_k;
+            generation_ = store.new_generation();
             return {success_k};
         }
 
@@ -977,6 +978,7 @@ class consistent_avl_gt {
 
             watches_.clear();
             stage_ = stage_t::created_k;
+            generation_ = store.new_generation();
             return {success_k};
         }
 
@@ -1001,6 +1003,7 @@ class consistent_avl_gt {
     generation_t generation_ {0};
     std::size_t visible_count_ {0};
 
+    friend class transaction_t;
     generation_t new_generation() noexcept { return ++generation_; }
 
     void unmask_and_compact(identifier_t const& id, generation_t generation_to_unmask) noexcept {
@@ -1037,15 +1040,8 @@ class consistent_avl_gt {
     }
 
     [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
-
     [[nodiscard]] static std::optional<store_t> make(allocator_t&& allocator = {}) noexcept { return store_t {}; }
-
-    [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
-        generation_t generation = new_generation();
-        transaction_t transaction {*this};
-        transaction.date(generation);
-        return std::move(transaction);
-    }
+    [[nodiscard]] std::optional<transaction_t> transaction() noexcept { return transaction_t {*this}; }
 
     [[nodiscard]] status_t upsert(element_t&& element) noexcept {
         auto node = entries_.allocator().allocate(1);

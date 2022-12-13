@@ -216,6 +216,7 @@ class partitioned_gt {
         friend partitioned_gt;
         partitioned_gt& store_;
         part_transactions_t parts_;
+        generation_t generation_;
         static_assert(std::is_nothrow_move_constructible<part_transaction_t>());
 
         template <typename callable_at>
@@ -225,19 +226,32 @@ class partitioned_gt {
 
       public:
         transaction_t(partitioned_gt& db, part_transactions_t&& unlocked) noexcept
-            : store_(db), parts_(std::move(unlocked)) {}
+            : store_(db), parts_(std::move(unlocked)), generation_(db.new_generation()) {}
         transaction_t(transaction_t&&) noexcept = default;
         transaction_t& operator=(transaction_t&&) noexcept = default;
+        generation_t generation() const noexcept { return generation_; }
 
-        [[nodiscard]] status_t watch(identifier_t const& id) noexcept { return parts_[bucket(id)].watch(id); }
-        [[nodiscard]] status_t upsert(element_t&& element) noexcept {
-            return parts_[bucket(identifier_t(element))].upsert(std::move(element));
+        [[nodiscard]] status_t reset() noexcept {
+            auto status = for_parts(std::mem_fn(&part_transaction_t::reset));
+            if (status)
+                generation_ = store_.new_generation();
+            return status;
         }
-        [[nodiscard]] status_t erase(identifier_t const& id) noexcept { return parts_[bucket(id)].erase(id); }
+        [[nodiscard]] status_t rollback() noexcept {
+            auto status = for_parts(std::mem_fn(&part_transaction_t::rollback));
+            if (status)
+                generation_ = store_.new_generation();
+            return status;
+        }
+
         [[nodiscard]] status_t stage() noexcept { return for_parts(std::mem_fn(&part_transaction_t::stage)); }
-        [[nodiscard]] status_t reset() noexcept { return for_parts(std::mem_fn(&part_transaction_t::reset)); }
-        [[nodiscard]] status_t rollback() noexcept { return for_parts(std::mem_fn(&part_transaction_t::rollback)); }
         [[nodiscard]] status_t commit() noexcept { return for_parts(std::mem_fn(&part_transaction_t::commit)); }
+
+        [[nodiscard]] status_t watch(identifier_t const& id) noexcept {
+            std::size_t part_idx = bucket(id);
+            shared_lock_t _ {store_.mutexes_[part_idx]};
+            return parts_[part_idx].watch(id);
+        }
 
         template <typename comparable_at = identifier_t,
                   typename callback_found_at = no_op_t,
@@ -264,11 +278,22 @@ class partitioned_gt {
                                                        std::forward<callback_found_at>(callback_found),
                                                        std::forward<callback_missing_at>(callback_missing));
         }
+
+        [[nodiscard]] status_t upsert(element_t&& element) noexcept {
+            return parts_[bucket(identifier_t(element))].upsert(std::move(element));
+        }
+
+        [[nodiscard]] status_t erase(identifier_t const& id) noexcept { //
+            return parts_[bucket(id)].erase(id);
+        }
     };
 
   private:
     mutable mutexes_t mutexes_;
     parts_t parts_;
+    std::atomic<generation_t> generation_;
+
+    friend class transaction_t;
 
     partitioned_gt(parts_t&& unlocked) noexcept : parts_(std::move(unlocked)) {}
     partitioned_gt& operator=(partitioned_gt&& other) noexcept {
@@ -282,6 +307,8 @@ class partitioned_gt {
     static std::optional<parts_t> new_parts() noexcept {
         return helpers::generate_array_safely<part_t, parts_k>([](std::size_t) { return part_t::make(); });
     }
+
+    generation_t new_generation() noexcept { return ++generation_; }
 
   public:
     partitioned_gt(partitioned_gt&& other) noexcept : parts_(std::move(other.parts_)) {}

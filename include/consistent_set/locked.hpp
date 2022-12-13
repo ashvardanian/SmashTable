@@ -34,11 +34,16 @@ class locked_gt {
             : store_(db), unlocked_(std::move(unlocked)) {}
         transaction_t(transaction_t&&) noexcept = default;
         transaction_t& operator=(transaction_t&&) noexcept = default;
+        generation_t generation() const noexcept { return unlocked_.generation(); }
 
-        [[nodiscard]] status_t watch(identifier_t const& id) noexcept { return unlocked_.watch(id); }
+        [[nodiscard]] status_t watch(identifier_t const& id) noexcept {
+            std::shared_lock _ {store_.mutex_};
+            return unlocked_.watch(id);
+        }
+
+        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return unlocked_.reserve(size); }
         [[nodiscard]] status_t upsert(element_t&& element) noexcept { return unlocked_.upsert(std::move(element)); }
         [[nodiscard]] status_t erase(identifier_t const& id) noexcept { return unlocked_.erase(id); }
-        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return unlocked_.reserve(size); }
 
         [[nodiscard]] status_t stage() noexcept {
             std::unique_lock _ {store_.mutex_};

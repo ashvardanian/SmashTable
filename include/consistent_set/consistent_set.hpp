@@ -99,8 +99,7 @@ class consistent_set_gt {
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
 
-        transaction_t(store_t& set) noexcept(false) : store_(&set) {}
-        void date(generation_t generation) noexcept { generation_ = generation; }
+        transaction_t(store_t& set) noexcept(false) : store_(&set), generation_(set.new_generation()) {}
         watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
         store_t& store_ref() noexcept { return *store_; }
         store_t const& store_ref() const noexcept { return *store_; }
@@ -110,6 +109,7 @@ class consistent_set_gt {
         transaction_t& operator=(transaction_t&&) noexcept = default;
         transaction_t(transaction_t const&) = delete;
         transaction_t& operator=(transaction_t const&) = delete;
+        generation_t generation() const noexcept { return generation_; }
 
         [[nodiscard]] status_t upsert(element_t&& element) noexcept {
             return invoke_safely([&] {
@@ -286,6 +286,7 @@ class consistent_set_gt {
          * - All the updates staged in DB will be reverted.
          * - All the updates will in this Transaction will be lost.
          * - All the watches will be lost.
+         * - New generation will be assigned.
          */
         [[nodiscard]] status_t reset() noexcept {
             // If the transaction was "staged",
@@ -302,6 +303,7 @@ class consistent_set_gt {
             watches_.clear();
             changes_.clear();
             stage_ = stage_t::created_k;
+            generation_ = store.new_generation();
             return {success_k};
         }
 
@@ -312,6 +314,7 @@ class consistent_set_gt {
          * - All the updates will be reverted in the DB.
          * - All the updates will re-emerge in this Transaction.
          * - All the watches will be lost.
+         * - New generation will be assigned.
          */
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k)
@@ -330,6 +333,7 @@ class consistent_set_gt {
 
             watches_.clear();
             stage_ = stage_t::created_k;
+            generation_ = store.new_generation();
             return {success_k};
         }
 
@@ -355,6 +359,8 @@ class consistent_set_gt {
     entry_set_t entries_;
     generation_t generation_ {0};
     std::size_t visible_count_ {0};
+
+    friend class transaction_t;
 
     consistent_set_gt() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
@@ -442,9 +448,8 @@ class consistent_set_gt {
      * If fails, an empty @c `std::optional` is returned.
      */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
-        generation_t generation = new_generation();
         std::optional<transaction_t> result;
-        invoke_safely([&] { result.emplace(transaction_t {*this}).date(generation); });
+        invoke_safely([&] { result.emplace(transaction_t {*this}); });
         return result;
     }
 
