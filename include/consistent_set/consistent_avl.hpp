@@ -228,8 +228,8 @@ class avl_node_gt {
             auto right_sub_interval = range(node->right, low, high, callback);
 
             auto result = node_interval_t {};
-            result.lower_bound = left_sub_interval.lower_bound ?: node;
-            result.upper_bound = right_sub_interval.upper_bound ?: node;
+            result.lower_bound = left_sub_interval.lower_bound ? left_sub_interval.lower_bound : node;
+            result.upper_bound = right_sub_interval.upper_bound ? right_sub_interval.upper_bound : node;
             result.lowest_common_ancestor = node;
             return result;
         }

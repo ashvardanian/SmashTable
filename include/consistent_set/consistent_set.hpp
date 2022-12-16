@@ -70,14 +70,15 @@ class consistent_set_gt {
     using entry_comparator_t = typename versioning_t::entry_comparator_t;
 
   private:
-    using entry_allocator_t = typename allocator_t::template rebind<entry_t>::other;
+    using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<entry_t>;
     using entry_set_t = std::set< //
         entry_t,
         entry_comparator_t,
         entry_allocator_t>;
     using entry_iterator_t = typename entry_set_t::iterator;
 
-    using watches_allocator_t = typename allocator_t::template rebind<watched_identifier_t>::other;
+    using watches_allocator_t =
+        typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
