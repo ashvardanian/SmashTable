@@ -130,6 +130,8 @@ class consistent_set_gt {
                 auto iterator = changes_.lower_bound(id);
                 if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, id))
                     iterator = changes_.emplace_hint(iterator, id);
+                else
+                    iterator->element = id;
                 iterator->generation = generation_;
                 iterator->deleted = true;
                 iterator->visible = false;
@@ -360,6 +362,7 @@ class consistent_set_gt {
     entry_set_t entries_;
     generation_t generation_ {0};
     std::size_t visible_count_ {0};
+    std::size_t visible_deleted_count_ {0};
 
     friend class transaction_t;
 
@@ -372,8 +375,9 @@ class consistent_set_gt {
         while (current != end)
             if (current->visible) {
                 callback(*current);
-                current = entries_.erase(current);
                 --visible_count_;
+                visible_deleted_count_ -= current->deleted;
+                current = entries_.erase(current);
             }
             else
                 ++current;
@@ -386,6 +390,7 @@ class consistent_set_gt {
             auto keep_this = current->generation == generation_to_unmask;
             if (keep_this) {
                 visible_count_ += !current->visible;
+                visible_deleted_count_ += !current->visible && current->deleted;
                 current->visible = true;
             }
 
@@ -394,8 +399,9 @@ class consistent_set_gt {
 
             // Older revisions must die
             if (last_visible_entry != end) {
-                entries_.erase(last_visible_entry);
                 --visible_count_;
+                visible_deleted_count_ -= last_visible_entry->deleted;
+                entries_.erase(last_visible_entry);
             }
             last_visible_entry = current;
         }
@@ -418,9 +424,10 @@ class consistent_set_gt {
     [[nodiscard]] status_t upsert(entry_set_t& sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
             bool should_compact = source->visible;
+            visible_count_ += source->visible;
+            visible_deleted_count_ += source->visible && source->deleted;
             auto source_node = sources.extract(source++);
             auto range_end = entries_.insert(std::move(source_node)).position;
-            ++visible_count_;
             if (should_compact) {
                 auto range_start = entries_.lower_bound(range_end->element);
                 erase_visible(range_start, range_end);
@@ -430,8 +437,8 @@ class consistent_set_gt {
     }
 
   public:
-    [[nodiscard]] std::size_t size() const noexcept { return visible_count_; }
-    [[nodiscard]] bool empty() const noexcept { return !visible_count_; }
+    [[nodiscard]] std::size_t size() const noexcept { return visible_count_ - visible_deleted_count_; }
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     /**
      * @brief Creates a new collection of this type without throwing exceptions.
@@ -465,9 +472,10 @@ class consistent_set_gt {
     [[nodiscard]] status_t upsert(element_t&& element) noexcept {
         generation_t generation = new_generation();
         return invoke_safely([&] {
+            bool exists = element;
             auto entry = entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = false;
+            entry.deleted = !exists;
             entry.visible = true;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
@@ -494,9 +502,11 @@ class consistent_set_gt {
         auto batch_construction_status = invoke_safely([&] {
             batch = entry_set_t {};
             for (; begin != end; ++begin) {
+                bool exists = *begin;
                 auto iterator = batch->emplace(*begin).first;
                 iterator->generation = generation;
                 iterator->visible = true;
+                iterator->deleted = !exists;
             }
         });
         if (!batch_construction_status)
@@ -526,7 +536,7 @@ class consistent_set_gt {
             ++range.first;
 
         // Check if there are no visible entries at all
-        return range.first != range.second //
+        return range.first != range.second && !range.first->deleted //
                    ? invoke_safely([&] { callback_found(*range.first); })
                    : invoke_safely(std::forward<callback_missing_at>(callback_missing));
     }
@@ -548,7 +558,7 @@ class consistent_set_gt {
         auto iterator = entries_.upper_bound(std::forward<comparable_at>(comparable));
 
         // Skip all the invisible entries
-        while (iterator != entries_.end() && !iterator->visible)
+        while (iterator != entries_.end() && (!iterator->visible || iterator->deleted))
             ++iterator;
 
         return iterator != entries_.end() //
@@ -566,7 +576,7 @@ class consistent_set_gt {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_at>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (lower_iterator->visible)
+            if (lower_iterator->visible && !lower_iterator->deleted)
                 if (auto status = invoke_safely([&] { callback(lower_iterator->element); }); !status)
                     return status;
 
@@ -584,7 +594,7 @@ class consistent_set_gt {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_at>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_at>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (lower_iterator->visible)
+            if (lower_iterator->visible && !lower_iterator->deleted)
                 if (auto status = invoke_safely(
                         [&] { callback(lower_iterator->element), lower_iterator->generation = generation; });
                     !status)
@@ -610,6 +620,8 @@ class consistent_set_gt {
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
         generation_ = 0;
+        visible_count_ = 0;
+        visible_deleted_count_ = 0;
         return {success_k};
     }
 
