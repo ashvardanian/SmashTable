@@ -8,10 +8,10 @@
 
 #include "status.hpp"
 
-namespace av {
+namespace unum::ucset {
 
 template <typename callable_at>
-consistent_set_status_t invoke_safely(callable_at&& callable) noexcept {
+status_t invoke_safely(callable_at&& callable) noexcept {
     if constexpr (noexcept(callable())) {
         callable();
         return {success_k};
@@ -22,10 +22,10 @@ consistent_set_status_t invoke_safely(callable_at&& callable) noexcept {
             return {success_k};
         }
         catch (std::bad_alloc const&) {
-            return {consistent_set_errc_t::out_of_memory_heap_k};
+            return {errc_t::out_of_memory_heap_k};
         }
         catch (...) {
-            return {consistent_set_errc_t::unknown_k};
+            return {errc_t::unknown_k};
         }
     }
 }
@@ -62,7 +62,6 @@ class consistent_set_gt {
     using versioning_t = element_versioning_gt<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
-    using status_t = typename versioning_t::status_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
     using watch_t = typename versioning_t::watch_t;
     using watched_identifier_t = typename versioning_t::watched_identifier_t;
@@ -258,7 +257,7 @@ class consistent_set_gt {
                     [&](entry_t const& entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated)
-                    return {consistent_set_errc_t::consistency_k};
+                    return {errc_t::consistency_k};
                 if (!status)
                     return status;
             }
@@ -725,4 +724,4 @@ void merge_overwrite(std::set<keys_at, compare_at, allocator_at>& target,
     }
 }
 
-} // namespace av
+} // namespace unum::ucset

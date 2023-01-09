@@ -1,4 +1,6 @@
-# If only [`std::set`][stl-set] was a [DBMS][dbms]
+# Unexceptional Consistent Set
+
+> If only [`std::set`][stl-set] was a [DBMS][dbms]
 
 This library provides you with a few containers:
 
@@ -26,13 +28,13 @@ To use this with any packaging/build tool you only need C++17 support.
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
-    consistent_set
-    GIT_REPOSITORY https://github.com/ashvardanian/consistent_set
+    ucset
+    GIT_REPOSITORY https://github.com/unum-cloud/ucset
     GIT_TAG main
     CONFIGURE_COMMAND ""
     BUILD_COMMAND ""
 )
-FetchContent_MakeAvailable(consistent_set)
+FetchContent_MakeAvailable(ucset)
 include_directories(${consistent_set_SOURCE_DIR})
 ```
 
@@ -55,8 +57,8 @@ That library is stuffed with unit-, integration-, consistency- and stress-tests.
 Performance-wise, concurrent versions are generally bottlenecked by "mutexes" you are using.
 So we allow different implementations:
 
-* STLs: [`std::shared_mutex`][stl-shared_mutex]
-* Intels One API: [`tbb::rw_mutex`][tbb] or others
+* STL: [`std::shared_mutex`][stl-shared_mutex]
+* Intel One API: [`tbb::rw_mutex`][tbb] or others
 
 ## Why I created this?
 
@@ -88,9 +90,9 @@ An we needed features, that are missing from Standard Templates Library containe
 [snapshot]: https://jepsen.io/consistency/models/snapshot-isolation
 
 [ukv]: https://github.com/unum-cloud/ukv
-[consistent_set]: tree/main/include/consistent_set/consistent_set.hpp
-[consistent_avl]: tree/main/include/consistent_set/consistent_avl.hpp
-[versioning_avl]: tree/main/include/consistent_set/versioning_avl.hpp
-[locked]: tree/main/include/consistent_set/locked.hpp
-[partitioned]: tree/main/include/consistent_set/partitioned.hpp
-[crazy]: tree/main/include/consistent_set/crazy.hpp
+[consistent_set]: tree/main/include/ucset/consistent_set.hpp
+[consistent_avl]: tree/main/include/ucset/consistent_avl.hpp
+[versioning_avl]: tree/main/include/ucset/versioning_avl.hpp
+[locked]: tree/main/include/ucset/locked.hpp
+[partitioned]: tree/main/include/ucset/partitioned.hpp
+[crazy]: tree/main/include/ucset/crazy.hpp

@@ -5,7 +5,7 @@
 
 #include "status.hpp"
 
-namespace av {
+namespace unum::ucset {
 
 /**
  * @brief AVL-Trees are some of the simplest yet performant Binary Search Trees.
@@ -756,7 +756,6 @@ class consistent_avl_gt {
     using versioning_t = element_versioning_gt<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
-    using status_t = typename versioning_t::status_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
     using watch_t = typename versioning_t::watch_t;
     using watched_identifier_t = typename versioning_t::watched_identifier_t;
@@ -924,7 +923,7 @@ class consistent_avl_gt {
                     [&](entry_t const& entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated)
-                    return {consistent_set_errc_t::consistency_k};
+                    return {errc_t::consistency_k};
                 if (!status)
                     return status;
             }
@@ -1271,4 +1270,4 @@ class consistent_avl_gt {
     }
 };
 
-} // namespace av
+} // namespace unum::ucset

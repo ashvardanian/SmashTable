@@ -1,7 +1,7 @@
 from conans import ConanFile
 
 class ConsistentSetConan(ConanFile):
-    name = 'consistent_set'
+    name = 'ucset'
     version = '0.1'
     exports_sources = 'include/*'
     no_copy_source = True

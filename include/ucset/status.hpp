@@ -2,9 +2,9 @@
 #include <cstdint>      //
 #include <system_error> // `ENOMEM`
 
-namespace av {
+namespace unum::ucset {
 
-enum consistent_set_errc_t {
+enum errc_t {
     success_k = 0,
     unknown_k = -1,
 
@@ -33,11 +33,11 @@ enum consistent_set_errc_t {
 
 /**
  * @brief Wraps error-codes into bool-convertible conditions.
- * @see @c consistent_set_errc_t.
+ * @see @c errc_t.
  */
-struct consistent_set_status_t {
-    consistent_set_errc_t errc = consistent_set_errc_t::success_k;
-    constexpr operator bool() const noexcept { return errc == consistent_set_errc_t::success_k; }
+struct status_t {
+    errc_t errc = errc_t::success_k;
+    constexpr operator bool() const noexcept { return errc == errc_t::success_k; }
 };
 
 struct no_op_t {
@@ -68,7 +68,6 @@ struct element_versioning_gt {
 
     using identifier_t = typename comparator_t::value_type;
     using generation_t = std::int64_t;
-    using status_t = consistent_set_status_t;
 
     static_assert(!std::is_reference<element_t>(), "Only value types are supported.");
     static_assert(std::is_nothrow_copy_constructible<identifier_t>(), "To WATCH, the ID must be safe to copy.");
@@ -175,4 +174,4 @@ struct element_versioning_gt {
     };
 };
 
-} // namespace av
+} // namespace unum::ucset
