@@ -1,0 +1,11 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Build Debug Test",
+            "command": "cmake ./example/ && make test",
+            "args": [],
+            "type": "shell"
+        }
+    ]
+}

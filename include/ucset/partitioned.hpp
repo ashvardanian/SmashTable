@@ -3,6 +3,7 @@
 #include <optional>     // `std::optional`
 #include <functional>   // `std::hash`
 #include <shared_mutex> // `std::shared_mutex`
+#include <atomic>
 
 namespace unum::ucset {
 

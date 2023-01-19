@@ -2,6 +2,8 @@
 #include <algorithm> // `std::max`
 #include <memory>    // `std::allocator`
 #include <optional>  // `std::optional`
+#include <mutex> // `std::unique_lock`    
+#include <ostream> // `std::endl`
 
 #include "status.hpp"
 

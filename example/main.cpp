@@ -79,6 +79,7 @@ struct pair_t {
 
     pair_t(std::size_t key = 0, std::size_t value = 0) noexcept : key(key), value(value) {}
     explicit operator std::size_t() const noexcept { return key; }
+    operator bool() const noexcept { return key; }
 };
 
 struct pair_compare_t {
