@@ -1,5 +1,6 @@
 #include <iostream>
 #include <cstdlib>
+#include <thread>
 #include <ctime>
 
 #include <ucset/consistent_set.hpp>
@@ -8,7 +9,7 @@
 
 using namespace unum::ucset;
 
-constexpr std::size_t size = 100;
+constexpr std::size_t size = 512;
 
 struct pair_t {
     std::size_t key;
@@ -30,6 +31,40 @@ using stl_t = consistent_set_gt<pair_t, pair_compare_t>;
 using avl_t = consistent_avl_gt<pair_t, pair_compare_t>;
 using id_stl_t = typename stl_t::identifier_t;
 using id_avl_t = typename avl_t::identifier_t;
+
+template <typename cont_t>
+void test_with_threads(std::size_t threads_count) {
+    auto cont = *cont_t::make();
+    std::vector<std::thread> threads;
+    threads.reserve(threads_count);
+
+    auto upsert = [&](std::size_t offset, std::size_t length) {
+        for (std::size_t idx = offset; idx < length; ++idx)
+            cont.upsert(pair_t {idx, idx});
+    };
+
+    std::size_t shift = (size / threads_count);
+    for (std::size_t idx = 0; idx < threads_count; ++idx)
+        threads.push_back(std::thread(upsert, idx * shift, idx * shift + shift));
+
+    for (std::size_t idx = 0; idx < threads_count; ++idx)
+        threads[idx].join();
+
+    EXPECT_EQ(cont.size(), size);
+    for (std::size_t idx = 0; idx < size; ++idx)
+        EXPECT_TRUE(cont.find(idx, [](auto const&) noexcept {}));
+}
+
+TEST(upsert_and_find_set, with_threads) {
+    test_with_threads<stl_t>(2);
+    test_with_threads<stl_t>(4);
+    test_with_threads<stl_t>(8);
+    test_with_threads<stl_t>(16);
+    test_with_threads<avl_t>(2);
+    test_with_threads<avl_t>(4);
+    test_with_threads<avl_t>(8);
+    test_with_threads<avl_t>(16);
+}
 
 TEST(upsert_and_find_set, ascending) {
     auto set = *stl_t::make();
@@ -127,9 +162,9 @@ TEST(test_set, range) {
     for (std::size_t idx = 0; idx < size; ++idx)
         set.upsert(pair_t {idx, idx});
 
-    for (size_t idx = 0; idx < size; idx += 10) {
-        size_t val = idx;
-        EXPECT_TRUE(set.range(idx, idx + 10, [&](auto const& rhs) noexcept {
+    for (std::size_t idx = 0; idx < size; idx += 8) {
+        std::size_t val = idx;
+        EXPECT_TRUE(set.range(idx, idx + 7, [&](auto const& rhs) noexcept {
             EXPECT_EQ(val, rhs.key);
             ++val;
         }));
@@ -144,12 +179,12 @@ TEST(test_avl, range) {
         avl.upsert(pair_t {idx, idx});
 
     bool state = false;
-    for (size_t idx = 0; idx < size; idx += 10) {
-        EXPECT_TRUE(avl.range(idx, idx + 9, [&](auto const& rhs) noexcept {
-            EXPECT_TRUE(set.upsert(pair_t{rhs.key,rhs.value}));
+    for (std::size_t idx = 0; idx < size; idx += 8) {
+        EXPECT_TRUE(avl.range(idx, idx + 7, [&](auto const& rhs) noexcept {
+            EXPECT_TRUE(set.upsert(pair_t {rhs.key, rhs.value}));
         }));
-        for(size_t i = idx; i < idx + 10; ++i){
-            set.find(i,[&](auto const&) noexcept { state = true; });
+        for (std::size_t i = idx; i < idx + 8; ++i) {
+            set.find(i, [&](auto const&) noexcept { state = true; });
             EXPECT_TRUE(state);
             state = false;
         }
@@ -164,9 +199,9 @@ TEST(test_set, erase) {
         set.upsert(pair_t {idx, idx});
 
     bool state = true;
-    for (size_t idx = 0; idx < size; idx += 10) {
+    for (std::size_t idx = 0; idx < size; idx += 10) {
         EXPECT_TRUE(set.erase_range(idx, idx + 10, [](auto const&) noexcept {}));
-        for (size_t i = idx; i < idx + 10; ++i) {
+        for (std::size_t i = idx; i < idx + 10; ++i) {
             set.find(i, [&](auto const&) noexcept { state = false; });
             EXPECT_TRUE(state);
         }
@@ -180,9 +215,9 @@ TEST(test_avl, erase) {
         avl.upsert(pair_t {idx, idx});
 
     bool state = true;
-    for (size_t idx = 0; idx < size; idx += 10) {
+    for (std::size_t idx = 0; idx < size; idx += 10) {
         EXPECT_TRUE(avl.erase_range(idx, idx + 10, [](auto const&) noexcept {}));
-        for (size_t i = idx; i < idx + 10; ++i) {
+        for (std::size_t i = idx; i < idx + 10; ++i) {
             avl.find(i, [&](auto const&) noexcept { state = false; });
             EXPECT_TRUE(state);
         }
@@ -195,7 +230,7 @@ TEST(test_avl, upper_bound) {
     for (std::size_t idx = 0; idx < size; ++idx)
         avl.upsert(pair_t {idx, idx});
 
-    for (size_t idx = 0; idx < size - 1; ++idx) {
+    for (std::size_t idx = 0; idx < size - 1; ++idx) {
         EXPECT_TRUE(avl.upper_bound(idx, [&](auto const& rhs) noexcept { EXPECT_TRUE(pair_compare_t {}(idx, rhs)); }));
     }
 }
@@ -206,7 +241,7 @@ TEST(test_set, upper_bound) {
     for (std::size_t idx = 0; idx < size; ++idx)
         set.upsert(pair_t {idx, idx});
 
-    for (size_t idx = 0; idx < size - 1; ++idx) {
+    for (std::size_t idx = 0; idx < size - 1; ++idx) {
         EXPECT_TRUE(set.upper_bound(idx, [&](auto const& rhs) noexcept { EXPECT_TRUE(pair_compare_t {}(idx, rhs)); }));
     }
 }
