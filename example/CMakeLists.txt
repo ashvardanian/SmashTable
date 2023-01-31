@@ -1,8 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
-project(consistent_set)
+project(ucset)
+
 set(CMAKE_CXX_STANDARD 17)
 include("${CMAKE_CURRENT_SOURCE_DIR}/../cmake/gtest.cmake")
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../include/)
+
 add_executable(main main.cpp)
 target_link_libraries(main gtest)
 add_executable(test test.cpp)
@@ -13,5 +15,6 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ferror-limit=1")
 
 elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfatal-errors")
 endif()
