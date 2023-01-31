@@ -843,6 +843,7 @@ class consistent_avl_gt {
 
         [[nodiscard]] status_t watch(entry_t const& entry) noexcept {
             watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+            return {success_k};
         }
 
         template <typename comparable_at = identifier_t,

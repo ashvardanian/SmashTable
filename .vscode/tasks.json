@@ -3,7 +3,7 @@
     "tasks": [
         {
             "label": "Build Debug Test",
-            "command": "cmake ./example/ && make test",
+            "command": "cmake -DCMAKE_BUILD_TYPE=Debug ./example/ && make ./example/test",
             "args": [],
             "type": "shell"
         }
