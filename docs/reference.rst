@@ -26,3 +26,14 @@ partitioned
 ===============
 .. doxygenfile:: partitioned.hpp
 
+
+===============
+crazy
+===============
+.. doxygenfile:: crazy.hpp
+
+
+===============
+status
+===============
+.. doxygenfile:: status.hpp
