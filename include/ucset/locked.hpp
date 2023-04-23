@@ -23,7 +23,7 @@ class locked_gt {
     using generation_t = typename unlocked_t::generation_t;
 
     class transaction_t {
-        friend locked_gt;
+        friend class locked_gt;
         locked_gt& store_;
         unlocked_transaction_t unlocked_;
         static_assert(std::is_nothrow_move_constructible<unlocked_transaction_t>());

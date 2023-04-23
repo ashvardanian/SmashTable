@@ -209,7 +209,7 @@ class partitioned_gt {
 
   public:
     class transaction_t {
-        friend partitioned_gt;
+        friend class partitioned_gt;
         partitioned_gt& store_;
         part_transactions_t parts_;
         generation_t generation_;
