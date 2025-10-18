@@ -5,7 +5,7 @@
 #include <shared_mutex> // `std::shared_mutex`
 #include <atomic>
 
-namespace unum::ucset {
+namespace ashvardanian::smashtable {
 
 template <typename at, std::size_t count_ak, std::size_t... sequence_ak>
 constexpr std::array<at, count_ak> move_to_array_impl(at (&a)[count_ak], std::index_sequence<sequence_ak...>) noexcept {
@@ -13,8 +13,8 @@ constexpr std::array<at, count_ak> move_to_array_impl(at (&a)[count_ak], std::in
 }
 
 /**
- * @brief This is a slightly tweaked implementation of `std::to_array` coming in C++20.
- * https://en.cppreference.com/w/cpp/container/array/to_array
+ *  @brief This is a slightly tweaked implementation of `std::to_array` coming in C++20.
+ *  @see https://en.cppreference.com/w/cpp/container/array/to_array
  */
 template <typename at, std::size_t count_ak>
 constexpr std::array<at, count_ak> move_to_array(at (&a)[count_ak]) noexcept {
@@ -22,9 +22,9 @@ constexpr std::array<at, count_ak> move_to_array(at (&a)[count_ak]) noexcept {
 }
 
 /**
- * @brief Takes a generator that produces `bool`-convertible and dereference-able objects like `std::optional`,
- * and builds up fixed-size of array of such object, but only if all were successfully built. If at least one
- * generator call fails, the entire resulting `std::optional` is returned to NULL state.
+ *  @brief Takes a generator that produces `bool`-convertible and dereference-able objects like `std::optional`,
+ *  and builds up fixed-size of array of such object, but only if all were successfully built. If at least one
+ *  generator call fails, the entire resulting `std::optional` is returned to NULL state.
  */
 template <typename at, std::size_t count_ak, typename generator_at>
 static std::optional<std::array<at, count_ak>> generate_array_safely(generator_at &&generator) noexcept {
@@ -402,4 +402,4 @@ class partitioned_gt {
     }
 };
 
-} // namespace unum::ucset
+} // namespace ashvardanian::smashtable

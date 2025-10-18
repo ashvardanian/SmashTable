@@ -8,23 +8,23 @@
 
 #include "status.hpp"
 
-namespace unum::ucset {
+namespace ashvardanian::smashtable {
 
 /**
- * @brief AVL-Trees are some of the simplest yet performant Binary Search Trees.
- * This "node" class implements the primary logic, but doesn't take part in
- * memory management.
+ *  @brief AVL-Trees are some of the simplest yet performant Binary Search Trees.
+ *  This "node" class implements the primary logic, but doesn't take part in
+ *  memory management.
  *
- * > Never throws! Even if new node allocation had failed.
- * > Implements `upper_bound` for faster and lighter iterators.
- *   Alternative would be - Binary Threaded Search Tree.
- * > Implements sampling methods.
+ *  > Never throws! Even if new node allocation had failed.
+ *  > Implements `upper_bound` for faster and lighter iterators.
+ *    Alternative would be - Binary Threaded Search Tree.
+ *  > Implements sampling methods.
  *
- * @tparam entry_at         Type of entries to store in this tree.
- * @tparam comparator_at    A comparator function object, that overload
- *                          @code
- *                              bool operator ()(entry_at, entry_at) const
- *                          @endcode
+ *  @tparam entry_at         Type of entries to store in this tree.
+ *  @tparam comparator_at    A comparator function object, that overload
+ *                           @code
+ *                               bool operator ()(entry_at, entry_at) const
+ *                           @endcode
  */
 template <typename entry_at, typename comparator_at>
 class avl_node_gt {
@@ -105,9 +105,9 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Find the smallest entry, bigger than or equal to the provided one.
-     * @param comparable Any key comparable with stored entries.
-     * @return NULL if nothing was found.
+     *  @brief Find the smallest entry, bigger than or equal to the provided one.
+     *  @param comparable Any key comparable with stored entries.
+     *  @return NULL if nothing was found.
      */
     template <typename comparable_at>
     static node_t *lower_bound(node_t *node, comparable_at &&comparable) noexcept {
@@ -136,14 +136,14 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Find the smallest entry, bigger than the provided one.
-     * @param comparable Any key comparable with stored entries.
-     * @return NULL if nothing was found.
+     *  @brief Find the smallest entry, bigger than the provided one.
+     *  @param comparable Any key comparable with stored entries.
+     *  @return NULL if nothing was found.
      *
-     * Is used for an atomic implementation of iterators.
-     * Alternatively one can:
-     * > store a stack for path, which is ~O(logN) space.
-     * > store parents in nodes and have complex logic.
+     *  Is used for an atomic implementation of iterators.
+     *  Alternatively one can:
+     *  > store a stack for path, which is ~O(logN) space.
+     *  > store parents in nodes and have complex logic.
      */
     template <typename comparable_at>
     static node_t *upper_bound(node_t *node, comparable_at &&comparable) noexcept {
@@ -172,9 +172,9 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Searches for the shortest node, that is ancestor of both provided keys.
-     * @return NULL if nothing was found.
-     * @warning Current recursive implementation is suboptimal.
+     *  @brief Searches for the shortest node, that is ancestor of both provided keys.
+     *  @return NULL if nothing was found.
+     *  @warning Current recursive implementation is suboptimal.
      */
     template <typename comparable_a_at, typename comparable_b_at>
     static node_t *lowest_common_ancestor(node_t *node, comparable_a_at &&a, comparable_b_at &&b) noexcept {
@@ -185,11 +185,9 @@ class avl_node_gt {
         if (less(a, node->entry) && less(b, node->entry)) return lowest_common_ancestor(node->left, a, b);
 
         // If both `a` and `b` are greater than `node`, then LCA lies in right
-        else if (less(node->entry, a) && less(node->entry, b))
-            return lowest_common_ancestor(node->right, a, b);
+        else if (less(node->entry, a) && less(node->entry, b)) { return lowest_common_ancestor(node->right, a, b); }
 
-        else
-            return node;
+        else { return node; }
     }
 
     struct node_interval_t {
@@ -199,9 +197,9 @@ class avl_node_gt {
     };
 
     /**
-     * @brief Complex method, that detects the left-most and right-most nodes
-     * containing keys in a provided intervals, as well as their lowest common ancestors.
-     * @warning Current recursive implementation is suboptimal.
+     *  @brief Complex method, that detects the left-most and right-most nodes
+     *  containing keys in a provided intervals, as well as their lowest common ancestors.
+     *  @warning Current recursive implementation is suboptimal.
      */
     template <typename lower_at, typename upper_at, typename callback_at>
     static node_interval_t range(node_t *node, lower_at &&low, upper_at &&high, callback_at &&callback) noexcept {
@@ -258,10 +256,10 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Random samples nodes within a given range of keys.
-     * @param generator Any STL-compatible random number generator.
-     * @return NULL if nothing was found.
-     * @warning Without additional stored metadata or dynamic memory, this algorithm performs two passes.
+     *  @brief Random samples nodes within a given range of keys.
+     *  @param generator Any STL-compatible random number generator.
+     *  @return NULL if nothing was found.
+     *  @warning Without additional stored metadata or dynamic memory, this algorithm performs two passes.
      */
     template <typename generator_at, typename lower_at, typename upper_at, typename predicate_at>
     static node_t *sample_range( //
@@ -318,7 +316,7 @@ class avl_node_gt {
         bool inserted = false;
 
         /**
-         * @return True if the allocation of the new node has failed.
+         *  @return True if the allocation of the new node has failed.
          */
         bool failed() const noexcept { return !inserted && !match; }
     };
@@ -449,8 +447,8 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Pops the root replacing it with one of descendants, if present.
-     * @param comparable Any key comparable with stored entries.
+     *  @brief Pops the root replacing it with one of descendants, if present.
+     *  @param comparable Any key comparable with stored entries.
      */
     static extract_result_t extract(node_t *node) noexcept {
 
@@ -486,8 +484,8 @@ class avl_node_gt {
     }
 
     /**
-     * @brief Searches for a matching ancestor and extracts it out.
-     * @param comparable Any key comparable with stored entries.
+     *  @brief Searches for a matching ancestor and extracts it out.
+     *  @param comparable Any key comparable with stored entries.
      */
     template <typename comparable_at>
     static extract_result_t extract(node_t *node, comparable_at &&comparable) noexcept {
@@ -683,25 +681,25 @@ class avl_tree_gt {
 };
 
 /**
- * @brief Transactional Concurrent In-Memory Container with Snapshots support.
+ *  @brief Transactional Concurrent In-Memory Container with Snapshots support.
  *
- * @section Writes Consistency
- * Writing one entry or a batch is logically different.
- * Either all fail or all succeed. Thats why `set` and `set_many`
- * are implemented separately. Transactions write only on `submit`,
- * thus they don't need `set_many`.
+ *  @section Writes Consistency
+ *  Writing one entry or a batch is logically different.
+ *  Either all fail or all succeed. Thats why `set` and `set_many`
+ *  are implemented separately. Transactions write only on `submit`,
+ *  thus they don't need `set_many`.
  *
- * @section Read Consistency
- * Reading a batch of entries is same as reading one by one.
- * The received items might not be consistent with each other.
- * If such behaviour is needed - you must create snapshot.
+ *  @section Read Consistency
+ *  Reading a batch of entries is same as reading one by one.
+ *  The received items might not be consistent with each other.
+ *  If such behaviour is needed - you must create snapshot.
  *
- * @section Pitfalls with WATCH-ing missing values
- * If an entry was missing. Then:
- *      1. WATCH-ed in a transaction.
- *      2. added in the second transaction.
- *      3. removed in the third transaction.
- * The first transaction will succeed, if we try to commit it.
+ *  @section Pitfalls with WATCH-ing missing values
+ *  If an entry was missing. Then:
+ *  1. WATCH-ed in a transaction.
+ *  2. added in the second transaction.
+ *  3. removed in the third transaction.
+ *  The first transaction will succeed, if we try to commit it.
  */
 template < //
     typename element_at, typename comparator_at = std::less<element_at>,
@@ -1189,4 +1187,4 @@ class consistent_avl_gt {
     }
 };
 
-} // namespace unum::ucset
+} // namespace ashvardanian::smashtable

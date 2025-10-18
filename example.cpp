@@ -1,14 +1,14 @@
-#include <ucset/consistent_set.hpp>
-#include <ucset/consistent_avl.hpp>
-#include <ucset/versioning_avl.hpp>
-#include <ucset/locked.hpp>
-#include <ucset/partitioned.hpp>
+#include <smashtable/consistent_set.hpp>
+#include <smashtable/consistent_avl.hpp>
+#include <smashtable/versioning_avl.hpp>
+#include <smashtable/locked.hpp>
+#include <smashtable/partitioned.hpp>
 
 #define macro_concat_(prefix, suffix) prefix##suffix
 #define macro_concat(prefix, suffix) macro_concat_(prefix, suffix)
 #define _ [[maybe_unused]] auto macro_concat(_, __LINE__)
 
-using namespace unum::ucset;
+using namespace ashvardanian::smashtable;
 
 template <typename container_at>
 void api() {
@@ -18,10 +18,10 @@ void api() {
     // Head state
     auto container = *container_at::make();
     _ = container.upsert(element_t {});
-    _ = container.find(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
-    _ = container.upper_bound(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
-    _ = container.range(identifier_t {}, identifier_t {}, [](element_t const&) noexcept {});
-    _ = container.erase_range(identifier_t {}, identifier_t {}, [](element_t const&) noexcept {});
+    _ = container.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    _ = container.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    _ = container.range(identifier_t {}, identifier_t {}, [](element_t const &) noexcept {});
+    _ = container.erase_range(identifier_t {}, identifier_t {}, [](element_t const &) noexcept {});
     _ = container.clear();
     _ = container.size();
 
@@ -30,8 +30,8 @@ void api() {
     _ = txn.upsert(element_t {});
     _ = txn.watch(identifier_t {});
     _ = txn.erase(identifier_t {});
-    _ = txn.find(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
-    _ = txn.upper_bound(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
+    _ = txn.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    _ = txn.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
     _ = txn.stage();
     _ = txn.rollback();
     _ = txn.commit();
@@ -41,20 +41,12 @@ void api() {
     std::random_device random_device;
     std::mt19937 random_generator(random_device());
     _ = container.sample_range( //
-        identifier_t {},
-        identifier_t {},
-        random_generator,
-        [](element_t const&) noexcept {});
+        identifier_t {}, identifier_t {}, random_generator, [](element_t const &) noexcept {});
 
     std::size_t count_seen = 0;
     std::array<element_t, 16> reservoir;
     _ = container.sample_range( //
-        identifier_t {},
-        identifier_t {},
-        random_generator,
-        count_seen,
-        reservoir.size(),
-        reservoir.data());
+        identifier_t {}, identifier_t {}, random_generator, count_seen, reservoir.size(), reservoir.data());
 
     // Exports
     element_t result;

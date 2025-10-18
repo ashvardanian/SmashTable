@@ -2,7 +2,7 @@
 #include <cstdint>      //
 #include <system_error> // `ENOMEM`
 
-namespace unum::ucset {
+namespace ashvardanian::smashtable {
 
 enum errc_t {
     success_k = 0,
@@ -32,8 +32,8 @@ enum errc_t {
 };
 
 /**
- * @brief Wraps error-codes into bool-convertible conditions.
- * @see @c errc_t.
+ *  @brief Wraps error-codes into bool-convertible conditions.
+ *  @see @c errc_t.
  */
 struct status_t {
     errc_t errc = errc_t::success_k;
@@ -172,4 +172,4 @@ struct element_versioning_gt {
     };
 };
 
-} // namespace unum::ucset
+} // namespace ashvardanian::smashtable

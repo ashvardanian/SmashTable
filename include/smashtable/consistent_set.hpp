@@ -8,7 +8,7 @@
 
 #include "status.hpp"
 
-namespace unum::ucset {
+namespace ashvardanian::smashtable {
 
 template <typename callable_at>
 status_t invoke_safely(callable_at &&callable) noexcept {
@@ -684,4 +684,4 @@ void merge_overwrite(std::set<keys_at, compare_at, allocator_at> &target,
     }
 }
 
-} // namespace unum::ucset
+} // namespace ashvardanian::smashtable

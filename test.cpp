@@ -3,11 +3,11 @@
 #include <thread>
 #include <ctime>
 
-#include <ucset/consistent_set.hpp>
-#include <ucset/consistent_avl.hpp>
+#include <smashtable/consistent_set.hpp>
+#include <smashtable/consistent_avl.hpp>
 #include <gtest/gtest.h>
 
-using namespace unum::ucset;
+using namespace ashvardanian::smashtable;
 
 constexpr std::size_t size = 128;
 

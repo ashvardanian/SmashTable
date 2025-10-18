@@ -1,12 +1,12 @@
 #pragma once
 #include <shared_mutex> // `std::shared_mutex`
 
-namespace unum::ucset {
+namespace ashvardanian::smashtable {
 
 /**
- * @brief Wraps and protects any "Consistent Set" under a shared mutex.
- * The collection itself becomes @b thread-safe, but the transaction don't!
- * Detects dead-locks and reports `operation_would_block_k`.
+ *  @brief Wraps and protects any "Consistent Set" under a shared mutex.
+ *  The collection itself becomes @b thread-safe, but the transaction don't!
+ *  Detects dead-locks and reports `operation_would_block_k`.
  */
 template <typename collection_at, typename shared_mutex_at = std::shared_mutex>
 class locked_gt {
@@ -203,4 +203,4 @@ class locked_gt {
     }
 };
 
-} // namespace unum::ucset
+} // namespace ashvardanian::smashtable

@@ -1,10 +1,10 @@
 cmake_minimum_required(VERSION 3.15)
-project(ucset)
+project(smashtable)
 
 set(CMAKE_CXX_STANDARD 17)
 
-add_library(ucset INTERFACE)
-target_include_directories(ucset INTERFACE include)
+add_library(smashtable INTERFACE)
+target_include_directories(smashtable INTERFACE include)
 
 include(FetchContent)
 FetchContent_Declare(

@@ -2,12 +2,14 @@
   "cmake.sourceDirectory": "${workspaceFolder}/example",
   "cSpell.words": [
     "alloc",
+    "ashvardanian",
     "bottlenecked",
     "conanfile",
     "MVCC",
     "noexcept",
+    "smashtable",
     "tparam",
-    "ucset",
+    "smashtable",
     "underutilizing",
     "VRAM"
   ],
@@ -77,6 +79,8 @@
     "unordered_set": "cpp",
     "utility": "cpp",
     "variant": "cpp",
-    "vector": "cpp"
+    "vector": "cpp",
+    "bitset": "cpp",
+    "__nullptr": "cpp"
   }
 }
