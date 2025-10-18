@@ -78,11 +78,13 @@ class avl_node_gt {
     }
 
     static node_t *find_min(node_t *node) noexcept {
+        if (!node) return nullptr;
         while (node->left) node = node->left;
         return node;
     }
 
     static node_t *find_max(node_t *node) noexcept {
+        if (!node) return nullptr;
         while (node->right) node = node->right;
         return node;
     }
@@ -271,14 +273,16 @@ class avl_node_gt {
         std::size_t count_matches = 0;
         range(node, low, high, [&](node_t *node) noexcept { count_matches += predicate(node); });
 
-        node_t *result = node;
-        std::uniform_int_distribution<std::size_t> distribution {0, count_matches + 1};
+        if (count_matches == 0) return nullptr;
+
+        node_t *result = nullptr;
+        std::uniform_int_distribution<std::size_t> distribution {0, count_matches - 1};
         auto choice = distribution(generator);
-        if (choice != 0)
-            range(node, low, high, [&](node_t *node) noexcept {
-                choice -= predicate(node);
-                result = choice != 0 ? result : node;
-            });
+        range(node, low, high, [&](node_t *node) noexcept {
+            if (!predicate(node)) return;
+            if (choice == 0) result = node;
+            --choice;
+        });
 
         return result;
     }
