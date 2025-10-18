@@ -2,7 +2,7 @@
 #include <cstdint>      //
 #include <system_error> // `ENOMEM`
 
-namespace unum::ucset {
+namespace ashvardanian::smashtable {
 
 enum errc_t {
     success_k = 0,
@@ -32,8 +32,8 @@ enum errc_t {
 };
 
 /**
- * @brief Wraps error-codes into bool-convertible conditions.
- * @see @c errc_t.
+ *  @brief Wraps error-codes into bool-convertible conditions.
+ *  @see @c errc_t.
  */
 struct status_t {
     errc_t errc = errc_t::success_k;
@@ -42,29 +42,29 @@ struct status_t {
 
 struct no_op_t {
     constexpr void operator()() const noexcept {}
-    template <typename at>
-    constexpr void operator()(at&&) const noexcept {}
+    template <typename type_>
+    constexpr void operator()(type_ &&) const noexcept {}
 };
 
-template <typename element_at>
+template <typename element_type_>
 struct copy_to_gt {
-    element_at& target;
-    template <typename at>
-    void operator()(at&& source) const noexcept {
-        target = std::forward<at>(source);
+    element_type_ &target;
+    template <typename type_>
+    void operator()(type_ &&source) const noexcept {
+        target = std::forward<type_>(source);
     }
 };
 
-template <typename element_at>
-copy_to_gt<element_at> copy_to(element_at& element) noexcept {
+template <typename element_type_>
+copy_to_gt<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
 }
 
-template <typename element_at, typename comparator_at>
+template <typename element_type_, typename comparator_type_>
 struct element_versioning_gt {
 
-    using element_t = element_at;
-    using comparator_t = comparator_at;
+    using element_t = element_type_;
+    using comparator_t = comparator_type_;
 
     using identifier_t = typename comparator_t::value_type;
     using generation_t = std::int64_t;
@@ -84,10 +84,10 @@ struct element_versioning_gt {
         generation_t generation {0};
         bool deleted {false};
 
-        bool operator==(watch_t const& watch) const noexcept {
+        bool operator==(watch_t const &watch) const noexcept {
             return watch.deleted == deleted && watch.generation == generation;
         }
-        bool operator!=(watch_t const& watch) const noexcept {
+        bool operator!=(watch_t const &watch) const noexcept {
             return watch.deleted != deleted || watch.generation != generation;
         }
     };
@@ -104,74 +104,72 @@ struct element_versioning_gt {
         mutable bool visible {true};
 
         entry_t() = default;
-        entry_t(entry_t&&) noexcept = default;
-        entry_t& operator=(entry_t&&) noexcept = default;
-        entry_t(entry_t const&) noexcept = delete;
-        entry_t& operator=(entry_t const&) noexcept = delete;
-        entry_t(element_t&& element) noexcept : element(std::move(element)) {}
+        entry_t(entry_t &&) noexcept = default;
+        entry_t &operator=(entry_t &&) noexcept = default;
+        entry_t(entry_t const &) noexcept = delete;
+        entry_t &operator=(entry_t const &) noexcept = delete;
+        entry_t(element_t &&element) noexcept : element(std::move(element)) {}
 
-        operator element_t const&() const& noexcept { return element; }
-        bool operator==(watch_t const& watch) const noexcept {
+        operator element_t const &() const & noexcept { return element; }
+        bool operator==(watch_t const &watch) const noexcept {
             return watch.deleted == deleted && watch.generation == generation;
         }
-        bool operator!=(watch_t const& watch) const noexcept {
+        bool operator!=(watch_t const &watch) const noexcept {
             return watch.deleted != deleted || watch.generation != generation;
         }
     };
 
-    template <typename at>
+    template <typename type_>
     constexpr static bool knows_generation() {
-        using t = std::remove_reference_t<at>;
+        using t = std::remove_reference_t<type_>;
         return std::is_same<t, entry_t>() || std::is_same<t, dated_identifier_t>();
     }
 
     struct entry_comparator_t {
         using is_transparent = void;
 
-        template <typename at>
-        decltype(auto) comparable(at const& object) const noexcept {
-            using t = std::remove_reference_t<at>;
-            if constexpr (std::is_same<t, entry_t>())
-                return (element_t const&)object.element;
+        template <typename type_>
+        decltype(auto) comparable(type_ const &object) const noexcept {
+            using t = std::remove_reference_t<type_>;
+            if constexpr (std::is_same<t, entry_t>()) return (element_t const &)object.element;
             else if constexpr (std::is_same<t, dated_identifier_t>())
-                return (identifier_t const&)object.id;
+                return (identifier_t const &)object.id;
             else
-                return (t const&)object;
+                return (t const &)object;
         }
 
-        template <typename first_at, typename second_at>
-        bool dated_compare(first_at const& a, second_at const& b) const noexcept {
+        template <typename first_type_, typename second_type_>
+        bool dated_compare(first_type_ const &a, second_type_ const &b) const noexcept {
             comparator_t less;
             auto a_less_b = less(comparable(a), comparable(b));
             auto b_less_a = less(comparable(b), comparable(a));
             return !a_less_b && !b_less_a ? a.generation < b.generation : a_less_b;
         }
 
-        template <typename first_at, typename second_at>
-        bool native_compare(first_at const& a, second_at const& b) const noexcept {
+        template <typename first_type_, typename second_type_>
+        bool native_compare(first_type_ const &a, second_type_ const &b) const noexcept {
             return comparator_t {}(comparable(a), comparable(b));
         }
 
-        template <typename first_at, typename second_at>
-        bool less(first_at const& a, second_at const& b) const noexcept {
-            using first_t = std::remove_reference_t<first_at>;
-            using second_t = std::remove_reference_t<second_at>;
-            if constexpr (knows_generation<first_t>() && knows_generation<second_t>())
-                return dated_compare(a, b);
+        template <typename first_type_, typename second_type_>
+        bool less(first_type_ const &a, second_type_ const &b) const noexcept {
+            using first_t = std::remove_reference_t<first_type_>;
+            using second_t = std::remove_reference_t<second_type_>;
+            if constexpr (knows_generation<first_t>() && knows_generation<second_t>()) return dated_compare(a, b);
             else
                 return native_compare(a, b);
         }
 
-        template <typename first_at, typename second_at>
-        bool operator()(first_at const& a, second_at const& b) const noexcept {
+        template <typename first_type_, typename second_type_>
+        bool operator()(first_type_ const &a, second_type_ const &b) const noexcept {
             return less(a, b);
         }
 
-        template <typename first_at, typename second_at>
-        bool same(first_at const& a, second_at const& b) const noexcept {
+        template <typename first_type_, typename second_type_>
+        bool same(first_type_ const &a, second_type_ const &b) const noexcept {
             return !less(a, b) && !less(b, a);
         }
     };
 };
 
-} // namespace unum::ucset
+} // namespace ashvardanian::smashtable

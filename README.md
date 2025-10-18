@@ -1,25 +1,10 @@
-<h1 align="center">Unexceptionally Consistent Set</h1>
-<h3 align="center">
-Imagine In-Memory Templated Containers<br/>
-Being as Consistent as Databases<br/>
-</h3>
-<br/>
+# SmashTable
 
-<p align="center">
-<a href="https://discord.gg/njybmcBEay"><img height="25" src="https://github.com/unum-cloud/ukv/raw/main/assets/icons/discord.svg" alt="Discord"></a>
-&nbsp;&nbsp;&nbsp;
-<a href="https://www.linkedin.com/company/unum-cloud/"><img height="25" src="https://github.com/unum-cloud/ukv/raw/main/assets/icons/linkedin.svg" alt="LinkedIn"></a>
-&nbsp;&nbsp;&nbsp;
-<a href="https://twitter.com/unum_cloud"><img height="25" src="https://github.com/unum-cloud/ukv/raw/main/assets/icons/twitter.svg" alt="Twitter"></a>
-&nbsp;&nbsp;&nbsp;
-<a href="https://unum.cloud/post"><img height="25" src="https://github.com/unum-cloud/ukv/raw/main/assets/icons/blog.svg" alt="Blog"></a>
-&nbsp;&nbsp;&nbsp;
-<a href="https://github.com/unum-cloud/ucset"><img height="25" src="https://github.com/unum-cloud/ukv/raw/main/assets/icons/github.svg" alt="GitHub"></a>
-</p>
 
----
+Imagine In-Memory Templated Containers
+Being as Consistent as Databases
 
-UCSet library provides `std::set`-like class templates for C++, where every operation is `noexcept`, and no update can leave the container in a partial state.
+SmashTable library provides `std::set`-like class templates for C++, where every operation is `noexcept`, and no update can leave the container in a partial state.
 
 There are 3 containers to choose from:
 
@@ -45,13 +30,13 @@ We suggest using CMake:
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
-    ucset
-    GIT_REPOSITORY https://github.com/unum-cloud/ucset
+    smashtable
+    GIT_REPOSITORY https://github.com/unum-cloud/smashtable
     GIT_TAG main
     CONFIGURE_COMMAND "" # Nothing to configure, its that simple :)
-    BUILD_COMMAND "" # No build needed, UCSet is header-only
+    BUILD_COMMAND "" # No build needed, SmashTable is header-only
 )
-FetchContent_MakeAvailable(ucset)
+FetchContent_MakeAvailable(smashtable)
 include_directories(${consistent_set_SOURCE_DIR})
 ```
 
@@ -76,7 +61,7 @@ So when we started working on [UKV][ukv] to build high-speed hardware-friendly d
 - Explicitly traversing trees for **random sampling**.
 - **Speed**!
 
-Now UCSet powers the in-memory backend of UKV.
+Now SmashTable powers the in-memory backend of UKV.
 
 ## Performance Tuning
 
@@ -99,9 +84,9 @@ So we allow different implementations:
 [snapshot]: https://jepsen.io/consistency/models/snapshot-isolation
 
 [ukv]: https://github.com/unum-cloud/ukv
-[consistent_set]: tree/main/include/ucset/consistent_set.hpp
-[consistent_avl]: tree/main/include/ucset/consistent_avl.hpp
-[versioning_avl]: tree/main/include/ucset/versioning_avl.hpp
-[locked]: tree/main/include/ucset/locked.hpp
-[partitioned]: tree/main/include/ucset/partitioned.hpp
-[crazy]: tree/main/include/ucset/crazy.hpp
+[consistent_set]: tree/main/include/smashtable/consistent_set.hpp
+[consistent_avl]: tree/main/include/smashtable/consistent_avl.hpp
+[versioning_avl]: tree/main/include/smashtable/versioning_avl.hpp
+[locked]: tree/main/include/smashtable/locked.hpp
+[partitioned]: tree/main/include/smashtable/partitioned.hpp
+[crazy]: tree/main/include/smashtable/crazy.hpp
