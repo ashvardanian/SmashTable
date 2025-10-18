@@ -15,15 +15,15 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 include_directories(${googletest_SOURCE_DIR}/googletest/include)
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wunknown-attributes")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ferror-limit=1")
 
-elseif(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pedantic")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
+elseif (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pedantic")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wfatal-errors")
-endif()
+endif ()
 
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/include/)
 add_executable(example example.cpp)
