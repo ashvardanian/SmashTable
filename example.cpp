@@ -10,13 +10,13 @@
 
 using namespace ashvardanian::smashtable;
 
-template <typename container_at>
+template <typename container_type_>
 void api() {
-    using element_t = typename container_at::element_t;
-    using identifier_t = typename container_at::identifier_t;
+    using element_t = typename container_type_::element_t;
+    using identifier_t = typename container_type_::identifier_t;
 
     // Head state
-    auto container = *container_at::make();
+    auto container = *container_type_::make();
     _ = container.upsert(element_t {});
     _ = container.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
     _ = container.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
