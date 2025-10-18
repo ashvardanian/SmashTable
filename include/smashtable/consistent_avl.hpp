@@ -78,11 +78,13 @@ class avl_node_gt {
     }
 
     static node_t *find_min(node_t *node) noexcept {
+        if (!node) return nullptr;
         while (node->left) node = node->left;
         return node;
     }
 
     static node_t *find_max(node_t *node) noexcept {
+        if (!node) return nullptr;
         while (node->right) node = node->right;
         return node;
     }
