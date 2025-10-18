@@ -18,14 +18,8 @@ void api() {
     // Head state
     auto container = *container_at::make();
     _ = container.upsert(element_t {});
-    _ = container.find(
-        identifier_t {},
-        [](element_t const&) noexcept {},
-        []() noexcept {});
-    _ = container.upper_bound(
-        identifier_t {},
-        [](element_t const&) noexcept {},
-        []() noexcept {});
+    _ = container.find(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
+    _ = container.upper_bound(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
     _ = container.range(identifier_t {}, identifier_t {}, [](element_t const&) noexcept {});
     _ = container.erase_range(identifier_t {}, identifier_t {}, [](element_t const&) noexcept {});
     _ = container.clear();
@@ -36,14 +30,8 @@ void api() {
     _ = txn.upsert(element_t {});
     _ = txn.watch(identifier_t {});
     _ = txn.erase(identifier_t {});
-    _ = txn.find(
-        identifier_t {},
-        [](element_t const&) noexcept {},
-        []() noexcept {});
-    _ = txn.upper_bound(
-        identifier_t {},
-        [](element_t const&) noexcept {},
-        []() noexcept {});
+    _ = txn.find(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
+    _ = txn.upper_bound(identifier_t {}, [](element_t const&) noexcept {}, []() noexcept {});
     _ = txn.stage();
     _ = txn.rollback();
     _ = txn.commit();
