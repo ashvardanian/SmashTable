@@ -9,10 +9,10 @@ namespace ashvardanian::smashtable {
  *  Detects dead-locks and reports `operation_would_block_k`.
  */
 template <typename collection_type_, typename shared_mutex_type_ = std::shared_mutex>
-class locked_gt {
+class locked_collection {
 
   public:
-    using locked_t = locked_gt;
+    using locked_t = locked_collection;
     using unlocked_t = collection_type_;
     using unlocked_transaction_t = typename unlocked_t::transaction_t;
     using shared_mutex_t = shared_mutex_type_;
@@ -23,13 +23,13 @@ class locked_gt {
     using generation_t = typename unlocked_t::generation_t;
 
     class transaction_t {
-        friend class locked_gt;
-        locked_gt &store_;
+        friend class locked_collection;
+        locked_collection &store_;
         unlocked_transaction_t unlocked_;
         static_assert(std::is_nothrow_move_constructible<unlocked_transaction_t>());
 
       public:
-        transaction_t(locked_gt &db, unlocked_transaction_t &&unlocked) noexcept
+        transaction_t(locked_collection &db, unlocked_transaction_t &&unlocked) noexcept
             : store_(db), unlocked_(std::move(unlocked)) {}
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
@@ -89,15 +89,15 @@ class locked_gt {
     mutable shared_mutex_t mutex_;
     unlocked_t unlocked_;
 
-    locked_gt(unlocked_t &&unlocked) noexcept : unlocked_(std::move(unlocked)) {}
-    locked_gt &operator=(locked_gt &&other) noexcept {
+    locked_collection(unlocked_t &&unlocked) noexcept : unlocked_(std::move(unlocked)) {}
+    locked_collection &operator=(locked_collection &&other) noexcept {
         std::unique_lock _ {mutex_};
         unlocked_ = std::move(other.unlocked_);
         return *this;
     }
 
   public:
-    locked_gt(locked_gt &&other) noexcept : unlocked_(std::move(other.unlocked_)) {}
+    locked_collection(locked_collection &&other) noexcept : unlocked_(std::move(other.unlocked_)) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
         std::shared_lock _ {mutex_};
@@ -109,10 +109,10 @@ class locked_gt {
         return unlocked_.empty();
     }
 
-    [[nodiscard]] static std::optional<locked_gt> make() noexcept {
-        std::optional<locked_gt> result;
+    [[nodiscard]] static std::optional<locked_collection> make() noexcept {
+        std::optional<locked_collection> result;
         if (std::optional<unlocked_t> unlocked = unlocked_t::make(); unlocked)
-            result.emplace(locked_gt {std::move(unlocked).value()});
+            result.emplace(locked_collection {std::move(unlocked).value()});
         return result;
     }
 

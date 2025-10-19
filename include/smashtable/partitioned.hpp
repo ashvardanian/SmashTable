@@ -56,11 +56,11 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
  */
 template <typename collection_type_, typename hash_type_ = std::hash<typename collection_type_::identifier_t>,
           typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_ = 16>
-class partitioned_gt {
+class partitioned_collection {
 
   public:
     static constexpr std::size_t parts_k = parts_;
-    using partitioned_t = partitioned_gt;
+    using partitioned_t = partitioned_collection;
     using hash_t = hash_type_;
     using part_t = collection_type_;
     using part_transaction_t = typename part_t::transaction_t;
@@ -187,8 +187,8 @@ class partitioned_gt {
 
   public:
     class transaction_t {
-        friend class partitioned_gt;
-        partitioned_gt &store_;
+        friend class partitioned_collection;
+        partitioned_collection &store_;
         part_transactions_t parts_;
         generation_t generation_;
         static_assert(std::is_nothrow_move_constructible<part_transaction_t>());
@@ -200,7 +200,7 @@ class partitioned_gt {
         }
 
       public:
-        transaction_t(partitioned_gt &db, part_transactions_t &&unlocked) noexcept
+        transaction_t(partitioned_collection &db, part_transactions_t &&unlocked) noexcept
             : store_(db), parts_(std::move(unlocked)), generation_(db.new_generation()) {}
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
@@ -263,8 +263,8 @@ class partitioned_gt {
 
     friend class transaction_t;
 
-    partitioned_gt(parts_t &&unlocked) noexcept : parts_(std::move(unlocked)) {}
-    partitioned_gt &operator=(partitioned_gt &&other) noexcept {
+    partitioned_collection(parts_t &&unlocked) noexcept : parts_(std::move(unlocked)) {}
+    partitioned_collection &operator=(partitioned_collection &&other) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
         parts_ = std::move(other.parts_);
         for (auto &mutex : mutexes_) mutex.unlock();
@@ -278,7 +278,7 @@ class partitioned_gt {
     generation_t new_generation() noexcept { return ++generation_; }
 
   public:
-    partitioned_gt(partitioned_gt &&other) noexcept : parts_(std::move(other.parts_)) {}
+    partitioned_collection(partitioned_collection &&other) noexcept : parts_(std::move(other.parts_)) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
         std::size_t total = 0;
@@ -288,10 +288,10 @@ class partitioned_gt {
         return total;
     }
 
-    [[nodiscard]] static std::optional<partitioned_gt> make() noexcept {
-        std::optional<partitioned_gt> result;
+    [[nodiscard]] static std::optional<partitioned_collection> make() noexcept {
+        std::optional<partitioned_collection> result;
         if (std::optional<parts_t> unlocked = new_parts(); unlocked)
-            result.emplace(partitioned_gt {std::move(unlocked).value()});
+            result.emplace(partitioned_collection {std::move(unlocked).value()});
         return result;
     }
 

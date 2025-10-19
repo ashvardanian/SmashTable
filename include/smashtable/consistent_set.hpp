@@ -51,14 +51,14 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-class consistent_set_gt {
+class consistent_standard_set {
 
   public:
     using element_t = element_type_;
     using comparator_t = comparator_type_;
     using allocator_t = allocator_type_;
 
-    using versioning_t = element_versioning_gt<element_t, comparator_t>;
+    using versioning_t = versioned_element<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
@@ -78,7 +78,7 @@ class consistent_set_gt {
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
-    using store_t = consistent_set_gt;
+    using store_t = consistent_standard_set;
 
   public:
     class transaction_t {
@@ -155,7 +155,7 @@ class consistent_set_gt {
         /**
          * @brief Finds a member @b equal to the given @ref `comparable`.
          *        You may want to `watch()` the received object, it's not done by default.
-         *        Unlike `consistent_set_gt::find()`, will include the entries added to this
+         *        Unlike `consistent_standard_set::find()`, will include the entries added to this
          *        transaction.
          *
          * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
@@ -178,7 +178,7 @@ class consistent_set_gt {
         /**
          * @brief Finds the first member @b greater than the given @ref `comparable`.
          *        You may want to `watch()` the received object, it's not done by default.
-         *        Unlike `consistent_set_gt::find()`, will include the entries added to this
+         *        Unlike `consistent_standard_set::find()`, will include the entries added to this
          *        transaction.
          *
          * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
@@ -346,7 +346,7 @@ class consistent_set_gt {
 
     friend class transaction_t;
 
-    consistent_set_gt() noexcept(false) {}
+    consistent_standard_set() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
 
     template <typename callback_type_ = no_op_t>
@@ -581,7 +581,8 @@ class consistent_set_gt {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
+    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
+                                       callback_type_ &&callback = {}) noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         erase_visible(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));

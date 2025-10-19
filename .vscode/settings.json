@@ -1,5 +1,5 @@
 {
-  "cmake.sourceDirectory": "${workspaceFolder}/example",
+  "cmake.sourceDirectory": "/home/ubuntu/SmashTable",
   "cSpell.words": [
     "alloc",
     "ashvardanian",
