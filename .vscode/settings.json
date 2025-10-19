@@ -14,17 +14,20 @@
     "VRAM"
   ],
   "files.associations": {
+    "__nullptr": "cpp",
     "*.tcc": "cpp",
     "algorithm": "cpp",
     "any": "cpp",
     "array": "cpp",
     "atomic": "cpp",
     "bit": "cpp",
+    "bitset": "cpp",
     "cctype": "cpp",
     "chrono": "cpp",
     "cinttypes": "cpp",
     "clocale": "cpp",
     "cmath": "cpp",
+    "codecvt": "cpp",
     "compare": "cpp",
     "concepts": "cpp",
     "condition_variable": "cpp",
@@ -79,9 +82,6 @@
     "unordered_set": "cpp",
     "utility": "cpp",
     "variant": "cpp",
-    "vector": "cpp",
-    "bitset": "cpp",
-    "__nullptr": "cpp",
-    "codecvt": "cpp"
+    "vector": "cpp"
   }
 }

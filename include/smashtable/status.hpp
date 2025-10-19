@@ -8,7 +8,7 @@ enum errc_t {
     success_k = 0,
     unknown_k = -1,
 
-    consistency_k,
+    consistency_k = 1,  // Must be non-zero to indicate error!
     transaction_not_recoverable_k = ENOTRECOVERABLE,
     sequence_number_overflow_k = EOVERFLOW,
 
@@ -47,7 +47,7 @@ struct no_op_t {
 };
 
 template <typename element_type_>
-struct copy_to {
+struct copy_to_fn {
     element_type_ &target;
     template <typename type_>
     void operator()(type_ &&source) const noexcept {
@@ -56,7 +56,7 @@ struct copy_to {
 };
 
 template <typename element_type_>
-copy_to<element_type_> copy_to(element_type_ &element) noexcept {
+copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
 }
 

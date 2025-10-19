@@ -4,7 +4,7 @@
 #include <optional>   // `std::optional` for "expected"
 #include <set>        // `std::set` for entries
 #include <vector>     // `std::vector` for watches
-#include <random>     // `std::uniform_int_distribution` fir sampling
+#include <random>     // `std::uniform_int_distribution` for sampling
 
 #include "status.hpp"
 
@@ -106,7 +106,7 @@ class atomic_standard_set {
         enum class stage_t {
             created_k,
             staged_k,
-            commited_k,
+            committed_k,
         };
 
         store_t *store_ {nullptr};
@@ -252,12 +252,12 @@ class atomic_standard_set {
         }
 
         [[nodiscard]] status_t stage() noexcept {
-            // First, check if we have any collisions.
+            // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
             auto entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find(
+                auto status = store.find_latest_for_watch(
                     id_and_watch.id,
                     [&](entry_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
@@ -323,16 +323,14 @@ class atomic_standard_set {
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
 
-            // If the transaction was "staged",
-            // we must delete all the entries.
+            // Transaction was staged, we must extract all the entries back
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k)
-                for (auto const &id_and_watch : watches_) {
-                    dated_identifier_t dated {id_and_watch.id, id_and_watch.watch.generation};
-                    auto source = store.entries_.find(dated);
-                    auto node = store.entries_.extract(source);
-                    changes_.insert(std::move(node));
-                }
+            for (auto const &id_and_watch : watches_) {
+                dated_identifier_t dated {id_and_watch.id, id_and_watch.watch.generation};
+                auto source = store.entries_.find(dated);
+                auto node = store.entries_.extract(source);
+                changes_.insert(std::move(node));
+            }
 
             watches_.clear();
             stage_ = stage_t::created_k;
@@ -368,9 +366,32 @@ class atomic_standard_set {
     atomic_standard_set() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
 
+    /**
+     *  @brief Finds the latest (highest generation) entry for watch validation.
+     *         Unlike find(), this checks ALL entries including staged (invisible) ones.
+     *         This is critical for detecting write-write conflicts with concurrent transactions.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                                 callback_missing_type_ &&callback_missing = {}) const noexcept {
+        auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
+
+        // Find the entry with the highest generation (most recent), visible or not
+        entry_iterator_t latest = range.second;
+        for (auto it = range.first; it != range.second; ++it) {
+            if (latest == range.second || it->generation > latest->generation) { latest = it; }
+        }
+
+        // Return the latest entry found (or missing if none found)
+        return latest != range.second && !latest->deleted
+                   ? invoke_safely([&] { callback_found(*latest); })
+                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+    }
+
     template <typename callback_type_ = no_op_t>
     void erase_visible(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
-        entry_iterator_t &current = begin;
+        entry_iterator_t current = begin;
         while (current != end)
             if (current->visible) {
                 callback(*current);
@@ -378,12 +399,11 @@ class atomic_standard_set {
                 visible_deleted_count_ -= current->deleted;
                 current = entries_.erase(current);
             }
-            else
-                ++current;
+            else { ++current; }
     }
 
     void unmask_and_compact(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
-        entry_iterator_t &current = begin;
+        entry_iterator_t current = begin;
         entry_iterator_t last_visible_entry = end;
         for (; current != end; ++current) {
             auto keep_this = current->generation == generation_to_unmask;
@@ -530,7 +550,7 @@ class atomic_standard_set {
         // Skip all the invisible entries
         while (range.first != range.second && !range.first->visible) ++range.first;
 
-        // Check if there are no visible entries type_ all
+        // Check if there are no visible entries at all
         return range.first != range.second && !range.first->deleted //
                    ? invoke_safely([&] { callback_found(*range.first); })
                    : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
