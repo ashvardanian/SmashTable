@@ -2,10 +2,10 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "C++: Test",
+      "name": "C++: Test (All)",
       "type": "cppdbg",
       "request": "launch",
-      "program": "${workspaceFolder}/example/test",
+      "program": "${workspaceFolder}/build_debug/test",
       "args": ["--gtest_break_on_failure", "--gtest_catch_exceptions=0"],
       "cwd": "${workspaceFolder}",
       "showDisplayString": true,
@@ -14,6 +14,50 @@
       "preLaunchTask": "Build Debug Test",
       "MIMode": "gdb",
       "miDebuggerPath": "/usr/bin/gdb"
+    },
+    {
+      "name": "C++: Test (Consistency Only)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build_debug/test",
+      "args": [
+        "--gtest_filter=consistency_*",
+        "--gtest_break_on_failure",
+        "--gtest_catch_exceptions=0"
+      ],
+      "cwd": "${workspaceFolder}",
+      "showDisplayString": true,
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "preLaunchTask": "Build Debug Test",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb"
+    },
+    {
+      "name": "C++: Test (Single Filter)",
+      "type": "cppdbg",
+      "request": "launch",
+      "program": "${workspaceFolder}/build_debug/test",
+      "args": [
+        "--gtest_filter=${input:testFilter}",
+        "--gtest_break_on_failure",
+        "--gtest_catch_exceptions=0"
+      ],
+      "cwd": "${workspaceFolder}",
+      "showDisplayString": true,
+      "stopAtEntry": false,
+      "externalConsole": false,
+      "preLaunchTask": "Build Debug Test",
+      "MIMode": "gdb",
+      "miDebuggerPath": "/usr/bin/gdb"
+    }
+  ],
+  "inputs": [
+    {
+      "id": "testFilter",
+      "type": "promptString",
+      "description": "GTest filter pattern (e.g., *watch_detects*)",
+      "default": "*"
     }
   ]
 }

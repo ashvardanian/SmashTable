@@ -3,9 +3,41 @@
   "tasks": [
     {
       "label": "Build Debug Test",
-      "command": "cmake -DCMAKE_BUILD_TYPE=Debug ./example/ && make ./example/test",
-      "args": [],
-      "type": "shell"
+      "command": "cmake",
+      "args": [
+        "--build",
+        "build_debug",
+        "--config",
+        "Debug",
+        "--target",
+        "test"
+      ],
+      "type": "shell",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      },
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "Configure CMake Debug",
+      "command": "cmake",
+      "args": ["-DCMAKE_BUILD_TYPE=Debug", "-B", "build_debug"],
+      "type": "shell",
+      "group": "build",
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "shared"
+      },
+      "problemMatcher": []
     }
   ]
 }
