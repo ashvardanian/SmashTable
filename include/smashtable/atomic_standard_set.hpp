@@ -31,34 +31,53 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
 }
 
 /**
- * @brief Atomic (in DBMS and Set Theory sense) Transactional Store on top of a
- * Standard Templates Library. It can be used as a Key-Value store, if you store
- * @c `std::pair` as entries.
+ *  @brief  Atomic alternative to `std::set` and `std::map`, if you keep `std::pair` entries.
+ *          Provides 2-phase commits for "transactions", with "watching" capabilities for
+ *          CAS-like (Compare-And-Swap) operations. Not thread-safe by itself.
  *
- * @section Design Goals
+ *  @section Design Goals
  *
- * - Atomicity of batch operations.
- * - Simplicity and familiarity.
- * For performance, consistency, Multi-Version Concurrency control and others,
- * check out the `set_avl_gt`.
+ *  First, all operations are atomic. If you are updating many values at once, you don't want
+ *  to break in an intermediate state, where only some of the values are updated. With two-phase
+ *  commit transactions, you can stage many changes, and then commit them all at once. Or rollback,
+ *  if something went wrong in the current transaction or some external condition changed.
+ *  A common usecase for this, is synchronizing many updates across many data stores.
  *
- * @section Heterogeneous Comparisons
+ *  The API must be simple, but generalizable, and the implementation must be light-weight.
+ *  So this collection @b doesn't provide snapshots or multi-version concurrency control (MVCC).
+ *  It means, that if you are starting a transaction, and even "watching" some values through it,
+ *  there is no guarantee, that the value received hasn't been updated before transaction "began"
+ *  and entry was added to the "watched" list.
  *
- * @tparam element_type_
- * @tparam comparator_type_
- * @tparam allocator_type_
+ *  Only "Monotonic Atomic View" consistency is guaranteed, including its inferior "Read Committed"
+ *  and "Read Uncommitted" levels. In other words, transactions are not allowed to observe writes
+ *  from other transactions which do not commit.
+ *
+ *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
+ *  @see https://jepsen.io/consistency/models/read-committed
+ *
+ *  @section API Overview
+ *
+ *  - All lookups are heterogeneous, meaning you can provide any type, that is comparable to the
+ *    @p element_type_. This allows for greater flexibility in how you interact with the set.
+ *  - No iterators are provided, to keep the implementation simple and avoid the complexity of
+ *    maintaining persistent iterator validity across transactions and modifications.
+ *
+ *  @tparam element_type_ Type of the elements stored in the set.
+ *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
+ *  @tparam allocator_type_ Arbitrary "rebindable" allocator for all internal structures.
  */
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-class consistent_set_gt {
+class atomic_standard_set {
 
   public:
     using element_t = element_type_;
     using comparator_t = comparator_type_;
     using allocator_t = allocator_type_;
 
-    using versioning_t = element_versioning_gt<element_t, comparator_t>;
+    using versioning_t = versioned_element<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
@@ -78,7 +97,7 @@ class consistent_set_gt {
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
-    using store_t = consistent_set_gt;
+    using store_t = atomic_standard_set;
 
   public:
     class transaction_t {
@@ -153,14 +172,14 @@ class consistent_set_gt {
         }
 
         /**
-         * @brief Finds a member @b equal to the given @ref `comparable`.
-         *        You may want to `watch()` the received object, it's not done by default.
-         *        Unlike `consistent_set_gt::find()`, will include the entries added to this
-         *        transaction.
+         *  @brief Finds a member @b equal to the given @ref `comparable`.
+         *         You may want to `watch()` the received object, it's not done by default.
+         *         Unlike `atomic_standard_set::find()`, will include the entries added to this
+         *         transaction.
          *
-         * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-         * @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-         * @param callback_missing      Callback to be triggered, if nothing was found.
+         *  @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
+         *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
+         *  @param callback_missing      Callback to be triggered, if nothing was found.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -176,14 +195,14 @@ class consistent_set_gt {
         }
 
         /**
-         * @brief Finds the first member @b greater than the given @ref `comparable`.
-         *        You may want to `watch()` the received object, it's not done by default.
-         *        Unlike `consistent_set_gt::find()`, will include the entries added to this
-         *        transaction.
+         *  @brief Finds the first member @b greater than the given @ref `comparable`.
+         *         You may want to `watch()` the received object, it's not done by default.
+         *         Unlike `atomic_standard_set::find()`, will include the entries added to this
+         *         transaction.
          *
-         * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-         * @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-         * @param callback_missing      Callback to be triggered, if nothing was found.
+         *  @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
+         *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
+         *  @param callback_missing      Callback to be triggered, if nothing was found.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -265,13 +284,13 @@ class consistent_set_gt {
         }
 
         /**
-         * @brief Resets the state of the transaction.
+         *  @brief Resets the state of the transaction.
          *
-         * In more detail:
-         * - All the updates staged in DB will be reverted.
-         * - All the updates will in this Transaction will be lost.
-         * - All the watches will be lost.
-         * - New generation will be assigned.
+         *  In more detail:
+         *  - All the updates staged in DB will be reverted.
+         *  - All the updates will in this Transaction will be lost.
+         *  - All the watches will be lost.
+         *  - New generation will be assigned.
          */
         [[nodiscard]] status_t reset() noexcept {
             // If the transaction was "staged",
@@ -293,13 +312,13 @@ class consistent_set_gt {
         }
 
         /**
-         * @brief Rolls-back a previously "staged" transaction.
+         *  @brief Rolls-back a previously "staged" transaction.
          *
-         * In more detail:
-         * - All the updates will be reverted in the DB.
-         * - All the updates will re-emerge in this Transaction.
-         * - All the watches will be lost.
-         * - New generation will be assigned.
+         *  In more detail:
+         *  - All the updates will be reverted in the DB.
+         *  - All the updates will re-emerge in this Transaction.
+         *  - All the watches will be lost.
+         *  - New generation will be assigned.
          */
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
@@ -346,7 +365,7 @@ class consistent_set_gt {
 
     friend class transaction_t;
 
-    consistent_set_gt() noexcept(false) {}
+    atomic_standard_set() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
 
     template <typename callback_type_ = no_op_t>
@@ -387,18 +406,19 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Atomically @b updates-or-inserts a collection of entries.
-     * Either all entries will be inserted, or all will fail.
-     * This operation is identical to creating and committing
-     * a transaction with all the same elements put into it.
+     *  @brief Atomically @b updates-or-inserts a collection of entries.
      *
-     * @section Why not take R-Value?
-     * We want this operation to be consistent, as the rest of the container,
-     * so we need a place to return all the objects, if the operation fails.
-     * With R-Value, the batch would be lost.
+     *  Either all entries will be inserted, or all will fail.
+     *  This operation is identical to creating and committing
+     *  a transaction with all the same elements put into it.
      *
-     * @param[inout] sources   Collection of entries to import.
-     * @return status_t        Can fail, if out of memory.
+     *  @section Why not take R-Value?
+     *  We want this operation to be consistent, as the rest of the container,
+     *  so we need a place to return all the objects, if the operation fails.
+     *  With R-Value, the batch would be lost.
+     *
+     *  @param[inout] sources   Collection of entries to import.
+     *  @return status_t        Can fail, if out of memory.
      */
     [[nodiscard]] status_t upsert(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
@@ -420,8 +440,8 @@ class consistent_set_gt {
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     /**
-     * @brief Creates a new collection of this type without throwing exceptions.
-     * If fails, an empty @c `std::optional` is returned.
+     *  @brief Creates a new collection of this type without throwing exceptions.
+     *  If fails, an empty @c `std::optional` is returned.
      */
     [[nodiscard]] static std::optional<store_t> make() noexcept {
         std::optional<store_t> result;
@@ -430,9 +450,9 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Starts a transaction with a new sequence number.
-     * If succeeded, that transaction can later be reset to reuse the memory.
-     * If fails, an empty @c `std::optional` is returned.
+     *  @brief Starts a transaction with a new sequence number.
+     *  If succeeded, that transaction can later be reset to reuse the memory.
+     *  If fails, an empty @c `std::optional` is returned.
      */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
         std::optional<transaction_t> result;
@@ -441,12 +461,12 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Moves a single new @param element into the container.
-     * This operation is identical to creating and committing
-     * a single upsert transaction.
+     *  @brief Moves a single new @param element into the container.
+     *  This operation is identical to creating and committing
+     *  a single upsert transaction.
      *
-     * @param[in] element   The element to import.
-     * @return status_t     Can fail, if out of memory.
+     *  @param[in] element   The element to import.
+     *  @return status_t     Can fail, if out of memory.
      */
     [[nodiscard]] status_t upsert(element_t &&element) noexcept {
         generation_t generation = new_generation();
@@ -464,15 +484,15 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Atomically @b updates-or-inserts a batch of entries.
-     * Either all entries will be inserted, or all will fail.
+     *  @brief Atomically @b updates-or-inserts a batch of entries.
+     *  Either all entries will be inserted, or all will fail.
      *
-     * The dereferencing operator of the passed @param iterator
-     * should return R-Value references of @c `element_t`.
-     * @see `std::make_move_iterator()`.
+     *  The dereferencing operator of the passed @param iterator
+     *  should return R-Value references of @c `element_t`.
+     *  @see `std::make_move_iterator()`.
      *
-     * @param begin
-     * @param end
+     *  @param begin
+     *  @param end
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
@@ -494,11 +514,11 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Finds a member @b equal to the given @ref `comparable`.
+     *  @brief Finds a member @b equal to the given @ref `comparable`.
      *
-     * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     * @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-     * @param callback_missing      Callback to be triggered, if nothing was found.
+     *  @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
+     *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
+     *  @param callback_missing      Callback to be triggered, if nothing was found.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -517,11 +537,11 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Finds the first member @b greater than the given @ref `comparable`.
+     *  @brief Finds the first member @b greater than the given @ref `comparable`.
      *
-     * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     * @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-     * @param callback_missing      Callback to be triggered, if nothing was found.
+     *  @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
+     *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
+     *  @param callback_missing      Callback to be triggered, if nothing was found.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -539,9 +559,9 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Implements a heterogeneous lookup for all the entries falling in
-     * between the @ref `lower` and the @ref `upper`. Degrades to `equal_range()`,
-     * if they are the same.
+     *  @brief Implements a heterogeneous lookup for all the entries falling in
+     *  between the @ref `lower` and the @ref `upper`. Degrades to `equal_range()`,
+     *  if they are the same.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -556,9 +576,9 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Implements a heterogeneous lookup for all the entries falling in
-     * between the @ref `lower` and the @ref `upper`. Degrades to `equal_range()`,
-     * if they are the same. Allows in-place @b modification.
+     *  @brief Implements a heterogeneous lookup for all the entries falling in
+     *  between the @ref `lower` and the @ref `upper`. Degrades to `equal_range()`,
+     *  if they are the same. Allows in-place @b modification.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -577,11 +597,12 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Erases all the entries falling in between the @ref `lower` and the @ref `upper`.
+     *  @brief Erases all the entries falling in between the @ref `lower` and the @ref `upper`.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
+    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
+                                       callback_type_ &&callback = {}) noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         erase_visible(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));
@@ -589,7 +610,7 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Removes all the data from the container.
+     *  @brief Removes all the data from the container.
      */
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
@@ -600,25 +621,25 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Optimization, that informs container to pre-allocate memory in-advance.
-     * Doesn't guarantee, that the following "upserts" won't fail with "out of memory".
+     *  @brief Optimization, that informs container to pre-allocate memory in-advance.
+     *  Doesn't guarantee, that the following "upserts" won't fail with "out of memory".
      */
     [[nodiscard]] status_t reserve(std::size_t) noexcept { return {}; }
 
     /**
-     * @brief Uniformly Random-Samples just one entry from the container.
-     * Searches within entries that compare equal to the provided @ref `comparable`.
+     *  @brief Uniformly Random-Samples just one entry from the container.
+     *  Searches within entries that compare equal to the provided @ref `comparable`.
      *
-     * ! This implementation is extremely inefficient and requires a two-pass approach.
-     * ! On the first run we estimate the number of entries matching the @ref `comparable`.
-     * ! On the second run we choose a random integer below the number of matched entries
-     * ! and loop until we advance the STL iterator enough.
+     *  ! This implementation is extremely inefficient and requires a two-pass approach.
+     *  ! On the first run we estimate the number of entries matching the @ref `comparable`.
+     *  ! On the second run we choose a random integer below the number of matched entries
+     *  ! and loop until we advance the STL iterator enough.
      *
-     * ! Depends on the `equal_range`. Use the Reservoir Sampling overload with
-     * ! temporary memory if you want to sample more than one entry.
+     *  ! Depends on the `equal_range`. Use the Reservoir Sampling overload with
+     *  ! temporary memory if you want to sample more than one entry.
      *
-     * @param[in] generator     Random generator to be invoked on the internal distribution.
-     * @param[in] callback      Callback to receive the sampled @c `element_t` entry.
+     *  @param[in] generator     Random generator to be invoked on the internal distribution.
+     *  @param[in] callback      Callback to receive the sampled @c `element_t` entry.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -640,13 +661,13 @@ class consistent_set_gt {
     }
 
     /**
-     * @brief Implements Uniform Reservoir Sampling into the provided output buffer.
-     * Searches within entries that compare equal to the provided @ref `comparable`.
+     *  @brief Implements Uniform Reservoir Sampling into the provided output buffer.
+     *  Searches within entries that compare equal to the provided @ref `comparable`.
      *
-     * @param[in] generator             Random generator to be invoked on the internal distribution.
-     * @param[inout] seen               The number of previously seen entries. Zero, by default.
-     * @param[in] reservoir_capacity    The number of entries that can fit in @ref `reservoir`.
-     * @param[in] reservoir             Iterator to the beginning of the output reservoir.
+     *  @param[in] generator             Random generator to be invoked on the internal distribution.
+     *  @param[inout] seen               The number of previously seen entries. Zero, by default.
+     *  @param[in] reservoir_capacity    The number of entries that can fit in @ref `reservoir`.
+     *  @param[in] reservoir             Iterator to the beginning of the output reservoir.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -673,10 +694,10 @@ class consistent_set_gt {
 };
 
 /**
- * @brief Unlike `std::set<>::merge`, this function overwrites existing values.
+ *  @brief Unlike `std::set<>::merge`, this function overwrites existing values.
  *
- * https://en.cppreference.com/w/cpp/container/set#Member_types
- * https://en.cppreference.com/w/cpp/container/set/insert
+ *  https://en.cppreference.com/w/cpp/container/set#Member_types
+ *  https://en.cppreference.com/w/cpp/container/set/insert
  */
 template <typename keys_type_, typename compare_type_, typename allocator_type_>
 void merge_overwrite(std::set<keys_type_, compare_type_, allocator_type_> &target,

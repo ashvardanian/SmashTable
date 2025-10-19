@@ -47,7 +47,7 @@ struct no_op_t {
 };
 
 template <typename element_type_>
-struct copy_to_gt {
+struct copy_to {
     element_type_ &target;
     template <typename type_>
     void operator()(type_ &&source) const noexcept {
@@ -56,12 +56,12 @@ struct copy_to_gt {
 };
 
 template <typename element_type_>
-copy_to_gt<element_type_> copy_to(element_type_ &element) noexcept {
+copy_to<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
 }
 
 template <typename element_type_, typename comparator_type_>
-struct element_versioning_gt {
+struct versioned_element {
 
     using element_t = element_type_;
     using comparator_t = comparator_type_;
@@ -121,8 +121,8 @@ struct element_versioning_gt {
 
     template <typename type_>
     constexpr static bool knows_generation() {
-        using t = std::remove_reference_t<type_>;
-        return std::is_same<t, entry_t>() || std::is_same<t, dated_identifier_t>();
+        using dereferenced_t = std::remove_reference_t<type_>;
+        return std::is_same<dereferenced_t, entry_t>() || std::is_same<dereferenced_t, dated_identifier_t>();
     }
 
     struct entry_comparator_t {
@@ -131,11 +131,9 @@ struct element_versioning_gt {
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
             using t = std::remove_reference_t<type_>;
-            if constexpr (std::is_same<t, entry_t>()) return (element_t const &)object.element;
-            else if constexpr (std::is_same<t, dated_identifier_t>())
-                return (identifier_t const &)object.id;
-            else
-                return (t const &)object;
+            if constexpr (std::is_same<t, entry_t>()) { return (element_t const &)object.element; }
+            else if constexpr (std::is_same<t, dated_identifier_t>()) { return (identifier_t const &)object.id; }
+            else { return (t const &)object; }
         }
 
         template <typename first_type_, typename second_type_>
@@ -155,9 +153,8 @@ struct element_versioning_gt {
         bool less(first_type_ const &a, second_type_ const &b) const noexcept {
             using first_t = std::remove_reference_t<first_type_>;
             using second_t = std::remove_reference_t<second_type_>;
-            if constexpr (knows_generation<first_t>() && knows_generation<second_t>()) return dated_compare(a, b);
-            else
-                return native_compare(a, b);
+            if constexpr (knows_generation<first_t>() && knows_generation<second_t>()) { return dated_compare(a, b); }
+            else { return native_compare(a, b); }
         }
 
         template <typename first_type_, typename second_type_>

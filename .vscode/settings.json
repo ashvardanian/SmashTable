@@ -1,5 +1,5 @@
 {
-  "cmake.sourceDirectory": "${workspaceFolder}/example",
+  "cmake.sourceDirectory": "/home/ubuntu/SmashTable",
   "cSpell.words": [
     "alloc",
     "ashvardanian",
@@ -7,9 +7,9 @@
     "conanfile",
     "MVCC",
     "noexcept",
+    "rebindable",
     "smashtable",
     "tparam",
-    "smashtable",
     "underutilizing",
     "VRAM"
   ],
@@ -81,6 +81,7 @@
     "variant": "cpp",
     "vector": "cpp",
     "bitset": "cpp",
-    "__nullptr": "cpp"
+    "__nullptr": "cpp",
+    "codecvt": "cpp"
   }
 }

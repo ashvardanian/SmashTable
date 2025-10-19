@@ -27,12 +27,12 @@ namespace ashvardanian::smashtable {
  *                           @endcode
  */
 template <typename entry_type_, typename comparator_type_>
-class avl_node_gt {
+class basic_avl_node {
   public:
     using entry_t = entry_type_;
     using comparator_t = comparator_type_;
     using height_t = std::int16_t;
-    using node_t = avl_node_gt;
+    using node_t = basic_avl_node;
 
     entry_t entry;
     node_t *left = nullptr;
@@ -531,14 +531,14 @@ class avl_node_gt {
 };
 
 template <typename entry_type_, typename comparator_type_,
-          typename node_allocator_type_ = std::allocator<avl_node_gt<entry_type_, comparator_type_>>>
-class avl_tree_gt {
+          typename node_allocator_type_ = std::allocator<basic_avl_node<entry_type_, comparator_type_>>>
+class basic_avl_tree {
   public:
-    using node_t = avl_node_gt<entry_type_, comparator_type_>;
+    using node_t = basic_avl_node<entry_type_, comparator_type_>;
     using node_allocator_t = node_allocator_type_;
     using comparator_t = comparator_type_;
     using entry_t = entry_type_;
-    using avl_tree_t = avl_tree_gt;
+    using avl_tree_t = basic_avl_tree;
 
   private:
     node_t *root_ = nullptr;
@@ -546,16 +546,16 @@ class avl_tree_gt {
     node_allocator_t allocator_;
 
   public:
-    avl_tree_gt() noexcept = default;
-    avl_tree_gt(avl_tree_gt &&other) noexcept
+    basic_avl_tree() noexcept = default;
+    basic_avl_tree(basic_avl_tree &&other) noexcept
         : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)) {}
-    avl_tree_gt &operator=(avl_tree_gt &&other) noexcept {
+    basic_avl_tree &operator=(basic_avl_tree &&other) noexcept {
         std::swap(root_, other.root_);
         std::swap(size_, other.size_);
         return *this;
     }
 
-    ~avl_tree_gt() { clear(); }
+    ~basic_avl_tree() { clear(); }
     std::size_t size() const noexcept { return size_; }
     std::size_t height() noexcept { return root_ ? root_->height : 0; }
     node_t *root() const noexcept { return root_; }
@@ -633,7 +633,7 @@ class avl_tree_gt {
     }
 
     struct extract_result_t {
-        avl_tree_gt *tree_ = nullptr;
+        basic_avl_tree *tree_ = nullptr;
         node_t *node_ptr_ = nullptr;
 
         ~extract_result_t() noexcept {
@@ -688,7 +688,12 @@ class avl_tree_gt {
 };
 
 /**
- *  @brief Transactional Concurrent In-Memory Container with Snapshots support.
+ *  @brief Concurrent ¹ Transactional ² In-Memory Container without Snapshots.
+ *
+ *  ¹ Concurrency is meant in the context of multiple transactions, not multiple threads.
+ *  @b Don't use this class from multiple threads without external synchronization.
+ *  ² Transactions don't provide full ACID compliance. We only guarantee
+ *
  *
  *  @section Writes Consistency
  *  Writing one entry or a batch is logically different.
@@ -711,14 +716,14 @@ class avl_tree_gt {
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-class consistent_avl_gt {
+class atomic_avl_tree {
 
   public:
     using element_t = element_type_;
     using comparator_t = comparator_type_;
     using allocator_t = allocator_type_;
 
-    using versioning_t = element_versioning_gt<element_t, comparator_t>;
+    using versioning_t = versioned_element<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
@@ -728,16 +733,16 @@ class consistent_avl_gt {
     using entry_comparator_t = typename versioning_t::entry_comparator_t;
 
   private:
-    using entry_node_t = avl_node_gt<entry_t, entry_comparator_t>;
+    using entry_node_t = basic_avl_node<entry_t, entry_comparator_t>;
     using entry_allocator_t = typename allocator_t::template rebind<entry_node_t>::other;
-    using entry_set_t = avl_tree_gt<entry_t, entry_comparator_t, entry_allocator_t>;
+    using entry_set_t = basic_avl_tree<entry_t, entry_comparator_t, entry_allocator_t>;
     using entry_iterator_t = entry_node_t *;
 
     using watches_allocator_t = typename allocator_t::template rebind<watched_identifier_t>::other;
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
-    using store_t = consistent_avl_gt;
+    using store_t = atomic_avl_tree;
     using extract_result_t = typename entry_set_t::extract_result_t;
 
   public:
@@ -848,8 +853,7 @@ class consistent_avl_gt {
                     external_previous_id = external_id;
                     return;
                 }
-                else
-                    return callback_found(external_element);
+                else { return callback_found(external_element); }
             };
             auto callback_external_missing = [&] {
                 if (internal_iterator == changes_.end()) return callback_missing();
@@ -952,6 +956,7 @@ class consistent_avl_gt {
     entry_set_t entries_;
     generation_t generation_ {0};
     std::size_t visible_count_ {0};
+    std::size_t visible_deleted_count_ {0};
 
     friend class transaction_t;
     generation_t new_generation() noexcept { return ++generation_; }
@@ -959,36 +964,55 @@ class consistent_avl_gt {
     void unmask_and_compact(identifier_t const &id, generation_t generation_to_unmask) noexcept {
         // This is similar to the public `erase_range()`, but adds generation-matching conditions.
         auto current = entries_.lower_bound(id);
+        if (!current) return; // Null check
+
         auto less = entry_comparator_t {};
         auto last_visible_entry = std::optional<dated_identifier_t> {};
         while (current && less.same(id, current->entry.element)) {
             auto next = entries_.upper_bound(current->entry);
+            auto was_visible = current->entry.visible;
             current->entry.visible |= current->entry.generation == generation_to_unmask;
+
+            // Update counters if visibility changed
+            if (!was_visible && current->entry.visible) {
+                ++visible_count_;
+                visible_deleted_count_ += current->entry.deleted;
+            }
+
             if (!current->entry.visible) {
                 current = next;
                 continue;
             }
 
             // Older revisions must die
-            if (last_visible_entry) entries_.extract(*last_visible_entry);
+            if (last_visible_entry) {
+                auto to_erase = entries_.find(*last_visible_entry);
+                if (to_erase != entries_.end() && to_erase->entry.visible) {
+                    --visible_count_;
+                    visible_deleted_count_ -= to_erase->entry.deleted;
+                }
+                entries_.extract(*last_visible_entry);
+            }
             last_visible_entry = dated_identifier_t {id, current->entry.generation};
             current = next;
         }
     }
 
   public:
-    consistent_avl_gt() noexcept {}
-    consistent_avl_gt(consistent_avl_gt &&other) noexcept
-        : entries_(std::move(other.entries_)), generation_(other.generation_), visible_count_(other.visible_count_) {}
+    atomic_avl_tree() noexcept {}
+    atomic_avl_tree(atomic_avl_tree &&other) noexcept
+        : entries_(std::move(other.entries_)), generation_(other.generation_), visible_count_(other.visible_count_),
+          visible_deleted_count_(other.visible_deleted_count_) {}
 
-    consistent_avl_gt &operator=(consistent_avl_gt &&other) noexcept {
+    atomic_avl_tree &operator=(atomic_avl_tree &&other) noexcept {
         entries_ = std::move(other.entries_);
         generation_ = other.generation_;
         visible_count_ = other.visible_count_;
+        visible_deleted_count_ = other.visible_deleted_count_;
         return *this;
     }
 
-    [[nodiscard]] std::size_t size() const noexcept { return entries_.size(); }
+    [[nodiscard]] std::size_t size() const noexcept { return visible_count_ - visible_deleted_count_; }
     [[nodiscard]] static std::optional<store_t> make(allocator_t &&allocator = {}) noexcept { return store_t {}; }
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept { return transaction_t {*this}; }
 
@@ -1005,6 +1029,7 @@ class consistent_avl_gt {
         entry.visible = true;
         entries_.merge(extract_result_t {&entries_, node});
         ++visible_count_;
+        assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
         return erase_range(id, dated_identifier_t {id, generation});
     }
@@ -1057,6 +1082,7 @@ class consistent_avl_gt {
             entry.visible = true;
             entries_.merge(extract_result_t {&entries_, last_node});
             ++visible_count_;
+            assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
             // Remove older revisions
             identifier_t id {entry.element};
@@ -1141,7 +1167,12 @@ class consistent_avl_gt {
         auto less = entry_comparator_t {};
         while (last != entries_.end() && less(last->entry, upper)) {
             auto next = entries_.upper_bound(last->entry);
-            if (last->entry.visible) entries_.extract(last->entry);
+            if (last->entry.visible) {
+                callback(last->entry.element);
+                --visible_count_;
+                visible_deleted_count_ -= last->entry.deleted;
+                entries_.extract(last->entry);
+            }
             last = next;
         }
         return {success_k};
@@ -1184,6 +1215,8 @@ class consistent_avl_gt {
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
         generation_ = 0;
+        visible_count_ = 0;
+        visible_deleted_count_ = 0;
         return {success_k};
     }
 

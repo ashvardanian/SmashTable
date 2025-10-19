@@ -1,5 +1,16 @@
 # SmashTable
 
+SmashTable is a collection of data-structures, with Atomic, Consistent, and Isolated transactions, similar to databases, but at the level of individual containers.
+It allows construction of larger stable systems, where in-memory operations cannot fail halfway through.
+It also enables Python programs with sub-interpreter support to use shared collections for synchronization, bringing developer-friendly multi-threading to Python 3.14t and newer.
+
+## Collections
+
+### AVL Trees
+
+
+---
+
 
 Imagine In-Memory Templated Containers
 Being as Consistent as Databases
@@ -16,8 +27,8 @@ All of them:
 
 - are `noexcept` top to bottom!
 - are templated, to be used with any `noexcept`-movable and `default`-constructible types.
-- can be wrapped into [`locked_gt`][locked], to make them thread-safe.
-- can be wrapped into [`partitioned_gt`][partitioned], to make them concurrent.
+- can be wrapped into [`locked_collection`][locked], to make them thread-safe.
+- can be wrapped into [`partitioned_collection`][partitioned], to make them concurrent.
 
 If you want your exceptions and classical interfaces back, you can also wrap any container into [`crazy_gt`][crazy].
 
