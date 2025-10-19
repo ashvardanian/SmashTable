@@ -323,16 +323,14 @@ class atomic_standard_set {
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
 
-            // If the transaction was "staged",
-            // we must delete all the entries.
+            // Transaction was staged, we must extract all the entries back
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k)
-                for (auto const &id_and_watch : watches_) {
-                    dated_identifier_t dated {id_and_watch.id, id_and_watch.watch.generation};
-                    auto source = store.entries_.find(dated);
-                    auto node = store.entries_.extract(source);
-                    changes_.insert(std::move(node));
-                }
+            for (auto const &id_and_watch : watches_) {
+                dated_identifier_t dated {id_and_watch.id, id_and_watch.watch.generation};
+                auto source = store.entries_.find(dated);
+                auto node = store.entries_.extract(source);
+                changes_.insert(std::move(node));
+            }
 
             watches_.clear();
             stage_ = stage_t::created_k;
