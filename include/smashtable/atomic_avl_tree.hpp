@@ -3,13 +3,89 @@
 #include <algorithm> // `std::max`
 #include <memory>    // `std::allocator`
 #include <optional>  // `std::optional`
-#include <mutex>     // `std::unique_lock`
-#include <ostream>   // `std::endl`
+#include <random>    // `std::uniform_int_distribution`
 #include <utility>   // `std::exchange`
 
 #include "status.hpp"
 
 namespace ashvardanian::smashtable {
+
+/**
+ *  @brief  Exception-free dynamic array that uses error codes instead of exceptions.
+ *          Provides RAII memory management with explicit failure handling.
+ */
+template <typename element_type_, typename allocator_type_ = std::allocator<element_type_>>
+class noexcept_vector {
+  public:
+    using element_t = element_type_;
+    using allocator_t = allocator_type_;
+
+  private:
+    element_t *data_ {nullptr};
+    std::size_t size_ {0};
+    std::size_t capacity_ {0};
+    [[no_unique_address]] allocator_t allocator_ {};
+
+  public:
+    noexcept_vector() noexcept = default;
+
+    ~noexcept_vector() noexcept {
+        if (data_) allocator_.deallocate(data_, capacity_);
+    }
+
+    noexcept_vector(noexcept_vector &&other) noexcept
+        : data_(std::exchange(other.data_, nullptr)), size_(std::exchange(other.size_, 0)),
+          capacity_(std::exchange(other.capacity_, 0)), allocator_(std::move(other.allocator_)) {}
+
+    noexcept_vector &operator=(noexcept_vector &&other) noexcept {
+        if (this != &other) {
+            if (data_) allocator_.deallocate(data_, capacity_);
+            data_ = std::exchange(other.data_, nullptr);
+            size_ = std::exchange(other.size_, 0);
+            capacity_ = std::exchange(other.capacity_, 0);
+            allocator_ = std::move(other.allocator_);
+        }
+        return *this;
+    }
+
+    noexcept_vector(noexcept_vector const &) = delete;
+    noexcept_vector &operator=(noexcept_vector const &) = delete;
+
+    [[nodiscard]] status_t try_reserve(std::size_t new_capacity) noexcept {
+        if (new_capacity <= capacity_) return {success_k};
+
+        auto new_data = allocator_.allocate(new_capacity);
+        if (!new_data) return {out_of_memory_heap_k};
+
+        // Move existing elements
+        for (std::size_t i = 0; i < size_; ++i) new (&new_data[i]) element_t(std::move(data_[i]));
+
+        if (data_) allocator_.deallocate(data_, capacity_);
+        data_ = new_data;
+        capacity_ = new_capacity;
+        return {success_k};
+    }
+
+    [[nodiscard]] status_t try_push_back(element_t &&value) noexcept {
+        // Auto-grow if needed (2x growth strategy)
+        if (size_ >= capacity_) {
+            std::size_t new_capacity = capacity_ == 0 ? 4 : capacity_ * 2;
+            auto status = try_reserve(new_capacity);
+            if (!status) return status;
+        }
+        new (&data_[size_++]) element_t(std::move(value));
+        return {success_k};
+    }
+
+    void clear() noexcept { size_ = 0; }
+    std::size_t size() const noexcept { return size_; }
+    std::size_t capacity() const noexcept { return capacity_; }
+
+    element_t *begin() noexcept { return data_; }
+    element_t *end() noexcept { return data_ + size_; }
+    element_t const *begin() const noexcept { return data_; }
+    element_t const *end() const noexcept { return data_ + size_; }
+};
 
 /**
  *  @brief  Tree node structure for the AVL-Tree implementation.
@@ -694,8 +770,10 @@ class basic_avl_tree {
  *  @brief  Atomic Binary Search Tree extending AVL-Tree with Versioning.
  *          Provides 2-phase commits for "transactions", with "watching" capabilities for
  *          CAS-like (Compare-And-Swap) operations. Not thread-safe by itself.
+ *          Doesn't use any locks or mutexes internally. Doesn't raise any exceptions
+ *          unlike STL-based alternatives.
  *
- *  @sa     basic_avl_tree
+ *  @sa     Wraps entries into `versioned_element`s and puts them into `basic_avl_tree`.
  *
  *  @section Design Goals
  *
@@ -755,8 +833,7 @@ class atomic_avl_tree {
     using entry_iterator_t = entry_node_t *;
 
     using watches_allocator_t = typename allocator_t::template rebind<watched_identifier_t>::other;
-    using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
-    using watch_iterator_t = typename watches_array_t::iterator;
+    using watches_vector_t = noexcept_vector<watched_identifier_t, watches_allocator_t>;
 
     using store_t = atomic_avl_tree;
     using extract_result_t = typename entry_set_t::extract_result_t;
@@ -773,7 +850,7 @@ class atomic_avl_tree {
 
         store_t *store_ {nullptr};
         entry_set_t changes_ {};
-        watches_array_t watches_ {};
+        watches_vector_t watches_ {};
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
         bool is_snapshot_ {false};
@@ -790,6 +867,7 @@ class atomic_avl_tree {
         transaction_t &operator=(transaction_t const &) = delete;
         generation_t generation() const noexcept { return generation_; }
 
+      public:
         [[nodiscard]] status_t upsert(element_t &&element) noexcept {
             entry_t entry;
             entry.element = std::move(element);
@@ -810,21 +888,21 @@ class atomic_avl_tree {
             return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
         }
 
-        [[nodiscard]] status_t reserve(std::size_t size) noexcept {
-            return invoke_safely([&] { watches_.reserve(size); });
-        }
+        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.try_reserve(size); }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
+            status_t result {success_k};
             auto found = [&](entry_t const &entry) noexcept {
-                watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+                result =
+                    watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
             };
-            auto missing = [&]() noexcept { watches_.push_back({id, missing_watch()}); };
-            return store_ref().find(id, found, missing);
+            auto missing = [&]() noexcept { result = watches_.try_push_back({id, missing_watch()}); };
+            auto status = store_ref().find(id, found, missing);
+            return status ? result : status;
         }
 
         [[nodiscard]] status_t watch(entry_t const &entry) noexcept {
-            watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
-            return {success_k};
+            return watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
         }
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -905,13 +983,15 @@ class atomic_avl_tree {
             // Now all of our watches will be replaced with "links" to entries
             // we are merging into the main tree.
             watches_.clear();
-            auto status = invoke_safely([&] { watches_.reserve(changes_.size()); });
+            auto status = watches_.try_reserve(changes_.size());
             if (!status) return status;
 
             // No new memory allocations or failures are possible after that.
             // It is all safe.
             changes_.for_each([&](entry_t const &entry) noexcept {
-                watches_.push_back({identifier_t {entry.element}, watch_t {generation_, entry.deleted}});
+                [[maybe_unused]] auto push_status =
+                    watches_.try_push_back({identifier_t {entry.element}, watch_t {generation_, entry.deleted}});
+                assert(push_status && "Should never fail after reserve");
             });
 
             // Than just merge our current nodes.
@@ -1257,15 +1337,19 @@ class atomic_avl_tree {
         return {success_k};
     }
 
+    /**
+     *  @brief Debug utility to print tree contents.
+     *  @note Requires `#include <ostream>` (not included by default to reduce header weight)
+     */
     template <typename dont_instantiate_me_type_>
     void print(dont_instantiate_me_type_ &cout) {
-        cout << "Items: " << entries_.size() << std::endl;
-        cout << "Imbalance: " << entries_.total_imbalance() << std::endl;
+        cout << "Items: " << entries_.size() << "\n";
+        cout << "Imbalance: " << entries_.total_imbalance() << "\n";
         entry_node_t::for_each_left_right(entries_.root(), [&](entry_node_t *node) {
             char const *marker = node->entry.visible ? "✓" : "✗";
             cout << identifier_t {node->entry.element} << " @" << node->entry.generation << marker << " ";
         });
-        cout << std::endl;
+        cout << "\n";
     }
 };
 
