@@ -4,7 +4,7 @@
 #include <optional>   // `std::optional` for "expected"
 #include <set>        // `std::set` for entries
 #include <vector>     // `std::vector` for watches
-#include <random>     // `std::uniform_int_distribution` fir sampling
+#include <random>     // `std::uniform_int_distribution` for sampling
 
 #include "status.hpp"
 
@@ -106,7 +106,7 @@ class atomic_standard_set {
         enum class stage_t {
             created_k,
             staged_k,
-            commited_k,
+            committed_k,
         };
 
         store_t *store_ {nullptr};
@@ -391,7 +391,7 @@ class atomic_standard_set {
 
     template <typename callback_type_ = no_op_t>
     void erase_visible(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
-        entry_iterator_t &current = begin;
+        entry_iterator_t current = begin;
         while (current != end)
             if (current->visible) {
                 callback(*current);
@@ -399,12 +399,11 @@ class atomic_standard_set {
                 visible_deleted_count_ -= current->deleted;
                 current = entries_.erase(current);
             }
-            else
-                ++current;
+            else { ++current; }
     }
 
     void unmask_and_compact(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
-        entry_iterator_t &current = begin;
+        entry_iterator_t current = begin;
         entry_iterator_t last_visible_entry = end;
         for (; current != end; ++current) {
             auto keep_this = current->generation == generation_to_unmask;
@@ -551,7 +550,7 @@ class atomic_standard_set {
         // Skip all the invisible entries
         while (range.first != range.second && !range.first->visible) ++range.first;
 
-        // Check if there are no visible entries type_ all
+        // Check if there are no visible entries at all
         return range.first != range.second && !range.first->deleted //
                    ? invoke_safely([&] { callback_found(*range.first); })
                    : invoke_safely(std::forward<callback_missing_type_>(callback_missing));

@@ -1,4 +1,5 @@
 #pragma once
+#include <cassert>   // `assert`
 #include <algorithm> // `std::max`
 #include <memory>    // `std::allocator`
 #include <optional>  // `std::optional`
@@ -11,14 +12,16 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  @brief AVL-Trees are some of the simplest yet performant Binary Search Trees.
+ *  @brief  Tree node structure for the AVL-Tree implementation.
+ *  @sa     basic_avl_tree
+ *
+ *  AVL-Trees are some of the simplest yet performant Binary Search Trees.
  *  This "node" class implements the primary logic, but doesn't take part in
- *  memory management.
+ *  memory management or any atomicity and consistency guarantees.
  *
  *  > Never throws! Even if new node allocation had failed.
- *  > Implements `upper_bound` for faster and lighter iterators.
- *    Alternative would be - Binary Threaded Search Tree.
- *  > Implements sampling methods.
+ *  > Implements `lower_bound` and `upper_bound` for faster and lighter iterators.
+ *  > Implements random sampling methods.
  *
  *  @tparam entry_type_         Type of entries to store in this tree.
  *  @tparam comparator_type_    A comparator function object, that overload
@@ -688,30 +691,43 @@ class basic_avl_tree {
 };
 
 /**
- *  @brief Concurrent ¹ Transactional ² In-Memory Container without Snapshots.
+ *  @brief  Atomic Binary Search Tree extending AVL-Tree with Versioning.
+ *          Provides 2-phase commits for "transactions", with "watching" capabilities for
+ *          CAS-like (Compare-And-Swap) operations. Not thread-safe by itself.
  *
- *  ¹ Concurrency is meant in the context of multiple transactions, not multiple threads.
- *  @b Don't use this class from multiple threads without external synchronization.
- *  ² Transactions don't provide full ACID compliance. We only guarantee
+ *  @sa     basic_avl_tree
  *
+ *  @section Design Goals
  *
- *  @section Writes Consistency
- *  Writing one entry or a batch is logically different.
- *  Either all fail or all succeed. Thats why `set` and `set_many`
- *  are implemented separately. Transactions write only on `submit`,
- *  thus they don't need `set_many`.
+ *  First, all operations are atomic. If you are updating many values at once, you don't want
+ *  to break in an intermediate state, where only some of the values are updated. With two-phase
+ *  commit transactions, you can stage many changes, and then commit them all at once. Or rollback,
+ *  if something went wrong in the current transaction or some external condition changed.
+ *  A common usecase for this, is synchronizing many updates across many data stores.
  *
- *  @section Read Consistency
- *  Reading a batch of entries is same as reading one by one.
- *  The received items might not be consistent with each other.
- *  If such behaviour is needed - you must create snapshot.
+ *  The API must be simple, but generalizable, and the implementation must be light-weight.
+ *  So this collection @b doesn't provide snapshots or multi-version concurrency control (MVCC).
+ *  It means, that if you are starting a transaction, and even "watching" some values through it,
+ *  there is no guarantee, that the value received hasn't been updated before transaction "began"
+ *  and entry was added to the "watched" list.
  *
- *  @section Pitfalls with WATCH-ing missing values
- *  If an entry was missing. Then:
- *  1. WATCH-ed in a transaction.
- *  2. added in the second transaction.
- *  3. removed in the third transaction.
- *  The first transaction will succeed, if we try to commit it.
+ *  Only "Monotonic Atomic View" consistency is guaranteed, including its inferior "Read Committed"
+ *  and "Read Uncommitted" levels. In other words, transactions are not allowed to observe writes
+ *  from other transactions which do not commit.
+ *
+ *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
+ *  @see https://jepsen.io/consistency/models/read-committed
+ *
+ *  @section API Overview
+ *
+ *  - All lookups are heterogeneous, meaning you can provide any type, that is comparable to the
+ *    @p element_type_. This allows for greater flexibility in how you interact with the set.
+ *  - No iterators are provided, to keep the implementation simple and avoid the complexity of
+ *    maintaining persistent iterator validity across transactions and modifications.
+ *
+ *  @tparam element_type_ Type of the elements stored in the set.
+ *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
+ *  @tparam allocator_type_ Arbitrary "rebindable" allocator for all internal structures.
  */
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
@@ -873,12 +889,12 @@ class atomic_avl_tree {
         }
 
         [[nodiscard]] status_t stage() noexcept {
-            // First, check if we have any collisions.
+            // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
             auto entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find(
+                auto status = store.find_latest_for_watch(
                     id_and_watch.id,
                     [&](entry_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
@@ -960,6 +976,27 @@ class atomic_avl_tree {
 
     friend class transaction_t;
     generation_t new_generation() noexcept { return ++generation_; }
+
+    /**
+     *  @brief Finds the latest (highest generation) entry for watch validation.
+     *         Unlike find(), this checks ALL entries including staged (invisible) ones.
+     *         This is critical for detecting write-write conflicts with concurrent transactions.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                                 callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+        entry_node_t *latest = nullptr;
+        entry_node_t::range(entries_.root(), comparable, comparable, [&](entry_node_t *node) noexcept {
+            // Find HIGHEST generation, regardless of visibility
+            if (!latest || node->entry.generation > latest->entry.generation) { latest = node; }
+        });
+
+        return (latest && !latest->entry.deleted)
+                   ? invoke_safely([&] { callback_found(latest->entry); })
+                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+    }
 
     void unmask_and_compact(identifier_t const &id, generation_t generation_to_unmask) noexcept {
         // This is similar to the public `erase_range()`, but adds generation-matching conditions.

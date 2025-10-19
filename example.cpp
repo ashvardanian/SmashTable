@@ -1,8 +1,7 @@
-#include <smashtable/consistent_set.hpp>
-#include <smashtable/consistent_avl.hpp>
-#include <smashtable/versioning_avl.hpp>
-#include <smashtable/locked.hpp>
-#include <smashtable/partitioned.hpp>
+#include <smashtable/atomic_standard_set.hpp>
+#include <smashtable/atomic_avl_tree.hpp>
+#include <smashtable/locked_collection.hpp>
+#include <smashtable/partitioned_collection.hpp>
 
 #define macro_concat_(prefix, suffix) prefix##suffix
 #define macro_concat(prefix, suffix) macro_concat_(prefix, suffix)
