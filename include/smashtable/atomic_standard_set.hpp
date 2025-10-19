@@ -252,12 +252,12 @@ class atomic_standard_set {
         }
 
         [[nodiscard]] status_t stage() noexcept {
-            // First, check if we have any collisions.
+            // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
             auto entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find(
+                auto status = store.find_latest_for_watch(
                     id_and_watch.id,
                     [&](entry_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
@@ -365,6 +365,29 @@ class atomic_standard_set {
 
     atomic_standard_set() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
+
+    /**
+     *  @brief Finds the latest (highest generation) entry for watch validation.
+     *         Unlike find(), this checks ALL entries including staged (invisible) ones.
+     *         This is critical for detecting write-write conflicts with concurrent transactions.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                                 callback_missing_type_ &&callback_missing = {}) const noexcept {
+        auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
+
+        // Find the entry with the highest generation (most recent), visible or not
+        entry_iterator_t latest = range.second;
+        for (auto it = range.first; it != range.second; ++it) {
+            if (latest == range.second || it->generation > latest->generation) { latest = it; }
+        }
+
+        // Return the latest entry found (or missing if none found)
+        return latest != range.second && !latest->deleted
+                   ? invoke_safely([&] { callback_found(*latest); })
+                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+    }
 
     template <typename callback_type_ = no_op_t>
     void erase_visible(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
