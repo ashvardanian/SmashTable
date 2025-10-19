@@ -7,9 +7,9 @@
     "conanfile",
     "MVCC",
     "noexcept",
+    "rebindable",
     "smashtable",
     "tparam",
-    "smashtable",
     "underutilizing",
     "VRAM"
   ],
