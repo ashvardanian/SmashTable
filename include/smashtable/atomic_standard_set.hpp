@@ -31,27 +31,27 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
 }
 
 /**
- * @brief Atomic (in DBMS and Set Theory sense) Transactional Store on top of a
- * Standard Templates Library. It can be used as a Key-Value store, if you store
- * @c `std::pair` as entries.
+ *  @brief Atomic (in DBMS and Set Theory sense) Transactional Store on top of a
+ *  Standard Templates Library. It can be used as a Key-Value store, if you store
+ *  @c `std::pair` as entries.
  *
- * @section Design Goals
+ *  @section Design Goals
  *
- * - Atomicity of batch operations.
- * - Simplicity and familiarity.
- * For performance, consistency, Multi-Version Concurrency control and others,
- * check out the `set_avl_gt`.
+ *  - Atomicity of batch operations.
+ *  - Simplicity and familiarity.
+ *  For performance, consistency, Multi-Version Concurrency control and others,
+ *  check out the `set_avl_gt`.
  *
- * @section Heterogeneous Comparisons
+ *  @section Heterogeneous Comparisons
  *
- * @tparam element_type_
- * @tparam comparator_type_
- * @tparam allocator_type_
+ *  @tparam element_type_
+ *  @tparam comparator_type_
+ *  @tparam allocator_type_
  */
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-class consistent_standard_set {
+class atomic_standard_set {
 
   public:
     using element_t = element_type_;
@@ -78,7 +78,7 @@ class consistent_standard_set {
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
-    using store_t = consistent_standard_set;
+    using store_t = atomic_standard_set;
 
   public:
     class transaction_t {
@@ -155,7 +155,7 @@ class consistent_standard_set {
         /**
          * @brief Finds a member @b equal to the given @ref `comparable`.
          *        You may want to `watch()` the received object, it's not done by default.
-         *        Unlike `consistent_standard_set::find()`, will include the entries added to this
+         *        Unlike `atomic_standard_set::find()`, will include the entries added to this
          *        transaction.
          *
          * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
@@ -178,7 +178,7 @@ class consistent_standard_set {
         /**
          * @brief Finds the first member @b greater than the given @ref `comparable`.
          *        You may want to `watch()` the received object, it's not done by default.
-         *        Unlike `consistent_standard_set::find()`, will include the entries added to this
+         *        Unlike `atomic_standard_set::find()`, will include the entries added to this
          *        transaction.
          *
          * @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
@@ -346,7 +346,7 @@ class consistent_standard_set {
 
     friend class transaction_t;
 
-    consistent_standard_set() noexcept(false) {}
+    atomic_standard_set() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
 
     template <typename callback_type_ = no_op_t>

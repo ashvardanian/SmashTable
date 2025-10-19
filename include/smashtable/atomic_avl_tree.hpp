@@ -688,7 +688,12 @@ class basic_avl_tree {
 };
 
 /**
- *  @brief Transactional Concurrent In-Memory Container with Snapshots support.
+ *  @brief Concurrent ¹ Transactional ² In-Memory Container without Snapshots.
+ *
+ *  ¹ Concurrency is meant in the context of multiple transactions, not multiple threads.
+ *  @b Don't use this class from multiple threads without external synchronization.
+ *  ² Transactions don't provide full ACID compliance. We only guarantee
+ *
  *
  *  @section Writes Consistency
  *  Writing one entry or a batch is logically different.
@@ -711,7 +716,7 @@ class basic_avl_tree {
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-class consistent_avl_tree {
+class atomic_avl_tree {
 
   public:
     using element_t = element_type_;
@@ -737,7 +742,7 @@ class consistent_avl_tree {
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
-    using store_t = consistent_avl_tree;
+    using store_t = atomic_avl_tree;
     using extract_result_t = typename entry_set_t::extract_result_t;
 
   public:
@@ -994,12 +999,12 @@ class consistent_avl_tree {
     }
 
   public:
-    consistent_avl_tree() noexcept {}
-    consistent_avl_tree(consistent_avl_tree &&other) noexcept
+    atomic_avl_tree() noexcept {}
+    atomic_avl_tree(atomic_avl_tree &&other) noexcept
         : entries_(std::move(other.entries_)), generation_(other.generation_), visible_count_(other.visible_count_),
           visible_deleted_count_(other.visible_deleted_count_) {}
 
-    consistent_avl_tree &operator=(consistent_avl_tree &&other) noexcept {
+    atomic_avl_tree &operator=(atomic_avl_tree &&other) noexcept {
         entries_ = std::move(other.entries_);
         generation_ = other.generation_;
         visible_count_ = other.visible_count_;

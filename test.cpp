@@ -27,8 +27,8 @@ struct pair_compare_t {
     bool operator()(pair_t a, std::size_t b) const noexcept { return a.key < b; }
 };
 
-using stl_t = consistent_standard_set<pair_t, pair_compare_t>;
-using avl_t = consistent_avl_tree<pair_t, pair_compare_t>;
+using stl_t = atomic_standard_set<pair_t, pair_compare_t>;
+using avl_t = atomic_avl_tree<pair_t, pair_compare_t>;
 using id_stl_t = typename stl_t::identifier_t;
 using id_avl_t = typename avl_t::identifier_t;
 
@@ -52,7 +52,7 @@ void test_with_threads(std::size_t threads_count) {
     for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.find(idx, [](auto const &) noexcept {}));
 }
 
-// NOTE: Disabled - consistent_standard_set and consistent_avl_tree are NOT thread-safe
+// NOTE: Disabled - atomic_standard_set and atomic_avl_tree are NOT thread-safe
 // Use locked_collection<> or partitioned_collection<> wrappers for thread-safe access
 // TEST(upsert_and_find_set, with_threads) {
 //     test_with_threads<stl_t>(2);

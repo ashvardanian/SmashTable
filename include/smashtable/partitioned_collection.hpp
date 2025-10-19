@@ -49,10 +49,10 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
 }
 
 /**
- * @brief Hashes inputs to route them into separate sets, which can
- * be concurrent, or have a separate state-full allocator attached.
+ *  @brief Hashes inputs to route them into separate sets, which can
+ *  be concurrent, or have a separate state-full allocator attached.
  *
- * @tparam hash_type_ Keys that compare equal must have the same hashes.
+ *  @tparam hash_type_ Keys that compare equal must have the same hashes.
  */
 template <typename collection_type_, typename hash_type_ = std::hash<typename collection_type_::identifier_t>,
           typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_ = 16>
@@ -99,9 +99,8 @@ class partitioned_collection {
         for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
             if (finished[part_idx]) continue;
             auto &mutex = mutexes[part_idx];
-            if constexpr (make_unique) remaining_count -= finished[part_idx] = mutex.try_lock();
-            else
-                remaining_count -= finished[part_idx] = mutex.try_lock_shared();
+            if constexpr (make_unique) { remaining_count -= finished[part_idx] = mutex.try_lock(); }
+            else { remaining_count -= finished[part_idx] = mutex.try_lock_shared(); }
         }
 
         if (remaining_count) goto cycle;

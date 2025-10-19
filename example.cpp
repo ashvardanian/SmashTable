@@ -71,17 +71,17 @@ struct pair_compare_t {
 
 int main() {
 
-    using stl_t = consistent_standard_set<pair_t, pair_compare_t>;
+    using stl_t = atomic_standard_set<pair_t, pair_compare_t>;
     api<stl_t>();
     api<locked_collection<stl_t>>();
     api<partitioned_collection<stl_t>>();
 
-    using avl_t = consistent_avl_tree<pair_t, pair_compare_t>;
+    using avl_t = atomic_avl_tree<pair_t, pair_compare_t>;
     api<avl_t>();
     api<locked_collection<avl_t>>();
     api<partitioned_collection<avl_t>>();
 
-    // using mvcc_t = consistent_standard_set<pair_t, pair_compare_t>;
+    // using mvcc_t = atomic_standard_set<pair_t, pair_compare_t>;
     // api<mvcc_t>();
     // api<locked_collection<mvcc_t>>();
     // api<partitioned_collection<mvcc_t>>();
