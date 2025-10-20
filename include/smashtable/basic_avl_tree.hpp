@@ -1,7 +1,7 @@
 /**
  *  @brief  Ordered "Adelson-Velsky and Landis" @b (AVL) Binary Search Tree implementation.
- *          Provides exception-free, allocator-aware ordered collection similar to @c std::set.
- *          Not thread-safe by itself. Doesn't raise any exceptions unlike STL-based alternatives.
+ *    Provides exception-free, allocator-aware ordered collection similar to @c std::set.
+ *    Not thread-safe by itself. Doesn't raise any exceptions unlike STL-based alternatives.
  *
  *  @section Design Characteristics
  *
@@ -31,8 +31,8 @@ namespace ashvardanian::smashtable {
 
 /**
  *  @brief  Tree node structure for the AVL-Tree implementation.
- *          Provides static methods for all tree operations: search, insertion, deletion, and traversal.
- *          All operations are exception-free and @c noexcept.
+ *    Provides static methods for all tree operations: search, insertion, deletion, and traversal.
+ *    All operations are exception-free and @c noexcept.
  *
  *  @section Implementation Notes
  *
@@ -48,8 +48,8 @@ namespace ashvardanian::smashtable {
  *
  *  @tparam entry_type_      Type of entries to store in this tree.
  *  @tparam comparator_type_ A comparator function object that overloads
- *                           @code bool operator()(entry_type_, entry_type_) const @endcode
- *                           For heterogeneous lookups, define @c using @c is_transparent @c = @c void;
+ *    @code bool operator()(entry_type_, entry_type_) const @endcode.
+ *    For heterogeneous lookups, define @code using is_transparent = void; @endcode inside the comparator.
  */
 template <typename entry_type_, typename comparator_type_>
 class basic_avl_node {
@@ -64,10 +64,10 @@ class basic_avl_node {
     node_t *right = nullptr;
 
     /**
-     *  @brief Root has the biggest `height` in the tree.
+     *  @brief Root has the biggest @c height in the tree.
      *  Zero is possible only in the uninitialized detached state.
      *  A non-NULL node would have height of one.
-     *  Allows you to guess the upper bound of branch size, as `1 << height`.
+     *  Allows you to guess the upper bound of branch size, as @c 1 << height.
      */
     height_t height = 0;
 
@@ -112,6 +112,44 @@ class basic_avl_node {
         if (!node) return nullptr;
         while (node->right) node = node->right;
         return node;
+    }
+
+    /**
+     *  @brief Finds the next node in in-order traversal (successor).
+     *  @param[in] root Root of the tree.
+     *  @param[in] node Current node.
+     *  @return node_t* Successor node, or nullptr if node is the maximum.
+     */
+    static node_t *find_successor(node_t *root, node_t *node) noexcept {
+        if (!node) return find_min(root);
+        return upper_bound(root, node->entry);
+    }
+
+    /**
+     *  @brief Finds the previous node in in-order traversal (predecessor).
+     *  @param[in] root  Root of the tree.
+     *  @param[in] node  Current node.
+     *  @return node_t* Predecessor node, or nullptr if node is the minimum.
+     */
+    static node_t *find_predecessor(node_t *root, node_t *node) noexcept {
+        if (!node) return find_max(root);
+
+        node_t *predecessor = nullptr;
+        comparator_t less;
+        node_t *current = root;
+
+        while (current) {
+            if (less(current->entry, node->entry)) {
+                // Current is less than target, it's a candidate predecessor
+                predecessor = current;
+                current = current->right;
+            }
+            else {
+                // Current is >= target, look in left subtree
+                current = current->left;
+            }
+        }
+        return predecessor;
     }
 
     /**
@@ -557,22 +595,23 @@ class basic_avl_node {
 
 /**
  *  @brief  Exception-free AVL tree container providing ordered storage similar to @c std::set.
- *          Manages memory allocation and provides high-level tree operations with status-based error handling.
+ *    Manages memory allocation and provides high-level tree operations with status-based error handling.
  *
  *  @section API Design
  *
- *  Unlike STL containers, this AVL tree:
- *  - Returns @c status_t instead of throwing exceptions for error reporting
- *  - Uses callbacks instead of iterators to avoid invalidation complexity
+ *  This AVL tree provides an STL-compatible interface:
+ *  - Bidirectional iterators for in-order traversal (begin/end/rbegin/rend)
+ *  - Returns @c status_t for some operations instead of throwing exceptions
  *  - Supports heterogeneous lookups when comparator defines @c is_transparent
  *  - Provides both @c insert (fails if exists) and @c upsert (always succeeds) semantics
  *  - Allows custom allocators for all internal nodes
+ *  - Iterator invalidation: only iterators to erased elements are invalidated
  *
- *  All @c noexcept callbacks are invoked directly without exception safety wrappers for performance.
+ *  Callback-based APIs are also provided for convenience (find, range, equal_range).
  *  The tree maintains O(log n) height through automatic rebalancing after modifications.
  *
- *  @tparam entry_type_         Type of entries stored in the tree.
- *  @tparam comparator_type_    Comparator for ordering entries. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam entry_type_ Type of entries stored in the tree.
+ *  @tparam comparator_type_ Comparator for ordering entries. Define @c is_transparent for heterogeneous lookups.
  *  @tparam node_allocator_type_ Allocator for tree nodes. Must be rebindable to @c basic_avl_node.
  */
 template <typename entry_type_, typename comparator_type_,
@@ -584,6 +623,128 @@ class basic_avl_tree {
     using comparator_t = comparator_type_;
     using entry_t = entry_type_;
     using avl_tree_t = basic_avl_tree;
+
+    // Forward declare iterator
+    class iterator;
+    class const_iterator;
+
+    /**
+     *  @brief Result of an erase operation on an iterator.
+     *    Combines iterator to next element with operation status.
+     */
+    struct erase_result_t {
+        iterator next;   //!< Iterator to the element following the erased element (or end()).
+        status_t status; //!< Status of the erase operation.
+    };
+
+    /**
+     *  @brief Bidirectional iterator for AVL tree.
+     *    Provides in-order traversal of tree elements.
+     */
+    class iterator {
+        friend class basic_avl_tree;
+        friend class const_iterator;
+
+      public:
+        using iterator_category = std::bidirectional_iterator_tag;
+        using value_type = entry_t;
+        using difference_type = std::ptrdiff_t;
+        using pointer = entry_t *;
+        using reference = entry_t &;
+
+      private:
+        basic_avl_tree const *tree_;
+        node_t *node_;
+
+        iterator(basic_avl_tree const *tree, node_t *node) noexcept : tree_(tree), node_(node) {}
+
+      public:
+        iterator() noexcept : tree_(nullptr), node_(nullptr) {}
+
+        reference operator*() const noexcept { return node_->entry; }
+        pointer operator->() const noexcept { return &node_->entry; }
+
+        iterator &operator++() noexcept {
+            node_ = node_t::find_successor(tree_->root_, node_);
+            return *this;
+        }
+
+        iterator operator++(int) noexcept {
+            iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        iterator &operator--() noexcept {
+            node_ = node_t::find_predecessor(tree_->root_, node_);
+            return *this;
+        }
+
+        iterator operator--(int) noexcept {
+            iterator tmp = *this;
+            --(*this);
+            return tmp;
+        }
+
+        bool operator==(iterator const &other) const noexcept { return node_ == other.node_; }
+        bool operator!=(iterator const &other) const noexcept { return node_ != other.node_; }
+    };
+
+    /**
+     *  @brief Const bidirectional iterator for AVL tree.
+     *    Provides in-order traversal of tree elements (read-only).
+     */
+    class const_iterator {
+        friend class basic_avl_tree;
+
+      public:
+        using iterator_category = std::bidirectional_iterator_tag;
+        using value_type = entry_t const;
+        using difference_type = std::ptrdiff_t;
+        using pointer = entry_t const *;
+        using reference = entry_t const &;
+
+      private:
+        basic_avl_tree const *tree_;
+        node_t const *node_;
+
+        const_iterator(basic_avl_tree const *tree, node_t const *node) noexcept : tree_(tree), node_(node) {}
+
+      public:
+        const_iterator() noexcept : tree_(nullptr), node_(nullptr) {}
+        const_iterator(iterator const &it) noexcept : tree_(it.tree_), node_(it.node_) {}
+
+        reference operator*() const noexcept { return node_->entry; }
+        pointer operator->() const noexcept { return &node_->entry; }
+
+        const_iterator &operator++() noexcept {
+            node_ = node_t::find_successor(tree_->root_, const_cast<node_t *>(node_));
+            return *this;
+        }
+
+        const_iterator operator++(int) noexcept {
+            const_iterator tmp = *this;
+            ++(*this);
+            return tmp;
+        }
+
+        const_iterator &operator--() noexcept {
+            node_ = node_t::find_predecessor(tree_->root_, const_cast<node_t *>(node_));
+            return *this;
+        }
+
+        const_iterator operator--(int) noexcept {
+            const_iterator tmp = *this;
+            --(*this);
+            return tmp;
+        }
+
+        bool operator==(const_iterator const &other) const noexcept { return node_ == other.node_; }
+        bool operator!=(const_iterator const &other) const noexcept { return node_ != other.node_; }
+    };
+
+    using reverse_iterator = std::reverse_iterator<iterator>;
+    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
 
   private:
     node_t *root_ = nullptr;
@@ -601,12 +762,108 @@ class basic_avl_tree {
     }
 
     ~basic_avl_tree() { clear(); }
+
+    /**
+     *  @brief Returns the number of elements in the tree.
+     *  @return std::size_t Number of elements.
+     */
     std::size_t size() const noexcept { return size_; }
+
+    /**
+     *  @brief Returns the height of the tree (number of edges in longest path from root to leaf).
+     *  @return std::size_t Height of the tree, 0 if empty.
+     */
     std::size_t height() noexcept { return root_ ? root_->height : 0; }
+
+    /**
+     *  @brief Returns raw pointer to the root node. For internal use.
+     *  @return node_t* Pointer to root, or nullptr if empty.
+     */
     node_t *root() const noexcept { return root_; }
-    node_t *end() const noexcept { return nullptr; }
+
+    /**
+     *  @brief Returns the allocator associated with the tree.
+     *  @return node_allocator_t& Reference to the allocator.
+     */
     node_allocator_t &allocator() noexcept { return allocator_; }
+
+    /**
+     *  @brief Returns the allocator associated with the tree (const version).
+     *  @return node_allocator_t const& Const reference to the allocator.
+     */
     node_allocator_t const &allocator() const noexcept { return allocator_; }
+
+    /**
+     *  @brief Returns an iterator to the first element (minimum) in the tree.
+     *  @return iterator Iterator to the minimum element, or end() if empty.
+     */
+    iterator begin() noexcept { return iterator(this, node_t::find_min(root_)); }
+
+    /**
+     *  @brief Returns a const iterator to the first element (minimum) in the tree.
+     *  @return const_iterator Const iterator to the minimum element, or end() if empty.
+     */
+    const_iterator begin() const noexcept { return const_iterator(this, node_t::find_min(root_)); }
+
+    /**
+     *  @brief Returns a const iterator to the first element (minimum) in the tree.
+     *  @return const_iterator Const iterator to the minimum element, or end() if empty.
+     */
+    const_iterator cbegin() const noexcept { return const_iterator(this, node_t::find_min(root_)); }
+
+    /**
+     *  @brief Returns an iterator to one past the last element.
+     *  @return iterator End iterator (points to nullptr).
+     */
+    iterator end() noexcept { return iterator(this, nullptr); }
+
+    /**
+     *  @brief Returns a const iterator to one past the last element.
+     *  @return const_iterator End iterator (points to nullptr).
+     */
+    const_iterator end() const noexcept { return const_iterator(this, nullptr); }
+
+    /**
+     *  @brief Returns a const iterator to one past the last element.
+     *  @return const_iterator End iterator (points to nullptr).
+     */
+    const_iterator cend() const noexcept { return const_iterator(this, nullptr); }
+
+    /**
+     *  @brief Returns a reverse iterator to the first element of the reversed tree (maximum element).
+     *  @return reverse_iterator Reverse iterator to the maximum element, or rend() if empty.
+     */
+    reverse_iterator rbegin() noexcept { return reverse_iterator(end()); }
+
+    /**
+     *  @brief Returns a const reverse iterator to the first element of the reversed tree (maximum element).
+     *  @return const_reverse_iterator Const reverse iterator to the maximum element, or rend() if empty.
+     */
+    const_reverse_iterator rbegin() const noexcept { return const_reverse_iterator(end()); }
+
+    /**
+     *  @brief Returns a const reverse iterator to the first element of the reversed tree (maximum element).
+     *  @return const_reverse_iterator Const reverse iterator to the maximum element, or rend() if empty.
+     */
+    const_reverse_iterator crbegin() const noexcept { return const_reverse_iterator(cend()); }
+
+    /**
+     *  @brief Returns a reverse iterator to one past the last element of the reversed tree (before minimum).
+     *  @return reverse_iterator Reverse end iterator.
+     */
+    reverse_iterator rend() noexcept { return reverse_iterator(begin()); }
+
+    /**
+     *  @brief Returns a const reverse iterator to one past the last element of the reversed tree (before minimum).
+     *  @return const_reverse_iterator Const reverse end iterator.
+     */
+    const_reverse_iterator rend() const noexcept { return const_reverse_iterator(begin()); }
+
+    /**
+     *  @brief Returns a const reverse iterator to one past the last element of the reversed tree (before minimum).
+     *  @return const_reverse_iterator Const reverse end iterator.
+     */
+    const_reverse_iterator crend() const noexcept { return const_reverse_iterator(cbegin()); }
 
     std::size_t total_imbalance() const noexcept {
         std::size_t abs_sum = 0;
@@ -615,57 +872,99 @@ class basic_avl_tree {
         return abs_sum;
     }
 
+    /**
+     *  @brief Finds an element equal to the given @p comparable.
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return iterator Iterator to found element, or end() if not found.
+     */
     template <typename comparable_type_>
-    node_t *find(comparable_type_ &&comparable) noexcept {
-        return node_t::find(root_, std::forward<comparable_type_>(comparable));
+    iterator find(comparable_type_ &&comparable) noexcept {
+        return iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable)));
     }
 
+    /**
+     *  @brief Finds an element equal to the given @p comparable (const version).
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return const_iterator Const iterator to found element, or end() if not found.
+     */
     template <typename comparable_type_>
-    node_t *lower_bound(comparable_type_ &&comparable) noexcept {
-        return node_t::lower_bound(root_, std::forward<comparable_type_>(comparable));
+    const_iterator find(comparable_type_ &&comparable) const noexcept {
+        return const_iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable)));
     }
 
+    /**
+     *  @brief Finds the first element not less than (>=) the given @p comparable.
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return iterator Iterator to found element, or end() if all elements are less.
+     */
     template <typename comparable_type_>
-    node_t *upper_bound(comparable_type_ &&comparable) noexcept {
-        return node_t::upper_bound(root_, std::forward<comparable_type_>(comparable));
+    iterator lower_bound(comparable_type_ &&comparable) noexcept {
+        return iterator(this, node_t::lower_bound(root_, std::forward<comparable_type_>(comparable)));
     }
 
+    /**
+     *  @brief Finds the first element not less than (>=) the given @p comparable (const version).
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return const_iterator Const iterator to found element, or end() if all elements are less.
+     */
     template <typename comparable_type_>
-    node_t const *find(comparable_type_ &&comparable) const noexcept {
-        return node_t::find(root_, std::forward<comparable_type_>(comparable));
+    const_iterator lower_bound(comparable_type_ &&comparable) const noexcept {
+        return const_iterator(this, node_t::lower_bound(root_, std::forward<comparable_type_>(comparable)));
     }
 
+    /**
+     *  @brief Finds the first element greater than (>) the given @p comparable.
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return iterator Iterator to found element, or end() if no element is greater.
+     */
     template <typename comparable_type_>
-    node_t const *lower_bound(comparable_type_ &&comparable) const noexcept {
-        return node_t::lower_bound(root_, std::forward<comparable_type_>(comparable));
+    iterator upper_bound(comparable_type_ &&comparable) noexcept {
+        return iterator(this, node_t::upper_bound(root_, std::forward<comparable_type_>(comparable)));
     }
 
+    /**
+     *  @brief Finds the first element greater than (>) the given @p comparable (const version).
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return const_iterator Const iterator to found element, or end() if no element is greater.
+     */
     template <typename comparable_type_>
-    node_t const *upper_bound(comparable_type_ &&comparable) const noexcept {
-        return node_t::upper_bound(root_, std::forward<comparable_type_>(comparable));
+    const_iterator upper_bound(comparable_type_ &&comparable) const noexcept {
+        return const_iterator(this, node_t::upper_bound(root_, std::forward<comparable_type_>(comparable)));
     }
 
     /**
      *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
      *
      *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
-     *  @return bool          True if element exists, false otherwise.
+     *  @return bool True if element exists, false otherwise.
      */
     template <typename comparable_type_>
     bool contains(comparable_type_ &&comparable) const noexcept {
-        return find(std::forward<comparable_type_>(comparable)) != nullptr;
+        return find(std::forward<comparable_type_>(comparable)) != end();
     }
 
     /**
      *  @brief Returns the number of elements with key equal to the specified argument.
-     *         For unique-key containers like this, returns either 0 or 1.
+     *    For unique-key containers like this, returns either 0 or 1.
      *
      *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
-     *  @return std::size_t   Number of elements with key equal to @p comparable (0 or 1).
+     *  @return std::size_t Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_>
     std::size_t count(comparable_type_ &&comparable) const noexcept {
-        return find(std::forward<comparable_type_>(comparable)) != nullptr ? 1 : 0;
+        return find(std::forward<comparable_type_>(comparable)) != end() ? 1 : 0;
     }
 
     /**
@@ -675,50 +974,78 @@ class basic_avl_tree {
     bool empty() const noexcept { return size_ == 0; }
 
     /**
+     *  @brief Returns a range of elements matching a specific key.
+     *    For unique-key containers, returns range containing at most one element.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return std::pair<iterator, iterator> Pair of iterators [first, last) where all elements are equal to key.
+     *    If key not found, both iterators equal end().
+     */
+    template <typename comparable_type_>
+    std::pair<iterator, iterator> equal_range(comparable_type_ &&comparable) noexcept {
+        auto it = find(std::forward<comparable_type_>(comparable));
+        if (it == end()) return {it, it};
+        auto next = it;
+        ++next;
+        return {it, next};
+    }
+
+    /**
+     *  @brief Returns a range of elements matching a specific key (const version).
+     *    For unique-key containers, returns range containing at most one element.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return std::pair<const_iterator, const_iterator> Pair of const iterators [first, last).
+     */
+    template <typename comparable_type_>
+    std::pair<const_iterator, const_iterator> equal_range(comparable_type_ &&comparable) const noexcept {
+        auto it = find(std::forward<comparable_type_>(comparable));
+        if (it == end()) return {it, it};
+        auto next = it;
+        ++next;
+        return {it, next};
+    }
+
+    /**
      *  @brief Finds all elements equal to a single key. Invokes callback for each matching element.
-     *         For trees with unique keys, this returns at most one element (0 or 1).
+     *    For trees with unique keys, this returns at most one element (0 or 1).
+     *    Callback-based alternative to iterator-returning equal_range().
      *
      *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
      *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
-     *  @return status_t      Success or error code.
      */
     template <typename comparable_type_ = entry_t, typename callback_type_ = no_op_t>
-    status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        auto node = find(std::forward<comparable_type_>(comparable));
-        if (node) { callback(node->entry); }
-        return {success_k};
+    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+        auto it = find(std::forward<comparable_type_>(comparable));
+        if (it != end()) { callback(*it); }
     }
 
     /**
      *  @brief Iterates over all entries in the range [@p lower, @p upper). Const version.
-     *         Invokes callback for each element in the specified range.
+     *    Invokes callback for each element in the specified range.
      *
-     *  @param[in] lower    Lower bound of the range (inclusive).
-     *  @param[in] upper    Upper bound of the range (exclusive).
+     *  @param[in] lower Lower bound of the range (inclusive).
+     *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
-     *  @return status_t    Success or error code.
      */
     template <typename lower_type_ = entry_t, typename upper_type_ = entry_t, typename callback_type_ = no_op_t>
-    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                       [&](node_t *node) noexcept { callback(node->entry); });
-        return {success_k};
     }
 
     /**
      *  @brief Iterates over all entries in the range [@p lower, @p upper), allowing in-place modification.
-     *         Invokes callback for each mutable element in the specified range. Non-const version.
+     *    Invokes callback for each mutable element in the specified range. Non-const version.
      *
-     *  @param[in]    lower    Lower bound of the range (inclusive).
-     *  @param[in]    upper    Upper bound of the range (exclusive).
+     *  @param[in] lower Lower bound of the range (inclusive).
+     *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[inout] callback Callback invoked for each mutable element in range. Must be @c noexcept.
-     *  @return status_t       Success or error code.
      */
     template <typename lower_type_ = entry_t, typename upper_type_ = entry_t, typename callback_type_ = no_op_t>
-    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                       [&](node_t *node) noexcept { callback(node->entry); });
-        return {success_k};
     }
 
     struct upsert_result_t {
@@ -736,31 +1063,33 @@ class basic_avl_tree {
     };
 
     /**
-     *  @brief Atomically inserts an entry only if the key doesn't exist. Fails if key exists.
-     *         This is the strict insert semantics matching @c std::set::insert().
+     *  @brief Inserts an entry only if the key doesn't exist. Matches @c std::set::insert() semantics.
+     *    Fails if key already exists (does not overwrite).
      *
      *  @param[in] entry Entry to insert (moved into the tree).
-     *  @return upsert_result_t Result containing pointer to node and insertion status.
-     *                          If @c inserted is false and @c node is null, allocation failed.
-     *                          If @c inserted is false and @c node is non-null, key already exists.
+     *  @return std::pair<iterator, bool> Pair of iterator to inserted/existing element and bool indicating success.
+     *    Returns {iterator, true} if inserted successfully.
+     *    Returns {iterator, false} if key already exists (iterator points to existing).
+     *    Returns {end(), false} if allocation failed.
      */
     template <typename comparable_type_>
-    upsert_result_t insert(comparable_type_ &&comparable) noexcept {
+    std::pair<iterator, bool> insert(comparable_type_ &&comparable) noexcept {
         auto result = node_t::insert(root_, std::forward<comparable_type_>(comparable),
                                      [&]() noexcept { return allocator_.allocate(1); });
         root_ = result.root;
         size_ += result.inserted;
-        return {result.match, result.inserted};
+        if (result.failed()) return {end(), false};
+        return {iterator(this, result.match), result.inserted};
     }
 
     /**
      *  @brief Atomically inserts an entry only if missing. Silently skips if key exists (no error).
-     *         This is the "silent no-op" insert semantics.
+     *    This is the "silent no-op" insert semantics.
      *
      *  @param[in] entry Entry to insert (moved into the tree).
      *  @return upsert_result_t Result containing pointer to node and insertion status.
-     *                          Always returns a valid @c node pointer (existing or new).
-     *                          @c inserted is true only if a new node was created.
+     *    Always returns a valid @c node pointer (existing or new).
+     *    @c inserted is true only if a new node was created.
      */
     template <typename comparable_type_>
     upsert_result_t insert_if_missing(comparable_type_ &&comparable) noexcept {
@@ -769,11 +1098,11 @@ class basic_avl_tree {
 
     /**
      *  @brief Atomically inserts or updates an entry. Always succeeds (unless OOM).
-     *         Overwrites existing entry if key exists. Matches @c std::map::insert_or_assign() semantics.
+     *    Overwrites existing entry if key exists. Matches @c std::map::insert_or_assign() semantics.
      *
      *  @param[in] entry Entry to insert or assign (moved into the tree).
      *  @return upsert_result_t Result containing pointer to node and insertion status.
-     *                          @c inserted is true if new node was created, false if existing was updated.
+     *    @c inserted is true if new node was created, false if existing was updated.
      */
     template <typename comparable_type_>
     upsert_result_t insert_or_assign(comparable_type_ &&comparable) noexcept {
@@ -792,6 +1121,102 @@ class basic_avl_tree {
     template <typename comparable_type_>
     upsert_result_t upsert(comparable_type_ &&comparable) noexcept {
         return insert_or_assign(std::forward<comparable_type_>(comparable));
+    }
+
+    /**
+     *  @brief Constructs an element in-place. Matches @c std::set::emplace() semantics.
+     *         Does not insert if key already exists.
+     *
+     *  @tparam Args Types of arguments to forward to entry_t constructor.
+     *  @param[in] args Arguments to forward to entry_t constructor.
+     *  @return std::pair<iterator, bool> Pair of iterator to inserted/existing element and bool indicating success.
+     */
+    template <typename... Args>
+    std::pair<iterator, bool> emplace(Args &&...args) noexcept {
+        return insert(entry_t(std::forward<Args>(args)...));
+    }
+
+    /**
+     *  @brief Deleted: Hint-based emplace is not supported.
+     *    AVL trees don't benefit from position hints, and providing unused hints is misleading.
+     *    Use @c emplace() instead.
+     */
+    template <typename... Args>
+    iterator emplace_hint(const_iterator, Args &&...) noexcept = delete;
+
+    /**
+     *  @brief Deleted: Hint-based insert is not supported.
+     *    AVL trees don't benefit from position hints, and providing unused hints is misleading.
+     *    Use @c insert(value) instead.
+     */
+    iterator insert(const_iterator, entry_t const &) noexcept = delete;
+
+    /**
+     *  @brief Deleted: Hint-based insert is not supported.
+     *    AVL trees don't benefit from position hints, and providing unused hints is misleading.
+     *    Use @c insert(value) instead.
+     */
+    iterator insert(const_iterator, entry_t &&) noexcept = delete;
+
+    /**
+     *  @brief Inserts a range of entries.
+     *    Inserts elements one-by-one until completion or first failure.
+     *    On failure, some elements may have been inserted (partial insertion).
+     *    This matches STL's basic exception guarantee semantics.
+     *
+     *  @tparam input_iterator_type_ Type of input iterator.
+     *  @param[in] first Beginning of range to insert.
+     *  @param[in] last End of range to insert.
+     *  @return status_t First error encountered, or success if all elements inserted.
+     */
+    template <typename input_iterator_type_>
+    status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+        for (; first != last; ++first) {
+            auto result = insert(*first);
+            if (result.first == end() && !result.second) return {errc_t::out_of_memory_heap_k};
+        }
+        return {success_k};
+    }
+
+    /**
+     *  @brief Inserts elements from an initializer list.
+     *    Inserts elements one-by-one until completion or first failure.
+     *    On failure, some elements may have been inserted (partial insertion).
+     *
+     *  @param[in] ilist Initializer list of entries to insert.
+     *  @return status_t First error encountered, or success if all elements inserted.
+     */
+    status_t insert(std::initializer_list<entry_t> ilist) noexcept { return insert(ilist.begin(), ilist.end()); }
+
+    /**
+     *  @brief Returns the function object that compares keys.
+     *  @return comparator_t The comparison function object.
+     */
+    comparator_t key_comp() const noexcept { return comparator_t {}; }
+
+    /**
+     *  @brief Returns the function object that compares values.
+     *         For sets, this is the same as key_comp().
+     *  @return comparator_t The comparison function object.
+     */
+    comparator_t value_comp() const noexcept { return comparator_t {}; }
+
+    /**
+     *  @brief Returns the maximum possible number of elements.
+     *  @return std::size_t Theoretical maximum size.
+     */
+    std::size_t max_size() const noexcept {
+        return std::min(allocator_.max_size(), std::numeric_limits<std::size_t>::max() / sizeof(node_t));
+    }
+
+    /**
+     *  @brief Exchanges the contents of this tree with another.
+     *  @param[inout] other Tree to swap with.
+     */
+    void swap(basic_avl_tree &other) noexcept {
+        std::swap(root_, other.root_);
+        std::swap(size_, other.size_);
+        std::swap(allocator_, other.allocator_);
     }
 
     struct extract_result_t {
@@ -818,33 +1243,31 @@ class basic_avl_tree {
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
-     *  @param[in] comparable        Object comparable to @c entry_t and convertible to search key.
-     *  @param[in] callback_found    Callback to receive the erased entry. Must be @c noexcept.
-     *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t             Success or error code.
+     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = entry_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                   callback_missing_type_ &&callback_missing) noexcept {
+    void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+               callback_missing_type_ &&callback_missing) noexcept {
         auto node = find(std::forward<comparable_type_>(comparable));
         if (!node) {
             callback_missing();
-            return {success_k};
+            return;
         }
 
         callback_found(node->entry);
         auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable));
         root_ = result.root;
         size_ -= result.extracted != nullptr;
-        return {success_k};
     }
 
     /**
      *  @brief Erases a single entry matching the given @p comparable. No callbacks.
      *
      *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
-     *  @return bool          True if element was erased, false if not found.
+     *  @return bool True if element was erased, false if not found.
      */
     template <typename comparable_type_>
     bool erase(comparable_type_ &&comparable) noexcept {
@@ -852,16 +1275,77 @@ class basic_avl_tree {
     }
 
     /**
+     *  @brief Erases the element at the specified iterator position.
+     *    Unlike STL, returns both the next iterator and a status code for error reporting.
+     *
+     *  @param[in] pos Iterator to element to erase. Must be valid and dereferenceable.
+     *  @return erase_result_t Contains iterator to element following the erased element and operation status.
+     *
+     *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
+     *    If erase fails (e.g., tree corruption), returns {end(), error}.
+     */
+    erase_result_t erase(iterator pos) noexcept {
+        if (pos == end()) return {end(), {success_k}};
+        auto next = std::next(pos);
+        bool erased = erase(*pos);
+        return {next, erased ? status_t {success_k} : status_t {errc_t::unknown_k}};
+    }
+
+    /**
+     *  @brief Erases the element at the specified const_iterator position.
+     *    Unlike STL, returns both the next iterator and a status code for error reporting.
+     *
+     *  @param[in] pos Const iterator to element to erase. Must be valid and dereferenceable.
+     *  @return erase_result_t Contains iterator to element following the erased element and operation status.
+     *
+     *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
+     *    If erase fails (e.g., tree corruption), returns {end(), error}.
+     */
+    erase_result_t erase(const_iterator pos) noexcept { return erase(iterator(this, pos.node_)); }
+
+    /**
+     *  @brief Erases all elements in the range [first, last).
+     *    Unlike STL, returns both the iterator following the last erased element and a status code.
+     *    On error, some elements may have been erased (partial erase, matches STL's basic guarantee).
+     *
+     *  @param[in] first Beginning of range to erase.
+     *  @param[in] last End of range to erase (not erased).
+     *  @return erase_result_t Contains iterator equal to @p last and status of the operation.
+     *    Returns first error encountered, or success if all elements erased.
+     */
+    erase_result_t erase(iterator first, iterator last) noexcept {
+        while (first != last) {
+            auto result = erase(first);
+            if (result.status.failed()) return {result.next, result.status};
+            first = result.next;
+        }
+        return {last, {success_k}};
+    }
+
+    /**
+     *  @brief Erases all elements in the range [first, last) using const_iterators.
+     *    Unlike STL, returns both the iterator following the last erased element and a status code.
+     *    On error, some elements may have been erased (partial erase, matches STL's basic guarantee).
+     *
+     *  @param[in] first Beginning of range to erase.
+     *  @param[in] last End of range to erase (not erased).
+     *  @return erase_result_t Contains iterator equal to @p last and status of the operation.
+     *    Returns first error encountered, or success if all elements erased.
+     */
+    erase_result_t erase(const_iterator first, const_iterator last) noexcept {
+        return erase(iterator(this, first.node_), iterator(this, last.node_));
+    }
+
+    /**
      *  @brief Hints to the tree to pre-allocate memory. No-op for AVL tree implementation.
-     *         Provided for API consistency with other containers. Doesn't guarantee subsequent
-     *         insertions won't fail with "out of memory".
+     *    Provided for API consistency with other containers. Doesn't guarantee subsequent
+     *    insertions won't fail with "out of memory".
      *
      *  @param[in] size Suggested capacity (ignored for AVL trees).
-     *  @return status_t Always succeeds.
      *
      *  @note This is a no-op because AVL trees don't support reserving capacity efficiently.
      */
-    status_t reserve(std::size_t) noexcept { return {success_k}; }
+    void reserve(std::size_t) noexcept {}
 
     /**
      *  @brief Removes all elements from the tree and frees their memory.
@@ -878,76 +1362,99 @@ class basic_avl_tree {
         node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept { callback(node->entry); });
     }
 
+    /**
+     *  @brief Merges another tree into this one, transferring all nodes.
+     *    Elements with keys that already exist in this tree are deallocated (not kept in source).
+     *
+     *  @param[inout] other Tree to merge from. Will be empty after merge.
+     *
+     *  @note Unlike @c std::set::merge(), nodes with duplicate keys are deallocated rather than
+     *    remaining in the source container. This ensures no memory leaks in a noexcept context.
+     */
     void merge(avl_tree_t &other) noexcept {
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
             auto result = node_t::insert(root_, node);
             root_ = result.root;
             size_ += result.inserted;
+            if (!result.inserted) {
+                // Key conflict - node wasn't inserted, deallocate it
+                allocator_.deallocate(node, 1);
+            }
         });
         other.root_ = nullptr;
         other.size_ = 0;
     }
 
+    /**
+     *  @brief Merges a single extracted node into this tree.
+     *    If the key already exists, the node is deallocated.
+     *
+     *  @param[in] other Extracted node to merge.
+     *
+     *  @note Unlike @c std::set::merge(), a node with a duplicate key is deallocated rather than
+     *    being returned. This ensures no memory leaks in a noexcept context.
+     */
     void merge(extract_result_t other) noexcept {
         if (!other.node_ptr_) return;
-        auto result = node_t::insert(root_, other.release());
+        node_t *node_to_insert = other.release();
+        auto result = node_t::insert(root_, node_to_insert);
         root_ = result.root;
         size_ += result.inserted;
+        if (!result.inserted) {
+            // Key conflict - node wasn't inserted, deallocate it
+            allocator_.deallocate(node_to_insert, 1);
+        }
     }
 
     /**
      *  @brief Uniformly samples a single random entry from the entire tree.
-     *         Uses a probabilistic algorithm based on tree height (upper bound of subtree size).
+     *    Uses a probabilistic algorithm based on tree height (upper bound of subtree size).
      *
      *  @param[in] generator Random number generator (e.g., @c std::mt19937).
-     *  @param[in] callback  Callback to receive the sampled element. Must be @c noexcept.
-     *  @return status_t     Success or error code.
+     *  @param[in] callback Callback to receive the sampled element. Must be @c noexcept.
      *
      *  @note Distribution is approximate due to relying on height-based size estimates.
      */
     template <typename generator_type_, typename callback_type_ = no_op_t>
-    status_t sample(generator_type_ &&generator, callback_type_ &&callback) const noexcept {
+    void sample(generator_type_ &&generator, callback_type_ &&callback) const noexcept {
         auto node = node_t::sample(root_, std::forward<generator_type_>(generator));
         if (node) { callback(node->entry); }
-        return {success_k};
     }
 
     /**
      *  @brief Uniformly samples a single random entry from the range [@p lower, @p upper).
-     *         Uses a two-pass algorithm: first counts entries, then selects random offset.
+     *    Uses a two-pass algorithm: first counts entries, then selects random offset.
      *
-     *  @param[in] lower     Lower bound of the range (inclusive).
-     *  @param[in] upper     Upper bound of the range (exclusive).
+     *  @param[in] lower Lower bound of the range (inclusive).
+     *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[in] generator Random number generator (e.g., @c std::mt19937).
-     *  @param[in] callback  Callback to receive the sampled element. Must be @c noexcept.
-     *  @return status_t     Success or error code.
+     *  @param[in] callback Callback to receive the sampled element. Must be @c noexcept.
      *
      *  @note Requires two tree traversals. For multiple samples, use reservoir sampling overload.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                          callback_type_ &&callback) const noexcept {
-        auto node = node_t::sample_range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                         std::forward<generator_type_>(generator), [](node_t *) noexcept { return true; });
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                      callback_type_ &&callback) const noexcept {
+        auto node =
+            node_t::sample_range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                 std::forward<generator_type_>(generator), [](node_t *) noexcept { return true; });
         if (node) { callback(node->entry); }
-        return {success_k};
     }
 
     /**
-     *  @brief Uniformly samples entries from [@p lower, @p upper) using reservoir sampling algorithm.
-     *         Fills a reservoir buffer with up to @p reservoir_capacity randomly selected elements.
+     *  @brief Uniformly samples entries from [ @p lower, @p upper) using reservoir sampling algorithm.
+     *    Fills a reservoir buffer with up to @p reservoir_capacity randomly selected elements.
      *
-     *  @param[in]    lower              Lower bound of the range (inclusive).
-     *  @param[in]    upper              Upper bound of the range (exclusive).
-     *  @param[inout] generator          Random number generator (e.g., @c std::mt19937).
-     *  @param[inout] seen               Count of entries processed (can span multiple calls).
-     *  @param[in]    reservoir_capacity Maximum number of samples to collect.
-     *  @param[out]   reservoir          Random access iterator to output buffer.
-     *  @return status_t                 Success or error code.
+     *  @param[in] lower Lower bound of the range (inclusive).
+     *  @param[in] upper Upper bound of the range (exclusive).
+     *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[inout] seen Count of entries processed (can span multiple calls).
+     *  @param[in] reservoir_capacity Maximum number of samples to collect.
+     *  @param[out] reservoir Random access iterator to output buffer.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
 
         using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
@@ -962,7 +1469,7 @@ class basic_avl_tree {
             }
             ++seen;
         };
-        return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
+        range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
     }
 };
 

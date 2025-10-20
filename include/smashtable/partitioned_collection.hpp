@@ -146,11 +146,10 @@ class partitioned_collection {
 
     template <typename parts_type_, typename mutexes_type_, typename comparable_type_, typename callback_found_type_,
               typename callback_missing_type_>
-    static status_t for_all_next_lookups(parts_type_ &parts, mutexes_type_ &mutexes, comparable_type_ &&comparable,
-                                         callback_found_type_ &&callback_found,
-                                         callback_missing_type_ &&callback_missing) noexcept {
+    static void for_all_next_lookups(parts_type_ &parts, mutexes_type_ &mutexes, comparable_type_ &&comparable,
+                                     callback_found_type_ &&callback_found,
+                                     callback_missing_type_ &&callback_missing) noexcept {
 
-        status_t status;
         std::array<bool, parts_k> finished;
         std::size_t remaining_count;
         identifier_t smallest_id;
@@ -169,29 +168,30 @@ class partitioned_collection {
             if (!lock) continue;
 
             auto &part = parts[part_idx];
-            status = part.upper_bound(comparable, [&](element_t const &element) {
+            part.upper_bound(comparable, [&](element_t const &element) noexcept {
                 if (smallest_idx != not_found_idx && !comparator_t {}(element, smallest_id)) return;
                 smallest_id = identifier_t(element);
                 smallest_idx = part_idx;
             });
-            if (!status) return status;
 
             finished[part_idx] = true;
             --remaining_count;
         }
         if (remaining_count) goto cycle;
 
-        if (smallest_idx == not_found_idx) return invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        if (smallest_idx == not_found_idx) {
+            callback_missing();
+            return;
+        }
 
         // Under "Read Committed" isolation, the element we found during `upper_bound` scanning
         // may have been deleted or modified by another transaction before we lock it for reading.
         // If the lookup fails (element deleted/changed), restart the entire scan to find the new minimum.
         // This is expected behavior for Read Committed - non-repeatable reads are allowed.
         bool should_restart = false;
-        status = parts[smallest_idx].find(smallest_id, std::forward<callback_found_type_>(callback_found),
-                                          [&] { should_restart = true; });
+        parts[smallest_idx].find(smallest_id, std::forward<callback_found_type_>(callback_found),
+                                 [&]() noexcept { should_restart = true; });
         if (should_restart) goto restart;
-        return status;
     }
 
   public:
@@ -261,23 +261,22 @@ class partitioned_collection {
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+        void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
             std::size_t part_idx = bucket(identifier_t(comparable));
             shared_lock_t _ {store_.mutexes_[part_idx]};
-            return parts_[part_idx].find(std::forward<comparable_type_>(comparable),
-                                         std::forward<callback_found_type_>(callback_found),
-                                         std::forward<callback_missing_type_>(callback_missing));
+            parts_[part_idx].find(std::forward<comparable_type_>(comparable),
+                                  std::forward<callback_found_type_>(callback_found),
+                                  std::forward<callback_missing_type_>(callback_missing));
         }
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
-            return partitioned_t::for_all_next_lookups(parts_, store_.mutexes_,
-                                                       std::forward<comparable_type_>(comparable),
-                                                       std::forward<callback_found_type_>(callback_found),
-                                                       std::forward<callback_missing_type_>(callback_missing));
+        void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
+            partitioned_t::for_all_next_lookups(parts_, store_.mutexes_, std::forward<comparable_type_>(comparable),
+                                                std::forward<callback_found_type_>(callback_found),
+                                                std::forward<callback_missing_type_>(callback_missing));
         }
 
         [[nodiscard]] status_t upsert(element_t &&element) noexcept {
@@ -362,77 +361,79 @@ class partitioned_collection {
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+              callback_missing_type_ &&callback_missing = {}) const noexcept {
         std::size_t part_idx = bucket(identifier_t(comparable));
         shared_lock_t _ {mutexes_[part_idx]};
-        return parts_[part_idx].find(std::forward<comparable_type_>(comparable),
-                                     std::forward<callback_found_type_>(callback_found),
-                                     std::forward<callback_missing_type_>(callback_missing));
+        parts_[part_idx].find(std::forward<comparable_type_>(comparable),
+                              std::forward<callback_found_type_>(callback_found),
+                              std::forward<callback_missing_type_>(callback_missing));
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
-        return for_all_next_lookups(parts_, mutexes_, std::forward<comparable_type_>(comparable),
-                                    std::forward<callback_found_type_>(callback_found),
-                                    std::forward<callback_missing_type_>(callback_missing));
+    void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                     callback_missing_type_ &&callback_missing = {}) const noexcept {
+        for_all_next_lookups(parts_, mutexes_, std::forward<comparable_type_>(comparable),
+                             std::forward<callback_found_type_>(callback_found),
+                             std::forward<callback_missing_type_>(callback_missing));
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         lock_out_of_order<shared_lock_t>(mutexes_);
-        status_t status;
-        for (auto &part : parts_)
-            if (status = part.range(lower, upper, callback); !status) break;
+        for (auto &part : parts_) part.range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock_shared();
-        return status;
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
-        status_t status;
-        for (auto &part : parts_)
-            if (status = part.range(lower, upper, callback); !status) break;
+        for (auto &part : parts_) part.range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock();
-        return status;
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         lock_out_of_order<unique_lock_t>(mutexes_);
-        status_t status;
-        for (auto &part : parts_)
-            if (status = part.erase_range(lower, upper, callback); !status) break;
+        for (auto &part : parts_) part.erase_range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock();
-        return status;
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                        callback_type_ &&callback) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                      callback_type_ &&callback) const noexcept {
         // ! Here the assumption is that every part will have a somewhat equal
         // ! number of entries that compare equal to the provided range.
         std::size_t part_idx = generator() % parts_k;
         shared_lock_t _ {mutexes_[part_idx]};
-        return parts_[part_idx].sample_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                             std::forward<generator_type_>(generator),
-                                             std::forward<callback_type_>(callback));
+        parts_[part_idx].sample_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                      std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                        std::size_t &seen, std::size_t reservoir_capacity,
-                                        output_iterator_type_ &&reservoir) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
         // ! This function trades consistency for performance!
-        return for_all<shared_lock_t>(parts_, mutexes_, [&](part_t const &part) noexcept {
-            return part.sample_range(lower, upper, generator, seen, reservoir_capacity, reservoir);
-        });
+        std::array<bool, parts_k> finished {false};
+        std::size_t remaining_count = parts_k;
+
+    cycle:
+        for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
+            if (finished[part_idx]) continue;
+            shared_lock_t lock {mutexes_[part_idx], std::try_to_lock_t {}};
+            if (!lock) continue;
+
+            parts_[part_idx].sample_range(lower, upper, generator, seen, reservoir_capacity, reservoir);
+
+            finished[part_idx] = true;
+            --remaining_count;
+        }
+
+        if (remaining_count) goto cycle;
     }
 
     [[nodiscard]] status_t clear() noexcept {

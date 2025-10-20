@@ -3,9 +3,11 @@
 #include <thread>
 #include <ctime>
 
-#include <smashtable/atomic_standard_set.hpp>
-#include <smashtable/atomic_avl_tree.hpp>
 #include <gtest/gtest.h>
+
+#include <smashtable/transactional_std_set.hpp>
+#include <smashtable/transactional_avl_tree.hpp>
+#include <smashtable/partitioned_collection.hpp>
 
 using namespace ashvardanian::smashtable;
 
@@ -22,13 +24,52 @@ struct pair_t {
 
 struct pair_compare_t {
     using value_type = std::size_t;
+    // Deliberately omit is_transparent to demonstrate heterogeneous lookups work without it
     bool operator()(pair_t a, pair_t b) const noexcept { return a.key < b.key; }
     bool operator()(std::size_t a, pair_t b) const noexcept { return a < b.key; }
     bool operator()(pair_t a, std::size_t b) const noexcept { return a.key < b; }
 };
 
-using stl_t = atomic_standard_set<pair_t, pair_compare_t>;
-using avl_t = atomic_avl_tree<pair_t, pair_compare_t>;
+struct pair_compare_transparent_t {
+    using value_type = std::size_t;
+    using is_transparent = void; // Explicitly enable heterogeneous lookups (C++14 style)
+    bool operator()(pair_t a, pair_t b) const noexcept { return a.key < b.key; }
+    bool operator()(std::size_t a, pair_t b) const noexcept { return a < b.key; }
+    bool operator()(pair_t a, std::size_t b) const noexcept { return a.key < b; }
+};
+
+// Element type for heterogeneous lookup tests (string-based)
+struct string_element_t {
+    std::string key;
+    int value;
+    string_element_t() noexcept = default;
+    string_element_t(std::string k, int v = 0) : key(std::move(k)), value(v) {}
+    explicit operator std::string_view() const noexcept { return key; }
+    operator bool() const noexcept { return !key.empty(); }
+};
+
+// Comparator WITH is_transparent for heterogeneous lookups
+struct string_compare_transparent_t {
+    using value_type = std::string_view;
+    using is_transparent = void;
+    bool operator()(string_element_t const &a, string_element_t const &b) const noexcept { return a.key < b.key; }
+    bool operator()(std::string_view a, string_element_t const &b) const noexcept { return a < b.key; }
+    bool operator()(string_element_t const &a, std::string_view b) const noexcept { return a.key < b; }
+};
+
+// Comparator WITHOUT is_transparent (tests that SmashTable still enables heterogeneous lookups)
+struct string_compare_t {
+    using value_type = std::string_view;
+    // Deliberately omit is_transparent
+    bool operator()(string_element_t const &a, string_element_t const &b) const noexcept { return a.key < b.key; }
+    bool operator()(std::string_view a, string_element_t const &b) const noexcept { return a < b.key; }
+    bool operator()(string_element_t const &a, std::string_view b) const noexcept { return a.key < b; }
+};
+
+using stl_t = transactional_std_set<pair_t, pair_compare_t>;
+using avl_t = transactional_avl_tree<pair_t, pair_compare_t>;
+using partitioned_stl_t = partitioned_collection<stl_t>;
+using partitioned_avl_t = partitioned_collection<avl_t>;
 using id_stl_t = typename stl_t::identifier_t;
 using id_avl_t = typename avl_t::identifier_t;
 
@@ -52,7 +93,7 @@ void test_with_threads(std::size_t threads_count) {
     for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.find(idx, [](auto const &) noexcept {}));
 }
 
-// NOTE: Disabled - atomic_standard_set and atomic_avl_tree are NOT thread-safe
+// NOTE: Disabled - transactional_std_set and transactional_avl_tree are NOT thread-safe
 // Use locked_collection<> or partitioned_collection<> wrappers for thread-safe access
 // TEST(upsert_and_find_set, with_threads) {
 //     test_with_threads<stl_t>(2);
@@ -143,7 +184,7 @@ void test_range_query_head_state() {
 }
 
 /**
- *  @brief Tests erase_range on committed HEAD state
+ *  @brief Tests `erase_range` on committed HEAD state
  */
 template <typename container_type_>
 void test_erase_range_head_state() {
@@ -163,7 +204,7 @@ void test_erase_range_head_state() {
 }
 
 /**
- *  @brief Tests upper_bound query returns first element > key
+ *  @brief Tests `upper_bound` query returns first `element > key`
  */
 template <typename container_type_>
 void test_upper_bound() {
@@ -178,7 +219,7 @@ void test_upper_bound() {
 }
 
 /**
- *  @brief Tests clear operation resets size to 0
+ *  @brief Tests `clear` operation resets size to 0
  */
 template <typename container_type_>
 void test_clear() {
@@ -194,7 +235,7 @@ void test_clear() {
 }
 
 /**
- *  @brief Tests size increments correctly after each upsert
+ *  @brief Tests `size` increments correctly after each upsert
  */
 template <typename container_type_>
 void test_size_after_upserts() {
@@ -238,7 +279,7 @@ void test_size_after_erase() {
 
     // Erase in ranges
     for (std::size_t idx = 0; idx < 50; idx += 10) {
-        EXPECT_TRUE(cont.erase_range(idx, idx + 10));
+        EXPECT_TRUE(cont.erase_range(id_t {idx}, id_t {idx + 10}));
         EXPECT_EQ(cont.size(), 50 - (idx + 10));
     }
     EXPECT_EQ(cont.size(), 0);
@@ -285,6 +326,125 @@ void test_single_element_operations() {
     EXPECT_EQ(cont.size(), 0);
 }
 
+/**
+ *  @brief Tests reserve() pre-allocates capacity (STL containers only)
+ *
+ *  AVL trees don't support collection-level reserve
+ */
+template <typename container_type_>
+void test_reserve() {
+    auto cont = *container_type_::make();
+    EXPECT_TRUE(cont.reserve(100));
+    EXPECT_TRUE(cont.empty());
+    EXPECT_EQ(cont.size(), 0);
+}
+
+/**
+ *  @brief Tests heterogeneous lookups with comparator that HAS is_transparent
+ *
+ *  Uses std::string elements with std::string_view lookups (truly distinct types, no implicit conversion)
+ */
+template <template <typename, typename> class base_collection_>
+void test_heterogeneous_lookups_with_transparent() {
+    using namespace std::literals;
+    using set_t = base_collection_<string_element_t, string_compare_transparent_t>;
+    auto set = *set_t::make();
+
+    EXPECT_TRUE(set.insert(string_element_t {"10", 100}));
+    EXPECT_TRUE(set.insert(string_element_t {"20", 200}));
+    EXPECT_TRUE(set.insert(string_element_t {"30", 300}));
+
+    // Test heterogeneous find()
+    bool found = false;
+    EXPECT_TRUE(set.find("20"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "20");
+        EXPECT_EQ(e.element.value, 200);
+    }));
+    EXPECT_TRUE(found);
+
+    // Test heterogeneous count()
+    EXPECT_EQ(set.count("20"sv), 1);
+    EXPECT_EQ(set.count("99"sv), 0);
+
+    // Test heterogeneous lower_bound()
+    found = false;
+    EXPECT_TRUE(set.lower_bound("15"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "20");
+    }));
+    EXPECT_TRUE(found);
+
+    // Test heterogeneous upper_bound()
+    found = false;
+    EXPECT_TRUE(set.upper_bound("20"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "30");
+    }));
+    EXPECT_TRUE(found);
+
+    // Test heterogeneous equal_range()
+    found = false;
+    EXPECT_TRUE(set.equal_range("20"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "20");
+    }));
+    EXPECT_TRUE(found);
+}
+
+/**
+ *  @brief Tests heterogeneous lookups with comparator that LACKS is_transparent
+ *
+ *  Verifies SmashTable enables heterogeneous lookups even without is_transparent
+ */
+template <template <typename, typename> class base_collection_>
+void test_heterogeneous_lookups_without_transparent() {
+    using namespace std::literals;
+    using set_t = base_collection_<string_element_t, string_compare_t>;
+    auto set = *set_t::make();
+
+    EXPECT_TRUE(set.insert(string_element_t {"10", 100}));
+    EXPECT_TRUE(set.insert(string_element_t {"20", 200}));
+    EXPECT_TRUE(set.insert(string_element_t {"30", 300}));
+
+    // Test heterogeneous find()
+    bool found = false;
+    EXPECT_TRUE(set.find("20"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "20");
+        EXPECT_EQ(e.element.value, 200);
+    }));
+    EXPECT_TRUE(found);
+
+    // Test heterogeneous count()
+    EXPECT_EQ(set.count("20"sv), 1);
+    EXPECT_EQ(set.count("99"sv), 0);
+
+    // Test heterogeneous lower_bound()
+    found = false;
+    EXPECT_TRUE(set.lower_bound("15"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "20");
+    }));
+    EXPECT_TRUE(found);
+
+    // Test heterogeneous upper_bound()
+    found = false;
+    EXPECT_TRUE(set.upper_bound("20"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "30");
+    }));
+    EXPECT_TRUE(found);
+
+    // Test heterogeneous equal_range()
+    found = false;
+    EXPECT_TRUE(set.equal_range("20"sv, [&](auto const &e) {
+        found = true;
+        EXPECT_EQ(e.element.key, "20");
+    }));
+    EXPECT_TRUE(found);
+}
+
 /** @brief Tests insertion in ascending, descending, and random order (AVL balancing) */
 TEST(basic_ops_standard_set, insertion_patterns) { test_basic_insertion_patterns<stl_t>(); }
 
@@ -317,6 +477,9 @@ TEST(basic_ops_standard_set, empty_container_operations) { test_empty_container_
 
 /** @brief Tests operations on single-element container */
 TEST(basic_ops_standard_set, single_element_operations) { test_single_element_operations<stl_t>(); }
+
+/** @brief Tests reserve() pre-allocates capacity (STL only) */
+TEST(basic_ops_standard_set, reserve) { test_reserve<stl_t>(); }
 
 /** @brief Tests insertion in ascending, descending, and random order (AVL balancing) */
 TEST(basic_ops_avl_tree, insertion_patterns) { test_basic_insertion_patterns<avl_t>(); }
@@ -1052,7 +1215,7 @@ void test_reset_clears_transaction_state() {
 /**
  *  @brief Write Conflicts: Watch validation must detect staged (invisible) writes
  *
- *  This test verifies the fix for the bug where atomic_avl_tree used find() instead of
+ *  This test verifies the fix for the bug where transactional_avl_tree used find() instead of
  *  find_latest_for_watch() during stage validation. The bug allowed two concurrent
  *  transactions to both stage successfully, violating Monotonic Atomic View consistency.
  *
@@ -1081,7 +1244,7 @@ void test_watch_detects_staged_invisible_writes() {
 
     // T2 modifies and stages (but doesn't commit)
     EXPECT_TRUE(t2->upsert(pair_t {1, 999}));
-    EXPECT_TRUE(t2->stage());  // Now gen=2, visible=false
+    EXPECT_TRUE(t2->stage()); // Now gen=2, visible=false
 
     // T1 should FAIL to stage because T2 has a staged (invisible) write
     // This tests that find_latest_for_watch() is used, not find()
@@ -1226,6 +1389,269 @@ TEST(consistency_avl_tree, delete_visibility) { test_delete_visibility<avl_t>();
 
 /** @brief Edge Cases: reset() should clear all transaction state */
 TEST(consistency_avl_tree, reset_clears_transaction_state) { test_reset_clears_transaction_state<avl_t>(); }
+
+/** @brief Basic Operations: Ascending, descending, random insertion with AVL rebalancing */
+TEST(basic_ops_partitioned_stl, insertion_patterns) { test_basic_insertion_patterns<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: Bulk insertion via move iterators */
+TEST(basic_ops_partitioned_stl, bulk_insertion_iterators) { test_bulk_insertion_from_iterators<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: Range queries on committed HEAD state */
+TEST(basic_ops_partitioned_stl, range_query_head_state) { test_range_query_head_state<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: erase_range on committed HEAD state */
+TEST(basic_ops_partitioned_stl, erase_range_head_state) { test_erase_range_head_state<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: upper_bound returns first element > key */
+TEST(basic_ops_partitioned_stl, upper_bound) { test_upper_bound<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: clear resets size to 0 */
+TEST(basic_ops_partitioned_stl, clear) { test_clear<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: size increments correctly */
+TEST(basic_ops_partitioned_stl, size_after_upserts) { test_size_after_upserts<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: size unchanged on duplicate upserts */
+TEST(basic_ops_partitioned_stl, size_invariant_on_duplicates) {
+    test_size_invariant_on_duplicate_upserts<partitioned_stl_t>();
+}
+
+/** @brief Basic Operations: size decrements after erase */
+TEST(basic_ops_partitioned_stl, size_after_erase) { test_size_after_erase<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: empty container operations don't crash */
+TEST(basic_ops_partitioned_stl, empty_container_operations) { test_empty_container_operations<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: single element operations */
+TEST(basic_ops_partitioned_stl, single_element_operations) { test_single_element_operations<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: reserve() pre-allocates capacity (STL only) */
+TEST(basic_ops_partitioned_stl, reserve) { test_reserve<partitioned_stl_t>(); }
+
+/** @brief Basic Operations: Ascending, descending, random insertion with AVL rebalancing */
+TEST(basic_ops_partitioned_avl, insertion_patterns) { test_basic_insertion_patterns<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: Bulk insertion via move iterators */
+TEST(basic_ops_partitioned_avl, bulk_insertion_iterators) { test_bulk_insertion_from_iterators<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: Range queries on committed HEAD state */
+TEST(basic_ops_partitioned_avl, range_query_head_state) { test_range_query_head_state<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: erase_range on committed HEAD state */
+TEST(basic_ops_partitioned_avl, erase_range_head_state) { test_erase_range_head_state<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: upper_bound returns first element > key */
+TEST(basic_ops_partitioned_avl, upper_bound) { test_upper_bound<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: clear resets size to 0 */
+TEST(basic_ops_partitioned_avl, clear) { test_clear<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: size increments correctly */
+TEST(basic_ops_partitioned_avl, size_after_upserts) { test_size_after_upserts<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: size unchanged on duplicate upserts */
+TEST(basic_ops_partitioned_avl, size_invariant_on_duplicates) {
+    test_size_invariant_on_duplicate_upserts<partitioned_avl_t>();
+}
+
+/** @brief Basic Operations: size decrements after erase */
+TEST(basic_ops_partitioned_avl, size_after_erase) { test_size_after_erase<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: empty container operations don't crash */
+TEST(basic_ops_partitioned_avl, empty_container_operations) { test_empty_container_operations<partitioned_avl_t>(); }
+
+/** @brief Basic Operations: single element operations */
+TEST(basic_ops_partitioned_avl, single_element_operations) { test_single_element_operations<partitioned_avl_t>(); }
+
+/** @brief Read Committed: Staged transactions with multiple keys must be completely invisible */
+TEST(consistency_partitioned_stl, no_dirty_reads_multi_key) { test_no_dirty_reads_multi_key<partitioned_stl_t>(); }
+
+/** @brief Read Committed: Transactions created after staging should not see staged changes */
+TEST(consistency_partitioned_stl, new_transaction_sees_nothing_staged) {
+    test_new_transaction_sees_nothing_staged<partitioned_stl_t>();
+}
+
+/** @brief Read Committed: Once committed, new transactions immediately see changes */
+TEST(consistency_partitioned_stl, committed_immediately_visible) {
+    test_committed_immediately_visible<partitioned_stl_t>();
+}
+
+/** @brief Atomic View: In a 10-key transaction, observer sees 0 or 10 keys, never 1-9 */
+TEST(consistency_partitioned_stl, multi_key_atomicity_10_keys) {
+    test_multi_key_atomicity_10_keys<partitioned_stl_t>();
+}
+
+/** @brief Atomic View: Rollback atomically hides all staged changes */
+TEST(consistency_partitioned_stl, rollback_makes_all_invisible) {
+    test_rollback_makes_all_invisible<partitioned_stl_t>();
+}
+
+/** @brief Atomic View: Range queries see complete transactions, not partial */
+TEST(consistency_partitioned_stl, range_query_sees_atomic_boundaries) {
+    test_range_query_sees_atomic_boundaries<partitioned_stl_t>();
+}
+
+/** @brief Atomic View: Interleaved commits don't create fractured reads */
+TEST(consistency_partitioned_stl, fractured_read_prevention) { test_fractured_read_prevention<partitioned_stl_t>(); }
+
+/** @brief Monotonic View: Sequential reads never see values go backwards */
+TEST(consistency_partitioned_stl, sequential_updates_never_regress) {
+    test_sequential_updates_never_regress<partitioned_stl_t>();
+}
+
+/** @brief Monotonic View: T1 commits v1, T2 commits v2 → reads see v1→v2, never v2→v1 */
+TEST(consistency_partitioned_stl, transaction_commits_maintain_order) {
+    test_transaction_commits_maintain_order<partitioned_stl_t>();
+}
+
+/** @brief Write Conflicts: T1 and T2 watch + modify same key → first wins, second fails */
+TEST(consistency_partitioned_stl, concurrent_transactions_on_same_key) {
+    test_concurrent_transactions_on_same_key<partitioned_stl_t>();
+}
+
+/** @brief Write Conflicts: If ANY watched key conflicts, entire transaction fails */
+TEST(consistency_partitioned_stl, multi_key_conflict_any_key_fails) {
+    test_multi_key_conflict_any_key_fails<partitioned_stl_t>();
+}
+
+/** @brief Write Conflicts: Watches detect modifications outside of transactions */
+TEST(consistency_partitioned_stl, watch_detects_external_direct_modification) {
+    test_watch_detects_external_direct_modification<partitioned_stl_t>();
+}
+
+/** @brief Write Conflicts: Watch validation must detect staged (invisible) writes */
+TEST(consistency_partitioned_stl, watch_detects_staged_invisible_writes) {
+    test_watch_detects_staged_invisible_writes<partitioned_stl_t>();
+}
+
+/** @brief Write Conflicts: Transactions on disjoint keys can both succeed */
+TEST(consistency_partitioned_stl, disjoint_keys_both_succeed) { test_disjoint_keys_both_succeed<partitioned_stl_t>(); }
+
+/** @brief Allowed Anomalies: Within a transaction, reading same key twice CAN see different values (CORRECT for Read
+ * Committed) */
+TEST(consistency_partitioned_stl, non_repeatable_reads_are_allowed) {
+    test_non_repeatable_reads_are_allowed<partitioned_stl_t>();
+}
+
+/** @brief Allowed Anomalies: Range query can return different counts on repeated execution (CORRECT for Read Committed)
+ */
+TEST(consistency_partitioned_stl, phantom_reads_are_allowed) { test_phantom_reads_are_allowed<partitioned_stl_t>(); }
+
+/** @brief Edge Cases: Committing a transaction with no changes should succeed */
+TEST(consistency_partitioned_stl, empty_transaction_commit) { test_empty_transaction_commit<partitioned_stl_t>(); }
+
+/** @brief Edge Cases: Deleted entries should not appear in queries */
+TEST(consistency_partitioned_stl, delete_visibility) { test_delete_visibility<partitioned_stl_t>(); }
+
+/** @brief Edge Cases: reset() should clear all transaction state */
+TEST(consistency_partitioned_stl, reset_clears_transaction_state) {
+    test_reset_clears_transaction_state<partitioned_stl_t>();
+}
+
+/** @brief Read Committed: Staged transactions with multiple keys must be completely invisible */
+TEST(consistency_partitioned_avl, no_dirty_reads_multi_key) { test_no_dirty_reads_multi_key<partitioned_avl_t>(); }
+
+/** @brief Read Committed: Transactions created after staging should not see staged changes */
+TEST(consistency_partitioned_avl, new_transaction_sees_nothing_staged) {
+    test_new_transaction_sees_nothing_staged<partitioned_avl_t>();
+}
+
+/** @brief Read Committed: Once committed, new transactions immediately see changes */
+TEST(consistency_partitioned_avl, committed_immediately_visible) {
+    test_committed_immediately_visible<partitioned_avl_t>();
+}
+
+/** @brief Atomic View: In a 10-key transaction, observer sees 0 or 10 keys, never 1-9 */
+TEST(consistency_partitioned_avl, multi_key_atomicity_10_keys) {
+    test_multi_key_atomicity_10_keys<partitioned_avl_t>();
+}
+
+/** @brief Atomic View: Rollback atomically hides all staged changes */
+TEST(consistency_partitioned_avl, rollback_makes_all_invisible) {
+    test_rollback_makes_all_invisible<partitioned_avl_t>();
+}
+
+/** @brief Atomic View: Range queries see complete transactions, not partial */
+TEST(consistency_partitioned_avl, range_query_sees_atomic_boundaries) {
+    test_range_query_sees_atomic_boundaries<partitioned_avl_t>();
+}
+
+/** @brief Atomic View: Interleaved commits don't create fractured reads */
+TEST(consistency_partitioned_avl, fractured_read_prevention) { test_fractured_read_prevention<partitioned_avl_t>(); }
+
+/** @brief Monotonic View: Sequential reads never see values go backwards */
+TEST(consistency_partitioned_avl, sequential_updates_never_regress) {
+    test_sequential_updates_never_regress<partitioned_avl_t>();
+}
+
+/** @brief Monotonic View: T1 commits v1, T2 commits v2 → reads see v1→v2, never v2→v1 */
+TEST(consistency_partitioned_avl, transaction_commits_maintain_order) {
+    test_transaction_commits_maintain_order<partitioned_avl_t>();
+}
+
+/** @brief Write Conflicts: T1 and T2 watch + modify same key → first wins, second fails */
+TEST(consistency_partitioned_avl, concurrent_transactions_on_same_key) {
+    test_concurrent_transactions_on_same_key<partitioned_avl_t>();
+}
+
+/** @brief Write Conflicts: If ANY watched key conflicts, entire transaction fails */
+TEST(consistency_partitioned_avl, multi_key_conflict_any_key_fails) {
+    test_multi_key_conflict_any_key_fails<partitioned_avl_t>();
+}
+
+/** @brief Write Conflicts: Watches detect modifications outside of transactions */
+TEST(consistency_partitioned_avl, watch_detects_external_direct_modification) {
+    test_watch_detects_external_direct_modification<partitioned_avl_t>();
+}
+
+/** @brief Write Conflicts: Watch validation must detect staged (invisible) writes */
+TEST(consistency_partitioned_avl, watch_detects_staged_invisible_writes) {
+    test_watch_detects_staged_invisible_writes<partitioned_avl_t>();
+}
+
+/** @brief Write Conflicts: Transactions on disjoint keys can both succeed */
+TEST(consistency_partitioned_avl, disjoint_keys_both_succeed) { test_disjoint_keys_both_succeed<partitioned_avl_t>(); }
+
+/** @brief Allowed Anomalies: Within a transaction, reading same key twice CAN see different values (CORRECT for Read
+ * Committed) */
+TEST(consistency_partitioned_avl, non_repeatable_reads_are_allowed) {
+    test_non_repeatable_reads_are_allowed<partitioned_avl_t>();
+}
+
+/** @brief Allowed Anomalies: Range query can return different counts on repeated execution (CORRECT for Read Committed)
+ */
+TEST(consistency_partitioned_avl, phantom_reads_are_allowed) { test_phantom_reads_are_allowed<partitioned_avl_t>(); }
+
+/** @brief Edge Cases: Committing a transaction with no changes should succeed */
+TEST(consistency_partitioned_avl, empty_transaction_commit) { test_empty_transaction_commit<partitioned_avl_t>(); }
+
+/** @brief Edge Cases: Deleted entries should not appear in queries */
+TEST(consistency_partitioned_avl, delete_visibility) { test_delete_visibility<partitioned_avl_t>(); }
+
+/** @brief Edge Cases: reset() should clear all transaction state */
+TEST(consistency_partitioned_avl, reset_clears_transaction_state) {
+    test_reset_clears_transaction_state<partitioned_avl_t>();
+}
+
+/** @brief Heterogeneous Lookups: WITH is_transparent in comparator (standard_set) */
+TEST(heterogeneous_lookups_standard_set, with_is_transparent) {
+    test_heterogeneous_lookups_with_transparent<transactional_std_set>();
+}
+
+/** @brief Heterogeneous Lookups: WITHOUT is_transparent in comparator (standard_set) */
+TEST(heterogeneous_lookups_standard_set, without_is_transparent) {
+    test_heterogeneous_lookups_without_transparent<transactional_std_set>();
+}
+
+/** @brief Heterogeneous Lookups: WITH is_transparent in comparator (avl_tree) */
+TEST(heterogeneous_lookups_avl_tree, with_is_transparent) {
+    test_heterogeneous_lookups_with_transparent<transactional_avl_tree>();
+}
+
+/** @brief Heterogeneous Lookups: WITHOUT is_transparent in comparator (avl_tree) */
+TEST(heterogeneous_lookups_avl_tree, without_is_transparent) {
+    test_heterogeneous_lookups_without_transparent<transactional_avl_tree>();
+}
 
 int main(int argc, char **argv) {
     ::testing::InitGoogleTest(&argc, argv);
