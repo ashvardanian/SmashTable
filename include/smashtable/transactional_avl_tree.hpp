@@ -86,11 +86,12 @@ class transactional_avl_tree {
 
   private:
     using entry_node_t = basic_avl_node<entry_t, entry_comparator_t>;
-    using entry_allocator_t = typename allocator_t::template rebind<entry_node_t>::other;
+    using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<entry_node_t>;
     using entry_set_t = basic_avl_tree<entry_t, entry_comparator_t, entry_allocator_t>;
     using entry_iterator_t = entry_node_t *;
 
-    using watches_allocator_t = typename allocator_t::template rebind<watched_identifier_t>::other;
+    using watches_allocator_t =
+        typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_vector_t = basic_vector<watched_identifier_t, watches_allocator_t>;
 
     using store_t = transactional_avl_tree;
@@ -325,8 +326,7 @@ class transactional_avl_tree {
                     external_previous_id = external_id;
                     return;
                 }
-                else
-                    return callback_found(external_element);
+                else return callback_found(external_element);
             };
             auto callback_external_missing = [&] {
                 if (internal_iterator == changes_.end()) return callback_missing();
