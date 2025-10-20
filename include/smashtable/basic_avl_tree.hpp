@@ -139,15 +139,13 @@ class basic_avl_node {
         node_t *current = root;
 
         while (current) {
+            // Current is less than target, it's a candidate predecessor
             if (less(current->entry, node->entry)) {
-                // Current is less than target, it's a candidate predecessor
                 predecessor = current;
                 current = current->right;
             }
-            else {
-                // Current is >= target, look in left subtree
-                current = current->left;
-            }
+            // Current is >= target, search left subtree
+            else current = current->left;
         }
         return predecessor;
     }
@@ -162,10 +160,8 @@ class basic_avl_node {
         auto less = comparator_t {};
         while (node) {
             if (less(comparable, node->entry)) node = node->left;
-            else if (less(node->entry, comparable))
-                node = node->right;
-            else
-                break;
+            else if (less(node->entry, comparable)) node = node->right;
+            else break;
         }
         return node;
     }
@@ -225,7 +221,7 @@ class basic_avl_node {
 
             // Of the given key is more than the root node, visit the right
             // subtree.
-            else if (less(node->entry, comparable)) { node = node->right; }
+            else if (less(node->entry, comparable)) node = node->right;
 
             // If a node with the desired value is found, the successor is the
             // minimum value node in its right subtree (if any).
@@ -251,9 +247,9 @@ class basic_avl_node {
         if (less(a, node->entry) && less(b, node->entry)) return lowest_common_ancestor(node->left, a, b);
 
         // If both `a` and `b` are greater than `node`, then LCA lies in right
-        else if (less(node->entry, a) && less(node->entry, b)) { return lowest_common_ancestor(node->right, a, b); }
+        if (less(node->entry, a) && less(node->entry, b)) return lowest_common_ancestor(node->right, a, b);
 
-        else { return node; }
+        return node;
     }
 
     struct node_interval_t {
@@ -288,11 +284,9 @@ class basic_avl_node {
             return result;
         }
 
-        else if (less(node->entry, low))
-            return range(node->right, low, high, callback);
+        if (less(node->entry, low)) return range(node->right, low, high, callback);
 
-        else
-            return range(node->left, low, high, callback);
+        return range(node->left, low, high, callback);
     }
 
     template <typename comparable_type_>
@@ -402,8 +396,7 @@ class basic_avl_node {
         if (balance > 1 && less(comparable, node->left->entry)) return rotate_right(node);
 
         // Right Right Case
-        else if (balance < -1 && less(node->right->entry, comparable))
-            return rotate_left(node);
+        else if (balance < -1 && less(node->right->entry, comparable)) return rotate_left(node);
 
         // Left Right Case
         else if (balance > 1 && less(node->left->entry, comparable)) {
@@ -415,8 +408,7 @@ class basic_avl_node {
             node->right = rotate_right(node->right);
             return rotate_left(node);
         }
-        else
-            return node;
+        else return node;
     }
 
     template <typename comparable_type_, typename callback_found_type_, typename callback_make_type_>
@@ -504,16 +496,14 @@ class basic_avl_node {
         }
 
         // Right Right Case
-        else if (balance < -1 && get_balance(node->right) <= 0)
-            return rotate_left(node);
+        else if (balance < -1 && get_balance(node->right) <= 0) return rotate_left(node);
 
         // Right Left Case
         else if (balance < -1 && get_balance(node->right) > 0) {
             node->right = rotate_right(node->right);
             return rotate_left(node);
         }
-        else
-            return node;
+        else return node;
     }
 
     /**
@@ -1223,11 +1213,24 @@ class basic_avl_tree {
         basic_avl_tree *tree_ = nullptr;
         node_t *node_ptr_ = nullptr;
 
+        extract_result_t() = default;
+        extract_result_t(basic_avl_tree *tree, node_t *node) noexcept : tree_(tree), node_ptr_(node) {}
+
         ~extract_result_t() noexcept {
             if (node_ptr_) tree_->allocator_.deallocate(node_ptr_, 1);
         }
         extract_result_t(extract_result_t const &) = delete;
         extract_result_t &operator=(extract_result_t const &) = delete;
+        extract_result_t(extract_result_t &&other) noexcept
+            : tree_(other.tree_), node_ptr_(std::exchange(other.node_ptr_, nullptr)) {}
+        extract_result_t &operator=(extract_result_t &&other) noexcept {
+            if (this != &other) {
+                if (node_ptr_) tree_->allocator_.deallocate(node_ptr_, 1);
+                tree_ = other.tree_;
+                node_ptr_ = std::exchange(other.node_ptr_, nullptr);
+            }
+            return *this;
+        }
         explicit operator bool() const noexcept { return node_ptr_; }
         node_t *release() noexcept { return std::exchange(node_ptr_, nullptr); }
     };

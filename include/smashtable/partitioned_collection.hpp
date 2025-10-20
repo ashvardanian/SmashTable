@@ -270,6 +270,13 @@ class partitioned_collection {
                                   std::forward<callback_missing_type_>(callback_missing));
         }
 
+        template <typename comparable_type_ = identifier_t>
+        bool contains(comparable_type_ &&comparable) const noexcept {
+            std::size_t part_idx = bucket(identifier_t(comparable));
+            shared_lock_t _ {store_.mutexes_[part_idx]};
+            return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
+        }
+
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -368,6 +375,13 @@ class partitioned_collection {
         parts_[part_idx].find(std::forward<comparable_type_>(comparable),
                               std::forward<callback_found_type_>(callback_found),
                               std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    template <typename comparable_type_ = identifier_t>
+    bool contains(comparable_type_ &&comparable) const noexcept {
+        std::size_t part_idx = bucket(identifier_t(comparable));
+        shared_lock_t _ {mutexes_[part_idx]};
+        return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,

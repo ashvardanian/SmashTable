@@ -1,5 +1,5 @@
-#include <smashtable/atomic_standard_set.hpp>
-#include <smashtable/atomic_avl_tree.hpp>
+#include <smashtable/transactional_std_set.hpp>
+#include <smashtable/transactional_avl_tree.hpp>
 #include <smashtable/locked_collection.hpp>
 #include <smashtable/partitioned_collection.hpp>
 
@@ -17,10 +17,10 @@ void api() {
     // Head state
     auto container = *container_type_::make();
     _ = container.upsert(element_t {});
-    _ = container.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
-    _ = container.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
-    _ = container.range(identifier_t {}, identifier_t {}, [](element_t const &) noexcept {});
-    _ = container.erase_range(identifier_t {}, identifier_t {}, [](element_t const &) noexcept {});
+    container.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    container.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    container.range(identifier_t {}, identifier_t {}, [](element_t const &) noexcept {});
+    container.erase_range(identifier_t {}, identifier_t {}, [](element_t const &) noexcept {});
     _ = container.clear();
     _ = container.size();
 
@@ -29,8 +29,8 @@ void api() {
     _ = txn.upsert(element_t {});
     _ = txn.watch(identifier_t {});
     _ = txn.erase(identifier_t {});
-    _ = txn.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
-    _ = txn.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    txn.find(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
+    txn.upper_bound(identifier_t {}, [](element_t const &) noexcept {}, []() noexcept {});
     _ = txn.stage();
     _ = txn.rollback();
     _ = txn.commit();
@@ -39,17 +39,17 @@ void api() {
     // Machine Learning
     std::random_device random_device;
     std::mt19937 random_generator(random_device());
-    _ = container.sample_range( //
+    container.sample_range( //
         identifier_t {}, identifier_t {}, random_generator, [](element_t const &) noexcept {});
 
     std::size_t count_seen = 0;
     std::array<element_t, 16> reservoir;
-    _ = container.sample_range( //
+    container.sample_range( //
         identifier_t {}, identifier_t {}, random_generator, count_seen, reservoir.size(), reservoir.data());
 
     // Exports
     element_t result;
-    _ = container.find(identifier_t {}, copy_to(result), no_op_t {});
+    container.find(identifier_t {}, copy_to(result), no_op_t {});
 }
 
 struct pair_t {
@@ -70,20 +70,15 @@ struct pair_compare_t {
 
 int main() {
 
-    using stl_t = atomic_standard_set<pair_t, pair_compare_t>;
+    using stl_t = transactional_std_set<pair_t, pair_compare_t>;
     api<stl_t>();
     api<locked_collection<stl_t>>();
     api<partitioned_collection<stl_t>>();
 
-    using avl_t = atomic_avl_tree<pair_t, pair_compare_t>;
+    using avl_t = transactional_avl_tree<pair_t, pair_compare_t>;
     api<avl_t>();
     api<locked_collection<avl_t>>();
     api<partitioned_collection<avl_t>>();
-
-    // using mvcc_t = atomic_standard_set<pair_t, pair_compare_t>;
-    // api<mvcc_t>();
-    // api<locked_collection<mvcc_t>>();
-    // api<partitioned_collection<mvcc_t>>();
 
     return 0;
 }
