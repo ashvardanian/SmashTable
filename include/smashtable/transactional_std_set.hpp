@@ -1,7 +1,7 @@
 /**
- *  @brief  Transactional set container with ACID semantics, built on `std::set` for baseline reference.
- *          Provides 2-phase commit transactions with optimistic concurrency control through watch/CAS operations.
- *          All operations use callback-based APIs and are exception-safe via `noexcept` wrappers.
+ *  @brief  Transactional set container with ACID semantics, built on @c std::set for baseline reference.
+ *    Provides 2-phase commit transactions with optimistic concurrency control through watch/CAS operations.
+ *    All operations use callback-based APIs and are exception-safe via @c noexcept wrappers.
  *
  *  @file   transactional_std_set.hpp
  *  @author Ash Vardanian
@@ -40,7 +40,7 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
 
 /**
  *  @brief  Transactional set providing ACID semantics with 2-phase commit and watch/CAS operations.
- *          Built on `std::set` as a baseline reference implementation. Not thread-safe by itself.
+ *    Built on @c std::set as a baseline reference implementation. Not thread-safe by itself.
  *
  *  @section Design Goals
  *
@@ -60,12 +60,11 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *
  *  @section API Overview
  *
- *  - All lookups are heterogeneous, meaning you can provide any type, that is comparable to the @p element_type_.
- *    This allows for greater flexibility in how you interact with the set. Just define `using is_transparent = void`
- *    in your comparator, to mark support.
+ *  - All lookups are heterogeneous: you can provide any type comparable to @p element_type_. Your comparator
+ *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
  *  - No iterators are provided to keep the implementation simple and avoid complexity of maintaining persistent
  *    iterator validity across transactions and modifications.
- *  - All operations use callback-based APIs for consistency and exception safety via `noexcept` wrappers.
+ *  - All operations use callback-based APIs for consistency and exception safety via @c noexcept wrappers.
  *
  *  @subsection Insert Strategies
  *
@@ -77,8 +76,8 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  | insert_if_missing()  | Skips (success) | success_k     | Lenient: insert only if absent, else no-op    |
  *  | insert_or_assign()   | Overwrites      | success_k     | Upsert: always update regardless of existence |
  *
- *  The `upsert` method is an alias for `insert_or_assign`, following a more DBMS-like naming convention.
- *  The `try_emplace` is deleted in favor of the more explicit `insert_if_missing`.
+ *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming convention.
+ *  The @c try_emplace is deleted in favor of the more explicit @c insert_if_missing.
  *
  *  @tparam element_type_    Type of the elements stored in the set.
  *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
@@ -152,25 +151,23 @@ class transactional_std_set {
         /**
          *  @brief Checks if this transaction has any pending changes (upserts or erases).
          *  @return bool True if there are pending changes, false otherwise.
-         *
          */
         bool has_changes() const noexcept { return !changes_.empty(); }
 
         /**
          *  @brief Returns the number of pending changes in this transaction.
-         *  @return std::size_t The count of staged changes (including both upserts and erases).
-         *
+         *  @return std::size_t Count of staged changes (upserts and erases).
          */
         std::size_t changes_count() const noexcept { return changes_.size(); }
 
         /**
          *  @brief Stages an insert operation only if the key doesn't exist. Fails if key exists.
-         *         Checks both transaction changes and main store for existence.
+         *    Checks both transaction changes and main store for existence.
          *
-         *  @param[in] element           Element to insert (moved into the transaction).
+         *  @param[in] element Element to insert (moved into the transaction).
          *  @param[in] callback_inserted Callback invoked if element will be inserted.
-         *  @param[in] callback_exists   Callback invoked if key already exists (insertion failed).
-         *  @return status_t             Success, or `invalid_argument_k` if key exists, or OOM error.
+         *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
+         *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_exists_type_ = no_op_t>
         [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -214,12 +211,12 @@ class transactional_std_set {
 
         /**
          *  @brief Stages an insert operation only if key is missing. Silently skips if key exists (no error).
-         *         Checks both transaction changes and main store for existence.
+         *    Checks both transaction changes and main store for existence.
          *
-         *  @param element               Element to insert (moved into the transaction).
-         *  @param callback_inserted     Callback invoked if element will be inserted (key doesn't exist).
-         *  @param callback_skipped      Callback invoked if key already exists (insertion skipped).
-         *  @return status_t             Always succeeds (unless OOM). Returns success even if key exists.
+         *  @param[in] element Element to insert (moved into the transaction).
+         *  @param[in] callback_inserted Callback invoked if element will be inserted (key doesn't exist).
+         *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
+         *  @return status_t Always succeeds (unless OOM). Success returned even if key exists.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_skipped_type_ = no_op_t>
         [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -262,13 +259,12 @@ class transactional_std_set {
 
         /**
          *  @brief Stages an insert or assign operation for the given element. Always succeeds.
-         *         Overwrites existing element if key exists. Changes visible after `stage()` and `commit()`.
+         *    Overwrites existing element if key exists. Changes visible after @c stage() and @c commit().
          *
-         *  @param element               Element to insert or assign (moved into the transaction).
-         *  @param callback_inserted     Optional callback invoked if element will be inserted (key doesn't exist).
-         *  @param callback_assigned     Optional callback invoked if element will be assigned (key exists, value
-         * updated).
-         *  @return status_t             Success or error code (e.g., out of memory).
+         *  @param[in] element Element to insert or assign (moved into the transaction).
+         *  @param[in] callback_inserted Callback invoked if element will be inserted (key doesn't exist).
+         *  @param[in] callback_assigned Callback invoked if element will be assigned (key exists, value updated).
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_assigned_type_ = no_op_t>
         [[nodiscard]] status_t insert_or_assign(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -305,18 +301,17 @@ class transactional_std_set {
 
         /**
          *  @brief Alias for insert_or_assign(). Stages an insert or assign operation.
-         *  @param element               Element to insert or assign (moved into the transaction).
-         *  @return status_t             Success or error code (e.g., out of memory).
+         *  @param[in] element Element to insert or assign (moved into the transaction).
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
         /**
          *  @brief Stages a delete operation for the element with the given identifier.
-         *         The deletion is not visible until after `stage()` and `commit()`.
+         *    The deletion is not visible until after @c stage() and @c commit().
          *
-         *  @param id                    Identifier of the element to erase.
-         *  @return status_t             Success or error code (e.g., out of memory).
-         *
+         *  @param[in] id Identifier of the element to erase.
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
             return invoke_safely([&] {
@@ -334,9 +329,8 @@ class transactional_std_set {
         /**
          *  @brief Pre-allocates memory for watch operations to reduce allocation failures during transaction.
          *
-         *  @param size                  Expected number of watches.
-         *  @return status_t             Success or error code (e.g., out of memory).
-         *
+         *  @param[in] size Expected number of watches.
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t reserve(std::size_t size) noexcept {
             return invoke_safely([&] { watches_.reserve(size); });
@@ -344,11 +338,10 @@ class transactional_std_set {
 
         /**
          *  @brief Registers a watch on the element with the given identifier for optimistic concurrency control.
-         *         The transaction will fail at `stage()` if the watched element changes.
+         *    The transaction will fail at @c stage() if the watched element changes.
          *
-         *  @param id                    Identifier of the element to watch.
-         *  @return status_t             Success or error code (e.g., out of memory).
-         *
+         *  @param[in] id Identifier of the element to watch.
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
             return store_ref().find(
@@ -361,11 +354,10 @@ class transactional_std_set {
 
         /**
          *  @brief Registers a watch on an already-fetched entry for optimistic concurrency control.
-         *         The transaction will fail at `stage()` if the watched element changes.
+         *    The transaction will fail at @c stage() if the watched element changes.
          *
-         *  @param entry                 Entry to watch (typically from a previous find/lookup).
-         *  @return status_t             Success or error code (e.g., out of memory).
-         *
+         *  @param[in] entry Entry to watch (typically from a previous find/lookup).
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t watch(entry_t const &entry) noexcept {
             return invoke_safely(
@@ -373,15 +365,14 @@ class transactional_std_set {
         }
 
         /**
-         *  @brief Finds a member @b equal to the given @ref `comparable`.
-         *         You may want to `watch()` the received object, it's not done by default.
-         *         Unlike `transactional_std_set::find()`, will include the entries added to this transaction.
+         *  @brief Finds a member @b equal to the given @p comparable.
+         *    You may want to @c watch() the received object, it's not done by default.
+         *    Unlike @c transactional_std_set::find(), will include entries added to this transaction.
          *
-         *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-         *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-         *  @param callback_missing      Callback to be triggered, if nothing was found.
-         *  @return status_t             Success or error code.
-         *
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -397,14 +388,13 @@ class transactional_std_set {
         }
 
         /**
-         *  @brief Checks if a member @b equal to the given @ref `comparable` exists, including transaction changes.
-         *         Convenience wrapper around `find()` for existence checks.
+         *  @brief Checks if a member @b equal to the given @p comparable exists, including transaction changes.
+         *    Convenience wrapper around @c find() for existence checks.
          *
-         *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-         *  @param callback_found        Callback to receive an `element_t const &` if found. Ideally, `noexcept.`
-         *  @param callback_missing      Callback to be triggered, if nothing was found.
-         *  @return status_t             Success or error code.
-         *
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t const & if found. Ideally @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -415,15 +405,14 @@ class transactional_std_set {
         }
 
         /**
-         *  @brief Finds the first member @b greater or equal to the given @ref `comparable`.
-         *         You may want to `watch()` the received object, it's not done by default.
-         *         Unlike `transactional_std_set::lower_bound()`, will include the entries added to this transaction.
+         *  @brief Finds the first member @b greater or equal to the given @p comparable.
+         *    You may want to @c watch() the received object, it's not done by default.
+         *    Unlike @c transactional_std_set::lower_bound(), includes entries added to this transaction.
          *
-         *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-         *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-         *  @param callback_missing      Callback to be triggered, if nothing was found.
-         *  @return status_t             Success or error code.
-         *
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -473,15 +462,14 @@ class transactional_std_set {
         }
 
         /**
-         *  @brief Finds the first member @b greater than the given @ref `comparable`.
-         *         You may want to `watch()` the received object, it's not done by default.
-         *         Unlike `transactional_std_set::upper_bound()`, will include the entries added to this transaction.
+         *  @brief Finds the first member @b greater than the given @p comparable.
+         *    You may want to @c watch() the received object, it's not done by default.
+         *    Unlike @c transactional_std_set::upper_bound(), includes entries added to this transaction.
          *
-         *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-         *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-         *  @param callback_missing      Callback to be triggered, if nothing was found.
-         *  @return status_t             Success or error code.
-         *
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -531,14 +519,13 @@ class transactional_std_set {
         }
 
         /**
-         *  @brief Iterates over all entries in the range [@ref `lower`, @ref `upper`), including transaction changes.
-         *         Degrades to `equal_range()` if @ref `lower` and @ref `upper` are the same.
+         *  @brief Iterates over all entries in the range [ @p lower, @p upper), including transaction changes.
+         *    Degrades to @c equal_range() if @p lower and @p upper are the same.
          *
-         *  @param lower                 Lower bound of the range (inclusive).
-         *  @param upper                 Upper bound of the range (exclusive).
-         *  @param callback              Callback invoked for each element in range.
-         *  @return status_t             Success or error code.
-         *
+         *  @param[in] lower Lower bound of the range (inclusive).
+         *  @param[in] upper Upper bound of the range (exclusive).
+         *  @param[in] callback Callback invoked for each element in range.
+         *  @return status_t Success or error code.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -571,10 +558,9 @@ class transactional_std_set {
 
         /**
          *  @brief Validates watches and stages all changes to the main store, making them visible but uncommitted.
-         *         Fails with `errc_t::consistency_k` if any watched elements changed.
+         *    Fails with @c errc_t::consistency_k if any watched elements changed.
          *
-         *  @return status_t             Success or consistency error if watches failed validation.
-         *
+         *  @return status_t Success, or consistency error if watches failed validation.
          */
         [[nodiscard]] status_t stage() noexcept {
             // First, check if we have any collisions by validating watches.
@@ -610,11 +596,10 @@ class transactional_std_set {
 
         /**
          *  @brief Resets the transaction to a clean state, discarding all changes and watches.
-         *         If transaction was staged, all staged changes are removed from the main store.
-         *         A new generation is assigned for reuse of this transaction.
+         *    If transaction was staged, all staged changes are removed from the main store.
+         *    A new generation is assigned for reuse of this transaction.
          *
-         *  @return status_t             Always succeeds.
-         *
+         *  @return status_t Always succeeds.
          */
         [[nodiscard]] status_t reset() noexcept {
             // If the transaction was "staged",
@@ -637,10 +622,9 @@ class transactional_std_set {
 
         /**
          *  @brief Rolls back a previously staged transaction, moving changes from the store back to the transaction.
-         *         Can only be called on staged transactions. Watches are cleared, new generation is assigned.
+         *    Can only be called on staged transactions. Watches are cleared, new generation is assigned.
          *
-         *  @return status_t             Success, or `operation_not_permitted_k` if transaction is not staged.
-         *
+         *  @return status_t Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
@@ -662,10 +646,9 @@ class transactional_std_set {
 
         /**
          *  @brief Commits a previously staged transaction, making all changes permanently visible.
-         *         Can only be called on staged transactions. Removes older versions of modified entries.
+         *    Can only be called on staged transactions. Removes older versions of modified entries.
          *
-         *  @return status_t             Success, or `operation_not_permitted_k` if transaction is not staged.
-         *
+         *  @return status_t Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         [[nodiscard]] status_t commit() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
@@ -697,8 +680,8 @@ class transactional_std_set {
 
     /**
      *  @brief Finds the latest (highest generation) entry for watch validation.
-     *         Unlike find(), this checks ALL entries including staged (invisible) ones.
-     *         This is critical for detecting write-write conflicts with concurrent transactions.
+     *    Unlike find(), this checks ALL entries including staged (invisible) ones.
+     *    This is critical for detecting write-write conflicts with concurrent transactions.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -766,8 +749,8 @@ class transactional_std_set {
      *  so we need a place to return all the objects, if the operation fails.
      *  With R-Value, the batch would be lost.
      *
-     *  @param[inout] sources   Collection of entries to import.
-     *  @return status_t        Can fail, if out of memory.
+     *  @param[inout] sources Collection of entries to import.
+     *  @return status_t Can fail, if out of memory.
      */
     [[nodiscard]] status_t insert_or_assign(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
@@ -793,24 +776,21 @@ class transactional_std_set {
     /**
      *  @brief Returns the number of visible (committed) non-deleted elements in the container.
      *  @return std::size_t Number of elements.
-     *
      */
     [[nodiscard]] std::size_t size() const noexcept { return visible_count_ - visible_deleted_count_; }
 
     /**
      *  @brief Checks if the container has no visible elements.
      *  @return bool True if empty, false otherwise.
-     *
      */
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     /**
      *  @brief Returns the number of elements with key equal to the specified argument.
-     *         For unique-key containers like this, returns either 0 or 1.
+     *    For unique-key containers like this, returns either 0 or 1.
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @return std::size_t          Number of elements with key equal to @p comparable (0 or 1).
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @return std::size_t Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
@@ -825,10 +805,9 @@ class transactional_std_set {
 
     /**
      *  @brief Factory method to create a new transactional set without throwing exceptions.
-     *         Returns an empty optional on allocation failure.
+     *    Returns an empty optional on allocation failure.
      *
      *  @return std::optional<store_t> Container instance or empty optional on failure.
-     *
      */
     [[nodiscard]] static std::optional<store_t> make() noexcept {
         std::optional<store_t> result;
@@ -838,11 +817,10 @@ class transactional_std_set {
 
     /**
      *  @brief Creates a new transaction with a fresh generation number.
-     *         Transaction can be reset and reused after commit/rollback to avoid reallocations.
-     *         Returns empty optional on allocation failure.
+     *    Transaction can be reset and reused after commit/rollback to avoid reallocations.
+     *    Returns empty optional on allocation failure.
      *
      *  @return std::optional<transaction_t> Transaction instance or empty optional on failure.
-     *
      */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
         std::optional<transaction_t> result;
@@ -852,12 +830,12 @@ class transactional_std_set {
 
     /**
      *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
-     *         This is the strict insert semantics matching std::map::insert().
+     *    This is the strict insert semantics matching std::map::insert().
      *
-     *  @param element               Element to insert (moved into the container).
-     *  @param callback_inserted     Callback invoked if element was inserted.
-     *  @param callback_exists       Callback invoked if key already exists (insertion failed).
-     *  @return status_t             Success, or `invalid_argument_k` if key exists, or OOM error.
+     *  @param[in] element Element to insert (moved into the container).
+     *  @param[in] callback_inserted Callback invoked if element was inserted.
+     *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
+     *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_exists_type_ = no_op_t>
     [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -895,12 +873,12 @@ class transactional_std_set {
 
     /**
      *  @brief Atomically inserts an element only if missing. Silently skips if key exists (no error).
-     *         This is the "silent no-op" insert semantics.
+     *    This is the "silent no-op" insert semantics.
      *
-     *  @param element               Element to insert (moved into the container).
-     *  @param callback_inserted     Callback invoked if element was inserted (key didn't exist).
-     *  @param callback_skipped      Callback invoked if key already exists (insertion skipped).
-     *  @return status_t             Always succeeds (unless OOM). Returns success even if key exists.
+     *  @param[in] element Element to insert (moved into the container).
+     *  @param[in] callback_inserted Callback invoked if element was inserted (key didn't exist).
+     *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
+     *  @return status_t Always succeeds (unless OOM). Success returned even if key exists.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_skipped_type_ = no_op_t>
     [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -938,12 +916,12 @@ class transactional_std_set {
 
     /**
      *  @brief Atomically inserts or updates an element. Always succeeds (unless OOM).
-     *         Overwrites existing element if key exists. Matches std::map::insert_or_assign() semantics.
+     *    Overwrites existing element if key exists. Matches std::map::insert_or_assign() semantics.
      *
-     *  @param element               Element to insert or assign (moved into the container).
-     *  @param callback_inserted     Optional callback invoked if element was inserted (key didn't exist).
-     *  @param callback_assigned     Optional callback invoked if element was assigned (key existed, value updated).
-     *  @return status_t             Success or error code (e.g., out of memory).
+     *  @param[in] element Element to insert or assign (moved into the container).
+     *  @param[in] callback_inserted Callback invoked if element was inserted (key didn't exist).
+     *  @param[in] callback_assigned Callback invoked if element was assigned (key existed, value updated).
+     *  @return status_t Success or error code (e.g., out of memory).
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_assigned_type_ = no_op_t>
     [[nodiscard]] status_t insert_or_assign(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -977,30 +955,29 @@ class transactional_std_set {
 
     /**
      *  @brief Alias for insert_or_assign(). Atomically inserts or updates an element.
-     *  @param element               Element to insert or assign (moved into the container).
-     *  @return status_t             Success or error code (e.g., out of memory).
+     *  @param[in] element Element to insert or assign (moved into the container).
+     *  @return status_t Success or error code (e.g., out of memory).
      */
     [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
     /**
      *  @brief Deleted: Use insert_if_missing() instead for "insert only if missing" semantics.
-     *         The std::map::try_emplace() name doesn't clearly communicate insert failure strategies.
-     *         We provide three explicit alternatives:
-     *           - insert()           : Fails with error if key exists
-     *           - insert_if_missing(): Silently skips if key exists (use this instead of try_emplace)
-     *           - insert_or_assign() : Always overwrites if key exists
+     *    The std::map::try_emplace() name doesn't clearly communicate insert failure strategies.
+     *    We provide three explicit alternatives:
+     *      - insert()           : Fails with error if key exists
+     *      - insert_if_missing(): Silently skips if key exists (use this instead of try_emplace)
+     *      - insert_or_assign() : Always overwrites if key exists
      */
     template <typename... args_types_>
     status_t try_emplace(args_types_ &&...) noexcept = delete;
 
     /**
      *  @brief Atomically inserts or assigns a batch of elements. Either all succeed or all fail.
-     *         Iterator dereferencing should return R-value references (use `std::make_move_iterator()`).
+     *    Iterator dereferencing should return R-value references (use @c std::make_move_iterator()).
      *
-     *  @param begin                 Iterator to the first element.
-     *  @param end                   Iterator past the last element.
-     *  @return status_t             Success or error code (e.g., out of memory).
-     *
+     *  @param[in] begin Iterator to the first element.
+     *  @param[in] end Iterator past the last element.
+     *  @return status_t Success or error code (e.g., out of memory).
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
@@ -1023,9 +1000,9 @@ class transactional_std_set {
 
     /**
      *  @brief Alias for batch insert_or_assign(). Atomically inserts or assigns a batch of elements.
-     *  @param begin                 Iterator to the first element.
-     *  @param end                   Iterator past the last element.
-     *  @return status_t             Success or error code (e.g., out of memory).
+     *  @param[in] begin Iterator to the first element.
+     *  @param[in] end Iterator past the last element.
+     *  @return status_t Success or error code (e.g., out of memory).
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
@@ -1033,13 +1010,12 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Finds a member @b equal to the given @ref `comparable`.
+     *  @brief Finds a member @b equal to the given @p comparable.
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-     *  @param callback_missing      Callback to be triggered, if nothing was found.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -1058,14 +1034,13 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Checks if a member @b equal to the given @ref `comparable` exists.
-     *         Convenience wrapper around `find()` for existence checks.
+     *  @brief Checks if a member @b equal to the given @p comparable exists.
+     *    Convenience wrapper around @c find() for existence checks.
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @param callback_found        Callback to receive an `element_t const &` if found. Ideally, `noexcept.`
-     *  @param callback_missing      Callback to be triggered, if nothing was found.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t const & if found. Ideally @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -1076,13 +1051,12 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Finds the first member @b greater or equal to the given @ref `comparable`.
+     *  @brief Finds the first member @b greater or equal to the given @p comparable.
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-     *  @param callback_missing      Callback to be triggered, if nothing was found.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -1100,13 +1074,12 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Finds the first member @b greater than the given @ref `comparable`.
+     *  @brief Finds the first member @b greater than the given @p comparable.
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @param callback_found        Callback to receive an `element_t const &`. Ideally, `noexcept.`
-     *  @param callback_missing      Callback to be triggered, if nothing was found.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -1125,12 +1098,11 @@ class transactional_std_set {
 
     /**
      *  @brief Finds all elements equal to a single key. Invokes callback for each matching element.
-     *         For sets with unique keys, this returns at most one element (0 or 1).
+     *    For sets with unique keys, this returns at most one element (0 or 1).
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @param callback              Callback invoked for each element equal to the key.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback Callback invoked for each element equal to the key.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
@@ -1148,14 +1120,13 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Iterates over all entries in the range [@ref `lower`, @ref `upper`). Const version.
-     *         Unlike `equal_range()`, this takes TWO keys and returns all entries between them.
+     *  @brief Iterates over all entries in the range [ @p lower, @p upper). Const version.
+     *    Unlike @c equal_range(), this takes TWO keys and returns all entries between them.
      *
-     *  @param lower                 Lower bound (inclusive).
-     *  @param upper                 Upper bound (exclusive).
-     *  @param callback              Callback invoked for each element in range.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
+     *  @param[in] callback Callback invoked for each element in range.
+     *  @return status_t Success or error code.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -1170,14 +1141,13 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Iterates over all entries in the range [@ref `lower`, @ref `upper`), allowing in-place modification.
-     *         Degrades to `equal_range()` if @ref `lower` and @ref `upper` are the same. Non-const version.
+     *  @brief Iterates over all entries in the range [ @p lower, @p upper), allowing in-place modification.
+     *    Degrades to @c equal_range() if @p lower and @p upper are the same. Non-const version.
      *
-     *  @param lower                 Lower bound (inclusive).
-     *  @param upper                 Upper bound (exclusive).
-     *  @param callback              Callback invoked for each mutable element in range.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
+     *  @param[in] callback Callback invoked for each mutable element in range.
+     *  @return status_t Success or error code.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -1196,13 +1166,12 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Erases a single entry matching the given @ref `comparable`.
+     *  @brief Erases a single entry matching the given @p comparable.
      *
-     *  @param comparable            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
-     *  @param callback_found        Callback to receive the erased `element_t const &`. Ideally, `noexcept.`
-     *  @param callback_missing      Callback to be triggered, if nothing was found.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive the erased @c element_t const &. Ideally @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -1231,13 +1200,12 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Erases all the entries falling in between the @ref `lower` and the @ref `upper`.
+     *  @brief Erases all the entries falling in between the @p lower and the @p upper.
      *
-     *  @param lower                 Lower bound of the range.
-     *  @param upper                 Upper bound of the range (exclusive).
-     *  @param callback              Optional callback invoked for each erased element.
-     *  @return status_t             Success or error code.
-     *
+     *  @param[in] lower Lower bound of the range.
+     *  @param[in] upper Upper bound of the range (exclusive).
+     *  @param[in] callback Optional callback invoked for each erased element.
+     *  @return status_t Success or error code.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -1252,8 +1220,7 @@ class transactional_std_set {
     /**
      *  @brief Removes all elements from the container and resets generation counter.
      *
-     *  @return status_t             Always succeeds.
-     *
+     *  @return status_t Always succeeds.
      */
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
@@ -1264,29 +1231,27 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Hints to the container to pre-allocate memory. No-op for `std::set`-based implementation.
-     *         Doesn't guarantee subsequent upserts won't fail with "out of memory".
+     *  @brief Hints to the container to pre-allocate memory. No-op for @c std::set-based implementation.
+     *    Doesn't guarantee subsequent upserts won't fail with "out of memory".
      *
-     *  @param size                  Suggested capacity (ignored for std::set).
-     *  @return status_t             Always succeeds.
+     *  @param[in] size Suggested capacity (ignored for std::set).
+     *  @return status_t Always succeeds.
      *
-     *  @note This is a no-op because `std::set` doesn't support reserving capacity.
-     *
+     *  @note This is a no-op because @c std::set doesn't support reserving capacity.
      */
     [[nodiscard]] status_t reserve(std::size_t) noexcept { return {}; }
 
     /**
-     *  @brief Uniformly samples a single random entry from the range [@ref `lower`, @ref `upper`).
-     *         Uses a two-pass algorithm: first counts entries, then selects random offset.
+     *  @brief Uniformly samples a single random entry from the range [ @p lower, @p upper).
+     *    Uses a two-pass algorithm: first counts entries, then selects random offset.
      *
-     *  @param lower                 Lower bound (inclusive).
-     *  @param upper                 Upper bound (exclusive).
-     *  @param generator             Random number generator (e.g., std::mt19937).
-     *  @param callback              Callback to receive the sampled element.
-     *  @return status_t             Success or error code.
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
+     *  @param[inout] generator Random number generator (e.g., std::mt19937).
+     *  @param[in] callback Callback to receive the sampled element.
+     *  @return status_t Success or error code.
      *
      *  @note Inefficient for large ranges. Use reservoir sampling overload for multiple samples.
-     *
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1308,17 +1273,16 @@ class transactional_std_set {
     }
 
     /**
-     *  @brief Uniformly samples entries from [@ref `lower`, @ref `upper`) using reservoir sampling algorithm.
-     *         Fills a reservoir buffer with up to @ref `reservoir_capacity` randomly selected elements.
+     *  @brief Uniformly samples entries from [ @p lower, @p upper) using reservoir sampling algorithm.
+     *    Fills a reservoir buffer with up to @p reservoir_capacity randomly selected elements.
      *
-     *  @param[in]     lower              Lower bound (inclusive).
-     *  @param[in]     upper              Upper bound (exclusive).
-     *  @param[inout]  generator          Random number generator (e.g., std::mt19937).
-     *  @param[inout]  seen               Count of entries processed (can span multiple calls).
-     *  @param[in]     reservoir_capacity Maximum number of samples to collect.
-     *  @param[out]    reservoir          Random access iterator to output buffer.
-     *  @return status_t                  Success or error code.
-     *
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
+     *  @param[inout] generator Random number generator (e.g., std::mt19937).
+     *  @param[inout] seen Count of entries processed (can span multiple calls).
+     *  @param[in] reservoir_capacity Maximum number of samples to collect.
+     *  @param[out] reservoir Random access iterator to output buffer.
+     *  @return status_t Success or error code.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1345,7 +1309,7 @@ class transactional_std_set {
 };
 
 /**
- *  @brief Unlike `std::set<>::merge`, this function overwrites existing values.
+ *  @brief Unlike @c std::set<>::merge, this function overwrites existing values.
  *
  *  https://en.cppreference.com/w/cpp/container/set#Member_types
  *  https://en.cppreference.com/w/cpp/container/set/insert

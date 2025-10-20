@@ -20,7 +20,7 @@ constexpr std::array<type_, count_> move_to_array_impl(type_ (&a)[count_], std::
 }
 
 /**
- *  @brief This is a slightly tweaked implementation of `std::to_array` coming in C++20.
+ *  @brief This is a slightly tweaked implementation of @c std::to_array coming in C++20.
  *  @see https://en.cppreference.com/w/cpp/container/array/to_array
  */
 template <typename type_, std::size_t count_>
@@ -29,9 +29,9 @@ constexpr std::array<type_, count_> move_to_array(type_ (&a)[count_]) noexcept {
 }
 
 /**
- *  @brief Takes a generator that produces `bool`-convertible and dereference-able objects like `std::optional`,
- *  and builds up fixed-size of array of such object, but only if all were successfully built. If type_ least one
- *  generator call fails, the entire resulting `std::optional` is returned to NULL state.
+ *  @brief Takes a generator that produces @c bool -convertible and dereference-able objects like @c std::optional,
+ *    and builds up fixed-size of array of such object, but only if all were successfully built. If type_ least one
+ *    generator call fails, the entire resulting @c std::optional is returned to NULL state.
  */
 template <typename type_, std::size_t count_, typename generator_type_>
 static std::optional<std::array<type_, count_>> generate_array_safely(generator_type_ &&generator) noexcept {
@@ -57,9 +57,12 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
 
 /**
  *  @brief Hashes inputs to route them into separate sets, which can
- *  be concurrent, or have a separate state-full allocator attached.
+ *    be concurrent, or have a separate state-full allocator attached.
  *
+ *  @tparam collection_type_ Type of the underlying collection, like @c transactional_std_set.
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
+ *  @tparam shared_mutex_type_ Mutex type to use for partition locking, like @c std::shared_mutex.
+ *  @tparam parts_count_ Number of partitions to split the collection into, default 16.
  */
 template <typename collection_type_, typename hash_type_ = std::hash<typename collection_type_::identifier_t>,
           typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_count_ = 16>
@@ -114,8 +117,7 @@ class partitioned_collection {
     }
 
     /**
-     * @brief Walks around all the parts, trying to perform operations on them,
-     * until all the tasks are exhausted.
+     * @brief Walks around all the parts, trying to perform operations on them, until all the tasks are exhausted.
      */
     template <typename lock_type_, typename parts_type_, typename mutexes_type_, typename callable_type_>
     static status_t for_all(parts_type_ &parts, mutexes_type_ &mutexes, callable_type_ &&callable) noexcept {

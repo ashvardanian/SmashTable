@@ -14,7 +14,7 @@ namespace ashvardanian::smashtable {
  *  @brief Wraps and protects any "Consistent Set" under a shared mutex.
  *
  *  The collection itself becomes @b thread-safe, but the transaction don't!
- *  Detects dead-locks and reports `operation_would_block_k`.
+ *  Detects dead-locks and reports @c operation_would_block_k.
  */
 template <typename collection_type_, typename shared_mutex_type_ = std::shared_mutex>
 class locked_collection {

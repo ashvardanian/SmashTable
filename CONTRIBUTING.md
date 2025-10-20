@@ -20,7 +20,7 @@ For more complex functions with many parameters, use the following template:
 
 ```cpp
 /**
- *  @brief Some function similar to STL's @c map::try_emplace().
+ *  @brief Some function similar to STL's @c std::map::try_emplace().
  *  @see https://en.cppreference.com/w/cpp/container/map/try_emplace.html
  *  @sa @c insert_if_missing() provides the same functionality under a less ambiguous name.
  *  @param[in] key Object comparable and convertible to @c element_t.
@@ -33,20 +33,23 @@ For multi-line descriptions, use 4 spaces for continuation indents:
 
 ```cpp
 /**
- *  @brief Returns the number of elements with key equal to the specified argument.
- *    For unique-key containers like this, returns either 0 or 1.
+ *  @brief Erases all elements in the range [first, last) using const_iterators.
+ *    Unlike STL, returns both the iterator following the last erased element and a status code.
+ *    On error, some elements may have been erased (partial erase, matches STL's basic guarantee).
  *
- *  @param[in] comparable Object comparable to @c element_t.
- *  @return std::size_t Number of elements with key equal to @p comparable (0 or 1).
+ *  @param[in] first Beginning of range to erase.
+ *  @param[in] last End of range to erase (not erased).
+ *  @return erase_result_t Contains iterator equal to @p last and status of the operation.
+ *    Returns first error encountered, or success if all elements erased.
  */
 ```
 
-Use `@see` for external references and `@sa` for internal cross-references.
+Use `@see` for external references, `@sa` for internal cross-references, `@note` for attention points.
 Use `@retval` for enumerated return values.
 Mark class template parameters with `@tparam`.
 Mark function parameters with direction indicators: `@param[in]`, `@param[out]`, or `@param[inout]`.
 Mention them with `@p`.
 Mark class/type names and method names with `@c`.
+Put examples or multi-token code snippets in `@code` ... `@endcode` blocks.
 Use `@b` for bold text and `@a` for italics.
-Put examples in `@code` ... `@endcode` blocks.
 Keep whitespaces on both sides of tags - `[ @p example]` not `[@p example]`.

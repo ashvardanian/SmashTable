@@ -1,7 +1,7 @@
 /**
  *  @brief  Transactional AVL tree container with ACID semantics, providing 2-phase commit transactions.
- *          Built on @c basic_avl_tree for performance with optimistic concurrency control through watch/CAS operations.
- *          All operations use callback-based APIs and are exception-free via @c noexcept constraints.
+ *    Built on @c basic_avl_tree for performance with optimistic concurrency control through watch/CAS operations.
+ *    All operations use callback-based APIs and are exception-free via @c noexcept constraints.
  *
  *  @file   transactional_avl_tree.hpp
  *  @author Ash Vardanian
@@ -22,8 +22,8 @@ namespace ashvardanian::smashtable {
 
 /**
  *  @brief  Transactional AVL tree providing ACID semantics with 2-phase commit and watch/CAS operations.
- *          Built on @c basic_avl_tree as a high-performance alternative to STL-based implementations.
- *          Not thread-safe by itself. Lock-free and mutex-free internally. Exception-free via @c noexcept.
+ *    Built on @c basic_avl_tree as a high-performance alternative to STL-based implementations.
+ *    Not thread-safe by itself. Lock-free and mutex-free internally. Exception-free via @c noexcept.
  *
  *  @section Design Goals
  *
@@ -44,7 +44,7 @@ namespace ashvardanian::smashtable {
  *  @section API Overview
  *
  *  - All lookups are heterogeneous: you can provide any type comparable to @p element_type_. Your comparator
- *    MUST define `using is_transparent = void;` to enable this, just like std::map and std::set.
+ *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
  *  - No iterators are provided to keep the implementation simple and avoid complexity of maintaining persistent
  *    iterator validity across transactions and modifications.
  *  - All operations use callback-based APIs for consistency, with all callbacks expected to be @c noexcept.
@@ -59,7 +59,7 @@ namespace ashvardanian::smashtable {
  *  | insert_if_missing()  | Skips (success) | success_k     | Lenient: insert only if absent, else no-op    |
  *  | insert_or_assign()   | Overwrites      | success_k     | Upsert: always update regardless of existence |
  *
- *  The `upsert` method is an alias for `insert_or_assign`, following a more DBMS-like naming convention.
+ *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming convention.
  *
  *  @tparam element_type_    Type of the elements stored in the tree.
  *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
@@ -145,16 +145,16 @@ class transactional_avl_tree {
       public:
         /**
          *  @brief Stages an insert operation only if the key doesn't exist. Fails if key exists.
-         *         Checks both transaction changes and main store for existence.
+         *    Checks both transaction changes and main store for existence.
          *
          *  @param[in] element Element to insert (moved into the transaction).
-         *  @return status_t   Success, or @c invalid_argument_k if key exists, or OOM error.
+         *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
          */
         [[nodiscard]] status_t insert(element_t &&element) noexcept {
             // Check local changes first
             identifier_t id {element};
             auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && !local_it->entry.deleted) return {invalid_argument_k};
+            if (local_it != changes_.end() && !local_it->deleted) return {invalid_argument_k};
 
             // Check main store if not in local changes or was deleted locally
             bool exists_in_store = false;
@@ -175,16 +175,16 @@ class transactional_avl_tree {
 
         /**
          *  @brief Stages an insert operation only if key is missing. Silently skips if key exists (no error).
-         *         Checks both transaction changes and main store for existence.
+         *    Checks both transaction changes and main store for existence.
          *
          *  @param[in] element Element to insert (moved into the transaction).
-         *  @return status_t   Always succeeds (unless OOM). Returns success even if key exists.
+         *  @return status_t Always succeeds (unless OOM). Returns success even if key exists.
          */
         [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
             // Check local changes first
             identifier_t id {element};
             auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && !local_it->entry.deleted) return {success_k};
+            if (local_it != changes_.end() && !local_it->deleted) return {success_k};
 
             // Check main store if not in local changes or was deleted locally
             bool exists_in_store = false;
@@ -204,10 +204,10 @@ class transactional_avl_tree {
 
         /**
          *  @brief Stages an insert or assign operation for the given element. Always succeeds.
-         *         Overwrites existing element if key exists. Changes visible after @c stage() and @c commit().
+         *    Overwrites existing element if key exists. Changes visible after @c stage() and @c commit().
          *
          *  @param[in] element Element to insert or assign (moved into the transaction).
-         *  @return status_t   Success or error code (e.g., out of memory).
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t insert_or_assign(element_t &&element) noexcept {
             entry_t entry;
@@ -222,7 +222,7 @@ class transactional_avl_tree {
         /**
          *  @brief Alias for @c insert_or_assign(). Stages an insert or assign operation.
          *  @param[in] element Element to insert or assign (moved into the transaction).
-         *  @return status_t   Success or error code (e.g., out of memory).
+         *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
@@ -255,20 +255,20 @@ class transactional_avl_tree {
 
         /**
          *  @brief Finds a member @b equal to the given @p comparable.
-         *         You may want to @c watch() the received object, it's not done by default.
-         *         Unlike @c transactional_avl_tree::find(), will include the entries added to this transaction.
+         *    You may want to @c watch() the received object, it's not done by default.
+         *    Unlike @c transactional_avl_tree::find(), will include the entries added to this transaction.
          *
          *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-         *  @return status_t             Success or error code.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept {
             if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
-                !iterator->entry.deleted ? callback_found(iterator->entry) : callback_missing();
+                !iterator->deleted ? callback_found(*iterator) : callback_missing();
                 return {success_k};
             }
             else
@@ -279,10 +279,10 @@ class transactional_avl_tree {
 
         /**
          *  @brief Checks if a member @b equal to the given @p comparable exists, including transaction changes.
-         *         Convenience wrapper around @c find() for existence checks.
+         *    Convenience wrapper around @c find() for existence checks.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @return status_t      Success or error code.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] status_t contains(comparable_type_ &&comparable) const noexcept {
@@ -291,13 +291,13 @@ class transactional_avl_tree {
 
         /**
          *  @brief Finds the first member @b greater or equal to the given @p comparable.
-         *         You may want to @c watch() the received object, it's not done by default.
-         *         Unlike @c transactional_avl_tree::lower_bound(), will include entries added to this transaction.
+         *    You may want to @c watch() the received object, it's not done by default.
+         *    Unlike @c transactional_avl_tree::lower_bound(), will include entries added to this transaction.
          *
          *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-         *  @return status_t             Success or error code.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -305,7 +305,7 @@ class transactional_avl_tree {
                                            callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->entry.deleted) ++internal_iterator;
+            while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
             // we might face an entry that was already deleted from here,
@@ -315,13 +315,13 @@ class transactional_avl_tree {
                 // The simplest case is when we have an external object.
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
-                element_t const &internal_element = internal_iterator->entry;
+                element_t const &internal_element = *internal_iterator;
                 if (!entry_comparator_t {}(external_element, internal_element)) return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
                 auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() && external_element_internal_state->entry.deleted) {
+                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                     return;
@@ -332,7 +332,7 @@ class transactional_avl_tree {
             auto callback_external_missing = [&] {
                 if (internal_iterator == changes_.end()) return callback_missing();
                 else {
-                    element_t const &internal_element = internal_iterator->entry;
+                    element_t const &internal_element = *internal_iterator;
                     return callback_found(internal_element);
                 }
             };
@@ -348,12 +348,12 @@ class transactional_avl_tree {
 
         /**
          *  @brief Finds all elements equal to a single key. Invokes callback for each matching element.
-         *         For sets with unique keys, returns at most one element (0 or 1).
-         *         Includes transaction changes.
+         *    For sets with unique keys, returns at most one element (0 or 1).
+         *    Includes transaction changes.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
-         *  @return status_t      Success or error code.
+         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
@@ -362,12 +362,12 @@ class transactional_avl_tree {
         }
 
         /**
-         *  @brief Iterates over all entries in the range [@p lower, @p upper), including transaction changes.
+         *  @brief Iterates over all entries in the range [ @p lower, @p upper), including transaction changes.
          *
          *  @param[in] lower    Lower bound of the range (inclusive).
          *  @param[in] upper    Upper bound of the range (exclusive).
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
-         *  @return status_t    Success or error code.
+         *  @return status_t Success or error code.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -377,8 +377,8 @@ class transactional_avl_tree {
             auto less = entry_comparator_t {};
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto const upper_internal_bound = identifier_t(upper);
-            for (auto it = lower_internal; it != changes_.end() && less(it->entry, upper_internal_bound); ++it) {
-                if (!it->entry.deleted) { callback(it->entry.element); }
+            for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it) {
+                if (!it->deleted) { callback(it->element); }
             }
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
@@ -400,7 +400,7 @@ class transactional_avl_tree {
                                            callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->entry.deleted) ++internal_iterator;
+            while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
             // we might face an entry, that was already deleted from here,
@@ -410,14 +410,13 @@ class transactional_avl_tree {
                 // The simplest case is when we have an external object.
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
-                element_t const &internal_element = internal_iterator->entry;
+                element_t const &internal_element = *internal_iterator;
                 if (!entry_comparator_t {}(external_element, internal_element)) return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
                 auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() &&
-                    external_element_internal_state->entry.deleted) {
+                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                     return;
@@ -427,7 +426,7 @@ class transactional_avl_tree {
             auto callback_external_missing = [&] {
                 if (internal_iterator == changes_.end()) return callback_missing();
                 else {
-                    element_t const &internal_element = internal_iterator->entry;
+                    element_t const &internal_element = *internal_iterator;
                     return callback_found(internal_element);
                 }
             };
@@ -471,7 +470,8 @@ class transactional_avl_tree {
 
             // Than just merge our current nodes.
             // The visibility will be updated later in the `commit`.
-            store.entries_.merge(changes_);
+            auto merge_status = store.entries_.merge(changes_);
+            if (!merge_status) return merge_status;
             stage_ = stage_t::staged_k;
             return {success_k};
         }
@@ -497,10 +497,13 @@ class transactional_avl_tree {
             // If the transaction was "staged",
             // we must delete all the entries.
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k)
-                for (auto const &id_and_watch : watches_)
-                    changes_.merge(
+            if (stage_ == stage_t::staged_k) {
+                for (auto const &id_and_watch : watches_) {
+                    auto status = changes_.merge(
                         store.entries_.extract(dated_identifier_t {id_and_watch.id, id_and_watch.watch.generation}));
+                    if (!status) return status;
+                }
+            }
 
             watches_.clear();
             stage_ = stage_t::created_k;
@@ -534,8 +537,8 @@ class transactional_avl_tree {
 
     /**
      *  @brief Finds the latest (highest generation) entry for watch validation.
-     *         Unlike find(), this checks ALL entries including staged (invisible) ones.
-     *         This is critical for detecting write-write conflicts with concurrent transactions.
+     *    Unlike find(), this checks ALL entries including staged (invisible) ones.
+     *    This is critical for detecting write-write conflicts with concurrent transactions.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -556,22 +559,22 @@ class transactional_avl_tree {
     void unmask_and_compact(identifier_t const &id, generation_t generation_to_unmask) noexcept {
         // This is similar to the public `erase_range()`, but adds generation-matching conditions.
         auto current = entries_.lower_bound(id);
-        if (!current) return; // Null check
+        if (current == entries_.end()) return;
 
         auto less = entry_comparator_t {};
         auto last_visible_entry = std::optional<dated_identifier_t> {};
-        while (current && less.same(id, current->entry.element)) {
-            auto next = entries_.upper_bound(current->entry);
-            auto was_visible = current->entry.visible;
-            current->entry.visible |= current->entry.generation == generation_to_unmask;
+        while (current != entries_.end() && less.same(id, (*current).element)) {
+            auto next = entries_.upper_bound(*current);
+            auto was_visible = (*current).visible;
+            (*current).visible |= (*current).generation == generation_to_unmask;
 
             // Update counters if visibility changed
-            if (!was_visible && current->entry.visible) {
+            if (!was_visible && (*current).visible) {
                 ++visible_count_;
-                visible_deleted_count_ += current->entry.deleted;
+                visible_deleted_count_ += (*current).deleted;
             }
 
-            if (!current->entry.visible) {
+            if (!(*current).visible) {
                 current = next;
                 continue;
             }
@@ -579,13 +582,13 @@ class transactional_avl_tree {
             // Older revisions must die
             if (last_visible_entry) {
                 auto to_erase = entries_.find(*last_visible_entry);
-                if (to_erase != entries_.end() && to_erase->entry.visible) {
+                if (to_erase != entries_.end() && (*to_erase).visible) {
                     --visible_count_;
-                    visible_deleted_count_ -= to_erase->entry.deleted;
+                    visible_deleted_count_ -= (*to_erase).deleted;
                 }
                 entries_.extract(*last_visible_entry);
             }
-            last_visible_entry = dated_identifier_t {id, current->entry.generation};
+            last_visible_entry = dated_identifier_t {id, (*current).generation};
             current = next;
         }
     }
@@ -618,10 +621,10 @@ class transactional_avl_tree {
 
     /**
      *  @brief Returns the number of elements with key equal to the specified argument.
-     *         For unique-key containers like this, returns either 0 or 1.
+     *    For unique-key containers like this, returns either 0 or 1.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @return std::size_t   Number of elements with key equal to @p comparable (0 or 1).
+     *  @return std::size_t Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
@@ -635,7 +638,7 @@ class transactional_avl_tree {
      *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @return status_t      Success or error code.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] status_t contains(comparable_type_ &&comparable) const noexcept {
@@ -644,7 +647,7 @@ class transactional_avl_tree {
 
     /**
      *  @brief Factory method to create a new transactional AVL tree without throwing exceptions.
-     *         Returns an empty optional on allocation failure.
+     *    Returns an empty optional on allocation failure.
      *
      *  @param[in] allocator Optional allocator instance.
      *  @return std::optional<store_t> Container instance or empty optional on failure.
@@ -653,8 +656,8 @@ class transactional_avl_tree {
 
     /**
      *  @brief Creates a new transaction with a fresh generation number.
-     *         Transaction can be reset and reused after commit/rollback to avoid reallocations.
-     *         Returns empty optional on allocation failure.
+     *    Transaction can be reset and reused after commit/rollback to avoid reallocations.
+     *    Returns empty optional on allocation failure.
      *
      *  @return std::optional<transaction_t> Transaction instance or empty optional on failure.
      */
@@ -662,10 +665,10 @@ class transactional_avl_tree {
 
     /**
      *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
-     *         This is the strict insert semantics matching @c std::set::insert().
+     *    This is the strict insert semantics matching @c std::set::insert().
      *
      *  @param[in] element Element to insert (moved into the tree).
-     *  @return status_t   Success, or @c invalid_argument_k if key exists, or OOM error.
+     *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
      */
     [[nodiscard]] status_t insert(element_t &&element) noexcept {
         // Check if key already exists
@@ -679,10 +682,10 @@ class transactional_avl_tree {
 
     /**
      *  @brief Atomically inserts an element only if missing. Silently skips if key exists (no error).
-     *         This is the "silent no-op" insert semantics.
+     *    This is the "silent no-op" insert semantics.
      *
      *  @param[in] element Element to insert (moved into the tree).
-     *  @return status_t   Always succeeds (unless OOM). Returns success even if key exists.
+     *  @return status_t Always succeeds (unless OOM). Returns success even if key exists.
      */
     [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
         // Check if key already exists
@@ -696,10 +699,10 @@ class transactional_avl_tree {
 
     /**
      *  @brief Atomically inserts or updates an element. Always succeeds (unless OOM).
-     *         Overwrites existing element if key exists. Matches @c std::map::insert_or_assign() semantics.
+     *    Overwrites existing element if key exists. Matches @c std::map::insert_or_assign() semantics.
      *
      *  @param[in] element Element to insert or assign (moved into the tree).
-     *  @return status_t   Success or error code (e.g., out of memory).
+     *  @return status_t Success or error code (e.g., out of memory).
      */
     [[nodiscard]] status_t insert_or_assign(element_t &&element) noexcept {
         auto node = entries_.allocator().allocate(1);
@@ -712,7 +715,8 @@ class transactional_avl_tree {
         entry.generation = generation;
         entry.deleted = false;
         entry.visible = true;
-        entries_.merge(extract_result_t {&entries_, node});
+        auto merge_status = entries_.merge(extract_result_t {&entries_, node});
+        if (!merge_status) return merge_status;
         ++visible_count_;
         assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
@@ -722,7 +726,7 @@ class transactional_avl_tree {
     /**
      *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an element.
      *  @param[in] element Element to insert or assign (moved into the tree).
-     *  @return status_t   Success or error code (e.g., out of memory).
+     *  @return status_t Success or error code (e.g., out of memory).
      */
     [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
@@ -772,7 +776,8 @@ class transactional_avl_tree {
             entry.generation = generation;
             entry.deleted = false;
             entry.visible = true;
-            entries_.merge(extract_result_t {&entries_, last_node});
+            auto merge_status = entries_.merge(extract_result_t {&entries_, last_node});
+            if (!merge_status) return merge_status;
             ++visible_count_;
             assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
@@ -796,7 +801,7 @@ class transactional_avl_tree {
      *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t             Success or error code.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -822,7 +827,7 @@ class transactional_avl_tree {
      *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t             Success or error code.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -842,11 +847,11 @@ class transactional_avl_tree {
 
     /**
      *  @brief Finds all elements equal to a single key. Invokes callback for each matching element.
-     *         For trees with unique keys, this returns at most one element (0 or 1).
+     *    For trees with unique keys, this returns at most one element (0 or 1).
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
-     *  @return status_t      Success or error code.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
@@ -900,13 +905,13 @@ class transactional_avl_tree {
         // TODO: Implement range-removals.
         auto last = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto less = entry_comparator_t {};
-        while (last != entries_.end() && less(last->entry, upper)) {
-            auto next = entries_.upper_bound(last->entry);
-            if (last->entry.visible) {
-                callback(last->entry.element);
+        while (last != entries_.end() && less(*last, upper)) {
+            auto next = entries_.upper_bound(*last);
+            if (last->visible) {
+                callback(last->element);
                 --visible_count_;
-                visible_deleted_count_ -= last->entry.deleted;
-                entries_.extract(last->entry);
+                visible_deleted_count_ -= last->deleted;
+                entries_.extract(*last);
             }
             last = next;
         }
@@ -953,7 +958,7 @@ class transactional_avl_tree {
      *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found    Callback to receive the erased entry. Must be @c noexcept.
      *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t             Success or error code.
+     *  @return status_t Success or error code.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -980,8 +985,8 @@ class transactional_avl_tree {
 
     /**
      *  @brief Hints to the tree to pre-allocate memory. No-op for AVL tree implementation.
-     *         Provided for API consistency with other containers. Doesn't guarantee subsequent
-     *         insertions won't fail with "out of memory".
+     *    Provided for API consistency with other containers. Doesn't guarantee subsequent
+     *    insertions won't fail with "out of memory".
      *
      *  @param[in] size Suggested capacity (ignored for AVL trees).
      *  @return status_t Always succeeds.
@@ -1004,7 +1009,7 @@ class transactional_avl_tree {
 
     /**
      *  @brief Debug utility to print tree contents.
-     *  @note Requires `#include <ostream>` (not included by default to reduce header weight)
+     *  @note Requires @c #include <ostream> (not included by default to reduce header weight)
      */
     template <typename dont_instantiate_me_type_>
     void print(dont_instantiate_me_type_ &cout) {
