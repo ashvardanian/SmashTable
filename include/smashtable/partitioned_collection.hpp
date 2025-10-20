@@ -1,8 +1,15 @@
+/**
+ *  @brief
+ *
+ *  @file   partitioned_collection.hpp
+ *  @author Ash Vardanian
+ */
 #pragma once
 #include <array>        // `std::array`
 #include <optional>     // `std::optional`
 #include <functional>   // `std::hash`
-#include <shared_mutex> // `std::shared_mutex`
+#include <mutex>        // `std::unique_lock`
+#include <shared_mutex> // `std::shared_mutex`, `std::shared_lock`
 #include <atomic>
 
 namespace ashvardanian::smashtable {
@@ -55,11 +62,11 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
  */
 template <typename collection_type_, typename hash_type_ = std::hash<typename collection_type_::identifier_t>,
-          typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_ = 16>
+          typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_count_ = 16>
 class partitioned_collection {
 
   public:
-    static constexpr std::size_t parts_k = parts_;
+    static constexpr std::size_t parts_k = parts_count_;
     using partitioned_t = partitioned_collection;
     using hash_t = hash_type_;
     using part_t = collection_type_;
@@ -174,9 +181,10 @@ class partitioned_collection {
 
         if (smallest_idx == not_found_idx) return invoke_safely(std::forward<callback_missing_type_>(callback_missing));
 
-        // Unless the underlying the engine implements Snapshot Isolation,
-        // the repeated lookup of the entry in the underlying store can fail
-        // and we will have to `restart` all over.
+        // Under "Read Committed" isolation, the element we found during `upper_bound` scanning
+        // may have been deleted or modified by another transaction before we lock it for reading.
+        // If the lookup fails (element deleted/changed), restart the entire scan to find the new minimum.
+        // This is expected behavior for Read Committed - non-repeatable reads are allowed.
         bool should_restart = false;
         status = parts[smallest_idx].find(smallest_id, std::forward<callback_found_type_>(callback_found),
                                           [&] { should_restart = true; });
@@ -190,12 +198,25 @@ class partitioned_collection {
         partitioned_collection &store_;
         part_transactions_t parts_;
         generation_t generation_;
+        std::array<bool, parts_k> dirty_ {}; // Track which partitions have been modified
         static_assert(std::is_nothrow_move_constructible<part_transaction_t>());
 
         template <typename callable_type_>
         status_t for_parts(callable_type_ &&callable) noexcept {
             return partitioned_t::for_all<unique_lock_t>(parts_, store_.mutexes_,
                                                          std::forward<callable_type_>(callable));
+        }
+
+        template <typename callable_type_>
+        status_t for_dirty_parts(callable_type_ &&callable) noexcept {
+            status_t status;
+            for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
+                if (!dirty_[part_idx]) continue;
+                unique_lock_t lock {store_.mutexes_[part_idx]};
+                status = callable(parts_[part_idx]);
+                if (!status) return status;
+            }
+            return status;
         }
 
       public:
@@ -207,20 +228,31 @@ class partitioned_collection {
 
         [[nodiscard]] status_t reset() noexcept {
             auto status = for_parts(std::mem_fn(&part_transaction_t::reset));
-            if (status) generation_ = store_.new_generation();
+            if (status) {
+                generation_ = store_.new_generation();
+                std::fill_n(dirty_.begin(), parts_k, false);
+            }
             return status;
         }
         [[nodiscard]] status_t rollback() noexcept {
-            auto status = for_parts(std::mem_fn(&part_transaction_t::rollback));
-            if (status) generation_ = store_.new_generation();
+            auto status = for_dirty_parts(std::mem_fn(&part_transaction_t::rollback));
+            if (status) {
+                generation_ = store_.new_generation();
+                std::fill_n(dirty_.begin(), parts_k, false);
+            }
             return status;
         }
 
-        [[nodiscard]] status_t stage() noexcept { return for_parts(std::mem_fn(&part_transaction_t::stage)); }
-        [[nodiscard]] status_t commit() noexcept { return for_parts(std::mem_fn(&part_transaction_t::commit)); }
+        [[nodiscard]] status_t stage() noexcept { return for_dirty_parts(std::mem_fn(&part_transaction_t::stage)); }
+        [[nodiscard]] status_t commit() noexcept {
+            auto status = for_dirty_parts(std::mem_fn(&part_transaction_t::commit));
+            if (status) std::fill_n(dirty_.begin(), parts_k, false);
+            return status;
+        }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
             std::size_t part_idx = bucket(id);
+            dirty_[part_idx] = true;
             shared_lock_t _ {store_.mutexes_[part_idx]};
             return parts_[part_idx].watch(id);
         }
@@ -247,11 +279,15 @@ class partitioned_collection {
         }
 
         [[nodiscard]] status_t upsert(element_t &&element) noexcept {
-            return parts_[bucket(identifier_t(element))].upsert(std::move(element));
+            std::size_t part_idx = bucket(identifier_t(element));
+            dirty_[part_idx] = true;
+            return parts_[part_idx].upsert(std::move(element));
         }
 
-        [[nodiscard]] status_t erase(identifier_t const &id) noexcept { //
-            return parts_[bucket(id)].erase(id);
+        [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
+            std::size_t part_idx = bucket(id);
+            dirty_[part_idx] = true;
+            return parts_[part_idx].erase(id);
         }
     };
 
@@ -282,10 +318,12 @@ class partitioned_collection {
     [[nodiscard]] std::size_t size() const noexcept {
         std::size_t total = 0;
         lock_out_of_order<shared_lock_t>(mutexes_);
-        for (auto const &part : parts_) total += parts_.size();
+        for (auto const &part : parts_) total += part.size();
         for (auto &mutex : mutexes_) mutex.unlock_shared();
         return total;
     }
+
+    [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     [[nodiscard]] static std::optional<partitioned_collection> make() noexcept {
         std::optional<partitioned_collection> result;
@@ -358,7 +396,7 @@ class partitioned_collection {
         status_t status;
         for (auto &part : parts_)
             if (status = part.range(lower, upper, callback); !status) break;
-        for (auto &mutex : mutexes_) mutex.unlock_shared();
+        for (auto &mutex : mutexes_) mutex.unlock();
         return status;
     }
 
@@ -369,7 +407,7 @@ class partitioned_collection {
         status_t status;
         for (auto &part : parts_)
             if (status = part.erase_range(lower, upper, callback); !status) break;
-        for (auto &mutex : mutexes_) mutex.unlock_shared();
+        for (auto &mutex : mutexes_) mutex.unlock();
         return status;
     }
 
@@ -404,6 +442,12 @@ class partitioned_collection {
         parts_ = std::move(maybe).value();
         for (auto &mutex : mutexes_) mutex.unlock();
         return {success_k};
+    }
+
+    [[nodiscard]] status_t reserve(std::size_t size) noexcept {
+        return for_all<unique_lock_t>(parts_, mutexes_, [size](part_t &part) noexcept { //
+            return part.reserve(size / parts_k);
+        });
     }
 };
 

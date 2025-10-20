@@ -1,10 +1,18 @@
+/**
+ *  @brief
+ *
+ *  @file   locked_collection.hpp
+ *  @author Ash Vardanian
+ */
 #pragma once
+#include <mutex>        // `std::unique_lock`
 #include <shared_mutex> // `std::shared_mutex`
 
 namespace ashvardanian::smashtable {
 
 /**
  *  @brief Wraps and protects any "Consistent Set" under a shared mutex.
+ *
  *  The collection itself becomes @b thread-safe, but the transaction don't!
  *  Detects dead-locks and reports `operation_would_block_k`.
  */

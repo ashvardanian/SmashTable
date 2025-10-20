@@ -1,3 +1,9 @@
+/**
+ *  @brief
+ *
+ *  @file   transactional_std_set.hpp
+ *  @author Ash Vardanian
+ */
 #pragma once
 #include <functional> // `std::less` as default
 #include <memory>     // `std::allocator` as default
@@ -70,7 +76,7 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-class atomic_standard_set {
+class transactional_std_set {
 
   public:
     using element_t = element_type_;
@@ -97,7 +103,7 @@ class atomic_standard_set {
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
-    using store_t = atomic_standard_set;
+    using store_t = transactional_std_set;
 
   public:
     class transaction_t {
@@ -174,7 +180,7 @@ class atomic_standard_set {
         /**
          *  @brief Finds a member @b equal to the given @ref `comparable`.
          *         You may want to `watch()` the received object, it's not done by default.
-         *         Unlike `atomic_standard_set::find()`, will include the entries added to this
+         *         Unlike `transactional_std_set::find()`, will include the entries added to this
          *         transaction.
          *
          *  @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
@@ -197,7 +203,7 @@ class atomic_standard_set {
         /**
          *  @brief Finds the first member @b greater than the given @ref `comparable`.
          *         You may want to `watch()` the received object, it's not done by default.
-         *         Unlike `atomic_standard_set::find()`, will include the entries added to this
+         *         Unlike `transactional_std_set::find()`, will include the entries added to this
          *         transaction.
          *
          *  @ref `comparable`            Object, comparable to @c `element_t` and convertible to @c `identifier_t`.
@@ -363,7 +369,7 @@ class atomic_standard_set {
 
     friend class transaction_t;
 
-    atomic_standard_set() noexcept(false) {}
+    transactional_std_set() noexcept(false) {}
     generation_t new_generation() noexcept { return ++generation_; }
 
     /**
