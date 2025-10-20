@@ -1,103 +1,257 @@
 # SmashTable
 
-SmashTable is a collection of data-structures, with Atomic, Consistent, and Isolated transactions, similar to databases, but at the level of individual containers.
-It allows construction of larger stable systems, where in-memory operations cannot fail halfway through.
-It also enables Python programs with sub-interpreter support to use shared collections for synchronization, bringing developer-friendly multi-threading to Python 3.14t and newer.
+SmashTable is a library of data-structures, with Atomic, Consistent, and Isolated transactions, similar to databases, but at the level of individual in-memory containers, without any Durability promises.
+It's implemented in __C++ 20__ as header-only templates, and also exposed to __Python 3__ via raw CPython API:
+At the lower C++ level it enables Systems Engineers to build safer concurrent software, avoiding exuberant costs of Multi-Version Concurrency Control (MVCC) in favor of cheaper mechanisms.
+At the higher Python level, it simplifies multi-core programming for data-intensive scripts, by providing shared collections that work across GIL-free sub-interpreters.
 
-## Collections
+![SmashTable Thumbnail](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/SmashTable.jpg?raw=true)
 
-### AVL Trees
+## Python Quick Start
 
+To install SmashTable for Python, simply run:
 
----
+```bash
+pip install smashtable
+```
 
+Then, you can use it as follows to create a parallel Python application.
+Let's say you've also installed `stringzilla` and want to find all of the unique words in a large text file using multiple CPU cores:
 
-Imagine In-Memory Templated Containers
-Being as Consistent as Databases
+```python
+import stringzilla as sz
+import smashtable as st
+import concurrent.futures
 
-SmashTable library provides `std::set`-like class templates for C++, where every operation is `noexcept`, and no update can leave the container in a partial state.
+doc = sz.File("enwik9.txt")
 
-There are 3 containers to choose from:
+```
 
-- [`consistent_set`][consistent_set]: serializable consistency, fully sorted, based on [`std::set`][stl-set].
-- [`consistent_avl`][consistent_avl]: serializable consistency, fully sorted, based on [AVL trees][avl].
-- [`versioning_avl`][versioning_avl]: [snapshot isolation][snapshot] via [MVCC][mvcc], fully sorted, based on [AVL trees][avl].
+## C++ Quick Start
 
-All of them:
-
-- are `noexcept` top to bottom!
-- are templated, to be used with any `noexcept`-movable and `default`-constructible types.
-- can be wrapped into [`locked_collection`][locked], to make them thread-safe.
-- can be wrapped into [`partitioned_collection`][partitioned], to make them concurrent.
-
-If you want your exceptions and classical interfaces back, you can also wrap any container into [`crazy_gt`][crazy].
-
-## Installation
-
-The entire library is header-only and requires C++17.
-You can copy-paste it, but it is not 2022 anymore.
-We suggest using CMake:
+To use SmashTable in C++, simply borrow the desired header files or install via CMake:
 
 ```cmake
 include(FetchContent)
 FetchContent_Declare(
     smashtable
-    GIT_REPOSITORY https://github.com/unum-cloud/smashtable
+    GIT_REPOSITORY https://github.com/ashvardanian/smashtable
     GIT_TAG main
-    CONFIGURE_COMMAND "" # Nothing to configure, its that simple :)
-    BUILD_COMMAND "" # No build needed, SmashTable is header-only
 )
 FetchContent_MakeAvailable(smashtable)
-include_directories(${consistent_set_SOURCE_DIR})
+target_link_libraries(your_target PRIVATE smashtable::smashtable)
 ```
 
-## Why we created this?
+For system-wide installation, SmashTable supports standard CMake package discovery:
 
-Hate for [`std::bad_alloc`](https://en.cppreference.com/w/cpp/memory/new/bad_alloc).
-If you consider "Out of Memory" an exception, you are always underutilizing your system.
-It happened way too many times that a program crashed when I was only getting to an exciting place.
-Especially with:
+```bash
+sudo cmake --install build_release
+```
 
-- [Neo4J][neo4j] and every other JVM-based project.
-- With big batch sizes beyond VRAM sizes of GPU when doing ML.
+Then in your CMakeLists.txt:
 
-At Unum, we live in conditions where machines can easily have 1 TB of RAM per CPU socket, but it is still at least 100x less than the datasets we are trying to swallow.
+```cmake
+find_package(smashtable REQUIRED)
+target_link_libraries(your_target PRIVATE smashtable::smashtable)
+```
 
-![UKV Landscape](https://github.com/unum-cloud/ukv/raw/main/assets/charts/Intro.png)
+The library is designed to avoid exceptions entirely, no `throw` anywhere.
+Mutation APIs (`upsert`, `insert`, `erase`, `reserve`, `clear`, etc.) return `status_t` to indicate success or failure.
+All containers are compatible with custom memory allocators, and can be pre-allocated to reduce runtime memory allocations.
+Basic containers (`basic_avl_tree`, `basic_hash_table`) provide full STL-style iterator support with bidirectional traversal.
+Transactional containers don't support iterators due to complexity of maintaining validity in presence of concurrent updates:
 
-So when we started working on [UKV][ukv] to build high-speed hardware-friendly databases, we needed something better than Standard Templates Library, with features uncommon to other libraries as well:
+- Query APIs like `find()`, `lower_bound()`, and `upper_bound()` return `void` and use 2 noexcept callbacks for found/missing cases.
+- Range operations like `equal_range()` and `sample_range()` return `void` and use a single noexcept callback invoked for each element.
+- Callbacks must be `noexcept` as they're invoked directly without exception wrapping.
 
-- Accessing the **allocator state** by reference.
-- **Reserving** memory for tree nodes before inserting.
-- Explicitly traversing trees for **random sampling**.
-- **Speed**!
+Most APIs are similar to STL containers:
 
-Now SmashTable powers the in-memory backend of UKV.
+```cpp
+#include <smashtable/transactional_std_set.hpp>
 
-## Performance Tuning
+namespace st = ashvardanian::smashtable;
 
-Concurrent containers in the library are blocking.
-Their performance greatly depends on the "mutexes" you are using.
-So we allow different implementations:
+int main() {
+    using pair_t = kv_pair<std::string_view, int>;      // cheaper than `std::pair`
+    using map_t = st::transactional_std_set<pair_t>;    // builds on top of `std::map`
+    auto map = *map_t::make();                          // instead of constructors to return optionals
+    _ = map.reserve(100);                               // optionally reserve space
+    
+    // STL-style operations outside of transactions
+    _ = map.clear(); _ = map.merge(another_map);
+    _ = map.insert({"alice", 2}); _ = map.insert_or_assign({"bob", 2}); _ = map.erase("alice");
+    _ = map.insert({"carol", 3});
 
-- STL: [`std::shared_mutex`][stl-shared_mutex],
-- Intel One API: [`tbb::rw_mutex`][tbb],
-- Or anything else with the same interfaces.
+    // Some operations will look different from STL
+    _ = map.upsert({"dave", 4});                        // "upsert" = insert or update
+    _ = map.insert_if_missing({"carol", 5});            // similar to `try_emplace` - skips if exists
+    map.find("alice",                                   // "find" won't return iterators!
+        [](pair_t const &existing) noexcept { ... },    // scoped processing of a found element
+        []() noexcept { ... });                         // handle the missing case
+    map.lower_bound(..., [](auto) noexcept { }, []() noexcept { });
+    map.upper_bound(..., [](auto) noexcept { }, []() noexcept { });
+    map.equal_range(..., [](auto const &) noexcept { });     // one key, invokes callback for matches
+
+    // Transactions are the crucial part
+    auto t1 = *map.transaction();                       // can't copy or move transactions
+    _ = t1.reserve(5);                                  // optionally reserve space for 5 updates
+    _ = t1.insert("al", 1); _ = t1.upsert("bob", 2);    // update some key-value pairs
+    _ = t1.watch("carol");                              // transaction will fail if "carol" is later modified
+
+    // Even within a single thread, many transactions can be active simultaneously
+    auto t2 = *map.transaction();
+    _ = t2.insert("carol", 5); _ = t2.erase("dave");
+
+    // Committing the transactions can happen in any order
+    _ = t2.commit();                                    // will succeed
+    _ = t1.commit();                                    // must fail, as "carol" was modified by `t2`
+
+    return 0;
+}
+```
+
+## Why Do You Need The Python Library?
+
+Python is famous for its Global Interpreter Lock (GIL) and the frequency of Twitter flame wars about it.
+More recently, sub-interpreters have been added to CPython to enable multi-core parallelism without the GIL.
+However, sub-interpreters can't share Python objects directly, as each interpreter has its own memory space and object management.
+The only [recommended sharing structures](https://docs.python.org/3/library/concurrent.interpreters.html#communication-between-interpreters) are the `memoryview` and `concurrent.interpreters.Queue`, which are limited in functionality and performance.
+One way to address this could be to:
+
+- allow read-only access to parent interpreter objects from sub-interpreters.
+- allow returning sub-interpreter created objects to the parent interpreter on completion.
+
+This, however, generally requires serializing and deserializing objects, which is expensive and error-prone... especially if you `pickle`!
+To address this gap, SmashTable provides shared associative and set containers of trivially copyable types, where keys and values of basic types (integers, floats, strings) can be shared directly between sub-interpreters without serialization.
+Create it once in the parent interpreter, and use it from multiple sub-interpreters concurrently!
+
+## Why Do You Need The C++ Library?
+
+Like any library, the C++ standard library has many loose ends when it comes to consistency.
+For example, the `std::set` container provides an API to insert a range of elements - `insert(first, last)`.
+But if an allocation failure happens halfway through the insertion, some elements will have already been inserted, while others won't.
+
+```cpp
+#include <cstddef>  // `std::size_t`
+#include <iostream> // `std::cout`
+#include <new>      // `std::bad_alloc`
+#include <set>      // `std::set`
+#include <vector>   // `std::vector`
+
+struct failing_allocator_state_t {
+    std::size_t count = 0, limit = 0;
+};
+
+template <typename value_type_>
+struct failing_allocator {
+    using value_type = value_type_;
+    template <typename other_type_>
+    struct rebind { using other = failing_allocator<other_type_>; };
+
+    failing_allocator_state_t *state_ {};
+    explicit failing_allocator(failing_allocator_state_t *state) noexcept : state_ {state} {}
+
+    failing_allocator() noexcept = default;
+    template <typename other_type_>
+    failing_allocator(failing_allocator<other_type_> const &other) noexcept : state_ {other.state_} {}
+    value_type_ *allocate(std::size_t count) {
+        if (!state_ || state_->count + count > state_->limit) throw std::bad_alloc {};
+        state_->count += count;
+        return static_cast<value_type_ *>(::operator new(count * sizeof(value_type_)));
+    }
+    void deallocate(value_type_ *pointer, std::size_t) noexcept { ::operator delete(pointer); }
+};
+
+int main() {
+    failing_allocator_state_t state {0, 3};
+    std::set<int, std::less<>, failing_allocator<int>> values {std::less<> {}, failing_allocator<int> {&state}};
+    std::vector<int> inputs {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+
+    try { values.insert(inputs.begin(), inputs.end()); }
+    catch (std::bad_alloc const &) { std::cout << "std::bad_alloc after " << state.count << " allocations\n"; }
+
+    std::cout << "set contains " << values.size() << " elements:\n";
+    for (int value : values) std::cout << value << ' ';
+    std::cout << '\n';
+}
+```
+
+Compiled with Clang++ 21 and G++ 15, this program produces:
+
+```
+std::bad_alloc after 3 allocations
+set contains 3 elements:
+0 1 2 
+```
+
+The standard doesn't define which exceptions can be thrown by `insert(first, last)`, but in practice, it's usually `std::bad_alloc` from memory allocation failures.
 
 
-[stl-set]: https://en.cppreference.com/w/cpp/container/set
-[stl-shared_mutex]: https://en.cppreference.com/w/cpp/thread/shared_mutex
-[avl]: https://en.wikipedia.org/wiki/AVL_tree
-[tbb]: https://spec.oneapi.io/versions/latest/elements/oneTBB/source/named_requirements/mutexes/rw_mutex.html#readerwritermutex
-[dbms]: https://en.wikipedia.org/wiki/Database
-[mvcc]: https://en.wikipedia.org/wiki/Multiversion_concurrency_control
-[neo4j]: http://neo4j.com
-[snapshot]: https://jepsen.io/consistency/models/snapshot-isolation
+## Collections
 
-[ukv]: https://github.com/unum-cloud/ukv
-[consistent_set]: tree/main/include/smashtable/consistent_set.hpp
-[consistent_avl]: tree/main/include/smashtable/consistent_avl.hpp
-[versioning_avl]: tree/main/include/smashtable/versioning_avl.hpp
-[locked]: tree/main/include/smashtable/locked.hpp
-[partitioned]: tree/main/include/smashtable/partitioned.hpp
-[crazy]: tree/main/include/smashtable/crazy.hpp
+SmashTable implements several collections with different consistency and concurrency models.
+But before enumerating them, remember:
+
+- "Concurrency" doesn't imply thread-safety or multi-threaded access... it can be simultaneous operations on the same thread.
+- "Consistency" doesn't imply "strict serializability" or "linearizability"... [weaker consistency levels exist too](https://jepsen.io/consistency/models).
+
+All of the header files are grouped as follows:
+
+- `smashtable/basic_*.hpp` - "use at your own risk" building blocks
+- `smashtable/transactional_*.hpp` - bringing 2-phase commit semantics
+- `smashtable/*_collection.hpp` - composable wrappers to reduce contention
+
+In more detail:
+
+```bash
+  basic_*               → Core data structures w/out transactions
+    ├─ basic_vector<T, Alloc>
+    ├─ basic_avl_tree<T, Comparator, Alloc>
+    └─ basic_hash_table<T, Hash, KeyEqual, Alloc>
+
+  transactional_*       → Add 2-phase commit + watch and CAS semantics
+    ├─ transactional_avl_tree<T, Comparator, Alloc>
+    └─ transactional_std_set<T, Comparator, Alloc>
+
+  *_collection          → Thread-safety wrappers
+    ├─ locked_collection<Collection, Mutex>
+    └─ partitioned_collection<Collection, Hash, Mutex, PartsCount>
+```
+
+### Making `std::set` Transactional
+
+> Refers to `smashtable/transactional_std_set.hpp`.
+
+The `std::set` was used to create a baseline reference design for the SmashTable functionality.
+Beyond the underlying `std::set` and similar `std::map` containers, it adds "transactions".
+Updates to the collection can be grouped together, and either all of them succeed, or none of them do, providing "Atomicity".
+Those transactions can be "staged" and "rolled back" before being "committed", enabling inter-dependent updates across many such collections.
+Read consistency is also provided, at the "Monotonic Atomic View" isolation level, so that transactions won't see partial updates from other concurrent transactions.
+It's not as strong as "Strict Serializability", as we can't guarantee, that all of the reads happening within a transaction see the same snapshot of the collection.
+On the bright side, it's much faster (in terms of runtime) and cheaper (in terms of memory consumption) than MVCC-based approaches.
+
+### Adelson-Velsky and Landis Trees
+
+> Refers to `smashtable/basic_avl_tree.hpp`.
+> Refers to `smashtable/transactional_avl_tree.hpp`.
+
+Rarely referred to by the full name, the AVL tree is one of the simplest and cleanest self-balancing binary search tree structures, proposed in 1962.
+The basic AVL tree template - `basic_avl_tree<entry, comparator, allocator>` provides a baseline ordered collection, similar to `std::set` or `std::map`.
+The standard implementations typically use Red-Black trees, which are slightly more complex, but provide similar performance.
+The AVL tree is more rigidly balanced, providing faster lookups at the cost of slightly slower insertions and deletions.
+
+The `basic_avl_tree` provides STL-compatible iterators for traversal, but some APIs differ to accommodate exception-free error reporting:
+- `insert()` returns `std::pair<iterator, bool>` (STL-compatible)
+- `erase(iterator)` returns `erase_result_t { iterator next; status_t status; }` instead of just iterator
+- Range `insert(first, last)` returns `status_t` instead of `void`
+- Hint-based `insert(hint, value)` and `emplace_hint()` are explicitly deleted (AVL trees don't benefit from hints)
+
+The higher-level `transactional_avl_tree<entry, comparator, allocator>` template builds on top of the basic AVL tree, adding transactional semantics similar to those described for `transactional_std_set`.
+Like the `transactional_std_set`, it provides Atomicity and Monotonic Atomic View isolation for grouped updates.
+
+### Lock-Free Hash Tables
+
+> Refers to `smashtable/basic_hash_table.hpp`.
+
+The `basic_hash_table<entry, hash, key_equal, allocator>` template implements a lock-free hash table using open addressing with constant probing.

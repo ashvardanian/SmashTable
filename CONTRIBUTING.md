@@ -1,10 +1,75 @@
 # Contributing to SmashTable
 
+## Compiling C++ Code
+
+Release build:
+
+```bash
+cmake -D CMAKE_BUILD_TYPE=Release -B build_release
+cmake --build build_release --config Release --target smashtable_test --parallel
+build_release/smashtable_test
+```
+
+Debug build:
+
+```bash
+cmake -D CMAKE_BUILD_TYPE=Debug -B build_debug
+cmake --build build_debug --config Debug
+build_debug/smashtable_test
+```
+
+### Running Tests
+
+Run all tests:
+
+```bash
+build_debug/smashtable_test
+```
+
+Run specific test suites:
+
+```bash
+build_debug/smashtable_test --gtest_filter="upsert_and_find*"
+build_debug/smashtable_test --gtest_filter="transaction_*"
+build_debug/smashtable_test --gtest_filter="*with_threads"
+```
+
+Brief output:
+
+```bash
+build_debug/smashtable_test --gtest_brief=1
+```
+
+List available tests:
+
+```bash
+build_debug/smashtable_test --gtest_list_tests
+```
+
 ## Code and Documentation Styling Guidelines
 
 Code is formatted automatically using `clang-format` with the configuration specified in `.clang-format`.
 CMake is formatted using `cmake-format` with the configuration specified in `.cmake-format.py`.
 Please ensure your code adheres to this style before submitting a pull request.
+
+Format C++ files:
+
+```bash
+clang-format -i include/smashtable/*.hpp
+clang-format -i test.cpp example.cpp
+```
+
+Format CMake files:
+
+```bash
+cmake-format -i CMakeLists.txt
+```
+
+Check formatting without modifying:
+
+```bash
+clang-format --dry-run --Werror include/smashtable/*.hpp
+```
 
 Documentation is trickier.
 All docstrings must use Doxygen-style comments.
