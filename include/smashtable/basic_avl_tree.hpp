@@ -1213,11 +1213,24 @@ class basic_avl_tree {
         basic_avl_tree *tree_ = nullptr;
         node_t *node_ptr_ = nullptr;
 
+        extract_result_t() = default;
+        extract_result_t(basic_avl_tree *tree, node_t *node) noexcept : tree_(tree), node_ptr_(node) {}
+
         ~extract_result_t() noexcept {
             if (node_ptr_) tree_->allocator_.deallocate(node_ptr_, 1);
         }
         extract_result_t(extract_result_t const &) = delete;
         extract_result_t &operator=(extract_result_t const &) = delete;
+        extract_result_t(extract_result_t &&other) noexcept
+            : tree_(other.tree_), node_ptr_(std::exchange(other.node_ptr_, nullptr)) {}
+        extract_result_t &operator=(extract_result_t &&other) noexcept {
+            if (this != &other) {
+                if (node_ptr_) tree_->allocator_.deallocate(node_ptr_, 1);
+                tree_ = other.tree_;
+                node_ptr_ = std::exchange(other.node_ptr_, nullptr);
+            }
+            return *this;
+        }
         explicit operator bool() const noexcept { return node_ptr_; }
         node_t *release() noexcept { return std::exchange(node_ptr_, nullptr); }
     };
