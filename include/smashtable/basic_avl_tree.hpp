@@ -1,6 +1,17 @@
 /**
  *  @brief  Ordered "Adelson-Velsky and Landis" @b (AVL) Binary Search Tree implementation.
+ *          Provides exception-free, allocator-aware ordered collection similar to @c std::set.
  *          Not thread-safe by itself. Doesn't raise any exceptions unlike STL-based alternatives.
+ *
+ *  @section Design Characteristics
+ *
+ *  AVL trees maintain strict balance (height difference ≤ 1), providing O(log n) worst-case lookups, insertions,
+ *  and deletions. Compared to Red-Black trees (used in std::set), AVL trees are more rigidly balanced, offering
+ *  faster lookups at the cost of slightly slower insertions and deletions due to more frequent rebalancing.
+ *
+ *  This implementation supports heterogeneous lookups (searching with types other than @c entry_type_), custom
+ *  allocators for all internal nodes, and callback-based iteration to avoid iterator invalidation complexity.
+ *  All methods are @c noexcept and use status codes instead of exceptions for error handling.
  *
  *  @file   basic_avl_tree.hpp
  *  @author Ash Vardanian
@@ -20,21 +31,25 @@ namespace ashvardanian::smashtable {
 
 /**
  *  @brief  Tree node structure for the AVL-Tree implementation.
- *  @sa     basic_avl_tree
+ *          Provides static methods for all tree operations: search, insertion, deletion, and traversal.
+ *          All operations are exception-free and @c noexcept.
  *
- *  AVL-Trees are some of the simplest yet performant Binary Search Trees.
- *  This "node" class implements the primary logic, but doesn't take part in
- *  memory management or any atomicity and consistency guarantees.
+ *  @section Implementation Notes
  *
- *  > Never throws! Even if new node allocation had failed.
- *  > Implements `lower_bound` and `upper_bound` for faster and lighter iterators.
- *  > Implements random sampling methods.
+ *  AVL trees are self-balancing binary search trees where the height difference between left and right subtrees
+ *  is at most 1. This "node" class implements the core tree logic including rotations and rebalancing, but
+ *  doesn't participate in memory management or provide atomicity guarantees - those are handled by @c basic_avl_tree.
  *
- *  @tparam entry_type_         Type of entries to store in this tree.
- *  @tparam comparator_type_    A comparator function object, that overload
- *                           @code
- *                               bool operator ()(entry_type_, entry_type_) const
- *                           @endcode
+ *  Features:
+ *  - Never throws exceptions, even on allocation failure
+ *  - Implements @c lower_bound and @c upper_bound for iterator-free navigation
+ *  - Supports random sampling within ranges for statistical operations
+ *  - All methods are static and work on raw node pointers for flexibility
+ *
+ *  @tparam entry_type_      Type of entries to store in this tree.
+ *  @tparam comparator_type_ A comparator function object that overloads
+ *                           @code bool operator()(entry_type_, entry_type_) const @endcode
+ *                           For heterogeneous lookups, define @c using @c is_transparent @c = @c void;
  */
 template <typename entry_type_, typename comparator_type_>
 class basic_avl_node {
@@ -540,6 +555,26 @@ class basic_avl_node {
     }
 };
 
+/**
+ *  @brief  Exception-free AVL tree container providing ordered storage similar to @c std::set.
+ *          Manages memory allocation and provides high-level tree operations with status-based error handling.
+ *
+ *  @section API Design
+ *
+ *  Unlike STL containers, this AVL tree:
+ *  - Returns @c status_t instead of throwing exceptions for error reporting
+ *  - Uses callbacks instead of iterators to avoid invalidation complexity
+ *  - Supports heterogeneous lookups when comparator defines @c is_transparent
+ *  - Provides both @c insert (fails if exists) and @c upsert (always succeeds) semantics
+ *  - Allows custom allocators for all internal nodes
+ *
+ *  All @c noexcept callbacks are invoked directly without exception safety wrappers for performance.
+ *  The tree maintains O(log n) height through automatic rebalancing after modifications.
+ *
+ *  @tparam entry_type_         Type of entries stored in the tree.
+ *  @tparam comparator_type_    Comparator for ordering entries. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam node_allocator_type_ Allocator for tree nodes. Must be rebindable to @c basic_avl_node.
+ */
 template <typename entry_type_, typename comparator_type_,
           typename node_allocator_type_ = std::allocator<basic_avl_node<entry_type_, comparator_type_>>>
 class basic_avl_tree {
@@ -610,6 +645,82 @@ class basic_avl_tree {
         return node_t::upper_bound(root_, std::forward<comparable_type_>(comparable));
     }
 
+    /**
+     *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @return bool          True if element exists, false otherwise.
+     */
+    template <typename comparable_type_>
+    bool contains(comparable_type_ &&comparable) const noexcept {
+        return find(std::forward<comparable_type_>(comparable)) != nullptr;
+    }
+
+    /**
+     *  @brief Returns the number of elements with key equal to the specified argument.
+     *         For unique-key containers like this, returns either 0 or 1.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @return std::size_t   Number of elements with key equal to @p comparable (0 or 1).
+     */
+    template <typename comparable_type_>
+    std::size_t count(comparable_type_ &&comparable) const noexcept {
+        return find(std::forward<comparable_type_>(comparable)) != nullptr ? 1 : 0;
+    }
+
+    /**
+     *  @brief Checks if the tree has no elements.
+     *  @return bool True if empty, false otherwise.
+     */
+    bool empty() const noexcept { return size_ == 0; }
+
+    /**
+     *  @brief Finds all elements equal to a single key. Invokes callback for each matching element.
+     *         For trees with unique keys, this returns at most one element (0 or 1).
+     *
+     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
+     *  @return status_t      Success or error code.
+     */
+    template <typename comparable_type_ = entry_t, typename callback_type_ = no_op_t>
+    status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+        auto node = find(std::forward<comparable_type_>(comparable));
+        if (node) { callback(node->entry); }
+        return {success_k};
+    }
+
+    /**
+     *  @brief Iterates over all entries in the range [@p lower, @p upper). Const version.
+     *         Invokes callback for each element in the specified range.
+     *
+     *  @param[in] lower    Lower bound of the range (inclusive).
+     *  @param[in] upper    Upper bound of the range (exclusive).
+     *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+     *  @return status_t    Success or error code.
+     */
+    template <typename lower_type_ = entry_t, typename upper_type_ = entry_t, typename callback_type_ = no_op_t>
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+        node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                      [&](node_t *node) noexcept { callback(node->entry); });
+        return {success_k};
+    }
+
+    /**
+     *  @brief Iterates over all entries in the range [@p lower, @p upper), allowing in-place modification.
+     *         Invokes callback for each mutable element in the specified range. Non-const version.
+     *
+     *  @param[in]    lower    Lower bound of the range (inclusive).
+     *  @param[in]    upper    Upper bound of the range (exclusive).
+     *  @param[inout] callback Callback invoked for each mutable element in range. Must be @c noexcept.
+     *  @return status_t       Success or error code.
+     */
+    template <typename lower_type_ = entry_t, typename upper_type_ = entry_t, typename callback_type_ = no_op_t>
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+        node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                      [&](node_t *node) noexcept { callback(node->entry); });
+        return {success_k};
+    }
+
     struct upsert_result_t {
         node_t *node = nullptr;
         bool inserted = false;
@@ -624,6 +735,15 @@ class basic_avl_tree {
         }
     };
 
+    /**
+     *  @brief Atomically inserts an entry only if the key doesn't exist. Fails if key exists.
+     *         This is the strict insert semantics matching @c std::set::insert().
+     *
+     *  @param[in] entry Entry to insert (moved into the tree).
+     *  @return upsert_result_t Result containing pointer to node and insertion status.
+     *                          If @c inserted is false and @c node is null, allocation failed.
+     *                          If @c inserted is false and @c node is non-null, key already exists.
+     */
     template <typename comparable_type_>
     upsert_result_t insert(comparable_type_ &&comparable) noexcept {
         auto result = node_t::insert(root_, std::forward<comparable_type_>(comparable),
@@ -633,13 +753,45 @@ class basic_avl_tree {
         return {result.match, result.inserted};
     }
 
+    /**
+     *  @brief Atomically inserts an entry only if missing. Silently skips if key exists (no error).
+     *         This is the "silent no-op" insert semantics.
+     *
+     *  @param[in] entry Entry to insert (moved into the tree).
+     *  @return upsert_result_t Result containing pointer to node and insertion status.
+     *                          Always returns a valid @c node pointer (existing or new).
+     *                          @c inserted is true only if a new node was created.
+     */
     template <typename comparable_type_>
-    upsert_result_t upsert(comparable_type_ &&comparable) noexcept {
+    upsert_result_t insert_if_missing(comparable_type_ &&comparable) noexcept {
+        return insert(std::forward<comparable_type_>(comparable));
+    }
+
+    /**
+     *  @brief Atomically inserts or updates an entry. Always succeeds (unless OOM).
+     *         Overwrites existing entry if key exists. Matches @c std::map::insert_or_assign() semantics.
+     *
+     *  @param[in] entry Entry to insert or assign (moved into the tree).
+     *  @return upsert_result_t Result containing pointer to node and insertion status.
+     *                          @c inserted is true if new node was created, false if existing was updated.
+     */
+    template <typename comparable_type_>
+    upsert_result_t insert_or_assign(comparable_type_ &&comparable) noexcept {
         auto result = node_t::upsert(root_, std::forward<comparable_type_>(comparable),
                                      [&]() noexcept { return allocator_.allocate(1); });
         root_ = result.root;
         size_ += result.inserted;
         return {result.match, result.inserted};
+    }
+
+    /**
+     *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an entry.
+     *  @param[in] entry Entry to insert or assign (moved into the tree).
+     *  @return upsert_result_t Result containing pointer to node and insertion status.
+     */
+    template <typename comparable_type_>
+    upsert_result_t upsert(comparable_type_ &&comparable) noexcept {
+        return insert_or_assign(std::forward<comparable_type_>(comparable));
     }
 
     struct extract_result_t {
@@ -663,11 +815,58 @@ class basic_avl_tree {
         return extract_result_t {this, result.extracted.release()};
     }
 
+    /**
+     *  @brief Erases a single entry matching the given @p comparable.
+     *
+     *  @param[in] comparable        Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] callback_found    Callback to receive the erased entry. Must be @c noexcept.
+     *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
+     *  @return status_t             Success or error code.
+     */
+    template <typename comparable_type_ = entry_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                   callback_missing_type_ &&callback_missing) noexcept {
+        auto node = find(std::forward<comparable_type_>(comparable));
+        if (!node) {
+            callback_missing();
+            return {success_k};
+        }
+
+        callback_found(node->entry);
+        auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable));
+        root_ = result.root;
+        size_ -= result.extracted != nullptr;
+        return {success_k};
+    }
+
+    /**
+     *  @brief Erases a single entry matching the given @p comparable. No callbacks.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @return bool          True if element was erased, false if not found.
+     */
     template <typename comparable_type_>
     bool erase(comparable_type_ &&comparable) noexcept {
         return !!extract(std::forward<comparable_type_>(comparable));
     }
 
+    /**
+     *  @brief Hints to the tree to pre-allocate memory. No-op for AVL tree implementation.
+     *         Provided for API consistency with other containers. Doesn't guarantee subsequent
+     *         insertions won't fail with "out of memory".
+     *
+     *  @param[in] size Suggested capacity (ignored for AVL trees).
+     *  @return status_t Always succeeds.
+     *
+     *  @note This is a no-op because AVL trees don't support reserving capacity efficiently.
+     */
+    status_t reserve(std::size_t) noexcept { return {success_k}; }
+
+    /**
+     *  @brief Removes all elements from the tree and frees their memory.
+     *  @return status_t Always succeeds.
+     */
     void clear() noexcept {
         node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept { return allocator_.deallocate(node, 1); });
         root_ = nullptr;
@@ -694,6 +893,76 @@ class basic_avl_tree {
         auto result = node_t::insert(root_, other.release());
         root_ = result.root;
         size_ += result.inserted;
+    }
+
+    /**
+     *  @brief Uniformly samples a single random entry from the entire tree.
+     *         Uses a probabilistic algorithm based on tree height (upper bound of subtree size).
+     *
+     *  @param[in] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[in] callback  Callback to receive the sampled element. Must be @c noexcept.
+     *  @return status_t     Success or error code.
+     *
+     *  @note Distribution is approximate due to relying on height-based size estimates.
+     */
+    template <typename generator_type_, typename callback_type_ = no_op_t>
+    status_t sample(generator_type_ &&generator, callback_type_ &&callback) const noexcept {
+        auto node = node_t::sample(root_, std::forward<generator_type_>(generator));
+        if (node) { callback(node->entry); }
+        return {success_k};
+    }
+
+    /**
+     *  @brief Uniformly samples a single random entry from the range [@p lower, @p upper).
+     *         Uses a two-pass algorithm: first counts entries, then selects random offset.
+     *
+     *  @param[in] lower     Lower bound of the range (inclusive).
+     *  @param[in] upper     Upper bound of the range (exclusive).
+     *  @param[in] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[in] callback  Callback to receive the sampled element. Must be @c noexcept.
+     *  @return status_t     Success or error code.
+     *
+     *  @note Requires two tree traversals. For multiple samples, use reservoir sampling overload.
+     */
+    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
+    status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                          callback_type_ &&callback) const noexcept {
+        auto node = node_t::sample_range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                         std::forward<generator_type_>(generator), [](node_t *) noexcept { return true; });
+        if (node) { callback(node->entry); }
+        return {success_k};
+    }
+
+    /**
+     *  @brief Uniformly samples entries from [@p lower, @p upper) using reservoir sampling algorithm.
+     *         Fills a reservoir buffer with up to @p reservoir_capacity randomly selected elements.
+     *
+     *  @param[in]    lower              Lower bound of the range (inclusive).
+     *  @param[in]    upper              Upper bound of the range (exclusive).
+     *  @param[inout] generator          Random number generator (e.g., @c std::mt19937).
+     *  @param[inout] seen               Count of entries processed (can span multiple calls).
+     *  @param[in]    reservoir_capacity Maximum number of samples to collect.
+     *  @param[out]   reservoir          Random access iterator to output buffer.
+     *  @return status_t                 Success or error code.
+     */
+    template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
+    status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
+
+        using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
+        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
+        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
+
+        auto sampler = [&](entry_t const &entry) noexcept {
+            if (seen < reservoir_capacity) reservoir[seen] = entry;
+            else {
+                std::uniform_int_distribution<std::size_t> distribution {0, seen};
+                auto slot_to_replace = distribution(generator);
+                if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = entry;
+            }
+            ++seen;
+        };
+        return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
     }
 };
 
