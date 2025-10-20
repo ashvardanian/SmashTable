@@ -1,3 +1,9 @@
+/**
+ *  @brief
+ *
+ *  @file   status.hpp
+ *  @author Ash Vardanian
+ */
 #pragma once
 #include <cstdint>      //
 #include <system_error> // `ENOMEM`
@@ -8,7 +14,7 @@ enum errc_t {
     success_k = 0,
     unknown_k = -1,
 
-    consistency_k = 1,  // Must be non-zero to indicate error!
+    consistency_k = 1, // Must be non-zero to indicate error!
     transaction_not_recoverable_k = ENOTRECOVERABLE,
     sequence_number_overflow_k = EOVERFLOW,
 
