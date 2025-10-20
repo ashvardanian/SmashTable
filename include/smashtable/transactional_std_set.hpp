@@ -1063,7 +1063,7 @@ class transactional_std_set {
 
         // Iterate through all entries with this key (should be at most one visible)
         for (auto it = range.first; it != range.second; ++it)
-            if (it->visible && !it->deleted) callback(*it);
+            if (it->visible && !it->deleted) callback(it->element);
     }
 
     /**

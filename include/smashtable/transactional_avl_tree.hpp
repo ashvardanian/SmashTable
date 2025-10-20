@@ -623,11 +623,13 @@ class transactional_avl_tree {
      *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @return status_t Success or error code.
+     *  @return bool True if element exists, false otherwise.
      */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] status_t contains(comparable_type_ &&comparable) const noexcept {
-        return find(std::forward<comparable_type_>(comparable), [](entry_t const &) noexcept {}, []() noexcept {});
+    [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+        bool found = false;
+        find(std::forward<comparable_type_>(comparable), [&](entry_t const &) noexcept { found = true; });
+        return found;
     }
 
     /**
@@ -767,8 +769,7 @@ class transactional_avl_tree {
 
             // Remove older revisions
             identifier_t id {entry.element};
-            auto status = erase_range(id, dated_identifier_t {id, generation});
-            if (!status) return status;
+            erase_range(id, dated_identifier_t {id, generation});
 
             // Update state for next loop cycle
             last_node = prev_node;
