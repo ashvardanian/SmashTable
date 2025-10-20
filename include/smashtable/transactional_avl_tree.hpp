@@ -158,9 +158,7 @@ class transactional_avl_tree {
 
             // Check main store if not in local changes or was deleted locally
             bool exists_in_store = false;
-            auto check_status = store_ref().find(id, [&](entry_t const &) noexcept { exists_in_store = true; },
-                                                  []() noexcept {});
-            if (!check_status) return check_status;
+            store_ref().find(id, [&](entry_t const &) noexcept { exists_in_store = true; }, []() noexcept {});
             if (exists_in_store) return {invalid_argument_k};
 
             // Key doesn't exist anywhere, proceed with insertion
@@ -188,8 +186,7 @@ class transactional_avl_tree {
 
             // Check main store if not in local changes or was deleted locally
             bool exists_in_store = false;
-            [[maybe_unused]] auto check_status = store_ref().find(id, [&](entry_t const &) noexcept { exists_in_store = true; },
-                                                                   []() noexcept {});
+            store_ref().find(id, [&](entry_t const &) noexcept { exists_in_store = true; }, []() noexcept {});
             if (exists_in_store) return {success_k};
 
             // Key doesn't exist anywhere, proceed with insertion
@@ -245,8 +242,8 @@ class transactional_avl_tree {
                     watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
             };
             auto missing = [&]() noexcept { result = watches_.try_push_back({id, missing_watch()}); };
-            auto status = store_ref().find(id, found, missing);
-            return status ? result : status;
+            store_ref().find(id, found, missing);
+            return result;
         }
 
         [[nodiscard]] status_t watch(entry_t const &entry) noexcept {
@@ -261,20 +258,19 @@ class transactional_avl_tree {
          *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+        void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
             if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
                 !iterator->deleted ? callback_found(*iterator) : callback_missing();
-                return {success_k};
             }
-            else
-                return store_ref().find(std::forward<comparable_type_>(comparable),
-                                        std::forward<callback_found_type_>(callback_found),
-                                        std::forward<callback_missing_type_>(callback_missing));
+            else {
+                store_ref().find(std::forward<comparable_type_>(comparable),
+                                 std::forward<callback_found_type_>(callback_found),
+                                 std::forward<callback_missing_type_>(callback_missing));
+            }
         }
 
         /**
@@ -282,11 +278,15 @@ class transactional_avl_tree {
          *    Convenience wrapper around @c find() for existence checks.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @return status_t Success or error code.
+         *  @return bool True if the element exists, false otherwise.
          */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] status_t contains(comparable_type_ &&comparable) const noexcept {
-            return find(std::forward<comparable_type_>(comparable), [](auto const &) noexcept {}, []() noexcept {});
+        [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+            bool found = false;
+            find(
+                std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; },
+                []() noexcept {});
+            return found;
         }
 
         /**
@@ -297,12 +297,11 @@ class transactional_avl_tree {
          *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
+        void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
             while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
@@ -339,11 +338,10 @@ class transactional_avl_tree {
 
             // Iterate until we find a non-deleted external value
             auto &store = store_ref();
-            auto status = status_t {};
             do {
-                status = store.lower_bound(external_previous_id, callback_external_found, callback_external_missing);
-            } while (faced_deleted_entry && status);
-            return status;
+                faced_deleted_entry = false;
+                store.lower_bound(external_previous_id, callback_external_found, callback_external_missing);
+            } while (faced_deleted_entry);
         }
 
         /**
@@ -353,12 +351,12 @@ class transactional_avl_tree {
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
-         *  @return status_t Success or error code.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-            return find(std::forward<comparable_type_>(comparable),
-                        [&](entry_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
+        void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+            find(
+                std::forward<comparable_type_>(comparable),
+                [&](entry_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
         }
 
         /**
@@ -367,12 +365,10 @@ class transactional_avl_tree {
          *  @param[in] lower    Lower bound of the range (inclusive).
          *  @param[in] upper    Upper bound of the range (exclusive).
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
-         *  @return status_t Success or error code.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
-                                     callback_type_ &&callback) const noexcept {
+        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
             // First, iterate over local changes
             auto less = entry_comparator_t {};
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
@@ -382,22 +378,22 @@ class transactional_avl_tree {
             }
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
-            return store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                     [&](element_t const &external_element) {
-                                         // Check if this entry exists in local changes
-                                         auto local_state = changes_.find(external_element);
-                                         if (local_state == changes_.end()) {
-                                             // Not modified locally, include it
-                                             callback(external_element);
-                                         }
-                                         // If modified locally, we already processed it above
-                                     });
+            store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                              [&](element_t const &external_element) {
+                                  // Check if this entry exists in local changes
+                                  auto local_state = changes_.find(external_element);
+                                  if (local_state == changes_.end()) {
+                                      // Not modified locally, include it
+                                      callback(external_element);
+                                  }
+                                  // If modified locally, we already processed it above
+                              });
         }
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
+        void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
             while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
@@ -433,11 +429,10 @@ class transactional_avl_tree {
 
             // Iterate until we find the a non-deleted external value
             auto &store = store_ref();
-            auto status = status_t {};
             do {
-                status = store.upper_bound(external_previous_id, callback_external_found, callback_external_missing);
-            } while (faced_deleted_entry && status);
-            return status;
+                faced_deleted_entry = false;
+                store.upper_bound(external_previous_id, callback_external_found, callback_external_missing);
+            } while (faced_deleted_entry);
         }
 
         [[nodiscard]] status_t stage() noexcept {
@@ -470,8 +465,7 @@ class transactional_avl_tree {
 
             // Than just merge our current nodes.
             // The visibility will be updated later in the `commit`.
-            auto merge_status = store.entries_.merge(changes_);
-            if (!merge_status) return merge_status;
+            store.entries_.merge(changes_);
             stage_ = stage_t::staged_k;
             return {success_k};
         }
@@ -497,13 +491,10 @@ class transactional_avl_tree {
             // If the transaction was "staged",
             // we must delete all the entries.
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k) {
-                for (auto const &id_and_watch : watches_) {
-                    auto status = changes_.merge(
+            if (stage_ == stage_t::staged_k)
+                for (auto const &id_and_watch : watches_)
+                    changes_.merge(
                         store.entries_.extract(dated_identifier_t {id_and_watch.id, id_and_watch.watch.generation}));
-                    if (!status) return status;
-                }
-            }
 
             watches_.clear();
             stage_ = stage_t::created_k;
@@ -629,8 +620,9 @@ class transactional_avl_tree {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
         bool found = false;
-        find(std::forward<comparable_type_>(comparable), [&](entry_t const &) noexcept { found = true; },
-             []() noexcept {});
+        find(
+            std::forward<comparable_type_>(comparable), [&](entry_t const &) noexcept { found = true; },
+            []() noexcept {});
         return found ? 1 : 0;
     }
 
@@ -715,12 +707,12 @@ class transactional_avl_tree {
         entry.generation = generation;
         entry.deleted = false;
         entry.visible = true;
-        auto merge_status = entries_.merge(extract_result_t {&entries_, node});
-        if (!merge_status) return merge_status;
+        entries_.merge(extract_result_t {&entries_, node});
         ++visible_count_;
         assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
-        return erase_range(id, dated_identifier_t {id, generation});
+        erase_range(id, dated_identifier_t {id, generation});
+        return {success_k};
     }
 
     /**
@@ -776,8 +768,7 @@ class transactional_avl_tree {
             entry.generation = generation;
             entry.deleted = false;
             entry.visible = true;
-            auto merge_status = entries_.merge(extract_result_t {&entries_, last_node});
-            if (!merge_status) return merge_status;
+            entries_.merge(extract_result_t {&entries_, last_node});
             ++visible_count_;
             assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
@@ -798,15 +789,14 @@ class transactional_avl_tree {
     /**
      *  @brief Finds a member @b equal to the given @p comparable.
      *
-     *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
-     *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t Success or error code.
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+              callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         entry_node_t *largest_visible = nullptr;
         entry_node_t::range(entries_.root(), comparable, comparable, [&](entry_node_t *node) noexcept {
@@ -818,21 +808,19 @@ class transactional_avl_tree {
         // static_assert(noexcept(callback_found(largest_visible->entry)));
         // static_assert(noexcept(callback_missing()));
         largest_visible ? callback_found(largest_visible->entry) : callback_missing();
-        return {success_k};
     }
 
     /**
      *  @brief Finds the first member @b greater or equal to the given @p comparable.
      *
-     *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
-     *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t Success or error code.
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                     callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         // Skip all the invisible entries
         entry_node_t *next_visible = entry_node_t::lower_bound(entries_.root(), comparable);
@@ -842,7 +830,6 @@ class transactional_avl_tree {
         // static_assert(noexcept(callback_found(next_visible->entry)));
         // static_assert(noexcept(callback_missing()));
         next_visible ? callback_found(next_visible->entry) : callback_missing();
-        return {success_k};
     }
 
     /**
@@ -850,19 +837,19 @@ class transactional_avl_tree {
      *    For trees with unique keys, this returns at most one element (0 or 1).
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
-     *  @return status_t Success or error code.
+     *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        return find(std::forward<comparable_type_>(comparable),
-                    [&](entry_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
+    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+        find(
+            std::forward<comparable_type_>(comparable), [&](entry_t const &entry) noexcept { callback(entry.element); },
+            []() noexcept {});
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                     callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         // Skip all the invisible entries
         entry_node_t *next_visible = entry_node_t::upper_bound(entries_.root(), comparable);
@@ -872,34 +859,31 @@ class transactional_avl_tree {
         // static_assert(noexcept(callback_found(next_visible->entry)));
         // static_assert(noexcept(callback_missing()));
         next_visible ? callback_found(next_visible->entry) : callback_missing();
-        return {success_k};
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             [&](entry_node_t *node) noexcept {
                                 if (node->entry.visible) callback(node->entry.element);
                             });
-        return {success_k};
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         generation_t generation = new_generation();
         entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             [&](entry_node_t *node) noexcept {
-                                if (node->entry.visible) callback(node->entry.element), node->entry.generation = generation;
+                                if (node->entry.visible)
+                                    callback(node->entry.element), node->entry.generation = generation;
                             });
-        return {success_k};
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
-                                       callback_type_ &&callback = {}) noexcept {
+    void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         // Implementing Splits and Joins for AVL can be tricky.
         // Let's start with deleting them one by one.
         // TODO: Implement range-removals.
@@ -915,24 +899,21 @@ class transactional_avl_tree {
             }
             last = next;
         }
-        return {success_k};
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                        callback_type_ &&callback) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                      callback_type_ &&callback) const noexcept {
 
         auto node = entry_node_t::sample_range( //
             entries_.root(), lower, upper, std::forward<generator_type_>(generator),
             [](entry_node_t *node) noexcept { return node->entry.visible; });
         if (node) callback(node->entry);
-        return {success_k};
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                        std::size_t &seen, std::size_t reservoir_capacity,
-                                        output_iterator_type_ &&reservoir) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
 
         using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
@@ -949,38 +930,38 @@ class transactional_avl_tree {
 
             ++seen;
         };
-        return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
+        range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
     }
 
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
-     *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found    Callback to receive the erased entry. Must be @c noexcept.
-     *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t Success or error code.
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                 callback_missing_type_ &&callback_missing) noexcept {
+    void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+               callback_missing_type_ &&callback_missing) noexcept {
         // Find the entry
         bool found = false;
-        find(std::forward<comparable_type_>(comparable),
-             [&](entry_t const &entry) noexcept {
-                 found = true;
-                 callback_found(entry.element);
-             },
-             []() noexcept {});
+        find(
+            std::forward<comparable_type_>(comparable),
+            [&](entry_t const &entry) noexcept {
+                found = true;
+                callback_found(entry.element);
+            },
+            []() noexcept {});
 
         if (!found) {
             callback_missing();
-            return {success_k};
+            return;
         }
 
         // Erase the entry
-        return erase_range(std::forward<comparable_type_>(comparable),
-                           dated_identifier_t {identifier_t(comparable), generation_ + 1});
+        erase_range(std::forward<comparable_type_>(comparable),
+                    dated_identifier_t {identifier_t(comparable), generation_ + 1});
     }
 
     /**

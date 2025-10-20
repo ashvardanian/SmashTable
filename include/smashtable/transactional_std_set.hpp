@@ -79,9 +79,9 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming convention.
  *  The @c try_emplace is deleted in favor of the more explicit @c insert_if_missing.
  *
- *  @tparam element_type_    Type of the elements stored in the set.
+ *  @tparam element_type_ Type of the elements stored in the set.
  *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
- *  @tparam allocator_type_  Arbitrary "rebindable" allocator for all internal structures.
+ *  @tparam allocator_type_ Arbitrary "rebindable" allocator for all internal structures.
  */
 template < //
     typename element_type_, typename comparator_type_ = std::less<element_type_>,
@@ -276,8 +276,7 @@ class transactional_std_set {
 
             if (!key_exists) {
                 // Check in main store
-                [[maybe_unused]] auto check_status =
-                    store_ref().find(id, [&](auto const &) noexcept { key_exists = true; }, []() noexcept {});
+                store_ref().find(id, [&](auto const &) noexcept { key_exists = true; }, []() noexcept {});
             }
 
             auto status = invoke_safely([&] {
@@ -344,12 +343,16 @@ class transactional_std_set {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
-            return store_ref().find(
+            status_t status;
+            store_ref().find(
                 id,
-                [&](entry_t const &entry) {
-                    watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+                [&](entry_t const &entry) noexcept {
+                    status = invoke_safely([&] {
+                        watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+                    });
                 },
-                [&] { watches_.push_back({id, missing_watch()}); });
+                [&]() noexcept { status = invoke_safely([&] { watches_.push_back({id, missing_watch()}); }); });
+            return status;
         }
 
         /**
@@ -370,21 +373,21 @@ class transactional_std_set {
          *    Unlike @c transactional_std_set::find(), will include entries added to this transaction.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
-         *  @param[in] callback_missing Callback triggered if nothing was found.
-         *  @return status_t Success or error code.
+         *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
-            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end())
-                return !iterator->deleted ? invoke_safely([&callback_found, &iterator] { callback_found(*iterator); })
-                                          : invoke_safely(callback_missing);
-            else
-                return store_ref().find(std::forward<comparable_type_>(comparable),
-                                        std::forward<callback_found_type_>(callback_found),
-                                        std::forward<callback_missing_type_>(callback_missing));
+        void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
+            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
+                !iterator->deleted ? callback_found(*iterator) : callback_missing();
+            }
+            else {
+                store_ref().find(std::forward<comparable_type_>(comparable),
+                                 std::forward<callback_found_type_>(callback_found),
+                                 std::forward<callback_missing_type_>(callback_missing));
+            }
         }
 
         /**
@@ -392,16 +395,15 @@ class transactional_std_set {
          *    Convenience wrapper around @c find() for existence checks.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t const & if found. Ideally @c noexcept.
-         *  @param[in] callback_missing Callback triggered if nothing was found.
-         *  @return status_t Success or error code.
+         *  @return bool True if the element exists, false otherwise.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t contains(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                                        callback_missing_type_ &&callback_missing = {}) const noexcept {
-            return find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
-                        std::forward<callback_missing_type_>(callback_missing));
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+            bool found = false;
+            find(
+                std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; },
+                []() noexcept {});
+            return found;
         }
 
         /**
@@ -410,14 +412,13 @@ class transactional_std_set {
          *    Unlike @c transactional_std_set::lower_bound(), includes entries added to this transaction.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
-         *  @param[in] callback_missing Callback triggered if nothing was found.
-         *  @return status_t Success or error code.
+         *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
+        void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
             while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
@@ -454,11 +455,10 @@ class transactional_std_set {
 
             // Iterate until we find the a non-deleted external value
             auto &store = store_ref();
-            auto status = status_t {};
             do {
-                status = store.lower_bound(external_previous_id, callback_external_found, callback_external_missing);
-            } while (faced_deleted_entry && status);
-            return status;
+                faced_deleted_entry = false;
+                store.lower_bound(external_previous_id, callback_external_found, callback_external_missing);
+            } while (faced_deleted_entry);
         }
 
         /**
@@ -467,14 +467,13 @@ class transactional_std_set {
          *    Unlike @c transactional_std_set::upper_bound(), includes entries added to this transaction.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
-         *  @param[in] callback_missing Callback triggered if nothing was found.
-         *  @return status_t Success or error code.
+         *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
+        void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
             while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
@@ -511,11 +510,10 @@ class transactional_std_set {
 
             // Iterate until we find the a non-deleted external value
             auto &store = store_ref();
-            auto status = status_t {};
             do {
-                status = store.upper_bound(external_previous_id, callback_external_found, callback_external_missing);
-            } while (faced_deleted_entry && status);
-            return status;
+                faced_deleted_entry = false;
+                store.upper_bound(external_previous_id, callback_external_found, callback_external_missing);
+            } while (faced_deleted_entry);
         }
 
         /**
@@ -524,36 +522,29 @@ class transactional_std_set {
          *
          *  @param[in] lower Lower bound of the range (inclusive).
          *  @param[in] upper Upper bound of the range (exclusive).
-         *  @param[in] callback Callback invoked for each element in range.
-         *  @return status_t Success or error code.
+         *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
-                                     callback_type_ &&callback) const noexcept {
+        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
             for (auto it = lower_internal; it != upper_internal; ++it) {
-                if (!it->deleted) {
-                    auto status = invoke_safely([&] { callback(it->element); });
-                    if (!status) return status;
-                }
+                if (!it->deleted) { callback(it->element); }
             }
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
-            auto status = store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                            [&](element_t const &external_element) {
-                                                // Check if this entry exists in local changes
-                                                auto local_state = changes_.find(external_element);
-                                                if (local_state == changes_.end()) {
-                                                    // Not modified locally, include it
-                                                    callback(external_element);
-                                                }
-                                                // If modified locally, we already processed it above
-                                            });
-
-            return status;
+            store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                              [&](element_t const &external_element) {
+                                  // Check if this entry exists in local changes
+                                  auto local_state = changes_.find(external_element);
+                                  if (local_state == changes_.end()) {
+                                      // Not modified locally, include it
+                                      callback(external_element);
+                                  }
+                                  // If modified locally, we already processed it above
+                              });
         }
 
         /**
@@ -568,12 +559,11 @@ class transactional_std_set {
             auto entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find_latest_for_watch(
+                store.find_latest_for_watch(
                     id_and_watch.id,
                     [&](entry_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated) return {errc_t::consistency_k};
-                if (!status) return status;
             }
 
             // Now all of our watches will be replaced with "links" to entries
@@ -685,8 +675,8 @@ class transactional_std_set {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                                 callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                               callback_missing_type_ &&callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Find the entry with the highest generation (most recent), visible or not
@@ -696,9 +686,7 @@ class transactional_std_set {
         }
 
         // Return the latest entry found (or missing if none found)
-        return latest != range.second && !latest->deleted
-                   ? invoke_safely([&] { callback_found(*latest); })
-                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        latest != range.second && !latest->deleted ? callback_found(*latest) : callback_missing();
     }
 
     template <typename callback_type_ = no_op_t>
@@ -1013,14 +1001,13 @@ class transactional_std_set {
      *  @brief Finds a member @b equal to the given @p comparable.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found.
-     *  @return status_t Success or error code.
+     *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+              callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
@@ -1028,9 +1015,7 @@ class transactional_std_set {
         while (range.first != range.second && !range.first->visible) ++range.first;
 
         // Check if there are no visible entries at all
-        return range.first != range.second && !range.first->deleted //
-                   ? invoke_safely([&] { callback_found(*range.first); })
-                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        range.first != range.second && !range.first->deleted ? callback_found(*range.first) : callback_missing();
     }
 
     /**
@@ -1038,62 +1023,54 @@ class transactional_std_set {
      *    Convenience wrapper around @c find() for existence checks.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t const & if found. Ideally @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found.
-     *  @return status_t Success or error code.
+     *  @return bool True if the element exists, false otherwise.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t contains(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
-        return find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
-                    std::forward<callback_missing_type_>(callback_missing));
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+        bool found = false;
+        find(
+            std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; }, []() noexcept {});
+        return found;
     }
 
     /**
      *  @brief Finds the first member @b greater or equal to the given @p comparable.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found.
-     *  @return status_t Success or error code.
+     *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                     callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         auto iterator = entries_.lower_bound(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
         while (iterator != entries_.end() && (!iterator->visible || iterator->deleted)) ++iterator;
 
-        return iterator != entries_.end() //
-                   ? invoke_safely([&] { callback_found(*iterator); })
-                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        iterator != entries_.end() ? callback_found(*iterator) : callback_missing();
     }
 
     /**
      *  @brief Finds the first member @b greater than the given @p comparable.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t const &. Ideally @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found.
-     *  @return status_t Success or error code.
+     *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                     callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         auto iterator = entries_.upper_bound(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
         while (iterator != entries_.end() && (!iterator->visible || iterator->deleted)) ++iterator;
 
-        return iterator != entries_.end() //
-                   ? invoke_safely([&] { callback_found(*iterator); })
-                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        iterator != entries_.end() ? callback_found(*iterator) : callback_missing();
     }
 
     /**
@@ -1101,22 +1078,16 @@ class transactional_std_set {
      *    For sets with unique keys, this returns at most one element (0 or 1).
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback Callback invoked for each element equal to the key.
-     *  @return status_t Success or error code.
+     *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Iterate through all entries with this key (should be at most one visible)
         for (auto it = range.first; it != range.second; ++it) {
-            if (it->visible && !it->deleted) {
-                auto status = invoke_safely([&] { callback(*it); });
-                if (!status) return status;
-            }
+            if (it->visible && !it->deleted) { callback(*it); }
         }
-
-        return {success_k};
     }
 
     /**
@@ -1125,19 +1096,15 @@ class transactional_std_set {
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Callback invoked for each element in range.
-     *  @return status_t Success or error code.
+     *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (lower_iterator->visible && !lower_iterator->deleted)
-                if (auto status = invoke_safely([&] { callback(lower_iterator->element); }); !status) return status;
-
-        return {success_k};
+            if (lower_iterator->visible && !lower_iterator->deleted) callback(lower_iterator->element);
     }
 
     /**
@@ -1146,37 +1113,30 @@ class transactional_std_set {
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Callback invoked for each mutable element in range.
-     *  @return status_t Success or error code.
+     *  @param[in] callback Callback invoked for each mutable element in range. Must be @c noexcept.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         generation_t generation = new_generation();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
             if (lower_iterator->visible && !lower_iterator->deleted)
-                if (auto status = invoke_safely(
-                        [&] { callback(lower_iterator->element), lower_iterator->generation = generation; });
-                    !status)
-                    return status;
-
-        return {success_k};
+                callback(lower_iterator->element), lower_iterator->generation = generation;
     }
 
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive the erased @c element_t const &. Ideally @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found.
-     *  @return status_t Success or error code.
+     *  @param[in] callback_found Callback to receive the erased @c element_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                                 callback_missing_type_ &&callback_missing = {}) noexcept {
+    void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
+               callback_missing_type_ &&callback_missing = {}) noexcept {
 
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
@@ -1184,19 +1144,18 @@ class transactional_std_set {
         while (range.first != range.second && !range.first->visible) ++range.first;
 
         // Check if there are no visible entries at all
-        if (range.first == range.second || range.first->deleted)
-            return invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        if (range.first == range.second || range.first->deleted) {
+            callback_missing();
+            return;
+        }
 
         // Invoke callback before erasing
-        auto status = invoke_safely([&] { callback_found(*range.first); });
-        if (!status) return status;
+        callback_found(*range.first);
 
         // Erase the visible entry
         --visible_count_;
         visible_deleted_count_ -= range.first->deleted;
         entries_.erase(range.first);
-
-        return {success_k};
     }
 
     /**
@@ -1204,17 +1163,14 @@ class transactional_std_set {
      *
      *  @param[in] lower Lower bound of the range.
      *  @param[in] upper Upper bound of the range (exclusive).
-     *  @param[in] callback Optional callback invoked for each erased element.
-     *  @return status_t Success or error code.
+     *  @param[in] callback Optional callback invoked for each erased element. Must be @c noexcept.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
-                                       callback_type_ &&callback = {}) noexcept {
+    void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         erase_visible(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));
-        return {success_k};
     }
 
     /**
@@ -1248,24 +1204,22 @@ class transactional_std_set {
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
      *  @param[inout] generator Random number generator (e.g., std::mt19937).
-     *  @param[in] callback Callback to receive the sampled element.
-     *  @return status_t Success or error code.
+     *  @param[in] callback Callback to receive the sampled element. Must be @c noexcept.
      *
      *  @note Inefficient for large ranges. Use reservoir sampling overload for multiple samples.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                        callback_type_ &&callback) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                      callback_type_ &&callback) const noexcept {
 
         std::size_t count = 0;
-        auto status = range(lower, upper, [&](element_t const &) noexcept { ++count; });
-        if (!status) return status;
+        range(lower, upper, [&](element_t const &) noexcept { ++count; });
 
-        if (!count) return {};
+        if (!count) return;
 
         std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
         std::size_t matches_to_skip = distribution(generator);
-        return range(lower, upper, [&](element_t const &element) noexcept {
+        range(lower, upper, [&](element_t const &element) noexcept {
             if (matches_to_skip) --matches_to_skip;
             else
                 callback(element);
@@ -1282,12 +1236,10 @@ class transactional_std_set {
      *  @param[inout] seen Count of entries processed (can span multiple calls).
      *  @param[in] reservoir_capacity Maximum number of samples to collect.
      *  @param[out] reservoir Random access iterator to output buffer.
-     *  @return status_t Success or error code.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    [[nodiscard]] status_t sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                        std::size_t &seen, std::size_t reservoir_capacity,
-                                        output_iterator_type_ &&reservoir) const noexcept {
+    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
 
         using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
@@ -1304,7 +1256,7 @@ class transactional_std_set {
 
             ++seen;
         };
-        return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
+        range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
     }
 };
 
