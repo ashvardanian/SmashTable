@@ -1,6 +1,6 @@
 /**
  *  @brief  Minimalistic growable array implementation.
- *          Not thread-safe by itself. Doesn't raise any exceptions unlike STL-based alternatives.
+ *    Not thread-safe by itself. Doesn't raise any exceptions unlike STL-based alternatives.
  *
  *  @file   basic_vector.hpp
  *  @author Ash Vardanian
@@ -16,10 +16,10 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  @brief  Exception-free dynamic array that uses error codes instead of exceptions.
- *          Provides RAII memory management with explicit failure handling, unlike `std::vector`.
+ *  @brief Exception-free dynamic array that uses error codes instead of exceptions.
+ *    Provides RAII memory management with explicit failure handling, unlike @c std::vector.
  *
- *  @see    https://en.cppreference.com/w/cpp/container/vector
+ *  @see https://en.cppreference.com/w/cpp/container/vector
  */
 template <typename element_type_, typename allocator_type_ = std::allocator<element_type_>>
 class basic_vector {
