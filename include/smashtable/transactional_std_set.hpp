@@ -198,8 +198,7 @@ class transactional_std_set {
                 auto iterator = changes_.lower_bound(element);
                 if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
-                else
-                    iterator->element = std::move(element);
+                else iterator->element = std::move(element);
                 iterator->generation = generation_;
                 iterator->deleted = false;
                 iterator->visible = false;
@@ -246,8 +245,7 @@ class transactional_std_set {
                 auto iterator = changes_.lower_bound(element);
                 if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
-                else
-                    iterator->element = std::move(element);
+                else iterator->element = std::move(element);
                 iterator->generation = generation_;
                 iterator->deleted = false;
                 iterator->visible = false;
@@ -274,27 +272,23 @@ class transactional_std_set {
             auto local_it = changes_.find(id);
             bool key_exists = (local_it != changes_.end() && !local_it->deleted);
 
-            if (!key_exists) {
-                // Check in main store
-                store_ref().find(id, [&](auto const &) noexcept { key_exists = true; }, []() noexcept {});
-            }
+            // Check in main store
+            if (!key_exists) store_ref().find(id, [&](auto const &) noexcept { key_exists = true; }, []() noexcept {});
 
             auto status = invoke_safely([&] {
                 auto iterator = changes_.lower_bound(element);
                 if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
-                else
-                    iterator->element = std::move(element);
+                else iterator->element = std::move(element);
                 iterator->generation = generation_;
                 iterator->deleted = false;
                 iterator->visible = false;
             });
 
-            if (status) {
-                if (key_exists) invoke_safely([&] { callback_assigned(); });
-                else
-                    invoke_safely([&] { callback_inserted(); });
-            }
+            if (!status) return status;
+
+            if (key_exists) invoke_safely([&] { callback_assigned(); });
+            else invoke_safely([&] { callback_inserted(); });
             return status;
         }
 
@@ -317,8 +311,7 @@ class transactional_std_set {
                 auto iterator = changes_.lower_bound(id);
                 if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, id))
                     iterator = changes_.emplace_hint(iterator, id);
-                else
-                    iterator->element = id;
+                else iterator->element = id;
                 iterator->generation = generation_;
                 iterator->deleted = true;
                 iterator->visible = false;
@@ -380,14 +373,12 @@ class transactional_std_set {
                   typename callback_missing_type_ = no_op_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
+            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end())
                 !iterator->deleted ? callback_found(*iterator) : callback_missing();
-            }
-            else {
+            else
                 store_ref().find(std::forward<comparable_type_>(comparable),
                                  std::forward<callback_found_type_>(callback_found),
                                  std::forward<callback_missing_type_>(callback_missing));
-            }
         }
 
         /**
@@ -440,17 +431,12 @@ class transactional_std_set {
                 if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
-                    return;
                 }
-                else
-                    return callback_found(external_element);
+                else callback_found(external_element);
             };
             auto callback_external_missing = [&] {
-                if (internal_iterator == changes_.end()) return callback_missing();
-                else {
-                    element_t const &internal_element = internal_iterator->element;
-                    return callback_found(internal_element);
-                }
+                if (internal_iterator == changes_.end()) callback_missing();
+                else callback_found(internal_iterator->element);
             };
 
             // Iterate until we find the a non-deleted external value
@@ -495,17 +481,12 @@ class transactional_std_set {
                 if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
-                    return;
                 }
-                else
-                    return callback_found(external_element);
+                else callback_found(external_element);
             };
             auto callback_external_missing = [&] {
-                if (internal_iterator == changes_.end()) return callback_missing();
-                else {
-                    element_t const &internal_element = internal_iterator->element;
-                    return callback_found(internal_element);
-                }
+                if (internal_iterator == changes_.end()) callback_missing();
+                else callback_found(internal_iterator->element);
             };
 
             // Iterate until we find the a non-deleted external value
@@ -530,19 +511,16 @@ class transactional_std_set {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
-            for (auto it = lower_internal; it != upper_internal; ++it) {
-                if (!it->deleted) { callback(it->element); }
-            }
+            for (auto it = lower_internal; it != upper_internal; ++it)
+                if (!it->deleted) callback(it->element);
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
             store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                               [&](element_t const &external_element) {
                                   // Check if this entry exists in local changes
                                   auto local_state = changes_.find(external_element);
-                                  if (local_state == changes_.end()) {
-                                      // Not modified locally, include it
-                                      callback(external_element);
-                                  }
+                                  // Not modified locally, include it
+                                  if (local_state == changes_.end()) callback(external_element);
                                   // If modified locally, we already processed it above
                               });
         }
@@ -679,14 +657,14 @@ class transactional_std_set {
                                callback_missing_type_ &&callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
-        // Find the entry with the highest generation (most recent), visible or not
+        // Locate the most recent revision regardless of visibility.
         entry_iterator_t latest = range.second;
-        for (auto it = range.first; it != range.second; ++it) {
-            if (latest == range.second || it->generation > latest->generation) { latest = it; }
-        }
+        for (auto it = range.first; it != range.second; ++it)
+            if (latest == range.second || it->generation > latest->generation) latest = it;
 
-        // Return the latest entry found (or missing if none found)
-        latest != range.second && !latest->deleted ? callback_found(*latest) : callback_missing();
+        // Invoke whichever callback matches the outcome.
+        if (latest == range.second || latest->deleted) callback_missing();
+        else callback_found(*latest);
     }
 
     template <typename callback_type_ = no_op_t>
@@ -699,7 +677,7 @@ class transactional_std_set {
                 visible_deleted_count_ -= current->deleted;
                 current = entries_.erase(current);
             }
-            else { ++current; }
+            else ++current;
     }
 
     void unmask_and_compact(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
@@ -933,11 +911,10 @@ class transactional_std_set {
             erase_visible(range_start, range_end);
         });
 
-        if (status) {
-            if (key_exists) invoke_safely([&] { callback_assigned(); });
-            else
-                invoke_safely([&] { callback_inserted(); });
-        }
+        if (!status) return status;
+
+        if (key_exists) invoke_safely([&] { callback_assigned(); });
+        else invoke_safely([&] { callback_inserted(); });
         return status;
     }
 
@@ -1085,9 +1062,8 @@ class transactional_std_set {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Iterate through all entries with this key (should be at most one visible)
-        for (auto it = range.first; it != range.second; ++it) {
-            if (it->visible && !it->deleted) { callback(*it); }
-        }
+        for (auto it = range.first; it != range.second; ++it)
+            if (it->visible && !it->deleted) callback(*it);
     }
 
     /**
@@ -1221,8 +1197,7 @@ class transactional_std_set {
         std::size_t matches_to_skip = distribution(generator);
         range(lower, upper, [&](element_t const &element) noexcept {
             if (matches_to_skip) --matches_to_skip;
-            else
-                callback(element);
+            else callback(element);
         });
     }
 

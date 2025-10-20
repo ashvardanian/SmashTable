@@ -264,14 +264,12 @@ class transactional_avl_tree {
                   typename callback_missing_type_ = no_op_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
+            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end())
                 !iterator->deleted ? callback_found(*iterator) : callback_missing();
-            }
-            else {
+            else
                 store_ref().find(std::forward<comparable_type_>(comparable),
                                  std::forward<callback_found_type_>(callback_found),
                                  std::forward<callback_missing_type_>(callback_missing));
-            }
         }
 
         /**
@@ -324,16 +322,12 @@ class transactional_avl_tree {
                 if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
-                    return;
                 }
-                else return callback_found(external_element);
+                else callback_found(external_element);
             };
             auto callback_external_missing = [&] {
-                if (internal_iterator == changes_.end()) return callback_missing();
-                else {
-                    element_t const &internal_element = *internal_iterator;
-                    return callback_found(internal_element);
-                }
+                if (internal_iterator == changes_.end()) callback_missing();
+                else callback_found(*internal_iterator);
             };
 
             // Iterate until we find a non-deleted external value
@@ -373,19 +367,16 @@ class transactional_avl_tree {
             auto less = entry_comparator_t {};
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto const upper_internal_bound = identifier_t(upper);
-            for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it) {
-                if (!it->deleted) { callback(it->element); }
-            }
+            for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it)
+                if (!it->deleted) callback(it->element);
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
             store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                               [&](element_t const &external_element) {
                                   // Check if this entry exists in local changes
                                   auto local_state = changes_.find(external_element);
-                                  if (local_state == changes_.end()) {
-                                      // Not modified locally, include it
-                                      callback(external_element);
-                                  }
+                                  // Not modified locally, include it
+                                  if (local_state == changes_.end()) callback(external_element); // Not modified locally
                                   // If modified locally, we already processed it above
                               });
         }
@@ -399,15 +390,21 @@ class transactional_avl_tree {
             while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
-            // we might face an entry, that was already deleted from here,
+            // we might face an entry that was already deleted from here,
             // so this might become a multi-step process.
             auto faced_deleted_entry = false;
             auto callback_external_found = [&](element_t const &external_element) {
                 // The simplest case is when we have an external object.
-                if (internal_iterator == changes_.end()) return callback_found(external_element);
+                if (internal_iterator == changes_.end()) {
+                    callback_found(external_element);
+                    return;
+                }
 
                 element_t const &internal_element = *internal_iterator;
-                if (!entry_comparator_t {}(external_element, internal_element)) return callback_found(internal_element);
+                if (!entry_comparator_t {}(external_element, internal_element)) {
+                    callback_found(internal_element);
+                    return;
+                }
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
@@ -415,16 +412,12 @@ class transactional_avl_tree {
                 if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
-                    return;
                 }
-                else { return callback_found(external_element); }
+                else { callback_found(external_element); }
             };
             auto callback_external_missing = [&] {
-                if (internal_iterator == changes_.end()) return callback_missing();
-                else {
-                    element_t const &internal_element = *internal_iterator;
-                    return callback_found(internal_element);
-                }
+                if (internal_iterator == changes_.end()) callback_missing();
+                else callback_found(*internal_iterator);
             };
 
             // Iterate until we find the a non-deleted external value
