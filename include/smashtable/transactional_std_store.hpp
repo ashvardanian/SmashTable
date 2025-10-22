@@ -94,19 +94,19 @@ class transactional_std_store {
     using comparator_t = comparator_type_;
     using allocator_t = allocator_type_;
 
-    using versioning_t = versioned_element<element_t, comparator_t>;
+    using versioning_t = versioning_for<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
     using watch_t = typename versioning_t::watch_t;
     using watched_identifier_t = typename versioning_t::watched_identifier_t;
-    using entry_t = typename versioning_t::entry_t;
-    using entry_comparator_t = typename versioning_t::entry_comparator_t;
+    using versioned_entry_t = typename versioning_t::versioned_entry_t;
+    using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
 
   private:
-    using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<entry_t>;
+    using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<versioned_entry_t>;
     using entry_set_t = std::set< //
-        entry_t, entry_comparator_t, entry_allocator_t>;
+        versioned_entry_t, versioned_comparator_t, entry_allocator_t>;
     using entry_iterator_t = typename entry_set_t::iterator;
 
     using watches_allocator_t =
@@ -174,10 +174,9 @@ class transactional_std_store {
         [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                       callback_exists_type_ &&callback_exists = {}) noexcept {
 
-            static_assert(std::is_nothrow_invocable_v<callback_exists_type_ &, element_t const &>,
+            static_assert(is_safe_callback_for<callback_exists_type_, element_t const &>,
                           "callback_exists must be noexcept invocable with element_t const &");
-            static_assert(std::is_nothrow_invocable_v<callback_inserted_type_ &>,
-                          "callback_inserted must be noexcept invocable");
+            static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
 
             // Check local changes first
             identifier_t id {element};
@@ -191,7 +190,7 @@ class transactional_std_store {
             bool exists_in_store = false;
             store_ref().find(
                 id,
-                [&](entry_t const &entry) noexcept {
+                [&](versioned_entry_t const &entry) noexcept {
                     exists_in_store = true;
                     callback_exists(entry.element);
                 },
@@ -200,14 +199,14 @@ class transactional_std_store {
             if (exists_in_store) return {invalid_argument_k};
 
             // Key doesn't exist anywhere, proceed with insertion
-            auto status = invoke_safely([&] {
+            auto status = invoke_safely([&]() {
                 auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, element))
+                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
-                else iterator->element = std::move(element);
-                iterator->generation = generation_;
-                iterator->deleted = false;
-                iterator->visible = false;
+                else const_cast<element_t &>(iterator->element) = std::move(element);
+                const_cast<generation_t &>(iterator->generation) = generation_;
+                const_cast<bool &>(iterator->deleted) = false;
+                const_cast<bool &>(iterator->visible) = false;
             });
 
             if (status) callback_inserted();
@@ -227,9 +226,8 @@ class transactional_std_store {
         [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                                  callback_skipped_type_ &&callback_skipped = {}) noexcept {
 
-            static_assert(std::is_nothrow_invocable_v<callback_inserted_type_ &>,
-                          "callback_inserted must be noexcept invocable");
-            static_assert(std::is_nothrow_invocable_v<callback_skipped_type_ &, element_t const &>,
+            static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
+            static_assert(is_safe_callback_for<callback_skipped_type_, element_t const &>,
                           "callback_skipped must be noexcept invocable with element_t const &");
 
             // Check local changes first
@@ -244,7 +242,7 @@ class transactional_std_store {
             bool exists_in_store = false;
             store_ref().find(
                 id,
-                [&](entry_t const &entry) noexcept {
+                [&](versioned_entry_t const &entry) noexcept {
                     exists_in_store = true;
                     callback_skipped(entry.element);
                 },
@@ -253,14 +251,14 @@ class transactional_std_store {
             if (exists_in_store) return {success_k}; // Success, just didn't insert
 
             // Key doesn't exist anywhere, proceed with insertion
-            auto status = invoke_safely([&] {
+            auto status = invoke_safely([&]() {
                 auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, element))
+                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
-                else iterator->element = std::move(element);
-                iterator->generation = generation_;
-                iterator->deleted = false;
-                iterator->visible = false;
+                else const_cast<element_t &>(iterator->element) = std::move(element);
+                const_cast<generation_t &>(iterator->generation) = generation_;
+                const_cast<bool &>(iterator->deleted) = false;
+                const_cast<bool &>(iterator->visible) = false;
             });
 
             if (status) callback_inserted();
@@ -280,10 +278,8 @@ class transactional_std_store {
         [[nodiscard]] status_t insert_or_assign(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                                 callback_assigned_type_ &&callback_assigned = {}) noexcept {
 
-            static_assert(std::is_nothrow_invocable_v<callback_inserted_type_ &>,
-                          "callback_inserted must be noexcept invocable");
-            static_assert(std::is_nothrow_invocable_v<callback_assigned_type_ &>,
-                          "callback_assigned must be noexcept invocable");
+            static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
+            static_assert(is_safe_callback<callback_assigned_type_>, "callback_assigned must be noexcept invocable");
 
             // Check if key exists in local changes or store
             identifier_t id {element};
@@ -293,14 +289,14 @@ class transactional_std_store {
             // Check in main store
             if (!key_exists) store_ref().find(id, [&](auto const &) noexcept { key_exists = true; }, []() noexcept {});
 
-            auto status = invoke_safely([&] {
+            auto status = invoke_safely([&]() {
                 auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, element))
+                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
-                else iterator->element = std::move(element);
-                iterator->generation = generation_;
-                iterator->deleted = false;
-                iterator->visible = false;
+                else const_cast<element_t &>(iterator->element) = std::move(element);
+                const_cast<generation_t &>(iterator->generation) = generation_;
+                const_cast<bool &>(iterator->deleted) = false;
+                const_cast<bool &>(iterator->visible) = false;
             });
 
             if (!status) return status;
@@ -325,14 +321,14 @@ class transactional_std_store {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            return invoke_safely([&] {
+            return invoke_safely([&]() {
                 auto iterator = changes_.lower_bound(id);
-                if (iterator == changes_.end() || !entry_comparator_t {}.same(iterator->element, id))
+                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, id))
                     iterator = changes_.emplace_hint(iterator, element_t {id});
-                else iterator->element = element_t {id};
-                iterator->generation = generation_;
-                iterator->deleted = true;
-                iterator->visible = false;
+                else const_cast<element_t &>(iterator->element) = element_t {id};
+                const_cast<generation_t &>(iterator->generation) = generation_;
+                const_cast<bool &>(iterator->deleted) = true;
+                const_cast<bool &>(iterator->visible) = false;
             });
         }
 
@@ -343,7 +339,7 @@ class transactional_std_store {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t reserve(std::size_t size) noexcept {
-            return invoke_safely([&] { watches_.reserve(size); });
+            return invoke_safely([&]() { watches_.reserve(size); });
         }
 
         /**
@@ -355,14 +351,14 @@ class transactional_std_store {
          */
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
             status_t status;
-            store_ref().find(
+            store_ref().find_visible_entry_(
                 id,
-                [&](entry_t const &entry) noexcept {
-                    status = invoke_safely([&] {
+                [&](versioned_entry_t const &entry) noexcept {
+                    status = invoke_safely([&]() {
                         watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
                     });
                 },
-                [&]() noexcept { status = invoke_safely([&] { watches_.push_back({id, missing_watch()}); }); });
+                [&]() noexcept { status = invoke_safely([&]() { watches_.push_back({id, missing_watch()}); }); });
             return status;
         }
 
@@ -373,7 +369,7 @@ class transactional_std_store {
          *  @param[in] entry Entry to watch (typically from a previous find/lookup).
          *  @return status_t Success or error code (e.g., out of memory).
          */
-        [[nodiscard]] status_t watch(entry_t const &entry) noexcept {
+        [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
             return invoke_safely(
                 [&] { watches_.push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}}); });
         }
@@ -392,10 +388,9 @@ class transactional_std_store {
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-            static_assert(std::is_nothrow_invocable_v<callback_found_type_ &, element_t const &>,
+            static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
                           "callback_found must be noexcept invocable with element_t const &");
-            static_assert(std::is_nothrow_invocable_v<callback_missing_type_ &>,
-                          "callback_missing must be noexcept invocable");
+            static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
             if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
                 if (!iterator->deleted) callback_found(iterator->element);
@@ -418,7 +413,7 @@ class transactional_std_store {
         [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
             bool found = false;
             find(
-                std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; },
+                std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; },
                 []() noexcept {});
             return found;
         }
@@ -437,10 +432,9 @@ class transactional_std_store {
         void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-            static_assert(std::is_nothrow_invocable_v<callback_found_type_ &, element_t const &>,
+            static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
                           "callback_found must be noexcept invocable with element_t const &");
-            static_assert(std::is_nothrow_invocable_v<callback_missing_type_ &>,
-                          "callback_missing must be noexcept invocable");
+            static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
@@ -455,7 +449,8 @@ class transactional_std_store {
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
                 element_t const &internal_element = internal_iterator->element;
-                if (!entry_comparator_t {}(external_element, internal_element)) return callback_found(internal_element);
+                if (!versioned_comparator_t {}(external_element, internal_element))
+                    return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
@@ -493,10 +488,9 @@ class transactional_std_store {
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-            static_assert(std::is_nothrow_invocable_v<callback_found_type_ &, element_t const &>,
+            static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
                           "callback_found must be noexcept invocable with element_t const &");
-            static_assert(std::is_nothrow_invocable_v<callback_missing_type_ &>,
-                          "callback_missing must be noexcept invocable");
+            static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
@@ -511,7 +505,8 @@ class transactional_std_store {
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
                 element_t const &internal_element = internal_iterator->element;
-                if (!entry_comparator_t {}(external_element, internal_element)) return callback_found(internal_element);
+                if (!versioned_comparator_t {}(external_element, internal_element))
+                    return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
@@ -575,9 +570,11 @@ class transactional_std_store {
             auto entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                store.find_latest_for_watch(
+                store.find_latest_entry_(
                     id_and_watch.id,
-                    [&](entry_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
+                    [&](versioned_entry_t const &entry) noexcept {
+                        consistency_violated = entry != id_and_watch.watch;
+                    },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated) return {errc_t::consistency_k};
             }
@@ -585,7 +582,7 @@ class transactional_std_store {
             // Now all of our watches will be replaced with "links" to entries
             // we are merging into the main tree.
             watches_.clear();
-            auto status = invoke_safely([&] { watches_.reserve(changes_.size()); });
+            auto status = invoke_safely([&]() { watches_.reserve(changes_.size()); });
             if (!status) return status;
 
             // No new memory allocations or failures are possible after that.
@@ -685,14 +682,45 @@ class transactional_std_store {
     generation_t new_generation() noexcept { return ++generation_; }
 
     /**
-     *  @brief Finds the latest (highest generation) entry for watch validation.
-     *    Unlike find(), this checks ALL entries including staged (invisible) ones.
-     *    This is critical for detecting write-write conflicts with concurrent transactions.
+     *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_entry_t const &.
+     *    Used by internal methods that need access to generation/deleted/visible fields.
+     *    Only considers VISIBLE entries (committed/staged).
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                               callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find_visible_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                             callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+        static_assert(is_safe_callback_for<callback_found_type_, versioned_entry_t const &>,
+                      "callback_found must be noexcept invocable with versioned_entry_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
+        auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
+
+        // Skip all the invisible entries
+        while (range.first != range.second && !range.first->visible) ++range.first;
+
+        if (range.first != range.second && !range.first->deleted) callback_found(*range.first);
+        else callback_missing();
+    }
+
+    /**
+     *  @brief Internal API: Finds the latest entry regardless of visibility for watch validation.
+     *    Checks ALL entries including staged (invisible) ones.
+     *    Critical for detecting write-write conflicts with concurrent transactions.
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    void find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                            callback_missing_type_ &&callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Locate the most recent revision regardless of visibility.
@@ -726,7 +754,7 @@ class transactional_std_store {
             if (keep_this) {
                 visible_count_ += !current->visible;
                 visible_deleted_count_ += !current->visible && current->deleted;
-                current->visible = true;
+                const_cast<bool &>(current->visible) = true;
             }
 
             if (!current->visible) continue;
@@ -815,7 +843,7 @@ class transactional_std_store {
      */
     [[nodiscard]] static std::optional<store_t> make() noexcept {
         std::optional<store_t> result;
-        invoke_safely([&] { result.emplace(store_t {}); });
+        invoke_safely([&]() { result.emplace(store_t {}); });
         return result;
     }
 
@@ -828,7 +856,7 @@ class transactional_std_store {
      */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
         std::optional<transaction_t> result;
-        invoke_safely([&] { result.emplace(transaction_t {*this}); });
+        invoke_safely([&]() { result.emplace(transaction_t {*this}); });
         return result;
     }
 
@@ -845,10 +873,9 @@ class transactional_std_store {
     [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                   callback_exists_type_ &&callback_exists = {}) noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_exists_type_ &, element_t const &>,
+        static_assert(is_safe_callback_for<callback_exists_type_, element_t const &>,
                       "callback_exists must be noexcept invocable with element_t const &");
-        static_assert(std::is_nothrow_invocable_v<callback_inserted_type_ &>,
-                      "callback_inserted must be noexcept invocable");
+        static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
 
         // First check if key already exists
         identifier_t id {element};
@@ -865,8 +892,8 @@ class transactional_std_store {
 
         // Key doesn't exist, proceed with insertion
         generation_t generation = new_generation();
-        auto status = invoke_safely([&] {
-            auto entry = entry_t {std::move(element)};
+        auto status = invoke_safely([&]() {
+            auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
             entry.deleted = false;
             entry.visible = true;
@@ -893,9 +920,8 @@ class transactional_std_store {
     [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                              callback_skipped_type_ &&callback_skipped = {}) noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_inserted_type_ &>,
-                      "callback_inserted must be noexcept invocable");
-        static_assert(std::is_nothrow_invocable_v<callback_skipped_type_ &, element_t const &>,
+        static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
+        static_assert(is_safe_callback_for<callback_skipped_type_, element_t const &>,
                       "callback_skipped must be noexcept invocable with element_t const &");
 
         // Check if key already exists
@@ -913,8 +939,8 @@ class transactional_std_store {
 
         // Key doesn't exist, proceed with insertion
         generation_t generation = new_generation();
-        auto status = invoke_safely([&] {
-            auto entry = entry_t {std::move(element)};
+        auto status = invoke_safely([&]() {
+            auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
             entry.deleted = false;
             entry.visible = true;
@@ -941,10 +967,8 @@ class transactional_std_store {
     [[nodiscard]] status_t insert_or_assign(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                             callback_assigned_type_ &&callback_assigned = {}) noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_inserted_type_ &>,
-                      "callback_inserted must be noexcept invocable");
-        static_assert(std::is_nothrow_invocable_v<callback_assigned_type_ &>,
-                      "callback_assigned must be noexcept invocable");
+        static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
+        static_assert(is_safe_callback<callback_assigned_type_>, "callback_assigned must be noexcept invocable");
 
         // Check if key exists
         identifier_t id {element};
@@ -953,8 +977,8 @@ class transactional_std_store {
         bool key_exists = (range.first != range.second && !range.first->deleted);
 
         generation_t generation = new_generation();
-        auto status = invoke_safely([&] {
-            auto entry = entry_t {std::move(element)};
+        auto status = invoke_safely([&]() {
+            auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
             entry.deleted = false;
             entry.visible = true;
@@ -1001,13 +1025,13 @@ class transactional_std_store {
     [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         generation_t generation = new_generation();
         std::optional<entry_set_t> batch;
-        auto batch_construction_status = invoke_safely([&] {
+        auto batch_construction_status = invoke_safely([&]() {
             batch = entry_set_t {};
             for (; begin != end; ++begin) {
                 auto iterator = batch->emplace(*begin).first;
-                iterator->generation = generation;
-                iterator->visible = true;
-                iterator->deleted = false;
+                const_cast<generation_t &>(iterator->generation) = generation;
+                const_cast<bool &>(iterator->visible) = true;
+                const_cast<bool &>(iterator->deleted) = false;
             }
         });
         if (!batch_construction_status) return batch_construction_status;
@@ -1038,18 +1062,14 @@ class transactional_std_store {
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_found_type_ &, element_t const &>,
-                      "callback_found must be noexcept invocable with element_t const & or entry_t const &");
-        static_assert(std::is_nothrow_invocable_v<callback_missing_type_ &>,
-                      "callback_missing must be noexcept invocable");
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
+                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-        auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
-
-        // Skip all the invisible entries
-        while (range.first != range.second && !range.first->visible) ++range.first;
-
-        if (range.first != range.second && !range.first->deleted) callback_found(range.first->element);
-        else callback_missing();
+        find_visible_entry_(
+            std::forward<comparable_type_>(comparable),
+            [&](versioned_entry_t const &entry) noexcept { callback_found(entry.element); },
+            std::forward<callback_missing_type_>(callback_missing));
     }
 
     /**
@@ -1063,7 +1083,7 @@ class transactional_std_store {
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
         bool found = false;
         find(
-            std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; }, []() noexcept {});
+            std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; }, []() noexcept {});
         return found;
     }
 
@@ -1079,10 +1099,9 @@ class transactional_std_store {
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_found_type_ &, element_t const &>,
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
                       "callback_found must be noexcept invocable with element_t const &");
-        static_assert(std::is_nothrow_invocable_v<callback_missing_type_ &>,
-                      "callback_missing must be noexcept invocable");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         auto iterator = entries_.lower_bound(std::forward<comparable_type_>(comparable));
 
@@ -1104,10 +1123,9 @@ class transactional_std_store {
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_found_type_ &, element_t const &>,
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
                       "callback_found must be noexcept invocable with element_t const &");
-        static_assert(std::is_nothrow_invocable_v<callback_missing_type_ &>,
-                      "callback_missing must be noexcept invocable");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         auto iterator = entries_.upper_bound(std::forward<comparable_type_>(comparable));
 
@@ -1151,22 +1169,30 @@ class transactional_std_store {
     }
 
     /**
-     *  @brief Iterates over all entries in the range [ @p lower, @p upper), allowing in-place modification.
-     *    Degrades to @c equal_range() if @p lower and @p upper are the same. Non-const version.
+     *  @brief Iterates over key-value associations in [ @p lower, @p upper), providing mutable value access.
+     *    Only enabled for association types. Callback receives (key_type const&, value_type&).
+     *    Updates generation for each accessed element.
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Callback invoked for each mutable element in range. Must be @c noexcept.
+     *  @param[in] callback Callback invoked with (key_type const&, value_type&) for each element. Must be @c noexcept.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+        requires is_association<element_t>
+    {
         generation_t generation = new_generation();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
-        for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (lower_iterator->visible && !lower_iterator->deleted)
-                callback(lower_iterator->element), lower_iterator->generation = generation;
+        for (; lower_iterator != upper_iterator; ++lower_iterator) {
+            if (!lower_iterator->visible || lower_iterator->deleted) continue;
+            // ! STL's `std::set::iterator` dereferencing operator returns immutable references
+            // ! to isolate keys from possible modifications, corrupting the ordered layout.
+            auto &entry = const_cast<versioned_entry_t &>(*lower_iterator);
+            callback(entry.element.key, entry.element.value);
+            entry.generation = generation;
+        }
     }
 
     /**
@@ -1215,7 +1241,7 @@ class transactional_std_store {
               typename callback_type_ = no_op_t>
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
 
-        static_assert(std::is_nothrow_invocable_v<callback_type_ &, element_t const &>,
+        static_assert(is_safe_callback_for<callback_type_, element_t const &>,
                       "callback must be noexcept invocable with element_t const &");
 
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
@@ -1334,6 +1360,6 @@ template < //
     typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
 using transactional_std_map =
-    transactional_std_store<kv_pair<key_type_, value_type_>, comparator_type_, allocator_type_>;
+    transactional_std_store<association<key_type_, value_type_>, comparator_type_, allocator_type_>;
 
 } // namespace ashvardanian::smashtable

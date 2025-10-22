@@ -5,7 +5,8 @@
 
 #include <gtest/gtest.h>
 
-#include <smashtable/transactional_std_set.hpp>
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
+#include <smashtable/transactional_std_store.hpp>
 #include <smashtable/transactional_avl_tree.hpp>
 #include <smashtable/partitioned_collection.hpp>
 
@@ -13,7 +14,7 @@ using namespace ashvardanian::smashtable;
 
 constexpr std::size_t size = 128;
 
-using pair_t = kv_pair<std::size_t, std::size_t>;
+using pair_t = association<std::size_t, std::size_t>;
 
 struct pair_compare_t {
     using value_type = std::size_t;
@@ -163,7 +164,7 @@ void test_range_query_head_state() {
     for (std::size_t idx = 0; idx < size; idx += 10) {
         std::size_t count = 0;
         std::size_t min_key = size, max_key = 0;
-        cont.range(idx, idx + 9, [&](auto const &rhs) noexcept {
+        cont.range(idx, idx + 9, [&](pair_t const &rhs) noexcept {
             min_key = std::min(min_key, rhs.key);
             max_key = std::max(max_key, rhs.key);
             count++;
@@ -190,7 +191,7 @@ void test_erase_range_head_state() {
     for (std::size_t idx = 0; idx < size; idx += 10) {
         cont.erase_range(idx, idx + 10, [](auto const &) noexcept {});
         for (std::size_t i = idx; i < idx + 10; ++i) {
-            cont.find(i, [&](auto const &) noexcept { state = false; });
+            cont.find(i, [&](pair_t const &) noexcept { state = false; });
             EXPECT_TRUE(state);
         }
     }
@@ -207,7 +208,7 @@ void test_upper_bound() {
     for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.upsert(pair_t {idx, idx}));
 
     for (std::size_t idx = 0; idx < size - 1; ++idx) {
-        cont.upper_bound(idx, [&](auto const &rhs) noexcept { EXPECT_TRUE(pair_compare_t {}(idx, rhs)); });
+        cont.upper_bound(idx, [&](pair_t const &rhs) noexcept { EXPECT_TRUE(pair_compare_t {}(idx, rhs)); });
     }
 }
 
@@ -288,10 +289,10 @@ void test_empty_container_operations() {
 
     // Operations on empty container should not crash
     bool found = false;
-    cont.find(id_t {1}, [&](auto const &) { found = true; });
+    cont.find(id_t {1}, [&](pair_t const &) noexcept { found = true; });
     EXPECT_FALSE(found);
 
-    cont.upper_bound(id_t {1}, [&](auto const &) { found = true; });
+    cont.upper_bound(id_t {1}, [&](pair_t const &) noexcept { found = true; });
     EXPECT_FALSE(found);
 
     cont.erase_range(id_t {0}, id_t {10});
@@ -309,9 +310,9 @@ void test_single_element_operations() {
     EXPECT_EQ(cont.size(), 1);
 
     bool found = false;
-    cont.find(id_t {42}, [&](auto const &e) {
+    cont.find(id_t {42}, [&](pair_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.value, 42);
+        EXPECT_EQ(e.value, 42);
     });
     EXPECT_TRUE(found);
 
@@ -349,10 +350,10 @@ void test_heterogeneous_lookups_with_transparent() {
 
     // Test heterogeneous find()
     bool found = false;
-    set.find("20"sv, [&](auto const &e) {
+    set.find("20"sv, [&](string_element_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.key, "20");
-        EXPECT_EQ(e.element.value, 200);
+        EXPECT_EQ(e.key, "20");
+        EXPECT_EQ(e.value, 200);
     });
     EXPECT_TRUE(found);
 
@@ -362,23 +363,23 @@ void test_heterogeneous_lookups_with_transparent() {
 
     // Test heterogeneous lower_bound()
     found = false;
-    set.lower_bound("15"sv, [&](auto const &e) {
+    set.lower_bound("15"sv, [&](string_element_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.key, "20");
+        EXPECT_EQ(e.key, "20");
     });
     EXPECT_TRUE(found);
 
     // Test heterogeneous upper_bound()
     found = false;
-    set.upper_bound("20"sv, [&](auto const &e) {
+    set.upper_bound("20"sv, [&](string_element_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.key, "30");
+        EXPECT_EQ(e.key, "30");
     });
     EXPECT_TRUE(found);
 
     // Test heterogeneous equal_range()
     found = false;
-    set.equal_range("20"sv, [&](auto const &e) {
+    set.equal_range("20"sv, [&](string_element_t const &e) noexcept {
         found = true;
         EXPECT_EQ(e.key, "20");
     });
@@ -402,10 +403,10 @@ void test_heterogeneous_lookups_without_transparent() {
 
     // Test heterogeneous find()
     bool found = false;
-    set.find("20"sv, [&](auto const &e) {
+    set.find("20"sv, [&](string_element_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.key, "20");
-        EXPECT_EQ(e.element.value, 200);
+        EXPECT_EQ(e.key, "20");
+        EXPECT_EQ(e.value, 200);
     });
     EXPECT_TRUE(found);
 
@@ -415,23 +416,23 @@ void test_heterogeneous_lookups_without_transparent() {
 
     // Test heterogeneous lower_bound()
     found = false;
-    set.lower_bound("15"sv, [&](auto const &e) {
+    set.lower_bound("15"sv, [&](string_element_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.key, "20");
+        EXPECT_EQ(e.key, "20");
     });
     EXPECT_TRUE(found);
 
     // Test heterogeneous upper_bound()
     found = false;
-    set.upper_bound("20"sv, [&](auto const &e) {
+    set.upper_bound("20"sv, [&](string_element_t const &e) noexcept {
         found = true;
-        EXPECT_EQ(e.element.key, "30");
+        EXPECT_EQ(e.key, "30");
     });
     EXPECT_TRUE(found);
 
     // Test heterogeneous equal_range()
     found = false;
-    set.equal_range("20"sv, [&](auto const &e) {
+    set.equal_range("20"sv, [&](string_element_t const &e) noexcept {
         found = true;
         EXPECT_EQ(e.key, "20");
     });
@@ -537,9 +538,9 @@ void test_no_dirty_reads_multi_key() {
     // External reader should see ORIGINAL values (staged changes invisible)
     for (std::size_t i = 1; i <= 5; ++i) {
         bool found = false;
-        set.find(id_t {i}, [&](auto const &e) {
+        set.find(id_t {i}, [&](pair_t const &e) noexcept {
             found = true;
-            EXPECT_EQ(e.element.value, i) << "Should see original value, not staged value";
+            EXPECT_EQ(e.value, i) << "Should see original value, not staged value";
         });
         EXPECT_TRUE(found) << "Key " << i << " should exist";
     }
@@ -570,8 +571,8 @@ void test_new_transaction_sees_nothing_staged() {
     ASSERT_TRUE(t2.has_value());
 
     bool found1 = false, found2 = false;
-    t2->find(id_t {1}, [&](auto const &) { found1 = true; });
-    t2->find(id_t {2}, [&](auto const &) { found2 = true; });
+    t2->find(id_t {1}, [&](pair_t const &) noexcept { found1 = true; });
+    t2->find(id_t {2}, [&](pair_t const &) noexcept { found2 = true; });
 
     EXPECT_FALSE(found1) << "T2 should not see T1's staged key 1";
     EXPECT_FALSE(found2) << "T2 should not see T1's staged key 2";
@@ -605,13 +606,13 @@ void test_committed_immediately_visible() {
     std::size_t val1 = 0, val2 = 0;
     bool found1 = false, found2 = false;
 
-    t2->find(id_t {1}, [&](auto const &e) {
+    t2->find(id_t {1}, [&](pair_t const &e) noexcept {
         found1 = true;
-        val1 = e.element.value;
+        val1 = e.value;
     });
-    t2->find(id_t {2}, [&](auto const &e) {
+    t2->find(id_t {2}, [&](pair_t const &e) noexcept {
         found2 = true;
-        val2 = e.element.value;
+        val2 = e.value;
     });
 
     EXPECT_TRUE(found1) << "T2 should see committed key 1";
@@ -652,7 +653,7 @@ void test_multi_key_atomicity_10_keys() {
     // Before stage: should see 0
     int count_before_stage = 0;
     for (std::size_t i = 0; i < 10; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count_before_stage++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count_before_stage++; });
     }
     EXPECT_EQ(count_before_stage, 0) << "Before stage: should see 0 keys";
 
@@ -661,7 +662,7 @@ void test_multi_key_atomicity_10_keys() {
     // After stage, before commit: should see 0
     int count_after_stage = 0;
     for (std::size_t i = 0; i < 10; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count_after_stage++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count_after_stage++; });
     }
     EXPECT_EQ(count_after_stage, 0) << "After stage, before commit: should see 0 keys";
 
@@ -670,7 +671,7 @@ void test_multi_key_atomicity_10_keys() {
     // After commit: should see ALL 10
     int count_after_commit = 0;
     for (std::size_t i = 0; i < 10; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count_after_commit++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count_after_commit++; });
     }
     EXPECT_EQ(count_after_commit, 10) << "After commit: should see ALL 10 keys atomically";
 }
@@ -704,16 +705,16 @@ void test_rollback_makes_all_invisible() {
 
     // Key 1 should have original value
     bool found1 = false;
-    set.find(id_t {1}, [&](auto const &e) {
+    set.find(id_t {1}, [&](pair_t const &e) noexcept {
         found1 = true;
-        EXPECT_EQ(e.element.value, 1) << "Rollback should restore original value";
+        EXPECT_EQ(e.value, 1) << "Rollback should restore original value";
     });
     EXPECT_TRUE(found1);
 
     // Keys 2 and 3 should not exist
     bool found2 = false, found3 = false;
-    set.find(id_t {2}, [&](auto const &) { found2 = true; });
-    set.find(id_t {3}, [&](auto const &) { found3 = true; });
+    set.find(id_t {2}, [&](pair_t const &) noexcept { found2 = true; });
+    set.find(id_t {3}, [&](pair_t const &) noexcept { found3 = true; });
 
     EXPECT_FALSE(found2) << "Rolled back key 2 should not exist";
     EXPECT_FALSE(found3) << "Rolled back key 3 should not exist";
@@ -747,7 +748,7 @@ void test_range_query_sees_atomic_boundaries() {
 
     // Before commit: range query sees 0
     int count_before = 0;
-    set.range(id_t {10}, id_t {20}, [&](auto const &) noexcept { count_before++; });
+    set.range(id_t {10}, id_t {20}, [&](pair_t const &) noexcept { count_before++; });
     EXPECT_EQ(count_before, 0) << "Range query before commit sees nothing";
 
     EXPECT_TRUE(txn->stage());
@@ -755,7 +756,7 @@ void test_range_query_sees_atomic_boundaries() {
 
     // After commit: range query sees ALL 10
     int count_after = 0;
-    set.range(id_t {10}, id_t {20}, [&](auto const &) noexcept { count_after++; });
+    set.range(id_t {10}, id_t {20}, [&](pair_t const &) noexcept { count_after++; });
     EXPECT_EQ(count_after, 10) << "Range query after commit sees all atomically";
 }
 
@@ -802,7 +803,7 @@ void test_fractured_read_prevention() {
     // Before any commits: see 0
     int count_0 = 0;
     for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count_0++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count_0++; });
     }
     EXPECT_EQ(count_0, 0);
 
@@ -812,7 +813,7 @@ void test_fractured_read_prevention() {
     // Should see exactly T1's keys (1-3), not T2's (4-6)
     int count_t1 = 0;
     for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count_t1++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count_t1++; });
     }
     EXPECT_EQ(count_t1, 3) << "Should see only T1's 3 keys, not T2's";
 
@@ -822,7 +823,7 @@ void test_fractured_read_prevention() {
     // Now should see ALL 6
     int count_both = 0;
     for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count_both++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count_both++; });
     }
     EXPECT_EQ(count_both, 6) << "Should see both transactions' keys";
 }
@@ -839,15 +840,15 @@ void test_sequential_updates_never_regress() {
     std::vector<std::size_t> observed_values;
 
     // Observe initial value
-    set.find(id_t {1}, [&](auto const &e) { observed_values.push_back(e.element.value); });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { observed_values.push_back(e.value); });
 
     // Update to 20
     EXPECT_TRUE(set.upsert(pair_t {1, 20}));
-    set.find(id_t {1}, [&](auto const &e) { observed_values.push_back(e.element.value); });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { observed_values.push_back(e.value); });
 
     // Update to 30
     EXPECT_TRUE(set.upsert(pair_t {1, 30}));
-    set.find(id_t {1}, [&](auto const &e) { observed_values.push_back(e.element.value); });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { observed_values.push_back(e.value); });
 
     // Verify monotonicity: each value >= previous
     ASSERT_EQ(observed_values.size(), 3);
@@ -876,7 +877,7 @@ void test_transaction_commits_maintain_order() {
 
     // Observe T1's value
     std::size_t val1 = 0;
-    set.find(id_t {1}, [&](auto const &e) { val1 = e.element.value; });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { val1 = e.value; });
     EXPECT_EQ(val1, 100);
 
     // T2: value = 200 (higher)
@@ -887,7 +888,7 @@ void test_transaction_commits_maintain_order() {
 
     // Observe T2's value - should be >= T1's value
     std::size_t val2 = 0;
-    set.find(id_t {1}, [&](auto const &e) { val2 = e.element.value; });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { val2 = e.value; });
     EXPECT_EQ(val2, 200);
     EXPECT_GE(val2, val1) << "Monotonic violation across transactions!";
 }
@@ -930,7 +931,7 @@ void test_concurrent_transactions_on_same_key() {
 
     // Verify T1's value persisted, T2's did not
     std::size_t final_value = 0;
-    set.find(id_t {1}, [&](auto const &e) { final_value = e.element.value; });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { final_value = e.value; });
     EXPECT_EQ(final_value, 100) << "Only T1's value should persist";
 }
 
@@ -1051,7 +1052,7 @@ void test_disjoint_keys_both_succeed() {
     // Verify all 6 keys exist
     int count = 0;
     for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](auto const &) { count++; });
+        set.find(id_t {i}, [&](pair_t const &) noexcept { count++; });
     }
     EXPECT_EQ(count, 6) << "Both transactions should succeed with disjoint keys";
 }
@@ -1081,7 +1082,7 @@ void test_non_repeatable_reads_are_allowed() {
 
     // First read
     std::size_t first_read = 0;
-    txn->find(id_t {1}, [&](auto const &e) { first_read = e.element.value; });
+    txn->find(id_t {1}, [&](pair_t const &e) noexcept { first_read = e.value; });
     EXPECT_EQ(first_read, 100);
 
     // External modification
@@ -1089,7 +1090,7 @@ void test_non_repeatable_reads_are_allowed() {
 
     // Second read in SAME transaction - CAN see new value (this is correct!)
     std::size_t second_read = 0;
-    txn->find(id_t {1}, [&](auto const &e) { second_read = e.element.value; });
+    txn->find(id_t {1}, [&](pair_t const &e) noexcept { second_read = e.value; });
 
     // With Read Committed, second read sees committed changes
     EXPECT_EQ(second_read, 999) << "Non-repeatable reads are ALLOWED in Read Committed";
@@ -1121,7 +1122,7 @@ void test_phantom_reads_are_allowed() {
 
     // First range query: see 5 items (reads are on committed state)
     int first_count = 0;
-    set.range(id_t {0}, id_t {10}, [&](auto const &) noexcept { first_count++; });
+    set.range(id_t {0}, id_t {10}, [&](pair_t const &) noexcept { first_count++; });
     EXPECT_EQ(first_count, 5);
 
     // External insert
@@ -1131,7 +1132,7 @@ void test_phantom_reads_are_allowed() {
     // Second range query while txn still active - CAN see new items (phantom reads)
     // In Read Committed, reads always see latest committed state
     int second_count = 0;
-    set.range(id_t {0}, id_t {10}, [&](auto const &) noexcept { second_count++; });
+    set.range(id_t {0}, id_t {10}, [&](pair_t const &) noexcept { second_count++; });
 
     EXPECT_EQ(second_count, 7) << "Phantom reads are ALLOWED in Read Committed";
     EXPECT_GT(second_count, first_count) << "This is correct behavior!";
@@ -1169,7 +1170,7 @@ void test_delete_visibility() {
 
     // Verify deleted key is invisible
     bool found = false;
-    set.find(id_t {1}, [&](auto const &) { found = true; });
+    set.find(id_t {1}, [&](pair_t const &) noexcept { found = true; });
     EXPECT_FALSE(found) << "Deleted entry should not be visible";
 
     EXPECT_EQ(set.size(), 1) << "Should have 1 item (key 2)";
@@ -1198,8 +1199,8 @@ void test_reset_clears_transaction_state() {
 
     // Key 3 should exist, key 2 should not
     bool found2 = false, found3 = false;
-    set.find(id_t {2}, [&](auto const &) { found2 = true; });
-    set.find(id_t {3}, [&](auto const &) { found3 = true; });
+    set.find(id_t {2}, [&](pair_t const &) noexcept { found2 = true; });
+    set.find(id_t {3}, [&](pair_t const &) noexcept { found3 = true; });
 
     EXPECT_FALSE(found2) << "Reset should have cleared key 2";
     EXPECT_TRUE(found3) << "New transaction should have added key 3";
@@ -1249,7 +1250,7 @@ void test_watch_detects_staged_invisible_writes() {
     // Clean up: rollback T2, verify original value persists
     EXPECT_TRUE(t2->rollback());
     std::size_t final_value = 0;
-    set.find(id_t {1}, [&](auto const &e) { final_value = e.element.value; });
+    set.find(id_t {1}, [&](pair_t const &e) noexcept { final_value = e.value; });
     EXPECT_EQ(final_value, 100) << "Original value should persist after rollback";
 }
 
