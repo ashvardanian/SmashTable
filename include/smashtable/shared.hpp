@@ -1,14 +1,47 @@
 /**
  *  @brief
  *
- *  @file   status.hpp
+ *  @file   shared.hpp
  *  @author Ash Vardanian
  */
 #pragma once
 #include <cstdint>      //
 #include <system_error> // `ENOMEM`
+#include <utility>      // `std::move`
 
 namespace ashvardanian::smashtable {
+
+template <typename key_type_, typename value_type_>
+struct kv_pair {
+    using key_type = key_type_;
+    using value_type = value_type_;
+
+    key_type key {};
+    value_type value {};
+
+    constexpr kv_pair() = default;
+    constexpr kv_pair(kv_pair const &) = default;
+    constexpr kv_pair(kv_pair &&) noexcept = default;
+    constexpr kv_pair &operator=(kv_pair const &) = default;
+    constexpr kv_pair &operator=(kv_pair &&) noexcept = default;
+
+    template <typename key_arg_, typename value_arg_>
+    constexpr kv_pair(key_arg_ &&key_arg, value_arg_ &&value_arg)
+        : key(std::forward<key_arg_>(key_arg)), value(std::forward<value_arg_>(value_arg)) {}
+
+    template <typename key_arg_>
+    constexpr explicit kv_pair(key_arg_ &&key_arg) : key(std::forward<key_arg_>(key_arg)), value() {}
+
+    constexpr kv_pair &operator=(key_type_ key_arg) noexcept {
+        key = std::move(key_arg);
+        value = value_type_ {};
+        return *this;
+    }
+
+    constexpr explicit operator key_type const &() const noexcept { return key; }
+
+    constexpr explicit operator std::pair<key_type, value_type>() const { return {key, value}; }
+};
 
 enum errc_t {
     success_k = 0,
@@ -46,10 +79,20 @@ struct status_t {
     constexpr operator bool() const noexcept { return errc == errc_t::success_k; }
 };
 
+/** @brief Sentinel type for range-based iteration end conditions. */
+struct end_sentinel_t {};
+
 struct no_op_t {
     constexpr void operator()() const noexcept {}
     template <typename type_>
     constexpr void operator()(type_ &&) const noexcept {}
+};
+
+struct identity_fn_t {
+    template <typename type_>
+    decltype(auto) operator()(type_ &&value) const noexcept {
+        return std::forward<type_>(value);
+    }
 };
 
 template <typename element_type_>
@@ -66,6 +109,17 @@ copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
 }
 
+/**
+ *  @brief Decorates an element type with generation and visibility metadata for transactional containers.
+ *
+ *  @par Template requirements
+ *  - @p element_type_ must be a value type (no references), nothrow default-constructible, and nothrow move
+ *    constructible/assignable so that transactional staging can remain noexcept.
+ *  - @p comparator_type_ must expose @c value_type describing the identifier used for ordering, and that identifier
+ *    type must be nothrow copy-constructible to support watch bookkeeping.
+ *  - @p element_type_ must be convertible to the identifier type and constructible from it, enabling the containers to
+ *    extract keys for lookups and manufacture key-only tombstones for erases.
+ */
 template <typename element_type_, typename comparator_type_>
 struct versioned_element {
 
@@ -159,8 +213,8 @@ struct versioned_element {
         bool less(first_type_ const &a, second_type_ const &b) const noexcept {
             using first_t = std::remove_reference_t<first_type_>;
             using second_t = std::remove_reference_t<second_type_>;
-            if constexpr (knows_generation<first_t>() && knows_generation<second_t>()) { return dated_compare(a, b); }
-            else { return native_compare(a, b); }
+            if constexpr (knows_generation<first_t>() && knows_generation<second_t>()) return dated_compare(a, b);
+            else return native_compare(a, b);
         }
 
         template <typename first_type_, typename second_type_>

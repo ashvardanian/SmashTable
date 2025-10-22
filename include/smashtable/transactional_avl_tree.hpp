@@ -14,7 +14,7 @@
 #include <random>    // `std::uniform_int_distribution`
 #include <utility>   // `std::exchange`
 
-#include "status.hpp"
+#include "shared.hpp"
 #include "basic_vector.hpp"
 #include "basic_avl_tree.hpp"
 

@@ -25,7 +25,7 @@
 #include <random>    // `std::uniform_int_distribution`
 #include <utility>   // `std::exchange`
 
-#include "status.hpp"
+#include "shared.hpp"
 
 namespace ashvardanian::smashtable {
 

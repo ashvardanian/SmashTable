@@ -14,7 +14,7 @@
 #include <vector>     // `std::vector` for watches
 #include <random>     // `std::uniform_int_distribution` for sampling
 
-#include "status.hpp"
+#include "shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -822,10 +822,9 @@ class transactional_std_set {
         // Key doesn't exist, proceed with insertion
         generation_t generation = new_generation();
         auto status = invoke_safely([&] {
-            bool exists = static_cast<bool>(element);
             auto entry = entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = !exists;
+            entry.deleted = false;
             entry.visible = true;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
@@ -865,10 +864,9 @@ class transactional_std_set {
         // Key doesn't exist, proceed with insertion
         generation_t generation = new_generation();
         auto status = invoke_safely([&] {
-            bool exists = static_cast<bool>(element);
             auto entry = entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = !exists;
+            entry.deleted = false;
             entry.visible = true;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
@@ -900,10 +898,9 @@ class transactional_std_set {
 
         generation_t generation = new_generation();
         auto status = invoke_safely([&] {
-            bool exists = static_cast<bool>(element);
             auto entry = entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = !exists;
+            entry.deleted = false;
             entry.visible = true;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
@@ -926,12 +923,12 @@ class transactional_std_set {
     [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
     /**
-     *  @brief Deleted: Use insert_if_missing() instead for "insert only if missing" semantics.
-     *    The std::map::try_emplace() name doesn't clearly communicate insert failure strategies.
+     *  @brief Deleted: Use @c insert_if_missing() instead for "insert only if missing" semantics.
+     *    The @c std::map::try_emplace() name doesn't clearly communicate insert failure strategies.
      *    We provide three explicit alternatives:
-     *      - insert()           : Fails with error if key exists
-     *      - insert_if_missing(): Silently skips if key exists (use this instead of try_emplace)
-     *      - insert_or_assign() : Always overwrites if key exists
+     *      - @c insert(): Fails with error if key exists
+     *      - @c insert_if_missing(): Silently skips if key exists (use this instead of try_emplace)
+     *      - @c insert_or_assign(): Always overwrites if key exists
      */
     template <typename... args_types_>
     status_t try_emplace(args_types_ &&...) noexcept = delete;
@@ -951,11 +948,10 @@ class transactional_std_set {
         auto batch_construction_status = invoke_safely([&] {
             batch = entry_set_t {};
             for (; begin != end; ++begin) {
-                bool exists = static_cast<bool>(*begin);
                 auto iterator = batch->emplace(*begin).first;
                 iterator->generation = generation;
                 iterator->visible = true;
-                iterator->deleted = !exists;
+                iterator->deleted = false;
             }
         });
         if (!batch_construction_status) return batch_construction_status;
