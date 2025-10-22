@@ -925,21 +925,33 @@ class transactional_avl_tree {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
-        // Implementing Splits and Joins for AVL can be tricky.
-        // Let's start with deleting them one by one.
-        // TODO: Implement range-removals.
-        auto last = entries_.lower_bound(std::forward<lower_type_>(lower));
-        auto less = versioned_comparator_t {};
-        while (last != entries_.end() && less(*last, upper)) {
-            auto next = entries_.upper_bound(*last);
-            if (last->visible) {
-                callback(last->element);
-                --visible_count_;
-                visible_deleted_count_ -= last->deleted;
-                entries_.extract(*last);
-            }
-            last = next;
-        }
+        // Use split/join for O(log n + k) complexity instead of O(k log n)
+        // Split at lower bound
+        auto first_split = entries_.split_at(std::forward<lower_type_>(lower));
+
+        // Split the right part at upper bound to isolate the range
+        auto second_split = first_split.right.split_at(std::forward<upper_type_>(upper));
+
+        // middle_tree contains elements in [lower, upper) that need to be deleted
+        // Traverse it to invoke callbacks and update counters
+        versioned_entry_node_t::for_each_left_right(second_split.left.root(),
+                                                    [&](versioned_entry_node_t *node) noexcept {
+                                                        if (node->entry.visible) {
+                                                            callback(node->entry.element);
+                                                            --visible_count_;
+                                                            visible_deleted_count_ -= node->entry.deleted;
+                                                        }
+                                                    });
+
+        // Deallocate all nodes in the middle tree (second_split.left)
+        second_split.left.clear();
+
+        // Join the left and far_right trees back together
+        first_split.left.join_with(second_split.right);
+
+        // Move the result back to entries_
+        entries_ = std::move(first_split.left);
+
         return status_t {success_k};
     }
 

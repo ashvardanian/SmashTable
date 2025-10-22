@@ -583,6 +583,125 @@ class basic_avl_node {
                                         node_deallocator_type_ &&node_deallocator) noexcept {
         return {};
     }
+
+#pragma mark - Split and Join
+
+    /**
+     *  @brief Result of a split operation.
+     */
+    struct split_result_t {
+        node_t *left = nullptr;  //!< Tree with all elements < key.
+        node_t *right = nullptr; //!< Tree with all elements >= key.
+    };
+
+    /**
+     *  @brief Joins two trees with a root node between them.
+     *    Precondition: All elements in left < root < all elements in right.
+     *    Maintains AVL balance property.
+     *
+     *  @param[in] left Left subtree (all elements < root).
+     *  @param[in] root_node Root node to insert between subtrees.
+     *  @param[in] right Right subtree (all elements > root).
+     *  @return node_t* Root of the joined tree.
+     */
+    static node_t *join_with_root(node_t *left, node_t *root_node, node_t *right) noexcept {
+        if (!root_node) return join(left, right);
+
+        root_node->left = left;
+        root_node->right = right;
+        root_node->height = 1 + std::max(get_height(left), get_height(right));
+
+        // Rebalance if necessary
+        auto balance = get_balance(root_node);
+
+        // Left Left Case
+        if (balance > 1 && get_balance(root_node->left) >= 0) return rotate_right(root_node);
+
+        // Left Right Case
+        else if (balance > 1 && get_balance(root_node->left) < 0) {
+            root_node->left = rotate_left(root_node->left);
+            return rotate_right(root_node);
+        }
+
+        // Right Right Case
+        else if (balance < -1 && get_balance(root_node->right) <= 0) return rotate_left(root_node);
+
+        // Right Left Case
+        else if (balance < -1 && get_balance(root_node->right) > 0) {
+            root_node->right = rotate_right(root_node->right);
+            return rotate_left(root_node);
+        }
+
+        return root_node;
+    }
+
+    /**
+     *  @brief Joins two AVL trees into one.
+     *    Precondition: All elements in left < all elements in right.
+     *    Maintains AVL balance property.
+     *
+     *  @param[in] left Left tree (smaller elements).
+     *  @param[in] right Right tree (larger elements).
+     *  @return node_t* Root of the joined tree.
+     */
+    static node_t *join(node_t *left, node_t *right) noexcept {
+        if (!left) return right;
+        if (!right) return left;
+
+        auto left_height = get_height(left);
+        auto right_height = get_height(right);
+
+        // If left tree is taller, join with right subtree of left
+        if (left_height > right_height + 1) {
+            left->right = join(left->right, right);
+            left->height = 1 + std::max(get_height(left->left), get_height(left->right));
+            return rebalance_after_extract(left);
+        }
+        // If right tree is taller, join with left subtree of right
+        else if (right_height > left_height + 1) {
+            right->left = join(left, right->left);
+            right->height = 1 + std::max(get_height(right->left), get_height(right->right));
+            return rebalance_after_extract(right);
+        }
+        // Heights are balanced, extract min from right and use as root
+        else {
+            node_t *min_right = find_min(right);
+            auto extract_result = extract(right, min_right->entry);
+            node_t *new_root = extract_result.release();
+            return join_with_root(left, new_root, extract_result.root);
+        }
+    }
+
+    /**
+     *  @brief Splits an AVL tree at a given key.
+     *    Elements less than the key go to left tree, elements >= key go to right tree.
+     *    Maintains AVL balance property in both resulting trees.
+     *
+     *  @param[in] node Root of the tree to split.
+     *  @param[in] comparable Key to split at.
+     *  @return split_result_t Contains left tree (< key) and right tree (>= key).
+     */
+    template <typename comparable_type_>
+    static split_result_t split(node_t *node, comparable_type_ &&comparable) noexcept {
+        if (!node) return {nullptr, nullptr};
+
+        auto less = comparator_t {};
+
+        // If node < key, put node in left tree and split right subtree
+        if (less(node->entry, comparable)) {
+            auto downstream = split(node->right, comparable);
+            node->right = downstream.left;
+            node->height = 1 + std::max(get_height(node->left), get_height(node->right));
+            return {join_with_root(node->left, node, downstream.left), downstream.right};
+        }
+        // If key <= node, put node in right tree and split left subtree
+        else {
+            auto downstream = split(node->left, comparable);
+            node->left = downstream.right;
+            node->height = 1 + std::max(get_height(node->left), get_height(node->right));
+            return {downstream.left, join_with_root(downstream.right, node, node->right)};
+        }
+    }
 };
 
 /**
@@ -1413,6 +1532,70 @@ class basic_avl_tree {
             // Key conflict - node wasn't inserted, deallocate it
             allocator_.deallocate(node_to_insert, 1);
         }
+    }
+
+#pragma mark - Split and Join Operations
+
+    /**
+     *  @brief Result of a split operation on a tree.
+     */
+    struct split_result_t {
+        avl_tree_t left;  //!< Tree with all elements < key.
+        avl_tree_t right; //!< Tree with all elements >= key.
+    };
+
+    /**
+     *  @brief Splits the tree at a given key into two trees.
+     *    Elements < key go to left tree, elements >= key go to right tree.
+     *    This tree becomes empty after the split.
+     *
+     *  @param[in] comparable Key to split at.
+     *  @return split_result_t Contains left tree (< key) and right tree (>= key).
+     *
+     *  @note This operation is O(log n) and maintains AVL balance in both resulting trees.
+     *    The current tree is emptied (moved-from state).
+     */
+    template <typename comparable_type_>
+    split_result_t split_at(comparable_type_ &&comparable) noexcept {
+        auto node_split_result = node_t::split(root_, std::forward<comparable_type_>(comparable));
+
+        // Count elements in each tree (need to traverse to get accurate size)
+        std::size_t left_size = 0, right_size = 0;
+        node_t::for_each_left_right(node_split_result.left, [&](node_t *) noexcept { ++left_size; });
+        node_t::for_each_left_right(node_split_result.right, [&](node_t *) noexcept { ++right_size; });
+
+        // Create result trees
+        split_result_t result;
+        result.left.root_ = node_split_result.left;
+        result.left.size_ = left_size;
+        result.left.allocator_ = allocator_;
+
+        result.right.root_ = node_split_result.right;
+        result.right.size_ = right_size;
+        result.right.allocator_ = allocator_;
+
+        // Empty current tree
+        root_ = nullptr;
+        size_ = 0;
+
+        return result;
+    }
+
+    /**
+     *  @brief Joins this tree with another tree.
+     *    Precondition: All elements in this tree < all elements in other tree.
+     *    The other tree becomes empty after the join.
+     *
+     *  @param[inout] other Tree to join with (must have all larger elements).
+     *
+     *  @note This operation is O(log n) and maintains AVL balance.
+     *    If the precondition is violated, the resulting tree structure is undefined.
+     */
+    void join_with(avl_tree_t &other) noexcept {
+        root_ = node_t::join(root_, other.root_);
+        size_ += other.size_;
+        other.root_ = nullptr;
+        other.size_ = 0;
     }
 
     /**
