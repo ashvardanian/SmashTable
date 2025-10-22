@@ -160,9 +160,7 @@ class transactional_avl_tree {
             if (local_it != changes_.end() && !local_it->deleted) return {invalid_argument_k};
 
             // Check main store if not in local changes or was deleted locally
-            bool exists_in_store = false;
-            store_ref().find(id, [&](element_t const &) noexcept { exists_in_store = true; }, []() noexcept {});
-            if (exists_in_store) return {invalid_argument_k};
+            if (store_ref().contains(id)) return {invalid_argument_k};
 
             // Key doesn't exist anywhere, proceed with insertion
             versioned_entry_t entry;
@@ -188,9 +186,7 @@ class transactional_avl_tree {
             if (local_it != changes_.end() && !local_it->deleted) return {success_k};
 
             // Check main store if not in local changes or was deleted locally
-            bool exists_in_store = false;
-            store_ref().find(id, [&](element_t const &) noexcept { exists_in_store = true; }, []() noexcept {});
-            if (exists_in_store) return {success_k};
+            if (store_ref().contains(id)) return {success_k};
 
             // Key doesn't exist anywhere, proceed with insertion
             versioned_entry_t entry;
@@ -546,9 +542,11 @@ class transactional_avl_tree {
                     largest_visible = node;
             });
 
-        // static_assert(noexcept(callback_found(largest_visible->entry)));
-        // static_assert(noexcept(callback_missing()));
-        largest_visible ? callback_found(largest_visible->entry) : callback_missing();
+        static_assert(is_safe_callback_for<callback_found_type_, versioned_entry_t const &>,
+                      "callback_found must be noexcept invocable with versioned_entry_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+        if (largest_visible) callback_found(largest_visible->entry);
+        else callback_missing();
     }
 
     /**
@@ -651,11 +649,7 @@ class transactional_avl_tree {
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
-        bool found = false;
-        find(
-            std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; },
-            []() noexcept {});
-        return found ? 1 : 0;
+        return contains(std::forward<comparable_type_>(comparable)) ? 1 : 0;
     }
 
     /**
@@ -699,9 +693,7 @@ class transactional_avl_tree {
     [[nodiscard]] status_t insert(element_t &&element) noexcept {
         // Check if key already exists
         identifier_t id {element};
-        bool exists = false;
-        find(id, [&](versioned_entry_t const &) noexcept { exists = true; }, []() noexcept {});
-        if (exists) return {invalid_argument_k};
+        if (contains(id)) return {invalid_argument_k};
 
         return insert_or_assign(std::move(element));
     }
@@ -716,9 +708,7 @@ class transactional_avl_tree {
     [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
         // Check if key already exists
         identifier_t id {element};
-        bool exists = false;
-        find(id, [&](versioned_entry_t const &) noexcept { exists = true; }, []() noexcept {});
-        if (exists) return {success_k};
+        if (contains(id)) return {success_k};
 
         return insert_or_assign(std::move(element));
     }
@@ -849,14 +839,17 @@ class transactional_avl_tree {
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
+                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
         // Skip all the invisible entries
         versioned_entry_node_t *next_visible = versioned_entry_node_t::lower_bound(entries_.root(), comparable);
         while (next_visible && !next_visible->entry.visible)
             next_visible = versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry);
 
-        // static_assert(noexcept(callback_found(next_visible->entry)));
-        // static_assert(noexcept(callback_missing()));
-        next_visible ? callback_found(next_visible->entry) : callback_missing();
+        if (next_visible) callback_found(next_visible->entry.element);
+        else callback_missing();
     }
 
     /**
@@ -868,9 +861,7 @@ class transactional_avl_tree {
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        find(
-            std::forward<comparable_type_>(comparable),
-            [&](versioned_entry_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
+        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -878,14 +869,17 @@ class transactional_avl_tree {
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
+                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
         // Skip all the invisible entries
         versioned_entry_node_t *next_visible = versioned_entry_node_t::upper_bound(entries_.root(), comparable);
         while (next_visible && !next_visible->entry.visible)
             next_visible = versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry);
 
-        // static_assert(noexcept(callback_found(next_visible->entry)));
-        // static_assert(noexcept(callback_missing()));
-        next_visible ? callback_found(next_visible->entry) : callback_missing();
+        if (next_visible) callback_found(next_visible->entry.element);
+        else callback_missing();
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,

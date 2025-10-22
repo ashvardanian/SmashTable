@@ -287,7 +287,7 @@ class transactional_std_store {
             bool key_exists = (local_it != changes_.end() && !local_it->deleted);
 
             // Check in main store
-            if (!key_exists) store_ref().find(id, [&](auto const &) noexcept { key_exists = true; }, []() noexcept {});
+            if (!key_exists) key_exists = store_ref().contains(id);
 
             auto status = invoke_safely([&]() {
                 auto iterator = changes_.lower_bound(element);
@@ -1083,7 +1083,8 @@ class transactional_std_store {
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
         bool found = false;
         find(
-            std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; }, []() noexcept {});
+            std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; },
+            []() noexcept {});
         return found;
     }
 
