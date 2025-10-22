@@ -13,29 +13,22 @@ using namespace ashvardanian::smashtable;
 
 constexpr std::size_t size = 128;
 
-struct pair_t {
-    std::size_t key;
-    std::size_t value;
-
-    pair_t(std::size_t key = 0, std::size_t value = 0) noexcept : key(key), value(value) {}
-    explicit operator std::size_t() const noexcept { return key; }
-    operator bool() const noexcept { return key != -1; }
-};
+using pair_t = kv_pair<std::size_t, std::size_t>;
 
 struct pair_compare_t {
     using value_type = std::size_t;
     // Deliberately omit is_transparent to demonstrate heterogeneous lookups work without it
-    bool operator()(pair_t a, pair_t b) const noexcept { return a.key < b.key; }
-    bool operator()(std::size_t a, pair_t b) const noexcept { return a < b.key; }
-    bool operator()(pair_t a, std::size_t b) const noexcept { return a.key < b; }
+    bool operator()(pair_t const &a, pair_t const &b) const noexcept { return a.key < b.key; }
+    bool operator()(std::size_t a, pair_t const &b) const noexcept { return a < b.key; }
+    bool operator()(pair_t const &a, std::size_t b) const noexcept { return a.key < b; }
 };
 
 struct pair_compare_transparent_t {
     using value_type = std::size_t;
     using is_transparent = void; // Explicitly enable heterogeneous lookups (C++14 style)
-    bool operator()(pair_t a, pair_t b) const noexcept { return a.key < b.key; }
-    bool operator()(std::size_t a, pair_t b) const noexcept { return a < b.key; }
-    bool operator()(pair_t a, std::size_t b) const noexcept { return a.key < b; }
+    bool operator()(pair_t const &a, pair_t const &b) const noexcept { return a.key < b.key; }
+    bool operator()(std::size_t a, pair_t const &b) const noexcept { return a < b.key; }
+    bool operator()(pair_t const &a, std::size_t b) const noexcept { return a.key < b; }
 };
 
 // Element type for heterogeneous lookup tests (string-based)

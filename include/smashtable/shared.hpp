@@ -32,12 +32,6 @@ struct kv_pair {
     template <typename key_arg_>
     constexpr explicit kv_pair(key_arg_ &&key_arg) : key(std::forward<key_arg_>(key_arg)), value() {}
 
-    constexpr kv_pair &operator=(key_type_ key_arg) noexcept {
-        key = std::move(key_arg);
-        value = value_type_ {};
-        return *this;
-    }
-
     constexpr explicit operator key_type const &() const noexcept { return key; }
 
     constexpr explicit operator std::pair<key_type, value_type>() const { return {key, value}; }

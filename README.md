@@ -212,16 +212,20 @@ In more detail:
 
   transactional_*       → Add 2-phase commit + watch and CAS semantics
     ├─ transactional_avl_tree<T, Comparator, Alloc>
-    └─ transactional_std_set<T, Comparator, Alloc>
+    └─ transactional_std_store<T, Comparator, Alloc>
 
   *_collection          → Thread-safety wrappers
     ├─ locked_collection<Collection, Mutex>
     └─ partitioned_collection<Collection, Hash, Mutex, PartsCount>
 ```
 
+All collections support custom memory allocators, and avoid exceptions entirely.
+Mutation APIs return `status_t` to indicate success or failure.
+Read-only operations never fail, and use `noexcept` callbacks to return results instead of throwing exceptions.
+
 ### Making `std::set` Transactional
 
-> Refers to `smashtable/transactional_std_set.hpp`.
+> Refers to `smashtable/transactional_std_store.hpp`.
 
 The `std::set` was used to create a baseline reference design for the SmashTable functionality.
 Beyond the underlying `std::set` and similar `std::map` containers, it adds "transactions".
