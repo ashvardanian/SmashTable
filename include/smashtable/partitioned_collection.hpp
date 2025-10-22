@@ -59,7 +59,7 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
  *  @brief Hashes inputs to route them into separate sets, which can
  *    be concurrent, or have a separate state-full allocator attached.
  *
- *  @tparam collection_type_ Type of the underlying collection, like @c transactional_std_set.
+ *  @tparam collection_type_ Type of the underlying collection, like @c transactional_std_store.
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
  *  @tparam shared_mutex_type_ Mutex type to use for partition locking, like @c std::shared_mutex.
  *  @tparam parts_count_ Number of partitions to split the collection into, default 16.

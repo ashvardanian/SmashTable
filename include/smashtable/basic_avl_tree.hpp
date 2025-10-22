@@ -25,7 +25,7 @@
 #include <random>    // `std::uniform_int_distribution`
 #include <utility>   // `std::exchange`
 
-#include "status.hpp"
+#include "shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -54,12 +54,12 @@ namespace ashvardanian::smashtable {
 template <typename entry_type_, typename comparator_type_>
 class basic_avl_node {
   public:
-    using entry_t = entry_type_;
+    using versioned_entry_t = entry_type_;
     using comparator_t = comparator_type_;
     using height_t = std::int16_t;
     using node_t = basic_avl_node;
 
-    entry_t entry;
+    versioned_entry_t entry;
     node_t *left = nullptr;
     node_t *right = nullptr;
 
@@ -446,11 +446,12 @@ class basic_avl_node {
     }
 
     template <typename node_allocator_type_>
-    static find_or_make_result_t insert(node_t *node, entry_t &&entry, node_allocator_type_ &&node_allocator) noexcept {
+    static find_or_make_result_t insert(node_t *node, versioned_entry_t &&entry,
+                                        node_allocator_type_ &&node_allocator) noexcept {
         auto found = [&](node_t *node) noexcept {};
         auto make = [&]() noexcept -> node_t * {
             auto node = node_allocator();
-            if (node) new (&node->entry) entry_t(std::move(entry));
+            if (node) new (&node->entry) versioned_entry_t(std::move(entry));
             return node;
         };
         auto result = find_or_make(node, entry, found, make);
@@ -458,11 +459,12 @@ class basic_avl_node {
     }
 
     template <typename node_allocator_type_>
-    static find_or_make_result_t upsert(node_t *node, entry_t &&entry, node_allocator_type_ &&node_allocator) noexcept {
+    static find_or_make_result_t upsert(node_t *node, versioned_entry_t &&entry,
+                                        node_allocator_type_ &&node_allocator) noexcept {
         auto found = [&](node_t *node) noexcept { node->entry = std::move(entry); };
         auto make = [&]() noexcept -> node_t * {
             auto node = node_allocator();
-            if (node) new (&node->entry) entry_t(std::move(entry));
+            if (node) new (&node->entry) versioned_entry_t(std::move(entry));
             return node;
         };
         auto result = find_or_make(node, entry, found, make);
@@ -611,7 +613,7 @@ class basic_avl_tree {
     using node_t = basic_avl_node<entry_type_, comparator_type_>;
     using node_allocator_t = node_allocator_type_;
     using comparator_t = comparator_type_;
-    using entry_t = entry_type_;
+    using versioned_entry_t = entry_type_;
     using avl_tree_t = basic_avl_tree;
 
     // Forward declare iterator
@@ -637,10 +639,10 @@ class basic_avl_tree {
 
       public:
         using iterator_category = std::bidirectional_iterator_tag;
-        using value_type = entry_t;
+        using value_type = versioned_entry_t;
         using difference_type = std::ptrdiff_t;
-        using pointer = entry_t *;
-        using reference = entry_t &;
+        using pointer = versioned_entry_t *;
+        using reference = versioned_entry_t &;
 
       private:
         basic_avl_tree const *tree_;
@@ -689,10 +691,10 @@ class basic_avl_tree {
 
       public:
         using iterator_category = std::bidirectional_iterator_tag;
-        using value_type = entry_t const;
+        using value_type = versioned_entry_t const;
         using difference_type = std::ptrdiff_t;
-        using pointer = entry_t const *;
-        using reference = entry_t const &;
+        using pointer = versioned_entry_t const *;
+        using reference = versioned_entry_t const &;
 
       private:
         basic_avl_tree const *tree_;
@@ -866,7 +868,7 @@ class basic_avl_tree {
      *  @brief Finds an element equal to the given @p comparable.
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return iterator Iterator to found element, or end() if not found.
      */
     template <typename comparable_type_>
@@ -878,7 +880,7 @@ class basic_avl_tree {
      *  @brief Finds an element equal to the given @p comparable (const version).
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return const_iterator Const iterator to found element, or end() if not found.
      */
     template <typename comparable_type_>
@@ -890,7 +892,7 @@ class basic_avl_tree {
      *  @brief Finds the first element not less than (>=) the given @p comparable.
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return iterator Iterator to found element, or end() if all elements are less.
      */
     template <typename comparable_type_>
@@ -902,7 +904,7 @@ class basic_avl_tree {
      *  @brief Finds the first element not less than (>=) the given @p comparable (const version).
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return const_iterator Const iterator to found element, or end() if all elements are less.
      */
     template <typename comparable_type_>
@@ -914,7 +916,7 @@ class basic_avl_tree {
      *  @brief Finds the first element greater than (>) the given @p comparable.
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return iterator Iterator to found element, or end() if no element is greater.
      */
     template <typename comparable_type_>
@@ -926,7 +928,7 @@ class basic_avl_tree {
      *  @brief Finds the first element greater than (>) the given @p comparable (const version).
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return const_iterator Const iterator to found element, or end() if no element is greater.
      */
     template <typename comparable_type_>
@@ -937,7 +939,7 @@ class basic_avl_tree {
     /**
      *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
      *
-     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t and convertible to search key.
      *  @return bool True if element exists, false otherwise.
      */
     template <typename comparable_type_>
@@ -949,7 +951,7 @@ class basic_avl_tree {
      *  @brief Returns the number of elements with key equal to the specified argument.
      *    For unique-key containers like this, returns either 0 or 1.
      *
-     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t and convertible to search key.
      *  @return std::size_t Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_>
@@ -967,7 +969,7 @@ class basic_avl_tree {
      *  @brief Returns a range of elements matching a specific key.
      *    For unique-key containers, returns range containing at most one element.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return std::pair<iterator, iterator> Pair of iterators [first, last) where all elements are equal to key.
      *    If key not found, both iterators equal end().
      */
@@ -984,7 +986,7 @@ class basic_avl_tree {
      *  @brief Returns a range of elements matching a specific key (const version).
      *    For unique-key containers, returns range containing at most one element.
      *
-     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t.
      *  @return std::pair<const_iterator, const_iterator> Pair of const iterators [first, last).
      */
     template <typename comparable_type_>
@@ -1001,10 +1003,10 @@ class basic_avl_tree {
      *    For trees with unique keys, this returns at most one element (0 or 1).
      *    Callback-based alternative to iterator-returning equal_range().
      *
-     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t and convertible to search key.
      *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
      */
-    template <typename comparable_type_ = entry_t, typename callback_type_ = no_op_t>
+    template <typename comparable_type_ = versioned_entry_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto it = find(std::forward<comparable_type_>(comparable));
         if (it != end()) { callback(*it); }
@@ -1018,7 +1020,8 @@ class basic_avl_tree {
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
      */
-    template <typename lower_type_ = entry_t, typename upper_type_ = entry_t, typename callback_type_ = no_op_t>
+    template <typename lower_type_ = versioned_entry_t, typename upper_type_ = versioned_entry_t,
+              typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                       [&](node_t *node) noexcept { callback(node->entry); });
@@ -1032,7 +1035,8 @@ class basic_avl_tree {
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[inout] callback Callback invoked for each mutable element in range. Must be @c noexcept.
      */
-    template <typename lower_type_ = entry_t, typename upper_type_ = entry_t, typename callback_type_ = no_op_t>
+    template <typename lower_type_ = versioned_entry_t, typename upper_type_ = versioned_entry_t,
+              typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                       [&](node_t *node) noexcept { callback(node->entry); });
@@ -1046,7 +1050,7 @@ class basic_avl_tree {
          *  @return True if the allocation of the new node has failed.
          */
         bool failed() const noexcept { return !inserted && !node; }
-        upsert_result_t &operator=(entry_t &&entry) noexcept {
+        upsert_result_t &operator=(versioned_entry_t &&entry) noexcept {
             node->entry = entry;
             return *this;
         }
@@ -1117,13 +1121,13 @@ class basic_avl_tree {
      *  @brief Constructs an element in-place. Matches @c std::set::emplace() semantics.
      *         Does not insert if key already exists.
      *
-     *  @tparam Args Types of arguments to forward to entry_t constructor.
-     *  @param[in] args Arguments to forward to entry_t constructor.
+     *  @tparam Args Types of arguments to forward to versioned_entry_t constructor.
+     *  @param[in] args Arguments to forward to versioned_entry_t constructor.
      *  @return std::pair<iterator, bool> Pair of iterator to inserted/existing element and bool indicating success.
      */
     template <typename... Args>
     std::pair<iterator, bool> emplace(Args &&...args) noexcept {
-        return insert(entry_t(std::forward<Args>(args)...));
+        return insert(versioned_entry_t(std::forward<Args>(args)...));
     }
 
     /**
@@ -1139,14 +1143,14 @@ class basic_avl_tree {
      *    AVL trees don't benefit from position hints, and providing unused hints is misleading.
      *    Use @c insert(value) instead.
      */
-    iterator insert(const_iterator, entry_t const &) noexcept = delete;
+    iterator insert(const_iterator, versioned_entry_t const &) noexcept = delete;
 
     /**
      *  @brief Deleted: Hint-based insert is not supported.
      *    AVL trees don't benefit from position hints, and providing unused hints is misleading.
      *    Use @c insert(value) instead.
      */
-    iterator insert(const_iterator, entry_t &&) noexcept = delete;
+    iterator insert(const_iterator, versioned_entry_t &&) noexcept = delete;
 
     /**
      *  @brief Inserts a range of entries.
@@ -1176,7 +1180,9 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to insert.
      *  @return status_t First error encountered, or success if all elements inserted.
      */
-    status_t insert(std::initializer_list<entry_t> ilist) noexcept { return insert(ilist.begin(), ilist.end()); }
+    status_t insert(std::initializer_list<versioned_entry_t> ilist) noexcept {
+        return insert(ilist.begin(), ilist.end());
+    }
 
     /**
      *  @brief Returns the function object that compares keys.
@@ -1246,11 +1252,11 @@ class basic_avl_tree {
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
-     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t and convertible to search key.
      *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = entry_t, typename callback_found_type_ = no_op_t,
+    template <typename comparable_type_ = versioned_entry_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                callback_missing_type_ &&callback_missing) noexcept {
@@ -1269,7 +1275,7 @@ class basic_avl_tree {
     /**
      *  @brief Erases a single entry matching the given @p comparable. No callbacks.
      *
-     *  @param[in] comparable Object comparable to @c entry_t and convertible to search key.
+     *  @param[in] comparable Object comparable to @c versioned_entry_t and convertible to search key.
      *  @return bool True if element was erased, false if not found.
      */
     template <typename comparable_type_>
@@ -1463,7 +1469,7 @@ class basic_avl_tree {
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
         static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
-        auto sampler = [&](entry_t const &entry) noexcept {
+        auto sampler = [&](versioned_entry_t const &entry) noexcept {
             if (seen < reservoir_capacity) reservoir[seen] = entry;
             else {
                 std::uniform_int_distribution<std::size_t> distribution {0, seen};

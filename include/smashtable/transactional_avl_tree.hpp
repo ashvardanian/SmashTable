@@ -14,7 +14,7 @@
 #include <random>    // `std::uniform_int_distribution`
 #include <utility>   // `std::exchange`
 
-#include "status.hpp"
+#include "shared.hpp"
 #include "basic_vector.hpp"
 #include "basic_avl_tree.hpp"
 
@@ -75,27 +75,29 @@ class transactional_avl_tree {
     using comparator_t = comparator_type_;
     using allocator_t = allocator_type_;
 
-    using versioning_t = versioned_element<element_t, comparator_t>;
+    using versioning_t = versioning_for<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
     using watch_t = typename versioning_t::watch_t;
     using watched_identifier_t = typename versioning_t::watched_identifier_t;
-    using entry_t = typename versioning_t::entry_t;
-    using entry_comparator_t = typename versioning_t::entry_comparator_t;
+    using versioned_entry_t = typename versioning_t::versioned_entry_t;
+    using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
 
   private:
-    using entry_node_t = basic_avl_node<entry_t, entry_comparator_t>;
-    using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<entry_node_t>;
-    using entry_set_t = basic_avl_tree<entry_t, entry_comparator_t, entry_allocator_t>;
-    using entry_iterator_t = entry_node_t *;
+    using versioned_entry_node_t = basic_avl_node<versioned_entry_t, versioned_comparator_t>;
+    using versioned_entry_allocator_t =
+        typename std::allocator_traits<allocator_t>::template rebind_alloc<versioned_entry_node_t>;
+    using versioned_entry_set_t =
+        basic_avl_tree<versioned_entry_t, versioned_comparator_t, versioned_entry_allocator_t>;
+    using versioned_entry_iterator_t = versioned_entry_node_t *;
 
     using watches_allocator_t =
         typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_vector_t = basic_vector<watched_identifier_t, watches_allocator_t>;
 
     using store_t = transactional_avl_tree;
-    using extract_result_t = typename entry_set_t::extract_result_t;
+    using extract_result_t = typename versioned_entry_set_t::extract_result_t;
 
   public:
     class transaction_t {
@@ -108,7 +110,7 @@ class transactional_avl_tree {
         };
 
         store_t *store_ {nullptr};
-        entry_set_t changes_ {};
+        versioned_entry_set_t changes_ {};
         watches_vector_t watches_ {};
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
@@ -158,12 +160,10 @@ class transactional_avl_tree {
             if (local_it != changes_.end() && !local_it->deleted) return {invalid_argument_k};
 
             // Check main store if not in local changes or was deleted locally
-            bool exists_in_store = false;
-            store_ref().find(id, [&](entry_t const &) noexcept { exists_in_store = true; }, []() noexcept {});
-            if (exists_in_store) return {invalid_argument_k};
+            if (store_ref().contains(id)) return {invalid_argument_k};
 
             // Key doesn't exist anywhere, proceed with insertion
-            entry_t entry;
+            versioned_entry_t entry;
             entry.element = std::move(element);
             entry.generation = generation_;
             entry.deleted = false;
@@ -186,12 +186,10 @@ class transactional_avl_tree {
             if (local_it != changes_.end() && !local_it->deleted) return {success_k};
 
             // Check main store if not in local changes or was deleted locally
-            bool exists_in_store = false;
-            store_ref().find(id, [&](entry_t const &) noexcept { exists_in_store = true; }, []() noexcept {});
-            if (exists_in_store) return {success_k};
+            if (store_ref().contains(id)) return {success_k};
 
             // Key doesn't exist anywhere, proceed with insertion
-            entry_t entry;
+            versioned_entry_t entry;
             entry.element = std::move(element);
             entry.generation = generation_;
             entry.deleted = false;
@@ -208,7 +206,7 @@ class transactional_avl_tree {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t insert_or_assign(element_t &&element) noexcept {
-            entry_t entry;
+            versioned_entry_t entry;
             entry.element = std::move(element);
             entry.generation = generation_;
             entry.deleted = false;
@@ -225,8 +223,8 @@ class transactional_avl_tree {
         [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            entry_t entry;
-            entry.element = id;
+            versioned_entry_t entry;
+            entry.element = element_t {id};
             entry.generation = generation_;
             entry.deleted = true;
             entry.visible = false;
@@ -238,16 +236,16 @@ class transactional_avl_tree {
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
             status_t result {success_k};
-            auto found = [&](entry_t const &entry) noexcept {
+            auto found = [&](versioned_entry_t const &entry) noexcept {
                 result =
                     watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
             };
             auto missing = [&]() noexcept { result = watches_.try_push_back({id, missing_watch()}); };
-            store_ref().find(id, found, missing);
+            store_ref().find_visible_entry_(id, found, missing);
             return result;
         }
 
-        [[nodiscard]] status_t watch(entry_t const &entry) noexcept {
+        [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
             return watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
         }
 
@@ -314,7 +312,8 @@ class transactional_avl_tree {
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
                 element_t const &internal_element = *internal_iterator;
-                if (!entry_comparator_t {}(external_element, internal_element)) return callback_found(internal_element);
+                if (!versioned_comparator_t {}(external_element, internal_element))
+                    return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
@@ -350,7 +349,7 @@ class transactional_avl_tree {
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
             find(
                 std::forward<comparable_type_>(comparable),
-                [&](entry_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
+                [&](versioned_entry_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
         }
 
         /**
@@ -364,7 +363,7 @@ class transactional_avl_tree {
                   typename callback_type_ = no_op_t>
         void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
             // First, iterate over local changes
-            auto less = entry_comparator_t {};
+            auto less = versioned_comparator_t {};
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto const upper_internal_bound = identifier_t(upper);
             for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it)
@@ -401,7 +400,7 @@ class transactional_avl_tree {
                 }
 
                 element_t const &internal_element = *internal_iterator;
-                if (!entry_comparator_t {}(external_element, internal_element)) {
+                if (!versioned_comparator_t {}(external_element, internal_element)) {
                     callback_found(internal_element);
                     return;
                 }
@@ -434,9 +433,11 @@ class transactional_avl_tree {
             auto entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find_latest_for_watch(
+                auto status = store.find_latest_entry_(
                     id_and_watch.id,
-                    [&](entry_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
+                    [&](versioned_entry_t const &entry) noexcept {
+                        consistency_violated = entry != id_and_watch.watch;
+                    },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated) return {errc_t::consistency_k};
                 if (!status) return status;
@@ -450,7 +451,7 @@ class transactional_avl_tree {
 
             // No new memory allocations or failures are possible after that.
             // It is all safe.
-            changes_.for_each([&](entry_t const &entry) noexcept {
+            changes_.for_each([&](versioned_entry_t const &entry) noexcept {
                 [[maybe_unused]] auto push_status =
                     watches_.try_push_back({identifier_t {entry.element}, watch_t {generation_, entry.deleted}});
                 assert(push_status && "Should never fail after reserve");
@@ -511,7 +512,7 @@ class transactional_avl_tree {
     };
 
   private:
-    entry_set_t entries_;
+    versioned_entry_set_t entries_;
     generation_t generation_ {0};
     std::size_t visible_count_ {0};
     std::size_t visible_deleted_count_ {0};
@@ -520,20 +521,56 @@ class transactional_avl_tree {
     generation_t new_generation() noexcept { return ++generation_; }
 
     /**
-     *  @brief Finds the latest (highest generation) entry for watch validation.
-     *    Unlike find(), this checks ALL entries including staged (invisible) ones.
-     *    This is critical for detecting write-write conflicts with concurrent transactions.
+     *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_entry_t const &.
+     *    Used by internal methods that need access to generation/deleted/visible fields.
+     *    Only considers VISIBLE entries (committed/staged).
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find_latest_for_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                                 callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find_visible_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                             callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        entry_node_t *latest = nullptr;
-        entry_node_t::range(entries_.root(), comparable, comparable, [&](entry_node_t *node) noexcept {
-            // Find HIGHEST generation, regardless of visibility
-            if (!latest || node->entry.generation > latest->entry.generation) { latest = node; }
-        });
+        versioned_entry_node_t *largest_visible = nullptr;
+        versioned_entry_node_t::range(
+            entries_.root(), comparable, comparable, [&](versioned_entry_node_t *node) noexcept {
+                if ((node->entry.visible) &&
+                    (!largest_visible || node->entry.generation > largest_visible->entry.generation))
+                    largest_visible = node;
+            });
+
+        static_assert(is_safe_callback_for<callback_found_type_, versioned_entry_t const &>,
+                      "callback_found must be noexcept invocable with versioned_entry_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+        if (largest_visible) callback_found(largest_visible->entry);
+        else callback_missing();
+    }
+
+    /**
+     *  @brief Internal API: Finds the latest entry regardless of visibility for watch validation.
+     *    Checks ALL entries including staged (invisible) ones.
+     *    Critical for detecting write-write conflicts with concurrent transactions.
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                              callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+        versioned_entry_node_t *latest = nullptr;
+        versioned_entry_node_t::range(entries_.root(), comparable, comparable,
+                                      [&](versioned_entry_node_t *node) noexcept {
+                                          // Find HIGHEST generation, regardless of visibility
+                                          if (!latest || node->entry.generation > latest->entry.generation) {
+                                              latest = node;
+                                          }
+                                      });
 
         return (latest && !latest->entry.deleted)
                    ? invoke_safely([&] { callback_found(latest->entry); })
@@ -545,7 +582,7 @@ class transactional_avl_tree {
         auto current = entries_.lower_bound(id);
         if (current == entries_.end()) return;
 
-        auto less = entry_comparator_t {};
+        auto less = versioned_comparator_t {};
         auto last_visible_entry = std::optional<dated_identifier_t> {};
         while (current != entries_.end() && less.same(id, (*current).element)) {
             auto next = entries_.upper_bound(*current);
@@ -612,11 +649,7 @@ class transactional_avl_tree {
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
-        bool found = false;
-        find(
-            std::forward<comparable_type_>(comparable), [&](entry_t const &) noexcept { found = true; },
-            []() noexcept {});
-        return found ? 1 : 0;
+        return contains(std::forward<comparable_type_>(comparable)) ? 1 : 0;
     }
 
     /**
@@ -628,7 +661,7 @@ class transactional_avl_tree {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
         bool found = false;
-        find(std::forward<comparable_type_>(comparable), [&](entry_t const &) noexcept { found = true; });
+        find(std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; });
         return found;
     }
 
@@ -660,9 +693,7 @@ class transactional_avl_tree {
     [[nodiscard]] status_t insert(element_t &&element) noexcept {
         // Check if key already exists
         identifier_t id {element};
-        bool exists = false;
-        find(id, [&](entry_t const &) noexcept { exists = true; }, []() noexcept {});
-        if (exists) return {invalid_argument_k};
+        if (contains(id)) return {invalid_argument_k};
 
         return insert_or_assign(std::move(element));
     }
@@ -677,9 +708,7 @@ class transactional_avl_tree {
     [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
         // Check if key already exists
         identifier_t id {element};
-        bool exists = false;
-        find(id, [&](entry_t const &) noexcept { exists = true; }, []() noexcept {});
-        if (exists) return {success_k};
+        if (contains(id)) return {success_k};
 
         return insert_or_assign(std::move(element));
     }
@@ -725,9 +754,9 @@ class transactional_avl_tree {
         // one-by-one with the same generation.
         std::size_t const count = end - begin;
         std::size_t count_remaining = count;
-        entry_node_t *last_node = nullptr;
+        versioned_entry_node_t *last_node = nullptr;
         while (count_remaining) {
-            entry_node_t *next_node = entries_.allocator().allocate(1);
+            versioned_entry_node_t *next_node = entries_.allocator().allocate(1);
             if (!next_node) break;
             // Reset the state
             next_node->right = nullptr;
@@ -742,7 +771,7 @@ class transactional_avl_tree {
         // We have failed to allocate all the needed nodes.
         if (count_remaining) {
             while (count_remaining != count) {
-                entry_node_t *prev_node = last_node->left;
+                versioned_entry_node_t *prev_node = last_node->left;
                 entries_.allocator().deallocate(last_node, 1);
                 // Update state for next loop cycle
                 last_node = prev_node;
@@ -754,7 +783,7 @@ class transactional_avl_tree {
         // Populate the allocated nodes and merge into the tree.
         generation_t generation = new_generation();
         while (count_remaining != count) {
-            entry_node_t *prev_node = last_node->left;
+            versioned_entry_node_t *prev_node = last_node->left;
             last_node->left = nullptr;
             last_node->right = nullptr;
 
@@ -792,16 +821,10 @@ class transactional_avl_tree {
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        entry_node_t *largest_visible = nullptr;
-        entry_node_t::range(entries_.root(), comparable, comparable, [&](entry_node_t *node) noexcept {
-            if ((node->entry.visible) &&
-                (!largest_visible || node->entry.generation > largest_visible->entry.generation))
-                largest_visible = node;
-        });
-
-        // static_assert(noexcept(callback_found(largest_visible->entry)));
-        // static_assert(noexcept(callback_missing()));
-        largest_visible ? callback_found(largest_visible->entry) : callback_missing();
+        find_visible_entry_(
+            std::forward<comparable_type_>(comparable),
+            [&](versioned_entry_t const &entry) noexcept { callback_found(entry.element); },
+            std::forward<callback_missing_type_>(callback_missing));
     }
 
     /**
@@ -816,14 +839,17 @@ class transactional_avl_tree {
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        // Skip all the invisible entries
-        entry_node_t *next_visible = entry_node_t::lower_bound(entries_.root(), comparable);
-        while (next_visible && !next_visible->entry.visible)
-            next_visible = entry_node_t::upper_bound(entries_.root(), next_visible->entry);
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
+                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-        // static_assert(noexcept(callback_found(next_visible->entry)));
-        // static_assert(noexcept(callback_missing()));
-        next_visible ? callback_found(next_visible->entry) : callback_missing();
+        // Skip all the invisible entries
+        versioned_entry_node_t *next_visible = versioned_entry_node_t::lower_bound(entries_.root(), comparable);
+        while (next_visible && !next_visible->entry.visible)
+            next_visible = versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry);
+
+        if (next_visible) callback_found(next_visible->entry.element);
+        else callback_missing();
     }
 
     /**
@@ -835,9 +861,7 @@ class transactional_avl_tree {
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        find(
-            std::forward<comparable_type_>(comparable), [&](entry_t const &entry) noexcept { callback(entry.element); },
-            []() noexcept {});
+        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -845,44 +869,67 @@ class transactional_avl_tree {
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        // Skip all the invisible entries
-        entry_node_t *next_visible = entry_node_t::upper_bound(entries_.root(), comparable);
-        while (next_visible && !next_visible->entry.visible)
-            next_visible = entry_node_t::upper_bound(entries_.root(), next_visible->entry);
+        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
+                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-        // static_assert(noexcept(callback_found(next_visible->entry)));
-        // static_assert(noexcept(callback_missing()));
-        next_visible ? callback_found(next_visible->entry) : callback_missing();
+        // Skip all the invisible entries
+        versioned_entry_node_t *next_visible = versioned_entry_node_t::upper_bound(entries_.root(), comparable);
+        while (next_visible && !next_visible->entry.visible)
+            next_visible = versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry);
+
+        if (next_visible) callback_found(next_visible->entry.element);
+        else callback_missing();
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
-        entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                            [&](entry_node_t *node) noexcept {
-                                if (node->entry.visible) callback(node->entry.element);
-                            });
+        versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
+                                      std::forward<upper_type_>(upper), [&](versioned_entry_node_t *node) noexcept {
+                                          if (node->entry.visible) callback(node->entry.element);
+                                      });
     }
 
+    /**
+     *  @brief Iterates over key-value associations in [ @p lower, @p upper), providing mutable value access.
+     *    Only enabled for association types. Callback receives (const key_type&, value_type&).
+     *    Updates generation for each accessed element.
+     *
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
+     *  @param[in] callback Callback invoked with (const Key&, Value&) for each element. Must be @c noexcept.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+        requires is_association<element_t>
+    {
         generation_t generation = new_generation();
-        entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                            [&](entry_node_t *node) noexcept {
-                                if (node->entry.visible)
-                                    callback(node->entry.element), node->entry.generation = generation;
-                            });
+        versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
+                                      std::forward<upper_type_>(upper), [&](versioned_entry_node_t *node) noexcept {
+                                          if (!node->entry.visible) return;
+                                          callback(node->entry.element.key, node->entry.element.value);
+                                          node->entry.generation = generation;
+                                      });
     }
 
+    /**
+     *  @brief Erases all the entries falling in between the @p lower and the @p upper.
+     *
+     *  @param[in] lower Lower bound of the range.
+     *  @param[in] upper Upper bound of the range (exclusive).
+     *  @param[in] callback Optional callback invoked for each erased element. Must be @c noexcept.
+     *  @return status_t Always succeeds.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
+    status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         // Implementing Splits and Joins for AVL can be tricky.
         // Let's start with deleting them one by one.
         // TODO: Implement range-removals.
         auto last = entries_.lower_bound(std::forward<lower_type_>(lower));
-        auto less = entry_comparator_t {};
+        auto less = versioned_comparator_t {};
         while (last != entries_.end() && less(*last, upper)) {
             auto next = entries_.upper_bound(*last);
             if (last->visible) {
@@ -893,15 +940,16 @@ class transactional_avl_tree {
             }
             last = next;
         }
+        return status_t {success_k};
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
 
-        auto node = entry_node_t::sample_range( //
+        auto node = versioned_entry_node_t::sample_range( //
             entries_.root(), lower, upper, std::forward<generator_type_>(generator),
-            [](entry_node_t *node) noexcept { return node->entry.visible; });
+            [](versioned_entry_node_t *node) noexcept { return node->entry.visible; });
         if (node) callback(node->entry);
     }
 
@@ -933,16 +981,17 @@ class transactional_avl_tree {
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
+     *  @return status_t Always succeeds.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-               callback_missing_type_ &&callback_missing) noexcept {
+    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
+                   callback_missing_type_ &&callback_missing = {}) noexcept {
         // Find the entry
         bool found = false;
         find(
             std::forward<comparable_type_>(comparable),
-            [&](entry_t const &entry) noexcept {
+            [&](versioned_entry_t const &entry) noexcept {
                 found = true;
                 callback_found(entry.element);
             },
@@ -950,12 +999,13 @@ class transactional_avl_tree {
 
         if (!found) {
             callback_missing();
-            return;
+            return status_t {success_k};
         }
 
         // Erase the entry
         erase_range(std::forward<comparable_type_>(comparable),
                     dated_identifier_t {identifier_t(comparable), generation_ + 1});
+        return status_t {success_k};
     }
 
     /**
@@ -990,7 +1040,7 @@ class transactional_avl_tree {
     void print(dont_instantiate_me_type_ &cout) {
         cout << "Items: " << entries_.size() << "\n";
         cout << "Imbalance: " << entries_.total_imbalance() << "\n";
-        entry_node_t::for_each_left_right(entries_.root(), [&](entry_node_t *node) {
+        versioned_entry_node_t::for_each_left_right(entries_.root(), [&](versioned_entry_node_t *node) {
             char const *marker = node->entry.visible ? "✓" : "✗";
             cout << identifier_t {node->entry.element} << " @" << node->entry.generation << marker << " ";
         });
