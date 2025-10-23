@@ -88,10 +88,10 @@ class partitioned_collection {
     using generation_t = typename part_t::generation_t;
 
   private:
-    static std::size_t bucket(identifier_t const &id) noexcept { return hash_t {}(id) % parts_k; }
+    static std::size_t bucket_(identifier_t const &id) noexcept { return hash_t {}(id) % parts_k; }
 
     template <typename lock_type_, typename mutexes_type_>
-    static void lock_out_of_order(mutexes_type_ &mutexes) noexcept {
+    static void lock_out_of_order_(mutexes_type_ &mutexes) noexcept {
         status_t status;
         std::array<bool, parts_k> finished {false};
         std::size_t remaining_count = parts_k;
@@ -204,13 +204,13 @@ class partitioned_collection {
         static_assert(std::is_nothrow_move_constructible<part_transaction_t>());
 
         template <typename callable_type_>
-        status_t for_parts(callable_type_ &&callable) noexcept {
+        status_t for_parts_(callable_type_ &&callable) noexcept {
             return partitioned_t::for_all<unique_lock_t>(parts_, store_.mutexes_,
                                                          std::forward<callable_type_>(callable));
         }
 
         template <typename callable_type_>
-        status_t for_dirty_parts(callable_type_ &&callable) noexcept {
+        status_t for_dirty_parts_(callable_type_ &&callable) noexcept {
             status_t status;
             for (std::size_t part_idx = 0; part_idx != parts_k; ++part_idx) {
                 if (!dirty_[part_idx]) continue;
@@ -229,7 +229,7 @@ class partitioned_collection {
         generation_t generation() const noexcept { return generation_; }
 
         [[nodiscard]] status_t reset() noexcept {
-            auto status = for_parts(std::mem_fn(&part_transaction_t::reset));
+            auto status = for_parts_(std::mem_fn(&part_transaction_t::reset));
             if (status) {
                 generation_ = store_.new_generation();
                 std::fill_n(dirty_.begin(), parts_k, false);
@@ -237,7 +237,7 @@ class partitioned_collection {
             return status;
         }
         [[nodiscard]] status_t rollback() noexcept {
-            auto status = for_dirty_parts(std::mem_fn(&part_transaction_t::rollback));
+            auto status = for_dirty_parts_(std::mem_fn(&part_transaction_t::rollback));
             if (status) {
                 generation_ = store_.new_generation();
                 std::fill_n(dirty_.begin(), parts_k, false);
@@ -245,15 +245,19 @@ class partitioned_collection {
             return status;
         }
 
-        [[nodiscard]] status_t stage() noexcept { return for_dirty_parts(std::mem_fn(&part_transaction_t::stage)); }
-        [[nodiscard]] status_t commit() noexcept {
-            auto status = for_dirty_parts(std::mem_fn(&part_transaction_t::commit));
+        template <typename... tags_types_>
+        [[nodiscard]] status_t stage(tags_types_... tags) noexcept {
+            return for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.stage(tags...); });
+        }
+        template <typename... tags_types_>
+        [[nodiscard]] status_t commit(tags_types_... tags) noexcept {
+            auto status = for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.commit(tags...); });
             if (status) std::fill_n(dirty_.begin(), parts_k, false);
             return status;
         }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
-            std::size_t part_idx = bucket(id);
+            std::size_t part_idx = bucket_(id);
             dirty_[part_idx] = true;
             shared_lock_t _ {store_.mutexes_[part_idx]};
             return parts_[part_idx].watch(id);
@@ -263,7 +267,7 @@ class partitioned_collection {
                   typename callback_missing_type_ = no_op_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            std::size_t part_idx = bucket(identifier_t(comparable));
+            std::size_t part_idx = bucket_(identifier_t(comparable));
             shared_lock_t _ {store_.mutexes_[part_idx]};
             parts_[part_idx].find(std::forward<comparable_type_>(comparable),
                                   std::forward<callback_found_type_>(callback_found),
@@ -272,7 +276,7 @@ class partitioned_collection {
 
         template <typename comparable_type_ = identifier_t>
         bool contains(comparable_type_ &&comparable) const noexcept {
-            std::size_t part_idx = bucket(identifier_t(comparable));
+            std::size_t part_idx = bucket_(identifier_t(comparable));
             shared_lock_t _ {store_.mutexes_[part_idx]};
             return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
         }
@@ -287,13 +291,13 @@ class partitioned_collection {
         }
 
         [[nodiscard]] status_t upsert(element_t &&element) noexcept {
-            std::size_t part_idx = bucket(identifier_t(element));
+            std::size_t part_idx = bucket_(identifier_t(element));
             dirty_[part_idx] = true;
             return parts_[part_idx].upsert(std::move(element));
         }
 
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            std::size_t part_idx = bucket(id);
+            std::size_t part_idx = bucket_(id);
             dirty_[part_idx] = true;
             return parts_[part_idx].erase(id);
         }
@@ -308,7 +312,7 @@ class partitioned_collection {
 
     partitioned_collection(parts_t &&unlocked) noexcept : parts_(std::move(unlocked)) {}
     partitioned_collection &operator=(partitioned_collection &&other) noexcept {
-        lock_out_of_order<unique_lock_t>(mutexes_);
+        lock_out_of_order_<unique_lock_t>(mutexes_);
         parts_ = std::move(other.parts_);
         for (auto &mutex : mutexes_) mutex.unlock();
         return *this;
@@ -325,7 +329,7 @@ class partitioned_collection {
 
     [[nodiscard]] std::size_t size() const noexcept {
         std::size_t total = 0;
-        lock_out_of_order<shared_lock_t>(mutexes_);
+        lock_out_of_order_<shared_lock_t>(mutexes_);
         for (auto const &part : parts_) total += part.size();
         for (auto &mutex : mutexes_) mutex.unlock_shared();
         return total;
@@ -349,7 +353,7 @@ class partitioned_collection {
     }
 
     [[nodiscard]] status_t upsert(element_t &&element) noexcept {
-        std::size_t part_idx = bucket(identifier_t(element));
+        std::size_t part_idx = bucket_(identifier_t(element));
         unique_lock_t _ {mutexes_[part_idx]};
         return parts_[part_idx].upsert(std::move(element));
     }
@@ -370,7 +374,7 @@ class partitioned_collection {
               typename callback_missing_type_ = no_op_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
-        std::size_t part_idx = bucket(identifier_t(comparable));
+        std::size_t part_idx = bucket_(identifier_t(comparable));
         shared_lock_t _ {mutexes_[part_idx]};
         parts_[part_idx].find(std::forward<comparable_type_>(comparable),
                               std::forward<callback_found_type_>(callback_found),
@@ -379,7 +383,7 @@ class partitioned_collection {
 
     template <typename comparable_type_ = identifier_t>
     bool contains(comparable_type_ &&comparable) const noexcept {
-        std::size_t part_idx = bucket(identifier_t(comparable));
+        std::size_t part_idx = bucket_(identifier_t(comparable));
         shared_lock_t _ {mutexes_[part_idx]};
         return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
     }
@@ -396,7 +400,7 @@ class partitioned_collection {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
-        lock_out_of_order<shared_lock_t>(mutexes_);
+        lock_out_of_order_<shared_lock_t>(mutexes_);
         for (auto &part : parts_) part.range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock_shared();
     }
@@ -404,7 +408,7 @@ class partitioned_collection {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
-        lock_out_of_order<unique_lock_t>(mutexes_);
+        lock_out_of_order_<unique_lock_t>(mutexes_);
         for (auto &part : parts_) part.range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock();
     }
@@ -412,7 +416,7 @@ class partitioned_collection {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
-        lock_out_of_order<unique_lock_t>(mutexes_);
+        lock_out_of_order_<unique_lock_t>(mutexes_);
         for (auto &part : parts_) part.erase_range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock();
     }
@@ -455,7 +459,7 @@ class partitioned_collection {
         auto maybe = new_parts();
         if (!maybe) return {unknown_k};
 
-        lock_out_of_order<unique_lock_t>(mutexes_);
+        lock_out_of_order_<unique_lock_t>(mutexes_);
         parts_ = std::move(maybe).value();
         for (auto &mutex : mutexes_) mutex.unlock();
         return {success_k};
