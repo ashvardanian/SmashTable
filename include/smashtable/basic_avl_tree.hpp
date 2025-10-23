@@ -340,7 +340,7 @@ class basic_avl_node {
         range(node, low, high, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
             if (choice == 0) result = node;
-            --choice;
+            -choice;
         });
 
         return result;
@@ -706,6 +706,198 @@ class basic_avl_node {
             return {downstream.left, join_with_root(downstream.right, node, node->right)};
         }
     }
+
+#pragma mark - Merge Algorithms
+
+    /**
+     *  @brief Merges two AVL trees using split-based divide-and-conquer.
+     *    Optimal for unbalanced sizes: O(m log(n/m + 1)) where m <= n.
+     *    Takes root of smaller tree, splits larger tree around it, recursively merges.
+     *
+     *  @param[in] small Smaller tree to merge (will be consumed).
+     *  @param[in] large Larger tree to merge into (will be consumed).
+     *  @return node_t* Root of merged tree with all nodes from both inputs.
+     *
+     *  @note Both input trees are consumed (ownership transferred).
+     *    Maintains AVL balance property throughout.
+     *  @see Blelloch et al., "Just Join for Parallel Ordered Sets" (2016)
+     */
+    static node_t *merge_split_based(node_t *small, node_t *large) noexcept {
+        if (!small) return large;
+        if (!large) return small;
+
+        // Extract root of smaller tree as pivot
+        node_t *pivot = small;
+        node_t *small_left = pivot->left;
+        node_t *small_right = pivot->right;
+
+        // Split larger tree around pivot's key: O(log n)
+        auto split_result = split(large, pivot->entry);
+
+        // Recursively merge subtrees
+        node_t *merged_left = merge_split_based(small_left, split_result.left);
+        node_t *merged_right = merge_split_based(small_right, split_result.right);
+
+        // Join with pivot as root: O(log height_diff)
+        return join_with_root(merged_left, pivot, merged_right);
+    }
+
+    /**
+     *  @brief Converts AVL tree to right-leaning spine (degenerate vine).
+     *    A spine is a sorted linked list using right pointers, all left pointers null.
+     *
+     *  @param[in] root Tree to convert.
+     *  @param[out] count Number of nodes in resulting spine.
+     *  @return node_t* Head of spine (smallest element).
+     *
+     *  @note Uses rotations to flatten tree: O(n) time, O(1) space.
+     */
+    static node_t *tree_to_spine(node_t *root, std::size_t &count) noexcept {
+        node_t *spine_head = nullptr;
+        node_t *spine_tail = nullptr;
+        count = 0;
+
+        // Stack-free Morris-like traversal using rotations
+        while (root) {
+            if (root->left) {
+                // Rotate right to bring left child up
+                node_t *temp = root->left;
+                root->left = temp->right;
+                temp->right = root;
+                root = temp;
+            }
+            else {
+                // Link current node to spine
+                if (!spine_head) spine_head = root;
+                if (spine_tail) spine_tail->right = root;
+                spine_tail = root;
+                ++count;
+
+                // Move to right subtree
+                node_t *next = root->right;
+                root->left = nullptr;
+                root = next;
+            }
+        }
+
+        if (spine_tail) spine_tail->right = nullptr;
+        return spine_head;
+    }
+
+    /**
+     *  @brief Merges two sorted spines into one sorted spine.
+     *
+     *  @param[in] spine1 First sorted spine.
+     *  @param[in] spine2 Second sorted spine.
+     *  @return node_t* Head of merged spine.
+     *
+     *  @note O(n+m) time, O(1) space. Just like merging sorted linked lists.
+     */
+    static node_t *merge_spines(node_t *spine1, node_t *spine2) noexcept {
+        if (!spine1) return spine2;
+        if (!spine2) return spine1;
+
+        node_t *merged_head = nullptr;
+        node_t *merged_tail = nullptr;
+        auto less = comparator_t {};
+
+        while (spine1 && spine2) {
+            node_t *next_node;
+            if (less(spine1->entry, spine2->entry)) {
+                next_node = spine1;
+                spine1 = spine1->right;
+            }
+            else {
+                next_node = spine2;
+                spine2 = spine2->right;
+            }
+
+            if (!merged_head) merged_head = next_node;
+            if (merged_tail) merged_tail->right = next_node;
+            merged_tail = next_node;
+        }
+
+        // Append remaining nodes
+        node_t *remaining = spine1 ? spine1 : spine2;
+        if (merged_tail) merged_tail->right = remaining;
+        else merged_head = remaining;
+
+        return merged_head;
+    }
+
+    /**
+     *  @brief Converts sorted spine back to balanced AVL tree (Day-Stout-Warren algorithm).
+     *
+     *  @param[in] spine Head of spine.
+     *  @param[in] count Number of nodes in spine.
+     *  @return node_t* Root of balanced AVL tree.
+     *
+     *  @note O(n) time using rotations to build perfectly balanced tree.
+     *  @see Stout & Warren, "Tree Rebalancing in Optimal Time and Space" (1986)
+     */
+    static node_t *spine_to_balanced(node_t *spine, std::size_t count) noexcept {
+        if (count == 0) return nullptr;
+        if (count == 1) {
+            spine->left = nullptr;
+            spine->right = nullptr;
+            spine->height = 1;
+            return spine;
+        }
+
+        // Build perfectly balanced tree recursively from spine
+        auto build_tree = [](node_t *&current, std::size_t n, auto &build_ref) -> node_t * {
+            if (n == 0) return nullptr;
+
+            // Build left subtree with n/2 nodes
+            node_t *left = build_ref(current, n / 2, build_ref);
+
+            // Current node becomes root
+            node_t *root = current;
+            current = current->right;
+
+            // Build right subtree with remaining nodes
+            node_t *right = build_ref(current, n - n / 2 - 1, build_ref);
+
+            root->left = left;
+            root->right = right;
+            root->height = 1 + std::max(get_height(left), get_height(right));
+            return root;
+        };
+
+        return build_tree(spine, count, build_tree);
+    }
+
+    /**
+     *  @brief Merges two AVL trees using Day-Stout-Warren spine algorithm.
+     *    Best for large similarly-sized trees: O(n+m) time, O(1) space.
+     *    Flattens both trees to spines, merges spines, rebuilds balanced tree.
+     *
+     *  @param[in] tree1 First tree to merge (will be consumed).
+     *  @param[in] tree2 Second tree to merge (will be consumed).
+     *  @param[out] out_size Total number of nodes in result.
+     *  @return node_t* Root of merged balanced tree.
+     *
+     *  @note High constant factor due to many rotations, but O(1) space.
+     *    Both input trees are consumed (ownership transferred).
+     *
+     *  @see Stout & Warren, "Tree Rebalancing in Optimal Time and Space" (1986)
+     *  @see https://en.wikipedia.org/wiki/Day%E2%80%93Stout%E2%80%93Warren_algorithm
+     */
+    static node_t *merge_dsw(node_t *tree1, node_t *tree2, std::size_t &out_size) noexcept {
+        std::size_t count1 = 0, count2 = 0;
+
+        // Convert both trees to spines: O(n + m)
+        node_t *spine1 = tree_to_spine(tree1, count1);
+        node_t *spine2 = tree_to_spine(tree2, count2);
+
+        // Merge spines: O(n + m)
+        node_t *merged_spine = merge_spines(spine1, spine2);
+
+        out_size = count1 + count2;
+
+        // Rebuild balanced tree from spine: O(n + m)
+        return spine_to_balanced(merged_spine, out_size);
+    }
 };
 
 /**
@@ -790,14 +982,14 @@ class basic_avl_tree {
             return tmp;
         }
 
-        iterator &operator--() noexcept {
+        iterator &operator-() noexcept {
             node_ = node_t::find_predecessor(tree_->root_, node_);
             return *this;
         }
 
-        iterator operator--(int) noexcept {
+        iterator operator-(int) noexcept {
             iterator tmp = *this;
-            --(*this);
+            -(*this);
             return tmp;
         }
 
@@ -843,14 +1035,14 @@ class basic_avl_tree {
             return tmp;
         }
 
-        const_iterator &operator--() noexcept {
+        const_iterator &operator-() noexcept {
             node_ = node_t::find_predecessor(tree_->root_, const_cast<node_t *>(node_));
             return *this;
         }
 
-        const_iterator operator--(int) noexcept {
+        const_iterator operator-(int) noexcept {
             const_iterator tmp = *this;
-            --(*this);
+            -(*this);
             return tmp;
         }
 
@@ -1496,14 +1688,14 @@ class basic_avl_tree {
      *  @return status_t Always succeeds.
      */
     void clear() noexcept {
-        node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept { return allocator_.deallocate(node, 1); });
+        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return allocator_.deallocate(node, 1); });
         root_ = nullptr;
         size_ = 0;
     }
 
     template <typename callback_type_>
     void for_each(callback_type_ &&callback) noexcept {
-        node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept { callback(node->entry); });
+        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { callback(node->entry); });
     }
 
 #pragma mark - Merge Operations
@@ -1516,17 +1708,82 @@ class basic_avl_tree {
      *
      *  @note Unlike @c std::set::merge(), nodes with duplicate keys are deallocated rather than
      *    remaining in the source container. This ensures no memory leaks in a noexcept context.
+     *  @note Complexity: O(m log n) where m = other.size(), n = this.size().
+     *    For disjoint trees, use @c merge(other, assume_unique) for faster O(m log(n/m+1)) or O(m+n).
      */
     void merge(avl_tree_t &other) noexcept {
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
             auto result = node_t::insert(root_, node);
             root_ = result.root;
             size_ += result.inserted;
-            if (!result.inserted) {
-                // Key conflict - node wasn't inserted, deallocate it
-                allocator_.deallocate(node, 1);
-            }
+            // Key conflict - node wasn't inserted, deallocate it
+            if (!result.inserted) allocator_.deallocate(node, 1);
         });
+        other.root_ = nullptr;
+        other.size_ = 0;
+    }
+
+    /**
+     *  @brief Merges another tree into this one with optimized algorithm for disjoint trees.
+     *    Precondition: Trees have no overlapping keys (disjoint).
+     *
+     *  @param[inout] other Tree to merge from. Will be empty after merge.
+     *  @param assume_unique Tag indicating trees are disjoint (no duplicate keys).
+     *
+     *  @note Complexity: O(m log(n/m + 1)) for unbalanced sizes, O(m+n) for similar sizes.
+     *    Automatically selects optimal algorithm:
+     *    - If all(this) < all(other): O(log n) join
+     *    - Large similar sizes: O(m+n) Day-Stout-Warren @b (DSW) spine merge
+     *    - Unbalanced sizes: O(m log(n/m+1)) split-based merge, optimal according to Blelloch
+     *  @warning If precondition violated (duplicate keys exist), behavior is undefined.
+     */
+    void merge(avl_tree_t &other, assume_unique_t) noexcept {
+        if (other.empty()) return;
+        if (empty()) {
+            // Move other into this
+            root_ = other.root_;
+            size_ = other.size_;
+            other.root_ = nullptr;
+            other.size_ = 0;
+            return;
+        }
+
+        // Strategy 1: Check if fully ordered - O(log n) check, O(log n) join
+        auto this_max = node_t::find_max(root_);
+        auto other_min = node_t::find_min(other.root_);
+        auto less = comparator_t {};
+
+        // Fast path: all(this) < all(other), use join: O(log n)
+        if (less(this_max->entry, other_min->entry)) {
+            root_ = node_t::join(root_, other.root_);
+            size_ += other.size_;
+            other.root_ = nullptr;
+            other.size_ = 0;
+            return;
+        }
+
+        // Strategy 2: Adaptive selection between split-based and DSW
+        std::size_t min_size = std::min(size_, other.size_);
+        std::size_t max_size = std::max(size_, other.size_);
+
+        // Heuristic: Use DSW when both large and similar size
+        constexpr std::size_t DSW_THRESHOLD = 10000;
+        constexpr std::size_t SIZE_RATIO_THRESHOLD = 3;
+
+        // DSW for large similarly-sized trees: O(m+n)
+        if (min_size > DSW_THRESHOLD && max_size < min_size * SIZE_RATIO_THRESHOLD) {
+            std::size_t new_size;
+            root_ = node_t::merge_dsw(root_, other.root_, new_size);
+            size_ = new_size;
+        }
+        // Split-based for unbalanced sizes: O(m log(n/m+1))
+        else {
+            node_t *small = (size_ < other.size_) ? root_ : other.root_;
+            node_t *large = (size_ < other.size_) ? other.root_ : root_;
+            root_ = node_t::merge_split_based(small, large);
+            size_ += other.size_;
+        }
+
         other.root_ = nullptr;
         other.size_ = 0;
     }
@@ -1546,10 +1803,8 @@ class basic_avl_tree {
         auto result = node_t::insert(root_, node_to_insert);
         root_ = result.root;
         size_ += result.inserted;
-        if (!result.inserted) {
-            // Key conflict - node wasn't inserted, deallocate it
-            allocator_.deallocate(node_to_insert, 1);
-        }
+        // Key conflict - node wasn't inserted, deallocate it
+        if (!result.inserted) allocator_.deallocate(node_to_insert, 1);
     }
 
 #pragma mark - Split and Join
@@ -1572,9 +1827,10 @@ class basic_avl_tree {
      *
      *  @note This operation is O(log n) and maintains AVL balance in both resulting trees.
      *    The current tree is emptied (moved-from state).
+     *  @note Renamed from @c split_at for STL naming consistency.
      */
     template <typename comparable_type_>
-    split_result_t split_at(comparable_type_ &&comparable) noexcept {
+    split_result_t split(comparable_type_ &&comparable) noexcept {
         auto node_split_result = node_t::split(root_, std::forward<comparable_type_>(comparable));
 
         // Count elements in each tree (need to traverse to get accurate size)
@@ -1608,8 +1864,9 @@ class basic_avl_tree {
      *
      *  @note This operation is O(log n) and maintains AVL balance.
      *    If the precondition is violated, the resulting tree structure is undefined.
+     *  @note Renamed from @c join_with for STL naming consistency (cf. @c std::set::merge, @c std::list::splice).
      */
-    void join_with(avl_tree_t &other) noexcept {
+    void join(avl_tree_t &other) noexcept {
         root_ = node_t::join(root_, other.root_);
         size_ += other.size_;
         other.root_ = nullptr;
@@ -1630,7 +1887,7 @@ class basic_avl_tree {
     template <typename generator_type_, typename callback_type_ = no_op_t>
     void sample(generator_type_ &&generator, callback_type_ &&callback) const noexcept {
         auto node = node_t::sample(root_, std::forward<generator_type_>(generator));
-        if (node) { callback(node->entry); }
+        if (node) callback(node->entry);
     }
 
     /**
@@ -1650,7 +1907,7 @@ class basic_avl_tree {
         auto node =
             node_t::sample_range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                  std::forward<generator_type_>(generator), [](node_t *) noexcept { return true; });
-        if (node) { callback(node->entry); }
+        if (node) callback(node->entry);
     }
 
     /**
