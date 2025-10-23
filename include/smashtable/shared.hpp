@@ -144,6 +144,96 @@ copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
 }
 
+#pragma mark - Tag Dispatch Types
+
+/**
+ *  @brief Tag to enable thread-safe atomic operations.
+ *    Similar to @c std::execution::par for parallel algorithms.
+ *    Typically, requires @c assume_reserved (pre-allocated capacity).
+ *  @see https://en.cppreference.com/w/cpp/algorithm/execution_policy_tag_t
+ */
+struct threadsafe_t {
+    explicit threadsafe_t() = default;
+};
+inline constexpr threadsafe_t threadsafe {};
+
+/**
+ *  @brief Tag to assume capacity is pre-allocated, skip null checks.
+ *    Similar to @c std::adopt_lock for assuming preconditions are met.
+ *  @see https://en.cppreference.com/w/cpp/thread/lock_tag_t
+ */
+struct assume_reserved_t {
+    explicit assume_reserved_t() = default;
+};
+inline constexpr assume_reserved_t assume_reserved {};
+
+/**
+ *  @brief Tag to assume elements are unique, skip equality comparisons.
+ *    Similar to Boost.Container's @c ordered_unique_range_t.
+ */
+struct assume_unique_t {
+    explicit assume_unique_t() = default;
+};
+inline constexpr assume_unique_t assume_unique {};
+
+/**
+ *  @brief Tag to terminate search on first slot match without probing.
+ *    Optimization for when exact probe sequence doesn't matter.
+ */
+struct first_match_t {
+    explicit first_match_t() = default;
+};
+inline constexpr first_match_t first_match {};
+
+/**
+ *  @brief Tag to request iterator position in return value.
+ *    Similar to @c std::allocator_arg for controlling return behavior.
+ *  @see https://en.cppreference.com/w/cpp/memory/allocator_arg_t
+ */
+struct return_position_t {
+    explicit return_position_t() = default;
+};
+inline constexpr return_position_t return_position {};
+
+/**
+ *  @brief Tag to atomically retrieve new size after modification.
+ *    Stores updated container size in provided reference.
+ */
+struct return_new_size_t {
+    explicit return_new_size_t() = default;
+};
+inline constexpr return_new_size_t return_new_size {};
+
+/**
+ *  @brief Compile-time check if a type appears in parameter pack.
+ *  @tparam needle_type_ Type to search for.
+ *  @tparam haystack_types_ Parameter pack to search in.
+ *  @return True if @p needle_type_ found in @p haystack_types_.
+ */
+template <typename needle_type_, typename... haystack_types_>
+consteval bool contains_type() {
+    return (std::is_same_v<needle_type_, haystack_types_> || ...);
+}
+
+/**
+ *  @brief Extract value of specific type from parameter pack or return default.
+ *  @tparam needle_type_ Type to extract.
+ *  @tparam default_type_ Type to return if needle not found.
+ *  @tparam haystack_types_ Parameter pack to search.
+ *  @return Reference to found value or default-constructed value.
+ */
+template <typename needle_type_, typename default_type_, typename... haystack_types_>
+decltype(auto) get_type_or(haystack_types_ &&...args) {
+    if constexpr ((std::is_same_v<std::decay_t<haystack_types_>, needle_type_> || ...)) {
+        default_type_ result {};
+        (..., (std::is_same_v<std::decay_t<haystack_types_>, needle_type_>
+                   ? (result = std::forward<haystack_types_>(args), 0)
+                   : 0));
+        return result;
+    }
+    else { return default_type_ {}; }
+}
+
 /** @brief Watch metadata for versioned elements. */
 struct watch_t {
     generation_t generation {0};
