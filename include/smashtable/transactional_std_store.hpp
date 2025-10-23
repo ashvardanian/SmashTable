@@ -134,7 +134,7 @@ class transactional_std_store {
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
 
-        transaction_t(store_t &set) noexcept(false) : store_(&set), generation_(set.new_generation()) {}
+        transaction_t(store_t &set) noexcept(false) : store_(&set), generation_(set.new_generation_()) {}
         watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
@@ -172,9 +172,10 @@ class transactional_std_store {
          *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
          *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
          */
-        template <typename callback_inserted_type_ = no_op_t, typename callback_exists_type_ = no_op_t>
+        template <typename callback_inserted_type_ = no_op_t, typename callback_exists_type_ = no_op_t,
+                  typename... tags_types_>
         [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                      callback_exists_type_ &&callback_exists = {}) noexcept {
+                                      callback_exists_type_ &&callback_exists = {}, tags_types_...) noexcept {
 
             static_assert(is_safe_callback_for<callback_exists_type_, element_t const &>,
                           "callback_exists must be noexcept invocable with element_t const &");
@@ -224,9 +225,11 @@ class transactional_std_store {
          *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
          *  @return status_t Always succeeds (unless OOM). Success returned even if key exists.
          */
-        template <typename callback_inserted_type_ = no_op_t, typename callback_skipped_type_ = no_op_t>
+        template <typename callback_inserted_type_ = no_op_t, typename callback_skipped_type_ = no_op_t,
+                  typename... tags_types_>
         [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                                 callback_skipped_type_ &&callback_skipped = {}) noexcept {
+                                                 callback_skipped_type_ &&callback_skipped = {},
+                                                 tags_types_...) noexcept {
 
             static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
             static_assert(is_safe_callback_for<callback_skipped_type_, element_t const &>,
@@ -276,9 +279,11 @@ class transactional_std_store {
          *  @param[in] callback_assigned Callback invoked if element will be assigned (key exists, value updated).
          *  @return status_t Success or error code (e.g., out of memory).
          */
-        template <typename callback_inserted_type_ = no_op_t, typename callback_assigned_type_ = no_op_t>
-        [[nodiscard]] status_t insert_or_assign(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                                callback_assigned_type_ &&callback_assigned = {}) noexcept {
+        template <typename callback_inserted_type_ = no_op_t, typename callback_assigned_type_ = no_op_t,
+                  typename... tags_types_>
+        [[nodiscard]] status_t insert_or_assign_(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                                                 callback_assigned_type_ &&callback_assigned = {},
+                                                 tags_types_...) noexcept {
 
             static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
             static_assert(is_safe_callback<callback_assigned_type_>, "callback_assigned must be noexcept invocable");
@@ -309,7 +314,7 @@ class transactional_std_store {
         }
 
         /**
-         *  @brief Alias for insert_or_assign(). Stages an insert or assign operation.
+         *  @brief Alias for @c insert_or_assign(). Stages an insert or assign operation.
          *  @param[in] element Element to insert or assign (moved into the transaction).
          *  @return status_t Success or error code (e.g., out of memory).
          */
@@ -566,7 +571,8 @@ class transactional_std_store {
          *
          *  @return status_t Success, or consistency error if watches failed validation.
          */
-        [[nodiscard]] status_t stage() noexcept {
+        template <typename... tags_types_>
+        [[nodiscard]] status_t stage(tags_types_... tags) noexcept {
             // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
             auto entry_missing = missing_watch();
@@ -596,6 +602,9 @@ class transactional_std_store {
             // The visibility will be updated later in the `commit`.
             store.entries_.merge(changes_);
             stage_ = stage_t::staged_k;
+
+            // Support return_new_size to export staged count
+            get_type_or<return_new_size_t, black_hole_t>(tags...) = watches_.size();
             return {success_k};
         }
 
@@ -621,7 +630,7 @@ class transactional_std_store {
             watches_.clear();
             changes_.clear();
             stage_ = stage_t::created_k;
-            generation_ = store.new_generation();
+            generation_ = store.new_generation_();
             return {success_k};
         }
 
@@ -645,7 +654,7 @@ class transactional_std_store {
 
             watches_.clear();
             stage_ = stage_t::created_k;
-            generation_ = store.new_generation();
+            generation_ = store.new_generation_();
             return {success_k};
         }
 
@@ -653,9 +662,11 @@ class transactional_std_store {
          *  @brief Commits a previously staged transaction, making all changes permanently visible.
          *    Can only be called on staged transactions. Removes older versions of modified entries.
          *
+         *  @tparam tags_types_ Optional tag types (@c return_new_size_t to export visible count).
          *  @return status_t Success, or @c operation_not_permitted_k if transaction is not staged.
          */
-        [[nodiscard]] status_t commit() noexcept {
+        template <typename... tags_types_>
+        [[nodiscard]] status_t commit(tags_types_... tags) noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
 
             // Once we make an entry visible,
@@ -664,10 +675,11 @@ class transactional_std_store {
             auto &store = store_ref();
             for (auto const &id_and_watch : watches_) {
                 auto range = store.entries_.equal_range(id_and_watch.id);
-                store.unmask_and_compact(range.first, range.second, id_and_watch.watch.generation);
+                store.unmask_and_compact_(range.first, range.second, id_and_watch.watch.generation);
             }
 
             stage_ = stage_t::created_k;
+            get_type_or<return_new_size_t, black_hole_t>(tags...) = store.visible_count_;
             return {success_k};
         }
     };
@@ -681,7 +693,7 @@ class transactional_std_store {
     friend class transaction_t;
 
     transactional_std_store() noexcept(false) {}
-    generation_t new_generation() noexcept { return ++generation_; }
+    generation_t new_generation_() noexcept { return ++generation_; }
 
     /**
      *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_entry_t const &.
@@ -736,7 +748,7 @@ class transactional_std_store {
     }
 
     template <typename callback_type_ = no_op_t>
-    void erase_visible(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
+    void erase_visible_(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
         entry_iterator_t current = begin;
         while (current != end)
             if (current->visible) {
@@ -748,7 +760,7 @@ class transactional_std_store {
             else ++current;
     }
 
-    void unmask_and_compact(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
+    void unmask_and_compact_(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
         entry_iterator_t current = begin;
         entry_iterator_t last_visible_entry = end;
         for (; current != end; ++current) {
@@ -786,7 +798,7 @@ class transactional_std_store {
      *  @param[inout] sources Collection of entries to import.
      *  @return status_t Can fail, if out of memory.
      */
-    [[nodiscard]] status_t insert_or_assign(entry_set_t &sources) noexcept {
+    [[nodiscard]] status_t insert_or_assign_(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
             bool should_compact = source->visible;
             visible_count_ += source->visible;
@@ -795,7 +807,7 @@ class transactional_std_store {
             auto range_end = entries_.insert(std::move(source_node)).position;
             if (should_compact) {
                 auto range_start = entries_.lower_bound(range_end->element);
-                erase_visible(range_start, range_end);
+                erase_visible_(range_start, range_end);
             }
         }
         return {success_k};
@@ -903,7 +915,7 @@ class transactional_std_store {
         }
 
         // Key doesn't exist, proceed with insertion
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         auto status = invoke_safely([&]() {
             auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
@@ -912,7 +924,7 @@ class transactional_std_store {
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
             ++visible_count_;
-            erase_visible(range_start, range_end);
+            erase_visible_(range_start, range_end);
         });
 
         if (status) callback_inserted();
@@ -950,7 +962,7 @@ class transactional_std_store {
         }
 
         // Key doesn't exist, proceed with insertion
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         auto status = invoke_safely([&]() {
             auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
@@ -959,7 +971,7 @@ class transactional_std_store {
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
             ++visible_count_;
-            erase_visible(range_start, range_end);
+            erase_visible_(range_start, range_end);
         });
 
         if (status) callback_inserted();
@@ -988,7 +1000,7 @@ class transactional_std_store {
         while (range.first != range.second && !range.first->visible) ++range.first;
         bool key_exists = (range.first != range.second && !range.first->deleted);
 
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         auto status = invoke_safely([&]() {
             auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
@@ -997,7 +1009,7 @@ class transactional_std_store {
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->element);
             ++visible_count_;
-            erase_visible(range_start, range_end);
+            erase_visible_(range_start, range_end);
         });
 
         if (!status) return status;
@@ -1008,7 +1020,7 @@ class transactional_std_store {
     }
 
     /**
-     *  @brief Alias for insert_or_assign(). Atomically inserts or updates an element.
+     *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an element.
      *  @param[in] element Element to insert or assign (moved into the container).
      *  @return status_t Success or error code (e.g., out of memory).
      */
@@ -1035,7 +1047,7 @@ class transactional_std_store {
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         std::optional<entry_set_t> batch;
         auto batch_construction_status = invoke_safely([&]() {
             batch = entry_set_t {};
@@ -1052,7 +1064,7 @@ class transactional_std_store {
     }
 
     /**
-     *  @brief Alias for batch insert_or_assign(). Atomically inserts or assigns a batch of elements.
+     *  @brief Alias for batch @c insert_or_assign(). Atomically inserts or assigns a batch of elements.
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
      *  @return status_t Success or error code (e.g., out of memory).
@@ -1199,7 +1211,7 @@ class transactional_std_store {
     void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_association<element_t>
     {
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator) {
@@ -1263,7 +1275,7 @@ class transactional_std_store {
 
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
-        erase_visible(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));
+        erase_visible_(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));
         return status_t {success_k};
     }
 

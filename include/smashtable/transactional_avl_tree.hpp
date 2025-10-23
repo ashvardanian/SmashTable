@@ -21,9 +21,9 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  @brief  Transactional AVL tree providing ACID semantics with 2-phase commit and watch/CAS operations.
+ *  @brief  Transactional AVL tree providing 2-phase commits and "watch" operations.
  *    Built on @c basic_avl_tree as a high-performance alternative to STL-based implementations.
- *    Not thread-safe by itself. Lock-free and mutex-free internally. Exception-free via @c noexcept.
+ *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
  *  @section Design Goals
  *
@@ -118,7 +118,7 @@ class transactional_avl_tree {
         stage_t stage_ {stage_t::created_k};
         bool is_snapshot_ {false};
 
-        transaction_t(store_t &set) noexcept : store_(&set), generation_(set.new_generation()) {}
+        transaction_t(store_t &set) noexcept : store_(&set), generation_(set.new_generation_()) {}
         watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
@@ -477,7 +477,7 @@ class transactional_avl_tree {
             watches_.clear();
             changes_.clear();
             stage_ = stage_t::created_k;
-            generation_ = store.new_generation();
+            generation_ = store.new_generation_();
             return {success_k};
         }
 
@@ -494,7 +494,7 @@ class transactional_avl_tree {
 
             watches_.clear();
             stage_ = stage_t::created_k;
-            generation_ = store.new_generation();
+            generation_ = store.new_generation_();
             return {success_k};
         }
 
@@ -506,7 +506,7 @@ class transactional_avl_tree {
             // the older generation must die.
             auto &store = store_ref();
             for (auto const &id_and_watch : watches_)
-                store.unmask_and_compact(id_and_watch.id, id_and_watch.watch.generation);
+                store.unmask_and_compact_(id_and_watch.id, id_and_watch.watch.generation);
 
             stage_ = stage_t::created_k;
             return {success_k};
@@ -520,7 +520,7 @@ class transactional_avl_tree {
     std::size_t visible_deleted_count_ {0};
 
     friend class transaction_t;
-    generation_t new_generation() noexcept { return ++generation_; }
+    generation_t new_generation_() noexcept { return ++generation_; }
 
     /**
      *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_entry_t const &.
@@ -579,7 +579,7 @@ class transactional_avl_tree {
                    : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
     }
 
-    void unmask_and_compact(identifier_t const &id, generation_t generation_to_unmask) noexcept {
+    void unmask_and_compact_(identifier_t const &id, generation_t generation_to_unmask) noexcept {
         // This is similar to the public `erase_range()`, but adds generation-matching conditions.
         auto current = entries_.lower_bound(id);
         if (current == entries_.end()) return;
@@ -737,7 +737,7 @@ class transactional_avl_tree {
         if (!node) return {out_of_memory_heap_k};
 
         identifier_t id {element};
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         auto &entry = node->entry;
         new (&entry.element) element_t(std::move(element));
         entry.generation = generation;
@@ -793,7 +793,7 @@ class transactional_avl_tree {
         }
 
         // Populate the allocated nodes and merge into the tree.
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         while (count_remaining != count) {
             versioned_entry_node_t *prev_node = last_node->left;
             last_node->left = nullptr;
@@ -921,7 +921,7 @@ class transactional_avl_tree {
     void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_association<element_t>
     {
-        generation_t generation = new_generation();
+        generation_t generation = new_generation_();
         versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
                                       std::forward<upper_type_>(upper), [&](versioned_entry_node_t *node) noexcept {
                                           if (!node->entry.visible) return;
