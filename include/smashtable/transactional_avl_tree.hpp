@@ -71,7 +71,6 @@ template < //
 class transactional_avl_tree {
 
   public:
-
 #pragma mark - Type Definitions
 
     using element_t = element_type_;
@@ -944,10 +943,10 @@ class transactional_avl_tree {
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         // Use split/join for O(log n + k) complexity instead of O(k log n)
         // Split at lower bound
-        auto first_split = entries_.split_at(std::forward<lower_type_>(lower));
+        auto first_split = entries_.split(std::forward<lower_type_>(lower));
 
         // Split the right part at upper bound to isolate the range
-        auto second_split = first_split.right.split_at(std::forward<upper_type_>(upper));
+        auto second_split = first_split.right.split(std::forward<upper_type_>(upper));
 
         // middle_tree contains elements in [lower, upper) that need to be deleted
         // Traverse it to invoke callbacks and update counters
@@ -964,7 +963,7 @@ class transactional_avl_tree {
         second_split.left.clear();
 
         // Join the left and far_right trees back together
-        first_split.left.join_with(second_split.right);
+        first_split.left.join(second_split.right);
 
         // Move the result back to entries_
         entries_ = std::move(first_split.left);
