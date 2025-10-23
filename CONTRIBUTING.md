@@ -6,15 +6,15 @@ Release build:
 
 ```bash
 cmake -D CMAKE_BUILD_TYPE=Release -B build_release
-cmake --build build_release --config Release --target smashtable_test --parallel
+cmake --build build_release --config Release --parallel
 build_release/smashtable_test
 ```
 
-Debug build:
+Debug build for the test suite:
 
 ```bash
 cmake -D CMAKE_BUILD_TYPE=Debug -B build_debug
-cmake --build build_debug --config Debug
+cmake --build build_debug --config Debug --target smashtable_test
 build_debug/smashtable_test
 ```
 
@@ -46,7 +46,13 @@ List available tests:
 build_debug/smashtable_test --gtest_list_tests
 ```
 
-## Code and Documentation Styling Guidelines
+## Code Styling Guidelines
+
+Internal `private` data and functions should be suffixed with an underscore (`_`).
+Avoid obvious inline comments.
+Prefer full words over abbreviations (e.g., `iterator` instead of `iter`, `element` instead of `elem`, `transaction` instead of `tx`, etc.).
+
+## Documentation Styling Guidelines
 
 Code is formatted automatically using `clang-format` with the configuration specified in `.clang-format`.
 CMake is formatted using `cmake-format` with the configuration specified in `.cmake-format.py`.
