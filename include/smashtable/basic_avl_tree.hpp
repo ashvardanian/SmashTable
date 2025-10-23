@@ -510,6 +510,47 @@ class basic_avl_node {
         return find_or_make(node, new_child->entry, [](node_t *) noexcept {}, [=]() noexcept { return new_child; });
     }
 
+    /**
+     *  @brief Builds a balanced AVL tree from sorted range in O(n) time.
+     *    Precondition: Range [first, first+count) must be sorted according to comparator.
+     *
+     *  @param[in] first Iterator to beginning of sorted range.
+     *  @param[in] count Number of elements in range.
+     *  @param[in] alloc Allocator function that returns new node pointer or nullptr on failure.
+     *  @return node_t* Root of balanced tree, or nullptr if allocation failed.
+     *
+     *  @note Complexity: O(n) time, O(log n) recursion depth.
+     *    Builds perfectly balanced tree by recursively picking middle element as root.
+     *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
+     */
+    template <typename iterator_type_, typename allocator_func_>
+    static node_t *build_from_sorted(iterator_type_ first, std::size_t count, allocator_func_ &&alloc) noexcept {
+        if (count == 0) return nullptr;
+
+        // Find middle element
+        std::size_t mid = count / 2;
+        auto mid_iter = first;
+        std::advance(mid_iter, mid);
+
+        // Allocate root node
+        node_t *root = alloc();
+        if (!root) return nullptr;
+        new (&root->entry) versioned_entry_t(*mid_iter);
+
+        // Build left subtree from [first, mid)
+        root->left = build_from_sorted(first, mid, alloc);
+
+        // Build right subtree from (mid, last)
+        auto right_first = mid_iter;
+        ++right_first;
+        root->right = build_from_sorted(right_first, count - mid - 1, alloc);
+
+        // Set height (no balancing needed for perfectly balanced construction)
+        root->height = 1 + std::max(get_height(root->left), get_height(root->right));
+
+        return root;
+    }
+
 #pragma mark - Removals
 
     struct extract_result_t {
@@ -1515,17 +1556,44 @@ class basic_avl_tree {
      *    This matches STL's basic exception guarantee semantics.
      *
      *  @tparam input_iterator_type_ Type of input iterator.
+     *  @tparam tags_types_ Optional tag types (@c assume_sorted_t for O(n) bulk construction).
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
+     *  @param[in] tags Optional tags to control insertion behavior.
      *  @return status_t First error encountered, or success if all elements inserted.
+     *
+     *  @note With @c assume_sorted_t tag: O(n) time, builds perfectly balanced tree.
+     *    Precondition: Tree must be empty and range must be sorted.
+     *    Without tag: O(n log n) time, inserts elements one-by-one.
      */
-    template <typename input_iterator_type_>
-    status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        for (; first != last; ++first) {
-            auto result = insert(*first);
-            if (result.first == end() && !result.second) return {errc_t::out_of_memory_heap_k};
+    template <typename input_iterator_type_, typename... tags_types_>
+    status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
+
+        // O(n): Build balanced tree from sorted range
+        if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
+            if (root_) return {errc_t::operation_not_permitted_k}; // Must be empty
+
+            auto count = std::distance(first, last);
+            if (count == 0) return {success_k};
+
+            root_ = node_t::build_from_sorted(first, count, [&]() noexcept { return allocator_.allocate(1); });
+
+            if (!root_) {
+                // Allocation failed - tree remains empty
+                return {errc_t::out_of_memory_heap_k};
+            }
+
+            size_ = count;
+            return {success_k};
         }
-        return {success_k};
+        // O(n log n): Insert elements one-by-one
+        else {
+            for (; first != last; ++first) {
+                auto result = insert(versioned_entry_t(*first));
+                if (result.first == end() && !result.second) return {errc_t::out_of_memory_heap_k};
+            }
+            return {success_k};
+        }
     }
 
     /**
