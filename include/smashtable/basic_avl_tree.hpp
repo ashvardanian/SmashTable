@@ -297,53 +297,84 @@ class basic_avl_node {
 #pragma mark - Sampling
 
     /**
-     *  @brief Random samples nodes.
+     *  @brief Random samples a single node using reservoir sampling for uniform distribution.
      *  @param generator Any STL-compatible random number generator.
-     *  @return NULL if nothing was found.
-     *  @warning Resulting distribution is inaccurate, as we only have the upper bound of the branch size.
+     *  @return Pointer to randomly selected node, or @c nullptr if tree is empty.
+     *  @note Uses single-pass reservoir sampling for O(n) time with true uniform distribution.
      */
     template <typename generator_type_>
     static node_t *sample(node_t *node, generator_type_ &&generator) noexcept {
-        auto less = comparator_t {};
-        while (node) {
-            auto count_left = node->left ? 1ul << node->left->height : 0ul;
-            auto count_right = node->right ? 1ul << node->right->height : 0ul;
-            auto count_total = count_left + count_right + 1ul;
-            std::uniform_int_distribution<std::size_t> distribution {0, count_total + 1};
-            auto choice = distribution(generator);
-            if (choice == 0) break;
+        if (!node) return nullptr;
 
-            node = choice > (count_left + 1ul) ? node->right : node->left;
-        }
-        return node;
+        node_t *result = nullptr;
+        std::size_t count = 0;
+
+        for_each_left_right(node, [&](node_t *current) noexcept {
+            ++count;
+            std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
+            if (distribution(generator) == 0) result = current;
+        });
+
+        return result;
     }
 
     /**
-     *  @brief Random samples nodes within a given range of keys.
+     *  @brief Random samples nodes within a given range of keys using reservoir sampling.
      *  @param generator Any STL-compatible random number generator.
      *  @return NULL if nothing was found.
-     *  @warning Without additional stored metadata or dynamic memory, this algorithm performs two passes.
+     *  @note Uses single-pass reservoir sampling for O(n) time with uniform distribution.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_>
     static node_t *sample_range( //
         node_t *node, lower_type_ &&low, upper_type_ &&high, generator_type_ &&generator,
         predicate_type_ &&predicate) noexcept {
 
-        std::size_t count_matches = 0;
-        range(node, low, high, [&](node_t *node) noexcept { count_matches += predicate(node); });
-
-        if (count_matches == 0) return nullptr;
-
         node_t *result = nullptr;
-        std::uniform_int_distribution<std::size_t> distribution {0, count_matches - 1};
-        auto choice = distribution(generator);
+        std::size_t count = 0;
         range(node, low, high, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
-            if (choice == 0) result = node;
-            -choice;
+            ++count;
+            std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
+            if (distribution(generator) == 0) result = node;
         });
 
         return result;
+    }
+
+    /**
+     *  @brief Multi-sample reservoir sampling for k uniform random nodes in range.
+     *  @param[in] node Root of the subtree to sample from.
+     *  @param[in] low Lower bound for the range (inclusive).
+     *  @param[in] high Upper bound for the range (exclusive).
+     *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[in] predicate Predicate to filter nodes.
+     *  @param[inout] seen Count of matching nodes processed (can span multiple calls).
+     *  @param[in] reservoir_capacity Maximum number of samples to collect.
+     *  @param[out] reservoir Random access iterator to output buffer.
+     *  @note Uses Algorithm R (reservoir sampling) for uniform k-sample in single pass.
+     */
+    template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_,
+              typename output_iterator_type_>
+    static void sample_range( //
+        node_t *node, lower_type_ &&low, upper_type_ &&high, generator_type_ &&generator, predicate_type_ &&predicate,
+        std::size_t &seen, std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) noexcept {
+
+        using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
+        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
+        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
+
+        range(node, low, high, [&](node_t *node) noexcept {
+            if (!predicate(node)) return;
+
+            if (seen < reservoir_capacity) { reservoir[seen] = node; }
+            else {
+                std::uniform_int_distribution<std::size_t> distribution {0, seen};
+                auto slot_to_replace = distribution(generator);
+                if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = node;
+            }
+
+            ++seen;
+        });
     }
 
 #pragma mark - Rotations and Balancing
