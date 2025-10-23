@@ -89,6 +89,8 @@ template < //
     typename allocator_type_ = std::allocator<std::uint8_t>>
 class transactional_std_store {
 
+#pragma mark - Type Definitions
+
   public:
     using element_t = element_type_;
     using comparator_t = comparator_type_;
@@ -799,11 +801,15 @@ class transactional_std_store {
         return {success_k};
     }
 
+#pragma mark - Constructors and Assignment
+
   public:
     transactional_std_store(transactional_std_store const &) = delete;
     transactional_std_store(transactional_std_store &&) noexcept = default;
     transactional_std_store &operator=(transactional_std_store const &) = delete;
     transactional_std_store &operator=(transactional_std_store &&) noexcept = default;
+
+#pragma mark - Capacity
 
     /**
      *  @brief Returns the number of visible (committed) non-deleted elements in the container.
@@ -835,6 +841,8 @@ class transactional_std_store {
         return (range.first != range.second && !range.first->deleted) ? 1 : 0;
     }
 
+#pragma mark - Observers
+
     /**
      *  @brief Factory method to create a new transactional set without throwing exceptions.
      *    Returns an empty optional on allocation failure.
@@ -846,6 +854,8 @@ class transactional_std_store {
         invoke_safely([&]() { result.emplace(store_t {}); });
         return result;
     }
+
+#pragma mark - Transaction Management
 
     /**
      *  @brief Creates a new transaction with a fresh generation number.
@@ -859,6 +869,8 @@ class transactional_std_store {
         invoke_safely([&]() { result.emplace(transaction_t {*this}); });
         return result;
     }
+
+#pragma mark - Modifiers
 
     /**
      *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
@@ -1050,6 +1062,8 @@ class transactional_std_store {
         return insert_or_assign(begin, end);
     }
 
+#pragma mark - Lookup
+
     /**
      *  @brief Finds a member @b equal to the given @p comparable.
      *
@@ -1151,6 +1165,8 @@ class transactional_std_store {
         for (auto it = range.first; it != range.second; ++it)
             if (it->visible && !it->deleted) callback(it->element);
     }
+
+#pragma mark - Range Operations
 
     /**
      *  @brief Iterates over all entries in the range [ @p lower, @p upper). Const version.
@@ -1273,6 +1289,8 @@ class transactional_std_store {
      *  @note This is a no-op because @c std::set doesn't support reserving capacity.
      */
     [[nodiscard]] status_t reserve(std::size_t) noexcept { return {}; }
+
+#pragma mark - Sampling
 
     /**
      *  @brief Uniformly samples a single random entry from the range [ @p lower, @p upper).

@@ -71,6 +71,9 @@ template < //
 class transactional_avl_tree {
 
   public:
+
+#pragma mark - Type Definitions
+
     using element_t = element_type_;
     using comparator_t = comparator_type_;
     using allocator_t = allocator_type_;
@@ -614,6 +617,8 @@ class transactional_avl_tree {
         }
     }
 
+#pragma mark - Constructors and Assignment
+
   public:
     transactional_avl_tree() noexcept {}
     transactional_avl_tree(transactional_avl_tree &&other) noexcept
@@ -627,6 +632,8 @@ class transactional_avl_tree {
         visible_deleted_count_ = other.visible_deleted_count_;
         return *this;
     }
+
+#pragma mark - Capacity
 
     /**
      *  @brief Returns the number of visible (committed) non-deleted elements in the tree.
@@ -665,6 +672,8 @@ class transactional_avl_tree {
         return found;
     }
 
+#pragma mark - Observers
+
     /**
      *  @brief Factory method to create a new transactional AVL tree without throwing exceptions.
      *    Returns an empty optional on allocation failure.
@@ -674,6 +683,8 @@ class transactional_avl_tree {
      */
     [[nodiscard]] static std::optional<store_t> make(allocator_t &&allocator = {}) noexcept { return store_t {}; }
 
+#pragma mark - Transaction Management
+
     /**
      *  @brief Creates a new transaction with a fresh generation number.
      *    Transaction can be reset and reused after commit/rollback to avoid reallocations.
@@ -682,6 +693,8 @@ class transactional_avl_tree {
      *  @return std::optional<transaction_t> Transaction instance or empty optional on failure.
      */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept { return transaction_t {*this}; }
+
+#pragma mark - Modifiers
 
     /**
      *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
@@ -809,6 +822,8 @@ class transactional_avl_tree {
         return {success_k};
     }
 
+#pragma mark - Lookup
+
     /**
      *  @brief Finds a member @b equal to the given @p comparable.
      *
@@ -882,6 +897,8 @@ class transactional_avl_tree {
         else callback_missing();
     }
 
+#pragma mark - Range Operations
+
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
@@ -954,6 +971,8 @@ class transactional_avl_tree {
 
         return status_t {success_k};
     }
+
+#pragma mark - Sampling
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,

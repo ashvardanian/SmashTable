@@ -76,7 +76,7 @@ class basic_avl_node {
         return node ? get_height(node->left) - get_height(node->right) : 0;
     }
 
-#pragma mark - Search
+#pragma mark - Traversal and Search
 
     template <typename callback_type_>
     static void for_each_top_down(node_t *node, callback_type_ &&callback) noexcept {
@@ -294,6 +294,8 @@ class basic_avl_node {
         return range(node, comparable, comparable);
     }
 
+#pragma mark - Sampling
+
     /**
      *  @brief Random samples nodes.
      *  @param generator Any STL-compatible random number generator.
@@ -344,7 +346,7 @@ class basic_avl_node {
         return result;
     }
 
-#pragma mark - Insertions
+#pragma mark - Rotations and Balancing
 
     static node_t *rotate_right(node_t *y) noexcept {
         node_t *x = y->left;
@@ -373,6 +375,8 @@ class basic_avl_node {
         y->height = std::max(get_height(y->left), get_height(y->right)) + 1;
         return y;
     }
+
+#pragma mark - Insertions
 
     struct find_or_make_result_t {
         node_t *root = nullptr;
@@ -863,6 +867,8 @@ class basic_avl_tree {
     node_allocator_t allocator_;
 
   public:
+#pragma mark - Constructors and Assignment
+
     basic_avl_tree() noexcept = default;
     basic_avl_tree(basic_avl_tree &&other) noexcept
         : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)) {}
@@ -873,6 +879,8 @@ class basic_avl_tree {
     }
 
     ~basic_avl_tree() { clear(); }
+
+#pragma mark - Capacity
 
     /**
      *  @brief Returns the number of elements in the tree.
@@ -903,6 +911,8 @@ class basic_avl_tree {
      *  @return node_allocator_t const& Const reference to the allocator.
      */
     node_allocator_t const &allocator() const noexcept { return allocator_; }
+
+#pragma mark - Iterators
 
     /**
      *  @brief Returns an iterator to the first element (minimum) in the tree.
@@ -982,6 +992,8 @@ class basic_avl_tree {
                                   [&](node_t *node) noexcept { abs_sum += std::abs(node_t::get_balance(node)); });
         return abs_sum;
     }
+
+#pragma mark - Lookup
 
     /**
      *  @brief Finds an element equal to the given @p comparable.
@@ -1161,6 +1173,8 @@ class basic_avl_tree {
                       [&](node_t *node) noexcept { callback(node->entry); });
     }
 
+#pragma mark - Modifiers
+
     struct upsert_result_t {
         node_t *node = nullptr;
         bool inserted = false;
@@ -1302,6 +1316,8 @@ class basic_avl_tree {
     status_t insert(std::initializer_list<versioned_entry_t> ilist) noexcept {
         return insert(ilist.begin(), ilist.end());
     }
+
+#pragma mark - Observers
 
     /**
      *  @brief Returns the function object that compares keys.
@@ -1490,6 +1506,8 @@ class basic_avl_tree {
         node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept { callback(node->entry); });
     }
 
+#pragma mark - Merge Operations
+
     /**
      *  @brief Merges another tree into this one, transferring all nodes.
      *    Elements with keys that already exist in this tree are deallocated (not kept in source).
@@ -1534,7 +1552,7 @@ class basic_avl_tree {
         }
     }
 
-#pragma mark - Split and Join Operations
+#pragma mark - Split and Join
 
     /**
      *  @brief Result of a split operation on a tree.
@@ -1597,6 +1615,8 @@ class basic_avl_tree {
         other.root_ = nullptr;
         other.size_ = 0;
     }
+
+#pragma mark - Sampling
 
     /**
      *  @brief Uniformly samples a single random entry from the entire tree.
