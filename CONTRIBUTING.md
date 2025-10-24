@@ -46,6 +46,18 @@ List available tests:
 build_debug/smashtable_test --gtest_list_tests
 ```
 
+## Compiling Python Bindings
+
+Python bindings are implemented using pure CPython, so you wouldn't need to install SWIG, PyBind11, or any other third-party library.
+Still, you need a virtual environment, and it's recommended to use `uv` to create one.
+
+```bash
+uv venv --python 3.14t                  # it's recommended to use a recent free-threading version
+source .venv/bin/activate               # to activate the virtual environment
+uv pip install setuptools wheel         # to pull the latest build tools
+uv pip install -e . --force-reinstall   # to build locally from source
+```
+
 ## Code Styling Guidelines
 
 Internal `private` data and functions should be suffixed with an underscore (`_`).

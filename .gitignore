@@ -7,3 +7,6 @@ _deps
 /build/
 /build_debug/
 /build_release/
+/lib/
+/bin/
+*.egg-info

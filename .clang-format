@@ -29,7 +29,6 @@ PenaltyReturnTypeOnItsOwnLine: 200
 
 BreakBeforeBraces: Custom
 BraceWrapping:
-  AfterElse: false
   AfterCaseLabel: false
   AfterClass: false
   AfterControlStatement: false

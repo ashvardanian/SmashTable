@@ -358,6 +358,19 @@ class basic_wb_tree {
     using node_allocator_t = node_allocator_type_;
     using wb_tree_t = basic_wb_tree;
     using size_t = std::size_t;
+    using allocator_t = node_allocator_type_;
+
+    /**
+     *  @brief Rebind this tree type to different entry and comparator types.
+     *    Follows STL allocator rebind pattern for type transformations.
+     *
+     *  @tparam other_entry_ New entry type for the rebound tree.
+     *  @tparam other_comparator_ New comparator type for the rebound tree.
+     */
+    template <typename other_entry_, typename other_comparator_>
+    using rebind = basic_wb_tree<other_entry_, other_comparator_,
+                                 typename std::allocator_traits<node_allocator_type_>::template rebind_alloc<
+                                     basic_wb_node<other_entry_, other_comparator_>>>;
 
   private:
     node_t *root_ = nullptr;

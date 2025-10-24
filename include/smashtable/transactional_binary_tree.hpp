@@ -1,9 +1,9 @@
 /**
- *  @brief  Transactional AVL tree container with ACID semantics, providing 2-phase commit transactions.
- *    Built on @c basic_avl_tree for performance with optimistic concurrency control through watch/CAS operations.
+ *  @brief  Generic transactional binary tree container with ACID semantics, providing 2-phase commit transactions.
+ *    Can be instantiated with any binary search tree implementation (AVL, WB, etc.) supporting the required interface.
  *    All operations use callback-based APIs and are exception-free via @c noexcept constraints.
  *
- *  @file   transactional_avl_tree.hpp
+ *  @file   transactional_binary_tree.hpp
  *  @author Ash Vardanian
  */
 #pragma once
@@ -17,12 +17,13 @@
 #include "shared.hpp"
 #include "basic_vector.hpp"
 #include "basic_avl_tree.hpp"
+#include "basic_wb_tree.hpp"
 
 namespace ashvardanian::smashtable {
 
 /**
- *  @brief  Transactional AVL tree providing 2-phase commits and "watch" operations.
- *    Built on @c basic_avl_tree as a high-performance alternative to STL-based implementations.
+ *  @brief  Generic transactional binary tree providing 2-phase commits and "watch" operations.
+ *    Can be instantiated with AVL trees, weight-balanced trees, or other binary search tree implementations.
  *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
  *  @section Design Goals
@@ -43,7 +44,7 @@ namespace ashvardanian::smashtable {
  *
  *  @section API Overview
  *
- *  - All lookups are heterogeneous: you can provide any type comparable to @p element_type_. Your comparator
+ *  - All lookups are heterogeneous: you can provide any type comparable to the element type. Your comparator
  *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
  *  - No iterators are provided to keep the implementation simple and avoid complexity of maintaining persistent
  *    iterator validity across transactions and modifications.
@@ -61,21 +62,18 @@ namespace ashvardanian::smashtable {
  *
  *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming convention.
  *
- *  @tparam element_type_    Type of the elements stored in the tree.
- *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
- *  @tparam allocator_type_  Arbitrary "rebindable" allocator for all internal structures.
+ *  @tparam basic_tree_type_ The underlying binary search tree type (basic_avl_tree, basic_wb_tree, etc.).
+ *    Must provide @c rebind template alias for type transformations.
  */
-template < //
-    typename element_type_, typename comparator_type_ = std::less<element_type_>,
-    typename allocator_type_ = std::allocator<std::uint8_t>>
-class transactional_avl_tree {
+template <typename basic_tree_type_>
+class transactional_binary_tree {
 
   public:
 #pragma mark - Type Definitions
 
-    using element_t = element_type_;
-    using comparator_t = comparator_type_;
-    using allocator_t = allocator_type_;
+    using element_t = typename basic_tree_type_::entry_t;
+    using comparator_t = typename basic_tree_type_::comparator_t;
+    using allocator_t = typename basic_tree_type_::allocator_t;
 
     using versioning_t = versioning_for<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
@@ -87,18 +85,16 @@ class transactional_avl_tree {
     using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
 
   private:
-    using versioned_entry_node_t = basic_avl_node<versioned_entry_t, versioned_comparator_t>;
-    using versioned_entry_allocator_t =
-        typename std::allocator_traits<allocator_t>::template rebind_alloc<versioned_entry_node_t>;
-    using versioned_entry_set_t =
-        basic_avl_tree<versioned_entry_t, versioned_comparator_t, versioned_entry_allocator_t>;
+    // Use tree's rebind to create versioned tree - clean 1-step type transformation!
+    using versioned_entry_set_t = typename basic_tree_type_::template rebind<versioned_entry_t, versioned_comparator_t>;
+    using versioned_entry_node_t = typename versioned_entry_set_t::node_t;
     using versioned_entry_iterator_t = versioned_entry_node_t *;
 
     using watches_allocator_t =
         typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_vector_t = basic_vector<watched_identifier_t, watches_allocator_t>;
 
-    using store_t = transactional_avl_tree;
+    using store_t = transactional_binary_tree;
     using extract_result_t = typename versioned_entry_set_t::extract_result_t;
 
   public:
@@ -254,7 +250,7 @@ class transactional_avl_tree {
         /**
          *  @brief Finds a member @b equal to the given @p comparable.
          *    You may want to @c watch() the received object, it's not done by default.
-         *    Unlike @c transactional_avl_tree::find(), will include the entries added to this transaction.
+         *    Unlike @c transactional_binary_tree::find(), will include the entries added to this transaction.
          *
          *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
@@ -291,7 +287,7 @@ class transactional_avl_tree {
         /**
          *  @brief Finds the first member @b greater or equal to the given @p comparable.
          *    You may want to @c watch() the received object, it's not done by default.
-         *    Unlike @c transactional_avl_tree::lower_bound(), will include entries added to this transaction.
+         *    Unlike @c transactional_binary_tree::lower_bound(), will include entries added to this transaction.
          *
          *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
@@ -429,6 +425,135 @@ class transactional_avl_tree {
             } while (faced_deleted_entry);
         }
 
+        /**
+         *  @brief Finds the k-th smallest element including transaction changes.
+         *    Only available for tree implementations that support order statistics (e.g., WB trees).
+         *    Merges view of local staged changes with committed entries from main store.
+         *
+         *  @param[in] k Zero-based index (0 = smallest element).
+         *  @param[in] callback_found Callback to receive the k-th element. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if k >= size(). Must be @c noexcept.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        void select(std::size_t k, callback_found_type_ &&callback_found,
+                    callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires supports_order_statistics<versioned_entry_set_t>
+        {
+            // Collect all visible elements (both local changes and committed entries)
+            std::size_t visible_index = 0;
+            bool found = false;
+            versioned_comparator_t less;
+
+            // Build merged sorted view: iterate both trees in sorted order
+            auto local_it = changes_.begin();
+            versioned_entry_node_t *store_node = versioned_entry_node_t::find_min(store_ref().entries_.root());
+
+            while ((local_it != changes_.end() || store_node) && !found) {
+                // Determine which element comes next in sorted order
+                bool take_local = false;
+
+                if (local_it == changes_.end()) { take_local = false; }
+                else if (!store_node) { take_local = true; }
+                else { take_local = less(local_it->element, store_node->entry.element); }
+
+                if (take_local) {
+                    // Process local change
+                    if (!local_it->deleted) {
+                        if (visible_index == k) {
+                            callback_found(local_it->element);
+                            found = true;
+                        }
+                        ++visible_index;
+                    }
+                    ++local_it;
+                }
+                else {
+                    // Process store entry
+                    identifier_t store_id {store_node->entry.element};
+                    auto local_state = changes_.find(store_id);
+
+                    // Only count if visible and not overridden/deleted locally
+                    if (store_node->entry.visible && !store_node->entry.deleted && local_state == changes_.end()) {
+                        if (visible_index == k) {
+                            callback_found(store_node->entry.element);
+                            found = true;
+                        }
+                        ++visible_index;
+                    }
+
+                    // Move to next store node
+                    store_node = versioned_entry_node_t::find_successor(store_ref().entries_.root(), store_node,
+                                                                        store_ref().entries_.key_comp());
+                }
+            }
+
+            if (!found) callback_missing();
+        }
+
+        /**
+         *  @brief Finds the rank (position) of an element including transaction changes.
+         *    Only available for tree implementations that support order statistics (e.g., WB trees).
+         *    Includes both staged changes and committed entries from main store.
+         *
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if element not found. Must be @c noexcept.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires supports_order_statistics<versioned_entry_set_t>
+        {
+            identifier_t target_id(comparable);
+            std::size_t rank_value = 0;
+            bool found = false;
+            versioned_comparator_t less;
+
+            // Check if target exists in local changes or main store
+            auto local_target = changes_.find(target_id);
+            if (local_target != changes_.end() && !local_target->deleted) { found = true; }
+            else if (store_ref().contains(target_id)) { found = true; }
+
+            if (!found) {
+                callback_missing();
+                return;
+            }
+
+            // Count visible elements less than target
+            auto local_it = changes_.begin();
+            versioned_entry_node_t *store_node = versioned_entry_node_t::find_min(store_ref().entries_.root());
+
+            while (local_it != changes_.end() || store_node) {
+                bool take_local = false;
+
+                if (local_it == changes_.end()) { take_local = false; }
+                else if (!store_node) { take_local = true; }
+                else { take_local = less(local_it->element, store_node->entry.element); }
+
+                if (take_local) {
+                    // Check if this local entry is less than target
+                    if (!local_it->deleted && less(local_it->element, target_id)) ++rank_value;
+                    ++local_it;
+                }
+                else {
+                    identifier_t store_id {store_node->entry.element};
+                    auto local_state = changes_.find(store_id);
+
+                    // Count if visible, not locally overridden, and less than target
+                    if (store_node->entry.visible && !store_node->entry.deleted && local_state == changes_.end() &&
+                        less(store_node->entry.element, target_id)) {
+                        ++rank_value;
+                    }
+
+                    store_node = versioned_entry_node_t::find_successor(store_ref().entries_.root(), store_node,
+                                                                        store_ref().entries_.key_comp());
+                }
+            }
+
+            callback_found(rank_value);
+        }
+
         [[nodiscard]] status_t stage() noexcept {
             // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
@@ -538,7 +663,7 @@ class transactional_avl_tree {
 
         versioned_entry_node_t *largest_visible = nullptr;
         versioned_entry_node_t::range(
-            entries_.root(), comparable, comparable, [&](versioned_entry_node_t *node) noexcept {
+            entries_.root(), comparable, comparable, entries_.key_comp(), [&](versioned_entry_node_t *node) noexcept {
                 if ((node->entry.visible) &&
                     (!largest_visible || node->entry.generation > largest_visible->entry.generation))
                     largest_visible = node;
@@ -566,12 +691,11 @@ class transactional_avl_tree {
                                               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         versioned_entry_node_t *latest = nullptr;
-        versioned_entry_node_t::range(entries_.root(), comparable, comparable,
+        versioned_entry_node_t::range(entries_.root(), comparable, comparable, entries_.key_comp(),
                                       [&](versioned_entry_node_t *node) noexcept {
                                           // Find HIGHEST generation, regardless of visibility
-                                          if (!latest || node->entry.generation > latest->entry.generation) {
+                                          if (!latest || node->entry.generation > latest->entry.generation)
                                               latest = node;
-                                          }
                                       });
 
         return (latest && !latest->entry.deleted)
@@ -619,12 +743,12 @@ class transactional_avl_tree {
 #pragma mark - Constructors and Assignment
 
   public:
-    transactional_avl_tree() noexcept {}
-    transactional_avl_tree(transactional_avl_tree &&other) noexcept
+    transactional_binary_tree() noexcept {}
+    transactional_binary_tree(transactional_binary_tree &&other) noexcept
         : entries_(std::move(other.entries_)), generation_(other.generation_), visible_count_(other.visible_count_),
           visible_deleted_count_(other.visible_deleted_count_) {}
 
-    transactional_avl_tree &operator=(transactional_avl_tree &&other) noexcept {
+    transactional_binary_tree &operator=(transactional_binary_tree &&other) noexcept {
         entries_ = std::move(other.entries_);
         generation_ = other.generation_;
         visible_count_ = other.visible_count_;
@@ -674,7 +798,7 @@ class transactional_avl_tree {
 #pragma mark - Observers
 
     /**
-     *  @brief Factory method to create a new transactional AVL tree without throwing exceptions.
+     *  @brief Factory method to create a new transactional binary tree without throwing exceptions.
      *    Returns an empty optional on allocation failure.
      *
      *  @param[in] allocator Optional allocator instance.
@@ -858,9 +982,11 @@ class transactional_avl_tree {
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         // Skip all the invisible entries
-        versioned_entry_node_t *next_visible = versioned_entry_node_t::lower_bound(entries_.root(), comparable);
+        versioned_entry_node_t *next_visible =
+            versioned_entry_node_t::lower_bound(entries_.root(), comparable, entries_.key_comp());
         while (next_visible && !next_visible->entry.visible)
-            next_visible = versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry);
+            next_visible =
+                versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry, entries_.key_comp());
 
         if (next_visible) callback_found(next_visible->entry.element);
         else callback_missing();
@@ -888,9 +1014,11 @@ class transactional_avl_tree {
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         // Skip all the invisible entries
-        versioned_entry_node_t *next_visible = versioned_entry_node_t::upper_bound(entries_.root(), comparable);
+        versioned_entry_node_t *next_visible =
+            versioned_entry_node_t::upper_bound(entries_.root(), comparable, entries_.key_comp());
         while (next_visible && !next_visible->entry.visible)
-            next_visible = versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry);
+            next_visible =
+                versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry, entries_.key_comp());
 
         if (next_visible) callback_found(next_visible->entry.element);
         else callback_missing();
@@ -902,7 +1030,8 @@ class transactional_avl_tree {
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
-                                      std::forward<upper_type_>(upper), [&](versioned_entry_node_t *node) noexcept {
+                                      std::forward<upper_type_>(upper), entries_.key_comp(),
+                                      [&](versioned_entry_node_t *node) noexcept {
                                           if (node->entry.visible) callback(node->entry.element);
                                       });
     }
@@ -923,7 +1052,8 @@ class transactional_avl_tree {
     {
         generation_t generation = new_generation_();
         versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
-                                      std::forward<upper_type_>(upper), [&](versioned_entry_node_t *node) noexcept {
+                                      std::forward<upper_type_>(upper), entries_.key_comp(),
+                                      [&](versioned_entry_node_t *node) noexcept {
                                           if (!node->entry.visible) return;
                                           callback(node->entry.element.key, node->entry.element.value);
                                           node->entry.generation = generation;
@@ -978,7 +1108,7 @@ class transactional_avl_tree {
                       callback_type_ &&callback) const noexcept {
 
         auto node = versioned_entry_node_t::sample_range( //
-            entries_.root(), lower, upper, std::forward<generator_type_>(generator),
+            entries_.root(), lower, upper, entries_.key_comp(), std::forward<generator_type_>(generator),
             [](versioned_entry_node_t *node) noexcept { return node->entry.visible; });
         if (node) callback(node->entry);
     }
@@ -1003,6 +1133,78 @@ class transactional_avl_tree {
             ++seen;
         };
         range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
+    }
+
+#pragma mark - Order Statistics
+
+    /**
+     *  @brief Finds the k-th smallest visible (committed) element using order statistics.
+     *    Only available for tree implementations that support order statistics (e.g., WB trees).
+     *    Requires O(log n) time for weight-balanced trees.
+     *
+     *  @param[in] k Zero-based index (0 = smallest element).
+     *  @param[in] callback_found Callback to receive the k-th element. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if k >= size(). Must be @c noexcept.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    void select(std::size_t k, callback_found_type_ &&callback_found,
+                callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires supports_order_statistics<versioned_entry_set_t>
+    {
+        // Count visible entries until we reach the k-th one
+        std::size_t visible_index = 0;
+        bool found = false;
+
+        // Iterate in sorted order, counting only visible entries
+        versioned_entry_node_t::for_each_left_right(entries_.root(), [&](versioned_entry_node_t *node) noexcept {
+            if (!node->entry.visible || node->entry.deleted) return;
+            if (visible_index == k) {
+                callback_found(node->entry.element);
+                found = true;
+                return;
+            }
+            ++visible_index;
+        });
+
+        if (!found) callback_missing();
+    }
+
+    /**
+     *  @brief Finds the rank (position) of an element among visible (committed) elements.
+     *    Only available for tree implementations that support order statistics (e.g., WB trees).
+     *    Requires O(log n) time for weight-balanced trees.
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if element not found. Must be @c noexcept.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+              callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires supports_order_statistics<versioned_entry_set_t>
+    {
+        // Count visible entries before the target
+        std::size_t rank_value = 0;
+        bool found = false;
+        identifier_t target_id(comparable);
+        versioned_comparator_t less;
+
+        versioned_entry_node_t::for_each_left_right(entries_.root(), [&](versioned_entry_node_t *node) noexcept {
+            if (!node->entry.visible || node->entry.deleted) return;
+
+            // Check if this is our target
+            if (less.same(node->entry.element, target_id)) {
+                callback_found(rank_value);
+                found = true;
+                return;
+            }
+
+            // If this node is less than target, increment rank
+            if (less(node->entry.element, target_id)) ++rank_value;
+        });
+
+        if (!found) callback_missing();
     }
 
     /**
@@ -1039,14 +1241,14 @@ class transactional_avl_tree {
     }
 
     /**
-     *  @brief Hints to the tree to pre-allocate memory. No-op for AVL tree implementation.
+     *  @brief Hints to the tree to pre-allocate memory. No-op for tree implementations.
      *    Provided for API consistency with other containers. Doesn't guarantee subsequent
      *    insertions won't fail with "out of memory".
      *
-     *  @param[in] size Suggested capacity (ignored for AVL trees).
+     *  @param[in] size Suggested capacity (ignored for tree structures).
      *  @return status_t Always succeeds.
      *
-     *  @note This is a no-op because AVL trees don't support reserving capacity efficiently.
+     *  @note This is a no-op because tree structures don't support reserving capacity efficiently.
      */
     [[nodiscard]] status_t reserve(std::size_t) noexcept { return {success_k}; }
 
@@ -1077,5 +1279,58 @@ class transactional_avl_tree {
         cout << "\n";
     }
 };
+
+/**
+ *  @brief STL-style transactional set using AVL tree.
+ *    Stores unique elements in sorted order with ACID transaction semantics.
+ *
+ *  @tparam element_type_ Type of elements stored in the set.
+ *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename element_type_, typename comparator_type_ = std::less<element_type_>,
+          typename allocator_type_ = std::allocator<element_type_>>
+using transactional_avl_set =
+    transactional_binary_tree<basic_avl_tree<element_type_, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional map using AVL tree.
+ *    Stores key-value pairs in sorted order with ACID transaction semantics.
+ *
+ *  @tparam key_type_ Type of keys stored in the map.
+ *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+          typename allocator_type_ = std::allocator<association<key_type_, value_type_>>>
+using transactional_avl_map =
+    transactional_binary_tree<basic_avl_tree<association<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional set using weight-balanced tree with order statistics support.
+ *    Stores unique elements in sorted order with ACID transaction semantics and O(log n) rank/select operations.
+ *
+ *  @tparam element_type_ Type of elements stored in the set.
+ *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename element_type_, typename comparator_type_ = std::less<element_type_>,
+          typename allocator_type_ = std::allocator<element_type_>>
+using transactional_wb_set = transactional_binary_tree<basic_wb_tree<element_type_, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional map using weight-balanced tree with order statistics support.
+ *    Stores key-value pairs in sorted order with ACID transaction semantics and O(log n) rank/select operations.
+ *
+ *  @tparam key_type_ Type of keys stored in the map.
+ *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+          typename allocator_type_ = std::allocator<association<key_type_, value_type_>>>
+using transactional_wb_map =
+    transactional_binary_tree<basic_wb_tree<association<key_type_, value_type_>, comparator_type_, allocator_type_>>;
 
 } // namespace ashvardanian::smashtable
