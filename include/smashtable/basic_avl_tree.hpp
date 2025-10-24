@@ -152,15 +152,16 @@ class basic_avl_node {
 
     /**
      *  @brief Searches for equal entry in this subtree.
+     *  @param node Root of subtree to search.
      *  @param comparable Any key comparable with stored entries.
+     *  @param comparator Comparator instance (may be stateful).
      *  @return NULL if nothing was found.
      */
     template <typename comparable_type_>
-    static node_t *find(node_t *node, comparable_type_ &&comparable) noexcept {
-        auto less = comparator_t {};
+    static node_t *find(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
         while (node) {
-            if (less(comparable, node->entry)) node = node->left;
-            else if (less(node->entry, comparable)) node = node->right;
+            if (comparator(comparable, node->entry)) node = node->left;
+            else if (comparator(node->entry, comparable)) node = node->right;
             else break;
         }
         return node;
@@ -168,24 +169,25 @@ class basic_avl_node {
 
     /**
      *  @brief Find the smallest entry, bigger than or equal to the provided one.
+     *  @param node Root of subtree to search.
      *  @param comparable Any key comparable with stored entries.
+     *  @param comparator Comparator instance (may be stateful).
      *  @return NULL if nothing was found.
      */
     template <typename comparable_type_>
-    static node_t *lower_bound(node_t *node, comparable_type_ &&comparable) noexcept {
+    static node_t *lower_bound(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
         node_t *successor = nullptr;
-        comparator_t less;
         while (node) {
             // If the given key is less than the root node, visit the left
             // subtree, taking current node as potential successor.
-            if (less(comparable, node->entry)) {
+            if (comparator(comparable, node->entry)) {
                 successor = node;
                 node = node->left;
             }
 
             // Of the given key is more than the root node, visit the right
             // subtree.
-            else if (less(node->entry, comparable)) { node = node->right; }
+            else if (comparator(node->entry, comparable)) { node = node->right; }
 
             // If a node with the desired value is found, the successor is the
             // minimum value node in its right subtree (if any).
@@ -199,7 +201,9 @@ class basic_avl_node {
 
     /**
      *  @brief Find the smallest entry, bigger than the provided one.
+     *  @param node Root of subtree to search.
      *  @param comparable Any key comparable with stored entries.
+     *  @param comparator Comparator instance (may be stateful).
      *  @return NULL if nothing was found.
      *
      *  Is used for an atomic implementation of iterators.
@@ -208,20 +212,19 @@ class basic_avl_node {
      *  > store parents in nodes and have complex logic.
      */
     template <typename comparable_type_>
-    static node_t *upper_bound(node_t *node, comparable_type_ &&comparable) noexcept {
+    static node_t *upper_bound(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
         node_t *successor = nullptr;
-        comparator_t less;
         while (node) {
             // If the given key is less than the root node, visit the left
             // subtree, taking current node as potential successor.
-            if (less(comparable, node->entry)) {
+            if (comparator(comparable, node->entry)) {
                 successor = node;
                 node = node->left;
             }
 
             // Of the given key is more than the root node, visit the right
             // subtree.
-            else if (less(node->entry, comparable)) node = node->right;
+            else if (comparator(node->entry, comparable)) node = node->right;
 
             // If a node with the desired value is found, the successor is the
             // minimum value node in its right subtree (if any).
@@ -239,15 +242,17 @@ class basic_avl_node {
      *  @warning Current recursive implementation is suboptimal.
      */
     template <typename comparable_a_type_, typename comparable_b_type_>
-    static node_t *lowest_common_ancestor(node_t *node, comparable_a_type_ &&a, comparable_b_type_ &&b) noexcept {
+    static node_t *lowest_common_ancestor(node_t *node, comparable_a_type_ &&a, comparable_b_type_ &&b,
+                                          comparator_t const &comparator) noexcept {
         if (!node) return nullptr;
 
-        auto less = comparator_t {};
         // If both `a` and `b` are smaller than `node`, then LCA lies in left
-        if (less(a, node->entry) && less(b, node->entry)) return lowest_common_ancestor(node->left, a, b);
+        if (comparator(a, node->entry) && comparator(b, node->entry))
+            return lowest_common_ancestor(node->left, a, b, comparator);
 
         // If both `a` and `b` are greater than `node`, then LCA lies in right
-        if (less(node->entry, a) && less(node->entry, b)) return lowest_common_ancestor(node->right, a, b);
+        if (comparator(node->entry, a) && comparator(node->entry, b))
+            return lowest_common_ancestor(node->right, a, b, comparator);
 
         return node;
     }
@@ -261,21 +266,25 @@ class basic_avl_node {
     /**
      *  @brief Complex method, that detects the left-most and right-most nodes
      *  containing keys in a provided intervals, as well as their lowest common ancestors.
+     *  @param node Root of subtree to search.
+     *  @param low Lower bound of range.
+     *  @param high Upper bound of range.
+     *  @param comparator Comparator instance (may be stateful).
+     *  @param callback Function to call for each node in range.
      *  @warning Current recursive implementation is suboptimal.
      */
     template <typename lower_type_, typename upper_type_, typename callback_type_>
-    static node_interval_t range(node_t *node, lower_type_ &&low, upper_type_ &&high,
+    static node_interval_t range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
                                  callback_type_ &&callback) noexcept {
         if (!node) return {};
 
         // If this node fits into the interval - analyze its children.
         // The first call to reach this branch in the call-stack
         // will be by definition the Lowest Common Ancestor.
-        auto less = comparator_t {};
-        if (!less(high, node->entry) && !less(node->entry, low)) {
+        if (!comparator(high, node->entry) && !comparator(node->entry, low)) {
             callback(node);
-            auto left_sub_interval = range(node->left, low, high, callback);
-            auto right_sub_interval = range(node->right, low, high, callback);
+            auto left_sub_interval = range(node->left, low, high, comparator, callback);
+            auto right_sub_interval = range(node->right, low, high, comparator, callback);
 
             auto result = node_interval_t {};
             result.lower_bound = left_sub_interval.lower_bound ? left_sub_interval.lower_bound : node;
@@ -284,14 +293,16 @@ class basic_avl_node {
             return result;
         }
 
-        if (less(node->entry, low)) return range(node->right, low, high, callback);
+        if (comparator(node->entry, low)) return range(node->right, low, high, comparator, callback);
 
-        return range(node->left, low, high, callback);
+        return range(node->left, low, high, comparator, callback);
     }
 
     template <typename comparable_type_>
-    static node_interval_t equal_range(node_t *node, comparable_type_ &&comparable) noexcept {
-        return range(node, comparable, comparable);
+    static node_interval_t equal_range(node_t *node, comparable_type_ &&comparable,
+                                       comparator_t const &comparator) noexcept {
+        auto no_op = [](node_t *) noexcept {};
+        return range(node, comparable, comparable, comparator, no_op);
     }
 
 #pragma mark - Sampling
@@ -320,18 +331,23 @@ class basic_avl_node {
 
     /**
      *  @brief Random samples nodes within a given range of keys using reservoir sampling.
+     *  @param node Root of subtree.
+     *  @param low Lower bound.
+     *  @param high Upper bound.
+     *  @param comparator Comparator instance (may be stateful).
      *  @param generator Any STL-compatible random number generator.
+     *  @param predicate Predicate to filter nodes.
      *  @return NULL if nothing was found.
      *  @note Uses single-pass reservoir sampling for O(n) time with uniform distribution.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_>
     static node_t *sample_range( //
-        node_t *node, lower_type_ &&low, upper_type_ &&high, generator_type_ &&generator,
-        predicate_type_ &&predicate) noexcept {
+        node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
+        generator_type_ &&generator, predicate_type_ &&predicate) noexcept {
 
         node_t *result = nullptr;
         std::size_t count = 0;
-        range(node, low, high, [&](node_t *node) noexcept {
+        range(node, low, high, comparator, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
             ++count;
             std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
@@ -356,14 +372,15 @@ class basic_avl_node {
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_,
               typename output_iterator_type_>
     static void sample_range( //
-        node_t *node, lower_type_ &&low, upper_type_ &&high, generator_type_ &&generator, predicate_type_ &&predicate,
-        std::size_t &seen, std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) noexcept {
+        node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
+        generator_type_ &&generator, predicate_type_ &&predicate, std::size_t &seen, std::size_t reservoir_capacity,
+        output_iterator_type_ &&reservoir) noexcept {
 
         using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
         static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
-        range(node, low, high, [&](node_t *node) noexcept {
+        range(node, low, high, comparator, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
 
             if (seen < reservoir_capacity) { reservoir[seen] = node; }
@@ -421,25 +438,25 @@ class basic_avl_node {
     };
 
     template <typename comparable_type_>
-    inline static node_t *rebalance_after_insert(node_t *node, comparable_type_ &&comparable) noexcept {
+    inline static node_t *rebalance_after_insert(node_t *node, comparable_type_ &&comparable,
+                                                 comparator_t const &comparator) noexcept {
         // Update height and check if branches aren't balanced
         node->height = std::max(get_height(node->left), get_height(node->right)) + 1;
         auto balance = get_balance(node);
-        auto less = comparator_t {};
 
         // Left Left Case
-        if (balance > 1 && less(comparable, node->left->entry)) return rotate_right(node);
+        if (balance > 1 && comparator(comparable, node->left->entry)) return rotate_right(node);
 
         // Right Right Case
-        else if (balance < -1 && less(node->right->entry, comparable)) return rotate_left(node);
+        else if (balance < -1 && comparator(node->right->entry, comparable)) return rotate_left(node);
 
         // Left Right Case
-        else if (balance > 1 && less(node->left->entry, comparable)) {
+        else if (balance > 1 && comparator(node->left->entry, comparable)) {
             node->left = rotate_left(node->left);
             return rotate_right(node);
         }
         // Right Left Case
-        else if (balance < -1 && less(comparable, node->right->entry)) {
+        else if (balance < -1 && comparator(comparable, node->right->entry)) {
             node->right = rotate_right(node->right);
             return rotate_left(node);
         }
@@ -448,7 +465,7 @@ class basic_avl_node {
 
     template <typename comparable_type_, typename callback_found_type_, typename callback_make_type_>
     static find_or_make_result_t find_or_make(node_t *node, comparable_type_ &&comparable,
-                                              callback_found_type_ &&callback_found,
+                                              comparator_t const &comparator, callback_found_type_ &&callback_found,
                                               callback_make_type_ &&callback_make) noexcept {
         if (!node) {
             node = callback_make();
@@ -460,17 +477,16 @@ class basic_avl_node {
             return {node, node, true};
         }
 
-        auto less = comparator_t {};
-        if (less(comparable, node->entry)) {
-            auto downstream = find_or_make(node->left, comparable, callback_found, callback_make);
+        if (comparator(comparable, node->entry)) {
+            auto downstream = find_or_make(node->left, comparable, comparator, callback_found, callback_make);
             node->left = downstream.root;
-            if (downstream.inserted) node = rebalance_after_insert(node, downstream.match->entry);
+            if (downstream.inserted) node = rebalance_after_insert(node, downstream.match->entry, comparator);
             return {node, downstream.match, downstream.inserted};
         }
-        else if (less(node->entry, comparable)) {
-            auto downstream = find_or_make(node->right, comparable, callback_found, callback_make);
+        else if (comparator(node->entry, comparable)) {
+            auto downstream = find_or_make(node->right, comparable, comparator, callback_found, callback_make);
             node->right = downstream.root;
-            if (downstream.inserted) node = rebalance_after_insert(node, downstream.match->entry);
+            if (downstream.inserted) node = rebalance_after_insert(node, downstream.match->entry, comparator);
             return {node, downstream.match, downstream.inserted};
         }
         else {
@@ -481,7 +497,7 @@ class basic_avl_node {
     }
 
     template <typename node_allocator_type_>
-    static find_or_make_result_t insert(node_t *node, versioned_entry_t &&entry,
+    static find_or_make_result_t insert(node_t *node, versioned_entry_t &&entry, comparator_t const &comparator,
                                         node_allocator_type_ &&node_allocator) noexcept {
         auto found = [&](node_t *node) noexcept {};
         auto make = [&]() noexcept -> node_t * {
@@ -489,12 +505,12 @@ class basic_avl_node {
             if (node) new (&node->entry) versioned_entry_t(std::move(entry));
             return node;
         };
-        auto result = find_or_make(node, entry, found, make);
+        auto result = find_or_make(node, entry, comparator, found, make);
         return result;
     }
 
     template <typename node_allocator_type_>
-    static find_or_make_result_t upsert(node_t *node, versioned_entry_t &&entry,
+    static find_or_make_result_t upsert(node_t *node, versioned_entry_t &&entry, comparator_t const &comparator,
                                         node_allocator_type_ &&node_allocator) noexcept {
         auto found = [&](node_t *node) noexcept { node->entry = std::move(entry); };
         auto make = [&]() noexcept -> node_t * {
@@ -502,12 +518,13 @@ class basic_avl_node {
             if (node) new (&node->entry) versioned_entry_t(std::move(entry));
             return node;
         };
-        auto result = find_or_make(node, entry, found, make);
+        auto result = find_or_make(node, entry, comparator, found, make);
         return result;
     }
 
-    static find_or_make_result_t insert(node_t *node, node_t *new_child) noexcept {
-        return find_or_make(node, new_child->entry, [](node_t *) noexcept {}, [=]() noexcept { return new_child; });
+    static find_or_make_result_t insert(node_t *node, node_t *new_child, comparator_t const &comparator) noexcept {
+        return find_or_make(
+            node, new_child->entry, comparator, [](node_t *) noexcept {}, [=]() noexcept { return new_child; });
     }
 
     /**
@@ -586,15 +603,16 @@ class basic_avl_node {
 
     /**
      *  @brief Pops the root replacing it with one of descendants, if present.
-     *  @param comparable Any key comparable with stored entries.
+     *  @param node Node to extract.
+     *  @param comparator Comparator for element comparison.
      */
-    static extract_result_t extract(node_t *node) noexcept {
+    static extract_result_t extract(node_t *node, comparator_t const &comparator) noexcept {
 
         // If the node has two children, replace it with the
         // smallest entry in the right branch.
         if (node->left && node->right) {
             node_t *midpoint = find_min(node->right);
-            auto downstream = extract(node->right, midpoint->entry);
+            auto downstream = extract(node->right, midpoint->entry, comparator);
             midpoint = downstream.extracted.release();
             midpoint->left = node->left;
             midpoint->right = downstream.root;
@@ -626,19 +644,19 @@ class basic_avl_node {
      *  @param comparable Any key comparable with stored entries.
      */
     template <typename comparable_type_>
-    static extract_result_t extract(node_t *node, comparable_type_ &&comparable) noexcept {
+    static extract_result_t extract(node_t *node, comparable_type_ &&comparable,
+                                    comparator_t const &comparator) noexcept {
         if (!node) return {node, {}};
 
-        auto less = comparator_t {};
-        if (less(comparable, node->entry)) {
-            auto downstream = extract(node->left, comparable);
+        if (comparator(comparable, node->entry)) {
+            auto downstream = extract(node->left, comparable, comparator);
             node->left = downstream.root;
             if (downstream.extracted) node = rebalance_after_extract(node);
             return {node, std::move(downstream.extracted)};
         }
 
-        else if (less(node->entry, comparable)) {
-            auto downstream = extract(node->right, comparable);
+        else if (comparator(node->entry, comparable)) {
+            auto downstream = extract(node->right, comparable, comparator);
             node->right = downstream.root;
             if (downstream.extracted) node = rebalance_after_extract(node);
             return {node, std::move(downstream.extracted)};
@@ -646,7 +664,7 @@ class basic_avl_node {
 
         else
             // We have found the node to extract!
-            return extract(node);
+            return extract(node, comparator);
     }
 
     struct remove_if_result_t {
@@ -680,8 +698,9 @@ class basic_avl_node {
      *  @param[in] right Right subtree (all elements > root).
      *  @return node_t* Root of the joined tree.
      */
-    static node_t *join_with_root(node_t *left, node_t *root_node, node_t *right) noexcept {
-        if (!root_node) return join(left, right);
+    static node_t *join_with_root(node_t *left, node_t *root_node, node_t *right,
+                                  comparator_t const &comparator) noexcept {
+        if (!root_node) return join(left, right, comparator);
 
         root_node->left = left;
         root_node->right = right;
@@ -718,9 +737,10 @@ class basic_avl_node {
      *
      *  @param[in] left Left tree (smaller elements).
      *  @param[in] right Right tree (larger elements).
+     *  @param[in] comparator Comparator for element comparison.
      *  @return node_t* Root of the joined tree.
      */
-    static node_t *join(node_t *left, node_t *right) noexcept {
+    static node_t *join(node_t *left, node_t *right, comparator_t const &comparator) noexcept {
         if (!left) return right;
         if (!right) return left;
 
@@ -729,22 +749,22 @@ class basic_avl_node {
 
         // If left tree is taller, join with right subtree of left
         if (left_height > right_height + 1) {
-            left->right = join(left->right, right);
+            left->right = join(left->right, right, comparator);
             left->height = 1 + std::max(get_height(left->left), get_height(left->right));
             return rebalance_after_extract(left);
         }
         // If right tree is taller, join with left subtree of right
         else if (right_height > left_height + 1) {
-            right->left = join(left, right->left);
+            right->left = join(left, right->left, comparator);
             right->height = 1 + std::max(get_height(right->left), get_height(right->right));
             return rebalance_after_extract(right);
         }
         // Heights are balanced, extract min from right and use as root
         else {
             node_t *min_right = find_min(right);
-            auto extract_result = extract(right, min_right->entry);
+            auto extract_result = extract(right, min_right->entry, comparator);
             node_t *new_root = extract_result.release();
-            return join_with_root(left, new_root, extract_result.root);
+            return join_with_root(left, new_root, extract_result.root, comparator);
         }
     }
 
@@ -758,24 +778,22 @@ class basic_avl_node {
      *  @return split_result_t Contains left tree (< key) and right tree (>= key).
      */
     template <typename comparable_type_>
-    static split_result_t split(node_t *node, comparable_type_ &&comparable) noexcept {
+    static split_result_t split(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
         if (!node) return {nullptr, nullptr};
 
-        auto less = comparator_t {};
-
         // If node < key, put node in left tree and split right subtree
-        if (less(node->entry, comparable)) {
-            auto downstream = split(node->right, comparable);
+        if (comparator(node->entry, comparable)) {
+            auto downstream = split(node->right, comparable, comparator);
             node->right = downstream.left;
             node->height = 1 + std::max(get_height(node->left), get_height(node->right));
-            return {join_with_root(node->left, node, downstream.left), downstream.right};
+            return {join_with_root(node->left, node, downstream.left, comparator), downstream.right};
         }
         // If key <= node, put node in right tree and split left subtree
         else {
-            auto downstream = split(node->left, comparable);
+            auto downstream = split(node->left, comparable, comparator);
             node->left = downstream.right;
             node->height = 1 + std::max(get_height(node->left), get_height(node->right));
-            return {downstream.left, join_with_root(downstream.right, node, node->right)};
+            return {downstream.left, join_with_root(downstream.right, node, node->right, comparator)};
         }
     }
 
@@ -794,7 +812,7 @@ class basic_avl_node {
      *    Maintains AVL balance property throughout.
      *  @see Blelloch et al., "Just Join for Parallel Ordered Sets" (2016)
      */
-    static node_t *merge_split_based(node_t *small, node_t *large) noexcept {
+    static node_t *merge_split_based(node_t *small, node_t *large, comparator_t const &comparator) noexcept {
         if (!small) return large;
         if (!large) return small;
 
@@ -804,14 +822,14 @@ class basic_avl_node {
         node_t *small_right = pivot->right;
 
         // Split larger tree around pivot's key: O(log n)
-        auto split_result = split(large, pivot->entry);
+        auto split_result = split(large, pivot->entry, comparator);
 
         // Recursively merge subtrees
-        node_t *merged_left = merge_split_based(small_left, split_result.left);
-        node_t *merged_right = merge_split_based(small_right, split_result.right);
+        node_t *merged_left = merge_split_based(small_left, split_result.left, comparator);
+        node_t *merged_right = merge_split_based(small_right, split_result.right, comparator);
 
         // Join with pivot as root: O(log height_diff)
-        return join_with_root(merged_left, pivot, merged_right);
+        return join_with_root(merged_left, pivot, merged_right, comparator);
     }
 
     /**
@@ -865,17 +883,16 @@ class basic_avl_node {
      *
      *  @note O(n+m) time, O(1) space. Just like merging sorted linked lists.
      */
-    static node_t *merge_spines(node_t *spine1, node_t *spine2) noexcept {
+    static node_t *merge_spines(node_t *spine1, node_t *spine2, comparator_t const &comparator) noexcept {
         if (!spine1) return spine2;
         if (!spine2) return spine1;
 
         node_t *merged_head = nullptr;
         node_t *merged_tail = nullptr;
-        auto less = comparator_t {};
 
         while (spine1 && spine2) {
             node_t *next_node;
-            if (less(spine1->entry, spine2->entry)) {
+            if (comparator(spine1->entry, spine2->entry)) {
                 next_node = spine1;
                 spine1 = spine1->right;
             }
@@ -946,6 +963,7 @@ class basic_avl_node {
      *
      *  @param[in] tree1 First tree to merge (will be consumed).
      *  @param[in] tree2 Second tree to merge (will be consumed).
+     *  @param[in] comparator Comparator for element comparison.
      *  @param[out] out_size Total number of nodes in result.
      *  @return node_t* Root of merged balanced tree.
      *
@@ -955,7 +973,8 @@ class basic_avl_node {
      *  @see Stout & Warren, "Tree Rebalancing in Optimal Time and Space" (1986)
      *  @see https://en.wikipedia.org/wiki/Day%E2%80%93Stout%E2%80%93Warren_algorithm
      */
-    static node_t *merge_dsw(node_t *tree1, node_t *tree2, std::size_t &out_size) noexcept {
+    static node_t *merge_dsw(node_t *tree1, node_t *tree2, comparator_t const &comparator,
+                             std::size_t &out_size) noexcept {
         std::size_t count1 = 0, count2 = 0;
 
         // Convert both trees to spines: O(n + m)
@@ -963,7 +982,7 @@ class basic_avl_node {
         node_t *spine2 = tree_to_spine(tree2, count2);
 
         // Merge spines: O(n + m)
-        node_t *merged_spine = merge_spines(spine1, spine2);
+        node_t *merged_spine = merge_spines(spine1, spine2, comparator);
 
         out_size = count1 + count2;
 
@@ -1272,7 +1291,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     iterator find(comparable_type_ &&comparable) noexcept {
-        return iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable)));
+        return iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable), comparator_));
     }
 
     /**
@@ -1284,7 +1303,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     const_iterator find(comparable_type_ &&comparable) const noexcept {
-        return const_iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable)));
+        return const_iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable), comparator_));
     }
 
     /**
@@ -1296,7 +1315,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     iterator lower_bound(comparable_type_ &&comparable) noexcept {
-        return iterator(this, node_t::lower_bound(root_, std::forward<comparable_type_>(comparable)));
+        return iterator(this, node_t::lower_bound(root_, std::forward<comparable_type_>(comparable), comparator_));
     }
 
     /**
@@ -1308,7 +1327,8 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     const_iterator lower_bound(comparable_type_ &&comparable) const noexcept {
-        return const_iterator(this, node_t::lower_bound(root_, std::forward<comparable_type_>(comparable)));
+        return const_iterator(this,
+                              node_t::lower_bound(root_, std::forward<comparable_type_>(comparable), comparator_));
     }
 
     /**
@@ -1320,7 +1340,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     iterator upper_bound(comparable_type_ &&comparable) noexcept {
-        return iterator(this, node_t::upper_bound(root_, std::forward<comparable_type_>(comparable)));
+        return iterator(this, node_t::upper_bound(root_, std::forward<comparable_type_>(comparable), comparator_));
     }
 
     /**
@@ -1332,7 +1352,8 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     const_iterator upper_bound(comparable_type_ &&comparable) const noexcept {
-        return const_iterator(this, node_t::upper_bound(root_, std::forward<comparable_type_>(comparable)));
+        return const_iterator(this,
+                              node_t::upper_bound(root_, std::forward<comparable_type_>(comparable), comparator_));
     }
 
     /**
@@ -1422,7 +1443,7 @@ class basic_avl_tree {
     template <typename lower_type_ = versioned_entry_t, typename upper_type_ = versioned_entry_t,
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
-        node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+        node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->entry); });
     }
 
@@ -1437,7 +1458,7 @@ class basic_avl_tree {
     template <typename lower_type_ = versioned_entry_t, typename upper_type_ = versioned_entry_t,
               typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
-        node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+        node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->entry); });
     }
 
@@ -1469,7 +1490,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     std::pair<iterator, bool> insert(comparable_type_ &&comparable) noexcept {
-        auto result = node_t::insert(root_, std::forward<comparable_type_>(comparable),
+        auto result = node_t::insert(root_, std::forward<comparable_type_>(comparable), comparator_,
                                      [&]() noexcept { return allocator_.allocate(1); });
         root_ = result.root;
         size_ += result.inserted;
@@ -1501,7 +1522,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     upsert_result_t insert_or_assign(comparable_type_ &&comparable) noexcept {
-        auto result = node_t::upsert(root_, std::forward<comparable_type_>(comparable),
+        auto result = node_t::upsert(root_, std::forward<comparable_type_>(comparable), comparator_,
                                      [&]() noexcept { return allocator_.allocate(1); });
         root_ = result.root;
         size_ += result.inserted;
@@ -1618,14 +1639,14 @@ class basic_avl_tree {
      *  @brief Returns the function object that compares keys.
      *  @return comparator_t The comparison function object.
      */
-    comparator_t key_comp() const noexcept { return comparator_t {}; }
+    comparator_t key_comp() const noexcept { return comparator_; }
 
     /**
      *  @brief Returns the function object that compares values.
      *         For sets, this is the same as key_comp().
      *  @return comparator_t The comparison function object.
      */
-    comparator_t value_comp() const noexcept { return comparator_t {}; }
+    comparator_t value_comp() const noexcept { return comparator_; }
 
     /**
      *  @brief Returns the maximum possible number of elements.
@@ -1673,7 +1694,7 @@ class basic_avl_tree {
 
     template <typename comparable_type_>
     extract_result_t extract(comparable_type_ &&comparable) noexcept {
-        auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable));
+        auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable), comparator_);
         root_ = result.root;
         size_ -= result.extracted != nullptr;
         return extract_result_t {this, result.extracted.release()};
@@ -1697,7 +1718,7 @@ class basic_avl_tree {
         }
 
         callback_found(node->entry);
-        auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable));
+        auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable), comparator_);
         root_ = result.root;
         size_ -= result.extracted != nullptr;
     }
@@ -1816,7 +1837,7 @@ class basic_avl_tree {
      */
     void merge(avl_tree_t &other) noexcept {
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
-            auto result = node_t::insert(root_, node);
+            auto result = node_t::insert(root_, node, comparator_);
             root_ = result.root;
             size_ += result.inserted;
             // Key conflict - node wasn't inserted, deallocate it
@@ -1854,11 +1875,10 @@ class basic_avl_tree {
         // Strategy 1: Check if fully ordered - O(log n) check, O(log n) join
         auto this_max = node_t::find_max(root_);
         auto other_min = node_t::find_min(other.root_);
-        auto less = comparator_t {};
 
         // Fast path: all(this) < all(other), use join: O(log n)
-        if (less(this_max->entry, other_min->entry)) {
-            root_ = node_t::join(root_, other.root_);
+        if (comparator_(this_max->entry, other_min->entry)) {
+            root_ = node_t::join(root_, other.root_, comparator_);
             size_ += other.size_;
             other.root_ = nullptr;
             other.size_ = 0;
@@ -1876,14 +1896,14 @@ class basic_avl_tree {
         // DSW for large similarly-sized trees: O(m+n)
         if (min_size > DSW_THRESHOLD && max_size < min_size * SIZE_RATIO_THRESHOLD) {
             std::size_t new_size;
-            root_ = node_t::merge_dsw(root_, other.root_, new_size);
+            root_ = node_t::merge_dsw(root_, other.root_, comparator_, new_size);
             size_ = new_size;
         }
         // Split-based for unbalanced sizes: O(m log(n/m+1))
         else {
             node_t *small = (size_ < other.size_) ? root_ : other.root_;
             node_t *large = (size_ < other.size_) ? other.root_ : root_;
-            root_ = node_t::merge_split_based(small, large);
+            root_ = node_t::merge_split_based(small, large, comparator_);
             size_ += other.size_;
         }
 
@@ -1903,7 +1923,7 @@ class basic_avl_tree {
     void merge(extract_result_t other) noexcept {
         if (!other.node_ptr_) return;
         node_t *node_to_insert = other.release();
-        auto result = node_t::insert(root_, node_to_insert);
+        auto result = node_t::insert(root_, node_to_insert, comparator_);
         root_ = result.root;
         size_ += result.inserted;
         // Key conflict - node wasn't inserted, deallocate it
@@ -1934,7 +1954,7 @@ class basic_avl_tree {
      */
     template <typename comparable_type_>
     split_result_t split(comparable_type_ &&comparable) noexcept {
-        auto node_split_result = node_t::split(root_, std::forward<comparable_type_>(comparable));
+        auto node_split_result = node_t::split(root_, std::forward<comparable_type_>(comparable), comparator_);
 
         // Count elements in each tree (need to traverse to get accurate size)
         std::size_t left_size = 0, right_size = 0;
@@ -1970,7 +1990,7 @@ class basic_avl_tree {
      *  @note Renamed from @c join_with for STL naming consistency (cf. @c std::set::merge, @c std::list::splice).
      */
     void join(avl_tree_t &other) noexcept {
-        root_ = node_t::join(root_, other.root_);
+        root_ = node_t::join(root_, other.root_, comparator_);
         size_ += other.size_;
         other.root_ = nullptr;
         other.size_ = 0;
@@ -2008,7 +2028,7 @@ class basic_avl_tree {
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
         auto node =
-            node_t::sample_range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+            node_t::sample_range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                                  std::forward<generator_type_>(generator), [](node_t *) noexcept { return true; });
         if (node) callback(node->entry);
     }
