@@ -318,7 +318,7 @@ class transactional_std_store {
          *  @param[in] element Element to insert or assign (moved into the transaction).
          *  @return status_t Success or error code (e.g., out of memory).
          */
-        [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
+        [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign_(std::move(element)); }
 
         /**
          *  @brief Stages a delete operation for the element with the given identifier.
@@ -1060,7 +1060,7 @@ class transactional_std_store {
         });
         if (!batch_construction_status) return batch_construction_status;
 
-        return insert_or_assign(batch.value());
+        return insert_or_assign_(batch.value());
     }
 
     /**
