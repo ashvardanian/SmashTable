@@ -118,29 +118,30 @@ class basic_avl_node {
      *  @brief Finds the next node in in-order traversal (successor).
      *  @param[in] root Root of the tree.
      *  @param[in] node Current node.
+     *  @param[in] comparator Comparator for ordering.
      *  @return node_t* Successor node, or nullptr if node is the maximum.
      */
-    static node_t *find_successor(node_t *root, node_t *node) noexcept {
+    static node_t *find_successor(node_t *root, node_t *node, comparator_t const &comparator) noexcept {
         if (!node) return find_min(root);
-        return upper_bound(root, node->entry);
+        return upper_bound(root, node->entry, comparator);
     }
 
     /**
      *  @brief Finds the previous node in in-order traversal (predecessor).
-     *  @param[in] root  Root of the tree.
-     *  @param[in] node  Current node.
+     *  @param[in] root Root of the tree.
+     *  @param[in] node Current node.
+     *  @param[in] comparator Comparator for ordering.
      *  @return node_t* Predecessor node, or nullptr if node is the minimum.
      */
-    static node_t *find_predecessor(node_t *root, node_t *node) noexcept {
+    static node_t *find_predecessor(node_t *root, node_t *node, comparator_t const &comparator) noexcept {
         if (!node) return find_max(root);
 
         node_t *predecessor = nullptr;
-        comparator_t less;
         node_t *current = root;
 
         while (current) {
             // Current is less than target, it's a candidate predecessor
-            if (less(current->entry, node->entry)) {
+            if (comparator(current->entry, node->entry)) {
                 predecessor = current;
                 current = current->right;
             }
@@ -1063,7 +1064,7 @@ class basic_avl_tree {
         pointer operator->() const noexcept { return &node_->entry; }
 
         iterator &operator++() noexcept {
-            node_ = node_t::find_successor(tree_->root_, node_);
+            node_ = node_t::find_successor(tree_->root_, node_, tree_->comparator_);
             return *this;
         }
 
@@ -1073,8 +1074,8 @@ class basic_avl_tree {
             return tmp;
         }
 
-        iterator &operator-() noexcept {
-            node_ = node_t::find_predecessor(tree_->root_, node_);
+        iterator &operator--() noexcept {
+            node_ = node_t::find_predecessor(tree_->root_, node_, tree_->comparator_);
             return *this;
         }
 
@@ -1116,7 +1117,7 @@ class basic_avl_tree {
         pointer operator->() const noexcept { return &node_->entry; }
 
         const_iterator &operator++() noexcept {
-            node_ = node_t::find_successor(tree_->root_, const_cast<node_t *>(node_));
+            node_ = node_t::find_successor(tree_->root_, const_cast<node_t *>(node_), tree_->comparator_);
             return *this;
         }
 
@@ -1126,8 +1127,8 @@ class basic_avl_tree {
             return tmp;
         }
 
-        const_iterator &operator-() noexcept {
-            node_ = node_t::find_predecessor(tree_->root_, const_cast<node_t *>(node_));
+        const_iterator &operator--() noexcept {
+            node_ = node_t::find_predecessor(tree_->root_, const_cast<node_t *>(node_), tree_->comparator_);
             return *this;
         }
 
