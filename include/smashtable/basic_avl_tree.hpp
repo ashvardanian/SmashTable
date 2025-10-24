@@ -1020,8 +1020,22 @@ class basic_avl_tree {
     using node_t = basic_avl_node<entry_type_, comparator_type_>;
     using node_allocator_t = node_allocator_type_;
     using comparator_t = comparator_type_;
+    using entry_t = entry_type_;
     using versioned_entry_t = entry_type_;
     using avl_tree_t = basic_avl_tree;
+    using allocator_t = node_allocator_type_;
+
+    /**
+     *  @brief Rebind this tree type to different entry and comparator types.
+     *    Follows STL allocator rebind pattern for type transformations.
+     *
+     *  @tparam other_entry_ New entry type for the rebound tree.
+     *  @tparam other_comparator_ New comparator type for the rebound tree.
+     */
+    template <typename other_entry_, typename other_comparator_>
+    using rebind = basic_avl_tree<other_entry_, other_comparator_,
+                                  typename std::allocator_traits<node_allocator_type_>::template rebind_alloc<
+                                      basic_avl_node<other_entry_, other_comparator_>>>;
 
     // Forward declare iterator
     class iterator;

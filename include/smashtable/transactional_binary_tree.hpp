@@ -1281,18 +1281,56 @@ class transactional_binary_tree {
 };
 
 /**
- *  @brief Backward compatibility alias - transactional AVL tree with STL-compatible interface.
- *    Provides transactional ACID semantics using AVL tree as the underlying balanced tree implementation.
+ *  @brief STL-style transactional set using AVL tree.
+ *    Stores unique elements in sorted order with ACID transaction semantics.
  *
- *  @tparam element_type_    Type of elements stored in the tree.
+ *  @tparam element_type_ Type of elements stored in the set.
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
- *  @tparam allocator_type_  Allocator for tree nodes, will be rebound to node type internally.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
 template <typename element_type_, typename comparator_type_ = std::less<element_type_>,
           typename allocator_type_ = std::allocator<element_type_>>
-using transactional_avl_tree =
-    transactional_binary_tree<basic_avl_tree<element_type_, comparator_type_,
-                                             typename std::allocator_traits<allocator_type_>::template rebind_alloc<
-                                                 basic_avl_node<element_type_, comparator_type_>>>>;
+using transactional_avl_set =
+    transactional_binary_tree<basic_avl_tree<element_type_, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional map using AVL tree.
+ *    Stores key-value pairs in sorted order with ACID transaction semantics.
+ *
+ *  @tparam key_type_ Type of keys stored in the map.
+ *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+          typename allocator_type_ = std::allocator<association<key_type_, value_type_>>>
+using transactional_avl_map =
+    transactional_binary_tree<basic_avl_tree<association<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional set using weight-balanced tree with order statistics support.
+ *    Stores unique elements in sorted order with ACID transaction semantics and O(log n) rank/select operations.
+ *
+ *  @tparam element_type_ Type of elements stored in the set.
+ *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename element_type_, typename comparator_type_ = std::less<element_type_>,
+          typename allocator_type_ = std::allocator<element_type_>>
+using transactional_wb_set = transactional_binary_tree<basic_wb_tree<element_type_, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional map using weight-balanced tree with order statistics support.
+ *    Stores key-value pairs in sorted order with ACID transaction semantics and O(log n) rank/select operations.
+ *
+ *  @tparam key_type_ Type of keys stored in the map.
+ *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
+ */
+template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+          typename allocator_type_ = std::allocator<association<key_type_, value_type_>>>
+using transactional_wb_map =
+    transactional_binary_tree<basic_wb_tree<association<key_type_, value_type_>, comparator_type_, allocator_type_>>;
 
 } // namespace ashvardanian::smashtable
