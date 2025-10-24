@@ -56,7 +56,7 @@ class basic_avl_node {
   public:
     using versioned_entry_t = entry_type_;
     using comparator_t = comparator_type_;
-    using height_t = std::int16_t;
+    using height_t = std::ptrdiff_t;
     using node_t = basic_avl_node;
 
     versioned_entry_t entry;
@@ -1128,21 +1128,25 @@ class basic_avl_tree {
   private:
     node_t *root_ = nullptr;
     std::size_t size_ = 0;
-    node_allocator_t allocator_;
+    [[no_unique_address]] comparator_t comparator_;
+    [[no_unique_address]] node_allocator_t allocator_;
 
   public:
 #pragma mark - Constructors and Assignment
 
     basic_avl_tree() noexcept = default;
     basic_avl_tree(basic_avl_tree &&other) noexcept
-        : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)) {}
+        : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)),
+          comparator_(std::move(other.comparator_)), allocator_(std::move(other.allocator_)) {}
     basic_avl_tree &operator=(basic_avl_tree &&other) noexcept {
         std::swap(root_, other.root_);
         std::swap(size_, other.size_);
+        std::swap(comparator_, other.comparator_);
+        std::swap(allocator_, other.allocator_);
         return *this;
     }
 
-    ~basic_avl_tree() { clear(); }
+    ~basic_avl_tree() noexcept { clear(); }
 
 #pragma mark - Capacity
 
