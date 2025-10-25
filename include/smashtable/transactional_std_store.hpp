@@ -3,13 +3,14 @@
  *    Provides 2-phase commit transactions with optimistic concurrency control through watch/CAS operations.
  *    All operations use callback-based APIs and are exception-safe via @c noexcept wrappers.
  *
- *  @file   transactional_std_store.hpp
+ *  @file transactional_std_store.hpp
+ *  @date October 25, 2025
  *  @author Ash Vardanian
  */
 #pragma once
 #include <functional>  // `std::less` as default
 #include <memory>      // `std::allocator` as default
-#include <optional>    // `std::optional` for "expected"
+#include <optional>    // `std::optional` for internal batch operations
 #include <random>      // `std::uniform_int_distribution` for sampling
 #include <set>         // `std::set` for inner versioned entries
 #include <type_traits> // `std::is_nothrow_invocable_v`
@@ -31,6 +32,9 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
             return {success_k};
         }
         catch (std::bad_alloc const &) {
+            return {errc_t::out_of_memory_heap_k};
+        }
+        catch (std::length_error const &) {
             return {errc_t::out_of_memory_heap_k};
         }
         catch (...) {
@@ -80,6 +84,22 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming convention.
  *  The @c try_emplace is deleted in favor of the more explicit @c insert_if_missing.
  *
+ *  @section Requirements
+ *
+ *  @par Element Type
+ *  - Nothrow default-constructible and nothrow move constructible/assignable (required)
+ *  - For watch operations: Nothrow copy-constructible OR provides
+ *      @code .copy() const -> expected<T> @endcode for safe copying of identifiers
+ *
+ *  @par Comparator Type
+ *  - Must define @code bool operator()(element_type const &, element_type const &) const @endcode
+ *  - For heterogeneous lookups: Define @code using is_transparent = void; @endcode and
+ *      @code using value_type = ...; @endcode (optional but recommended)
+ *
+ *  @par Allocator Type
+ *  - Must be "rebindable" for internal structures (@c std::set nodes, @c std::vector arrays)
+ *  - Standard allocator propagation traits respected for move/copy operations
+ *
  *  @tparam element_type_ Type of the elements stored in the set.
  *  @tparam comparator_type_ Ideally heterogeneous comparator for @c element_type_.
  *  @tparam allocator_type_ Arbitrary "rebindable" allocator for all internal structures.
@@ -116,6 +136,9 @@ class transactional_std_store {
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
     using watch_iterator_t = typename watches_array_t::iterator;
 
+    using changed_ids_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
+    using changed_ids_vector_t = std::vector<identifier_t, changed_ids_allocator_t>;
+
     using store_t = transactional_std_store;
 
   public:
@@ -131,6 +154,7 @@ class transactional_std_store {
         store_t *store_ {nullptr};
         entry_set_t changes_ {};
         watches_array_t watches_ {};
+        changed_ids_vector_t changed_ids_ {};
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
 
@@ -203,6 +227,7 @@ class transactional_std_store {
 
             // Key doesn't exist anywhere, proceed with insertion
             auto status = invoke_safely([&]() {
+                changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
                 if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
@@ -210,6 +235,7 @@ class transactional_std_store {
                 const_cast<generation_t &>(iterator->generation) = generation_;
                 const_cast<bool &>(iterator->deleted) = false;
                 const_cast<bool &>(iterator->visible) = false;
+                changed_ids_.push_back(id);
             });
 
             if (status) callback_inserted();
@@ -257,6 +283,7 @@ class transactional_std_store {
 
             // Key doesn't exist anywhere, proceed with insertion
             auto status = invoke_safely([&]() {
+                changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
                 if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
@@ -264,6 +291,7 @@ class transactional_std_store {
                 const_cast<generation_t &>(iterator->generation) = generation_;
                 const_cast<bool &>(iterator->deleted) = false;
                 const_cast<bool &>(iterator->visible) = false;
+                changed_ids_.push_back(id);
             });
 
             if (status) callback_inserted();
@@ -297,6 +325,7 @@ class transactional_std_store {
             if (!key_exists) key_exists = store_ref().contains(id);
 
             auto status = invoke_safely([&]() {
+                changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
                 if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
@@ -304,6 +333,7 @@ class transactional_std_store {
                 const_cast<generation_t &>(iterator->generation) = generation_;
                 const_cast<bool &>(iterator->deleted) = false;
                 const_cast<bool &>(iterator->visible) = false;
+                changed_ids_.push_back(id);
             });
 
             if (!status) return status;
@@ -329,6 +359,7 @@ class transactional_std_store {
          */
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
             return invoke_safely([&]() {
+                changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(id);
                 if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->element, id))
                     iterator = changes_.emplace_hint(iterator, element_t {id});
@@ -336,6 +367,7 @@ class transactional_std_store {
                 const_cast<generation_t &>(iterator->generation) = generation_;
                 const_cast<bool &>(iterator->deleted) = true;
                 const_cast<bool &>(iterator->visible) = false;
+                changed_ids_.push_back(id);
             });
         }
 
@@ -587,24 +619,13 @@ class transactional_std_store {
                 if (consistency_violated) return {errc_t::consistency_k};
             }
 
-            // Now all of our watches will be replaced with "links" to entries
-            // we are merging into the main tree.
-            watches_.clear();
-            auto status = invoke_safely([&]() { watches_.reserve(changes_.size()); });
-            if (!status) return status;
-
-            // No new memory allocations or failures are possible after that.
-            // It is all safe.
-            for (auto const &entry : changes_)
-                watches_.push_back({identifier_t {entry.element}, watch_t {generation_, entry.deleted}});
-
-            // Than just merge our current nodes.
+            // Merge our current nodes into the store.
             // The visibility will be updated later in the `commit`.
             store.entries_.merge(changes_);
             stage_ = stage_t::staged_k;
 
             // Support return_new_size to export staged count
-            get_type_or<return_new_size_t, black_hole_t>(tags...) = watches_.size();
+            get_type_or<return_new_size_t, black_hole_t>(tags...) = changed_ids_.size();
             return {success_k};
         }
 
@@ -620,15 +641,16 @@ class transactional_std_store {
             // we must delete all the entries.
             auto &store = store_ref();
             if (stage_ == stage_t::staged_k)
-                for (auto const &id_and_watch : watches_) {
+                for (auto const &id : changed_ids_) {
                     // Heterogeneous `erase` is only coming in C++23.
-                    dated_identifier_t dated {id_and_watch.id, id_and_watch.watch.generation};
+                    dated_identifier_t dated {id, generation_};
                     if (auto iterator = store.entries_.find(dated); iterator != store.entries_.end())
                         store.entries_.erase(iterator);
                 }
 
             watches_.clear();
             changes_.clear();
+            changed_ids_.clear();
             stage_ = stage_t::created_k;
             generation_ = store.new_generation_();
             return {success_k};
@@ -636,7 +658,8 @@ class transactional_std_store {
 
         /**
          *  @brief Rolls back a previously staged transaction, moving changes from the store back to the transaction.
-         *    Can only be called on staged transactions. Watches are cleared, new generation is assigned.
+         *    Can only be called on staged transactions. Watches are preserved (read concerns persist across rollback),
+         *    allowing retry patterns. New generation is assigned.
          *
          *  @return status_t Success, or @c operation_not_permitted_k if transaction is not staged.
          */
@@ -645,14 +668,15 @@ class transactional_std_store {
 
             // Transaction was staged, we must extract all the entries back
             auto &store = store_ref();
-            for (auto const &id_and_watch : watches_) {
-                dated_identifier_t dated {id_and_watch.id, id_and_watch.watch.generation};
+            for (auto const &id : changed_ids_) {
+                dated_identifier_t dated {id, generation_};
                 auto source = store.entries_.find(dated);
                 auto node = store.entries_.extract(source);
                 changes_.insert(std::move(node));
             }
 
-            watches_.clear();
+            // Preserve watches_ for future stage operations (read watches persist across rollback)
+            changed_ids_.clear();
             stage_ = stage_t::created_k;
             generation_ = store.new_generation_();
             return {success_k};
@@ -662,7 +686,7 @@ class transactional_std_store {
          *  @brief Commits a previously staged transaction, making all changes permanently visible.
          *    Can only be called on staged transactions. Removes older versions of modified entries.
          *
-         *  @tparam tags_types_ Optional tag types (@c return_new_size_t to export visible count).
+         *  @tparam tags_types_ Optional tag types ( @c return_new_size_t to export visible count).
          *  @return status_t Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         template <typename... tags_types_>
@@ -673,9 +697,9 @@ class transactional_std_store {
             // if there are more than one with the same key,
             // the older generation must die.
             auto &store = store_ref();
-            for (auto const &id_and_watch : watches_) {
-                auto range = store.entries_.equal_range(id_and_watch.id);
-                store.unmask_and_compact_(range.first, range.second, id_and_watch.watch.generation);
+            for (auto const &id : changed_ids_) {
+                auto range = store.entries_.equal_range(id);
+                store.unmask_and_compact_(range.first, range.second, generation_);
             }
 
             stage_ = stage_t::created_k;
@@ -857,14 +881,15 @@ class transactional_std_store {
 
     /**
      *  @brief Factory method to create a new transactional set without throwing exceptions.
-     *    Returns an empty optional on allocation failure.
+     *    Returns error status on allocation failure.
      *
-     *  @return std::optional<store_t> Container instance or empty optional on failure.
+     *  @return expected<store_t> Container instance or error status on failure.
      */
-    [[nodiscard]] static std::optional<store_t> make() noexcept {
-        std::optional<store_t> result;
-        invoke_safely([&]() { result.emplace(store_t {}); });
-        return result;
+    [[nodiscard]] static expected<store_t> make() noexcept {
+        std::optional<store_t> opt_store;
+        auto status = invoke_safely([&]() { opt_store.emplace(); });
+        if (!status) return expected<store_t>(store_t {}, status);
+        return expected<store_t>(std::move(opt_store.value()), status);
     }
 
 #pragma mark - Transaction Management
@@ -872,14 +897,15 @@ class transactional_std_store {
     /**
      *  @brief Creates a new transaction with a fresh generation number.
      *    Transaction can be reset and reused after commit/rollback to avoid reallocations.
-     *    Returns empty optional on allocation failure.
+     *    Returns error status on allocation failure.
      *
-     *  @return std::optional<transaction_t> Transaction instance or empty optional on failure.
+     *  @return expected<transaction_t> Transaction instance or error status on failure.
      */
-    [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
-        std::optional<transaction_t> result;
-        invoke_safely([&]() { result.emplace(transaction_t {*this}); });
-        return result;
+    [[nodiscard]] expected<transaction_t> transaction() noexcept {
+        std::optional<transaction_t> opt_txn;
+        auto status = invoke_safely([&]() { opt_txn.emplace(*this); });
+        if (!status) return expected<transaction_t>(transaction_t {*this}, status);
+        return expected<transaction_t>(std::move(opt_txn.value()), status);
     }
 
 #pragma mark - Modifiers
