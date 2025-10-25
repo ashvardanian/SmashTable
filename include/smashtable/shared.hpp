@@ -270,33 +270,101 @@ struct watch_t {
 };
 
 /**
- *  @brief Concept checking if a type has a `.copy()` method returning std::optional<T>.
- *    This allows non-nothrow-copyable types to participate in watch operations.
+ *  @brief Alternative to C++ 23 @c std::expected and C++ 17 @c std::optional with error code.
+ *    Wraps a @c noexcept default-constructible @c entry_type_, without all the complexity of
+ *    implementing a @c union -based uninitialized storage state.
  */
-template <typename type_>
-concept has_copy_method = requires(type_ const &t) {
-    { t.copy() } -> std::same_as<std::optional<type_>>;
+template <typename entry_type_>
+struct expected {
+    using entry_t = entry_type_;
+    static_assert(std::is_nothrow_default_constructible_v<entry_t>,
+                  "expected<T> requires T to be nothrow default-constructible");
+
+    entry_t entry;
+    status_t status;
+
+    expected() = default;
+    expected(entry_t &&e, status_t s = status_t {}) noexcept : entry(std::move(e)), status(s) {}
+    expected(entry_t const &e, status_t s = status_t {}) noexcept : entry(e), status(s) {}
+
+    /**
+     *  @brief Checks if the expected contains a successful value.
+     *  @return @c true if status is success, @c false otherwise.
+     */
+    explicit operator bool() const noexcept { return status; }
+
+    /**
+     *  @brief Accesses the contained value (like @c std::optional).
+     *  @return Reference to the entry.
+     */
+    entry_t &operator*() & noexcept { return entry; }
+
+    /**
+     *  @brief Accesses the contained value (like @c std::optional, const version).
+     *  @return Const reference to the entry.
+     */
+    entry_t const &operator*() const & noexcept { return entry; }
+
+    /**
+     *  @brief Accesses the contained value (like @c std::optional, rvalue version).
+     *  @return Rvalue reference to the entry.
+     */
+    entry_t &&operator*() && noexcept { return std::move(entry); }
+
+    /**
+     *  @brief Member access operator (like @c std::optional).
+     *  @return Pointer to the entry.
+     */
+    entry_t *operator->() noexcept { return &entry; }
+
+    /**
+     *  @brief Member access operator (like @c std::optional, const version).
+     *  @return Const pointer to the entry.
+     */
+    entry_t const *operator->() const noexcept { return &entry; }
 };
 
 /**
- *  @brief Helper to copy an identifier, using nothrow copy if available, otherwise `.copy()`.
- *  @return std::optional containing the copy, or std::nullopt on failure.
+ *  @brief Concept checking if a type has a @c .copy() method returning @c expected<T>.
+ *    This allows non-nothrow-copyable types to participate in safe copy operations.
  */
-template <typename identifier_type_>
-[[nodiscard]] std::optional<identifier_type_> try_copy_identifier(identifier_type_ const &id) noexcept {
+template <typename type_>
+concept has_copy_method = requires(type_ const &t) {
+    { t.copy() } noexcept -> std::same_as<expected<type_>>;
+};
+
+/**
+ *  @brief Concept checking if a type has a static @c .make() method returning @c expected<T>.
+ *    This allows types with potentially throwing constructors to participate in safe construction.
+ */
+template <typename type_, typename... args_types_>
+concept has_make_method = requires(args_types_&&... args) {
+    { type_::make(std::forward<args_types_>(args)...) } noexcept -> std::same_as<expected<type_>>;
+};
+
+/**
+ *  @brief Helper to copy an object, using nothrow copy if available, otherwise @c .copy() method.
+ *  @return @c expected<object_type_> containing the copy and status.
+ *    On success, status is @c success_k. On failure, returns default-constructed object with error status.
+ */
+template <typename object_type_>
+[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &obj) noexcept {
+    static_assert(std::is_nothrow_default_constructible_v<object_type_>,
+                  "Type must be nothrow default-constructible to use with expected<T>");
 
     // Fast path: nothrow copy
-    if constexpr (std::is_nothrow_copy_constructible_v<identifier_type_>) return identifier_type_ {id};
+    if constexpr (std::is_nothrow_copy_constructible_v<object_type_>)
+        return expected<object_type_>(object_type_ {obj}, status_t {success_k});
 
     // Fallback: use .copy() method
-    else if constexpr (has_copy_method<identifier_type_>) return id.copy();
+    else if constexpr (has_copy_method<object_type_>) return obj.copy();
 
     else {
         // Type doesn't support safe copying
-        static_assert(std::is_nothrow_copy_constructible_v<identifier_type_> || has_copy_method<identifier_type_>,
-                      "Identifier type must be either nothrow copy constructible or provide a .copy() -> "
-                      "std::optional<T> method for watch operations");
-        return std::nullopt;
+        static_assert(std::is_nothrow_copy_constructible_v<object_type_> || has_copy_method<object_type_>,
+                      "Type must be either nothrow copy constructible or provide a .copy() -> "
+                      "expected<T> method for copy operations");
+        return expected<object_type_>(object_type_ {}, status_t {errc_t::unknown_k});
     }
 }
 
@@ -322,7 +390,7 @@ struct versioning_for {
 
     static_assert(!std::is_reference<element_t>(), "Only value types are supported.");
     static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
-                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() -> std::optional<T> "
+                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() -> expected<T> "
                   "method");
     static_assert(std::is_nothrow_default_constructible<element_t>(), "We need an empty state.");
     static_assert(std::is_nothrow_move_constructible<element_t>() && std::is_nothrow_move_assignable<element_t>(),
