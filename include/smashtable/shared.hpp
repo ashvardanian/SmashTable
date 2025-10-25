@@ -117,6 +117,17 @@ inline constexpr bool is_safe_callback = true;
 /** @brief Sentinel type for range-based iteration end conditions. */
 struct end_sentinel_t {};
 
+/** @brief Placeholder type for template conditional where no type is needed. */
+struct dummy_t {};
+
+/** @brief Sink type that discards assigned values. */
+struct black_hole_t {
+    template <typename type_>
+    black_hole_t &operator=(type_ &&) noexcept {
+        return *this;
+    }
+};
+
 struct no_op_t {
     constexpr void operator()() const noexcept {}
     template <typename type_>
@@ -175,6 +186,17 @@ struct assume_unique_t {
     explicit assume_unique_t() = default;
 };
 inline constexpr assume_unique_t assume_unique {};
+
+/**
+ *  @brief Tag to assume input range is sorted, enable O(n) bulk construction.
+ *    Allows building balanced tree from sorted range without individual insertions.
+ *    Precondition: Elements must be in sorted order according to comparator.
+ *  @warning If precondition violated (unsorted input), behavior is undefined.
+ */
+struct assume_sorted_t {
+    explicit assume_sorted_t() = default;
+};
+inline constexpr assume_sorted_t assume_sorted {};
 
 /**
  *  @brief Tag to terminate search on first slot match without probing.
@@ -248,6 +270,105 @@ struct watch_t {
 };
 
 /**
+ *  @brief Alternative to C++ 23 @c std::expected and C++ 17 @c std::optional with error code.
+ *    Wraps a @c noexcept default-constructible @c entry_type_, without all the complexity of
+ *    implementing a @c union -based uninitialized storage state.
+ */
+template <typename entry_type_>
+struct expected {
+    using entry_t = entry_type_;
+    static_assert(std::is_nothrow_default_constructible_v<entry_t>,
+                  "expected<T> requires T to be nothrow default-constructible");
+
+    entry_t entry;
+    status_t status;
+
+    expected() = default;
+    expected(entry_t &&e, status_t s = status_t {}) noexcept : entry(std::move(e)), status(s) {}
+    expected(entry_t const &e, status_t s = status_t {}) noexcept : entry(e), status(s) {}
+
+    /**
+     *  @brief Checks if the expected contains a successful value.
+     *  @return @c true if status is success, @c false otherwise.
+     */
+    explicit operator bool() const noexcept { return status; }
+
+    /**
+     *  @brief Accesses the contained value (like @c std::optional).
+     *  @return Reference to the entry.
+     */
+    entry_t &operator*() & noexcept { return entry; }
+
+    /**
+     *  @brief Accesses the contained value (like @c std::optional, const version).
+     *  @return Const reference to the entry.
+     */
+    entry_t const &operator*() const & noexcept { return entry; }
+
+    /**
+     *  @brief Accesses the contained value (like @c std::optional, rvalue version).
+     *  @return Rvalue reference to the entry.
+     */
+    entry_t &&operator*() && noexcept { return std::move(entry); }
+
+    /**
+     *  @brief Member access operator (like @c std::optional).
+     *  @return Pointer to the entry.
+     */
+    entry_t *operator->() noexcept { return &entry; }
+
+    /**
+     *  @brief Member access operator (like @c std::optional, const version).
+     *  @return Const pointer to the entry.
+     */
+    entry_t const *operator->() const noexcept { return &entry; }
+};
+
+/**
+ *  @brief Concept checking if a type has a @c .copy() method returning @c expected<T>.
+ *    This allows non-nothrow-copyable types to participate in safe copy operations.
+ */
+template <typename type_>
+concept has_copy_method = requires(type_ const &t) {
+    { t.copy() } noexcept -> std::same_as<expected<type_>>;
+};
+
+/**
+ *  @brief Concept checking if a type has a static @c .make() method returning @c expected<T>.
+ *    This allows types with potentially throwing constructors to participate in safe construction.
+ */
+template <typename type_, typename... args_types_>
+concept has_make_method = requires(args_types_&&... args) {
+    { type_::make(std::forward<args_types_>(args)...) } noexcept -> std::same_as<expected<type_>>;
+};
+
+/**
+ *  @brief Helper to copy an object, using nothrow copy if available, otherwise @c .copy() method.
+ *  @return @c expected<object_type_> containing the copy and status.
+ *    On success, status is @c success_k. On failure, returns default-constructed object with error status.
+ */
+template <typename object_type_>
+[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &obj) noexcept {
+    static_assert(std::is_nothrow_default_constructible_v<object_type_>,
+                  "Type must be nothrow default-constructible to use with expected<T>");
+
+    // Fast path: nothrow copy
+    if constexpr (std::is_nothrow_copy_constructible_v<object_type_>)
+        return expected<object_type_>(object_type_ {obj}, status_t {success_k});
+
+    // Fallback: use .copy() method
+    else if constexpr (has_copy_method<object_type_>) return obj.copy();
+
+    else {
+        // Type doesn't support safe copying
+        static_assert(std::is_nothrow_copy_constructible_v<object_type_> || has_copy_method<object_type_>,
+                      "Type must be either nothrow copy constructible or provide a .copy() -> "
+                      "expected<T> method for copy operations");
+        return expected<object_type_>(object_type_ {}, status_t {errc_t::unknown_k});
+    }
+}
+
+/**
  *  @brief Decorates an element type with generation and visibility metadata for transactional containers.
  *
  *  @par Template requirements
@@ -268,7 +389,9 @@ struct versioning_for {
     using watch_t = ashvardanian::smashtable::watch_t;
 
     static_assert(!std::is_reference<element_t>(), "Only value types are supported.");
-    static_assert(std::is_nothrow_copy_constructible<identifier_t>(), "To WATCH, the ID must be safe to copy.");
+    static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
+                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() -> expected<T> "
+                  "method");
     static_assert(std::is_nothrow_default_constructible<element_t>(), "We need an empty state.");
     static_assert(std::is_nothrow_move_constructible<element_t>() && std::is_nothrow_move_assignable<element_t>(),
                   "To make all the methods `noexcept`, the moves must be safe too.");
@@ -355,5 +478,72 @@ struct versioning_for {
         }
     };
 };
+
+/**
+ *  @brief Returns an unsigned integer with only the most significant bit set.
+ *    Used for creating bitmasks in bucket metadata operations.
+ *  @tparam unsigned_type_ Unsigned integer type (e.g., @c std::uint32_t).
+ *  @return Value with only the top bit set (e.g., 0x80000000 for 32-bit).
+ */
+template <typename unsigned_type_>
+constexpr unsigned_type_ enabled_top_bit() noexcept {
+    return static_cast<unsigned_type_>(1) << (sizeof(unsigned_type_) * 8 - 1);
+}
+
+/**
+ *  @brief Rounds up an integer to the next power of two.
+ *    Returns 0 for input 0, and 1 for input 1.
+ *  @param[in] x Value to round up.
+ *  @return Smallest power of two greater than or equal to @p x.
+ */
+constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
+    if (x <= 1) return x;
+    return std::size_t {1} << (64 - std::countl_zero(x - 1));
+}
+
+/**
+ *  @brief Rounds up a value to the next multiple of a compile-time constant.
+ *  @tparam value_type_ Type of value to round (must be integral).
+ *  @tparam multiple_ The multiple to round up to (compile-time constant).
+ *  @param[in] x Value to round up.
+ *  @return Smallest multiple of @p multiple_ greater than or equal to @p x.
+ */
+template <typename value_type_, value_type_ multiple_>
+constexpr value_type_ roundup_to_multiple(value_type_ x) noexcept {
+    return ((x + multiple_ - 1) / multiple_) * multiple_;
+}
+
+#pragma mark - Tree Concepts
+
+/**
+ *  @brief Concept to detect if a tree type supports order statistics operations.
+ *
+ *  Order statistics allow O(log n) access to the k-th smallest element (select)
+ *  and finding the rank (position) of an element. Weight-balanced trees support
+ *  these operations, while standard AVL trees do not.
+ *
+ *  @tparam tree_type_ The tree type to check.
+ */
+template <typename tree_type_>
+concept supports_order_statistics =
+    requires(tree_type_ const &tree, std::size_t k, typename tree_type_::entry_t const &entry) {
+        { tree.select(k) } -> std::convertible_to<typename tree_type_::node_t const *>;
+        { tree.rank(entry) } -> std::same_as<std::size_t>;
+    };
+
+/**
+ *  @brief Concept to detect if a node type supports order statistics operations.
+ *
+ *  This is the node-level version of @c supports_order_statistics for static methods.
+ *
+ *  @tparam node_type_ The node type to check.
+ */
+template <typename node_type_>
+concept node_supports_order_statistics =
+    requires(node_type_ *node, std::size_t k, typename node_type_::entry_t const &entry,
+             typename node_type_::comparator_t const &comp) {
+        { node_type_::select(node, k, comp) } -> std::convertible_to<node_type_ *>;
+        { node_type_::rank(node, entry, comp) } -> std::same_as<std::size_t>;
+    };
 
 } // namespace ashvardanian::smashtable
