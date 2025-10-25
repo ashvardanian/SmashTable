@@ -84,6 +84,11 @@ class basic_vector {
         return {success_k};
     }
 
+    void push_back(element_t &&value, assume_reserved_t) noexcept {
+        assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
+        new (&data_[size_++]) element_t(std::move(value));
+    }
+
     void clear() noexcept { size_ = 0; }
     std::size_t size() const noexcept { return size_; }
     std::size_t capacity() const noexcept { return capacity_; }

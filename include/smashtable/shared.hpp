@@ -117,6 +117,17 @@ inline constexpr bool is_safe_callback = true;
 /** @brief Sentinel type for range-based iteration end conditions. */
 struct end_sentinel_t {};
 
+/** @brief Placeholder type for template conditional where no type is needed. */
+struct dummy_t {};
+
+/** @brief Sink type that discards assigned values. */
+struct black_hole_t {
+    template <typename type_>
+    black_hole_t &operator=(type_ &&) noexcept {
+        return *this;
+    }
+};
+
 struct no_op_t {
     constexpr void operator()() const noexcept {}
     template <typename type_>
@@ -175,6 +186,17 @@ struct assume_unique_t {
     explicit assume_unique_t() = default;
 };
 inline constexpr assume_unique_t assume_unique {};
+
+/**
+ *  @brief Tag to assume input range is sorted, enable O(n) bulk construction.
+ *    Allows building balanced tree from sorted range without individual insertions.
+ *    Precondition: Elements must be in sorted order according to comparator.
+ *  @warning If precondition violated (unsorted input), behavior is undefined.
+ */
+struct assume_sorted_t {
+    explicit assume_sorted_t() = default;
+};
+inline constexpr assume_sorted_t assume_sorted {};
 
 /**
  *  @brief Tag to terminate search on first slot match without probing.
@@ -248,6 +270,37 @@ struct watch_t {
 };
 
 /**
+ *  @brief Concept checking if a type has a `.copy()` method returning std::optional<T>.
+ *    This allows non-nothrow-copyable types to participate in watch operations.
+ */
+template <typename type_>
+concept has_copy_method = requires(type_ const &t) {
+    { t.copy() } -> std::same_as<std::optional<type_>>;
+};
+
+/**
+ *  @brief Helper to copy an identifier, using nothrow copy if available, otherwise `.copy()`.
+ *  @return std::optional containing the copy, or std::nullopt on failure.
+ */
+template <typename identifier_type_>
+[[nodiscard]] std::optional<identifier_type_> try_copy_identifier(identifier_type_ const &id) noexcept {
+
+    // Fast path: nothrow copy
+    if constexpr (std::is_nothrow_copy_constructible_v<identifier_type_>) return identifier_type_ {id};
+
+    // Fallback: use .copy() method
+    else if constexpr (has_copy_method<identifier_type_>) return id.copy();
+
+    else {
+        // Type doesn't support safe copying
+        static_assert(std::is_nothrow_copy_constructible_v<identifier_type_> || has_copy_method<identifier_type_>,
+                      "Identifier type must be either nothrow copy constructible or provide a .copy() -> "
+                      "std::optional<T> method for watch operations");
+        return std::nullopt;
+    }
+}
+
+/**
  *  @brief Decorates an element type with generation and visibility metadata for transactional containers.
  *
  *  @par Template requirements
@@ -268,7 +321,9 @@ struct versioning_for {
     using watch_t = ashvardanian::smashtable::watch_t;
 
     static_assert(!std::is_reference<element_t>(), "Only value types are supported.");
-    static_assert(std::is_nothrow_copy_constructible<identifier_t>(), "To WATCH, the ID must be safe to copy.");
+    static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
+                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() -> std::optional<T> "
+                  "method");
     static_assert(std::is_nothrow_default_constructible<element_t>(), "We need an empty state.");
     static_assert(std::is_nothrow_move_constructible<element_t>() && std::is_nothrow_move_assignable<element_t>(),
                   "To make all the methods `noexcept`, the moves must be safe too.");
@@ -355,5 +410,72 @@ struct versioning_for {
         }
     };
 };
+
+/**
+ *  @brief Returns an unsigned integer with only the most significant bit set.
+ *    Used for creating bitmasks in bucket metadata operations.
+ *  @tparam unsigned_type_ Unsigned integer type (e.g., @c std::uint32_t).
+ *  @return Value with only the top bit set (e.g., 0x80000000 for 32-bit).
+ */
+template <typename unsigned_type_>
+constexpr unsigned_type_ enabled_top_bit() noexcept {
+    return static_cast<unsigned_type_>(1) << (sizeof(unsigned_type_) * 8 - 1);
+}
+
+/**
+ *  @brief Rounds up an integer to the next power of two.
+ *    Returns 0 for input 0, and 1 for input 1.
+ *  @param[in] x Value to round up.
+ *  @return Smallest power of two greater than or equal to @p x.
+ */
+constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
+    if (x <= 1) return x;
+    return std::size_t {1} << (64 - std::countl_zero(x - 1));
+}
+
+/**
+ *  @brief Rounds up a value to the next multiple of a compile-time constant.
+ *  @tparam value_type_ Type of value to round (must be integral).
+ *  @tparam multiple_ The multiple to round up to (compile-time constant).
+ *  @param[in] x Value to round up.
+ *  @return Smallest multiple of @p multiple_ greater than or equal to @p x.
+ */
+template <typename value_type_, value_type_ multiple_>
+constexpr value_type_ roundup_to_multiple(value_type_ x) noexcept {
+    return ((x + multiple_ - 1) / multiple_) * multiple_;
+}
+
+#pragma mark - Tree Concepts
+
+/**
+ *  @brief Concept to detect if a tree type supports order statistics operations.
+ *
+ *  Order statistics allow O(log n) access to the k-th smallest element (select)
+ *  and finding the rank (position) of an element. Weight-balanced trees support
+ *  these operations, while standard AVL trees do not.
+ *
+ *  @tparam tree_type_ The tree type to check.
+ */
+template <typename tree_type_>
+concept supports_order_statistics =
+    requires(tree_type_ const &tree, std::size_t k, typename tree_type_::entry_t const &entry) {
+        { tree.select(k) } -> std::convertible_to<typename tree_type_::node_t const *>;
+        { tree.rank(entry) } -> std::same_as<std::size_t>;
+    };
+
+/**
+ *  @brief Concept to detect if a node type supports order statistics operations.
+ *
+ *  This is the node-level version of @c supports_order_statistics for static methods.
+ *
+ *  @tparam node_type_ The node type to check.
+ */
+template <typename node_type_>
+concept node_supports_order_statistics =
+    requires(node_type_ *node, std::size_t k, typename node_type_::entry_t const &entry,
+             typename node_type_::comparator_t const &comp) {
+        { node_type_::select(node, k, comp) } -> std::convertible_to<node_type_ *>;
+        { node_type_::rank(node, entry, comp) } -> std::same_as<std::size_t>;
+    };
 
 } // namespace ashvardanian::smashtable

@@ -39,6 +39,11 @@ namespace ashvardanian::smashtable {
  *  list. Only "Monotonic Atomic View" consistency is guaranteed, including its inferior "Read Committed" and
  *  "Read Uncommitted" levels. Transactions cannot observe writes from other uncommitted transactions.
  *
+ *  The state management doesn't rely on entry pointers or iterators. Those could simplify the implementation,
+ *  but introduce require validity constraints for re-allocations and modifications of the tree and underlying
+ *  allocator behavior. So all entry IDs must either be nothrow-copyable or provide a @c copy() member method
+ *  returning an @c std::optional<T> to support safe copying for watch bookkeeping.
+ *
  *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
  *  @see https://jepsen.io/consistency/models/read-committed
  *
@@ -94,6 +99,9 @@ class transactional_binary_tree {
         typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_vector_t = basic_vector<watched_identifier_t, watches_allocator_t>;
 
+    using changed_ids_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
+    using changed_ids_vector_t = basic_vector<identifier_t, changed_ids_allocator_t>;
+
     using store_t = transactional_binary_tree;
     using extract_result_t = typename versioned_entry_set_t::extract_result_t;
 
@@ -108,8 +116,9 @@ class transactional_binary_tree {
         };
 
         store_t *store_ {nullptr};
-        versioned_entry_set_t changes_ {};
+        versioned_entry_set_t changed_entries_ {};
         watches_vector_t watches_ {};
+        changed_ids_vector_t changed_ids_ {};
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
         bool is_snapshot_ {false};
@@ -135,13 +144,13 @@ class transactional_binary_tree {
          *  @brief Checks if this transaction has any pending changes (upserts or erases).
          *  @return bool True if there are pending changes, false otherwise.
          */
-        bool has_changes() const noexcept { return changes_.size() != 0; }
+        bool has_changes() const noexcept { return changed_entries_.size() != 0; }
 
         /**
          *  @brief Returns the number of pending changes in this transaction.
          *  @return std::size_t The count of staged changes (including both upserts and erases).
          */
-        std::size_t changes_count() const noexcept { return changes_.size(); }
+        std::size_t changed_entries_count() const noexcept { return changed_entries_.size(); }
 
       public:
         /**
@@ -153,21 +162,29 @@ class transactional_binary_tree {
          */
         [[nodiscard]] status_t insert(element_t &&element) noexcept {
             // Check local changes first
-            identifier_t id {element};
-            auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && !local_it->deleted) return {invalid_argument_k};
+            auto local_it = changed_entries_.find(element);
+            if (local_it != changed_entries_.end() && !local_it->deleted) return {invalid_argument_k};
 
             // Check main store if not in local changes or was deleted locally
-            if (store_ref().contains(id)) return {invalid_argument_k};
+            if (store_ref().contains(element)) return {invalid_argument_k};
 
             // Key doesn't exist anywhere, proceed with insertion
+            auto maybe_id = try_copy_identifier(id);
+            if (!maybe_id) return status_t {out_of_memory_heap_k};
+
+            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            if (!reserve_status) return reserve_status;
+
             versioned_entry_t entry;
             entry.element = std::move(element);
             entry.generation = generation_;
             entry.deleted = false;
             entry.visible = false;
-            auto result = changes_.upsert(std::move(entry));
-            return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
+            auto result = changed_entries_.upsert(std::move(entry));
+            if (result.failed()) return status_t {out_of_memory_heap_k};
+
+            changed_ids_.push_back(std::move(*maybe_id), assume_reserved);
+            return status_t {success_k};
         }
 
         /**
@@ -179,21 +196,29 @@ class transactional_binary_tree {
          */
         [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
             // Check local changes first
-            identifier_t id {element};
-            auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && !local_it->deleted) return {success_k};
+            auto local_it = changed_entries_.find(element);
+            if (local_it != changed_entries_.end() && !local_it->deleted) return {success_k};
 
             // Check main store if not in local changes or was deleted locally
-            if (store_ref().contains(id)) return {success_k};
+            if (store_ref().contains(element)) return {success_k};
 
             // Key doesn't exist anywhere, proceed with insertion
+            auto maybe_id = try_copy_identifier(id);
+            if (!maybe_id) return status_t {out_of_memory_heap_k};
+
+            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            if (!reserve_status) return reserve_status;
+
             versioned_entry_t entry;
             entry.element = std::move(element);
             entry.generation = generation_;
             entry.deleted = false;
             entry.visible = false;
-            auto result = changes_.upsert(std::move(entry));
-            return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
+            auto result = changed_entries_.upsert(std::move(entry));
+            if (result.failed()) return status_t {out_of_memory_heap_k};
+
+            changed_ids_.try_push_back(std::move(*maybe_id), assume_reserved);
+            return status_t {success_k};
         }
 
         /**
@@ -204,13 +229,22 @@ class transactional_binary_tree {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t insert_or_assign(element_t &&element) noexcept {
+            auto maybe_id = try_copy_identifier(element);
+            if (!maybe_id) return status_t {out_of_memory_heap_k};
+
+            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            if (!reserve_status) return reserve_status;
+
             versioned_entry_t entry;
             entry.element = std::move(element);
             entry.generation = generation_;
             entry.deleted = false;
             entry.visible = false;
-            auto result = changes_.upsert(std::move(entry));
-            return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
+            auto result = changed_entries_.upsert(std::move(entry));
+            if (result.failed()) return status_t {out_of_memory_heap_k};
+
+            changed_ids_.try_push_back(std::move(*maybe_id), assume_reserved);
+            return status_t {success_k};
         }
 
         /**
@@ -221,30 +255,40 @@ class transactional_binary_tree {
         [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
+            auto maybe_id = try_copy_identifier(id);
+            if (!maybe_id) return status_t {out_of_memory_heap_k};
+
+            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            if (!reserve_status) return reserve_status;
+
             versioned_entry_t entry;
             entry.element = element_t {id};
             entry.generation = generation_;
             entry.deleted = true;
             entry.visible = false;
-            auto result = changes_.upsert(std::move(entry));
-            return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
+            auto result = changed_entries_.upsert(std::move(entry));
+            if (result.failed()) return status_t {out_of_memory_heap_k};
+
+            changed_ids_.try_push_back(std::move(*maybe_id), assume_reserved);
+            return status_t {success_k};
         }
 
         [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.try_reserve(size); }
 
-        [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
+        [[nodiscard]] status_t watch(identifier_t id) noexcept {
             status_t result {success_k};
             auto found = [&](versioned_entry_t const &entry) noexcept {
-                result =
-                    watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+                result = watches_.try_push_back({std::move(id), watch_t {entry.generation, entry.deleted}});
             };
-            auto missing = [&]() noexcept { result = watches_.try_push_back({id, missing_watch()}); };
+            auto missing = [&]() noexcept { result = watches_.try_push_back({std::move(id), missing_watch()}); };
             store_ref().find_visible_entry_(id, found, missing);
             return result;
         }
 
         [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
-            return watches_.try_push_back({identifier_t {entry.element}, watch_t {entry.generation, entry.deleted}});
+            auto maybe_id = try_copy_identifier(identifier_t {entry.element});
+            if (!maybe_id) return status_t {out_of_memory_heap_k};
+            return watches_.try_push_back({std::move(*maybe_id), watch_t {entry.generation, entry.deleted}});
         }
 
         /**
@@ -252,15 +296,16 @@ class transactional_binary_tree {
          *    You may want to @c watch() the received object, it's not done by default.
          *    Unlike @c transactional_binary_tree::find(), will include the entries added to this transaction.
          *
-         *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
-         *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end())
+            if (auto iterator = changed_entries_.find(std::forward<comparable_type_>(comparable));
+                iterator != changed_entries_.end())
                 !iterator->deleted ? callback_found(*iterator) : callback_missing();
             else
                 store_ref().find(std::forward<comparable_type_>(comparable),
@@ -289,17 +334,17 @@ class transactional_binary_tree {
          *    You may want to @c watch() the received object, it's not done by default.
          *    Unlike @c transactional_binary_tree::lower_bound(), will include entries added to this transaction.
          *
-         *  @param[in] comparable        Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found    Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
-         *  @param[in] callback_missing  Callback triggered if nothing was found. Must be @c noexcept.
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
-            auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
+            auto internal_iterator = changed_entries_.lower_bound(std::forward<comparable_type_>(comparable));
+            while (internal_iterator != changed_entries_.end() && internal_iterator->deleted) ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
             // we might face an entry that was already deleted from here,
@@ -307,7 +352,7 @@ class transactional_binary_tree {
             auto faced_deleted_entry = false;
             auto callback_external_found = [&](element_t const &external_element) {
                 // The simplest case is when we have an external object.
-                if (internal_iterator == changes_.end()) return callback_found(external_element);
+                if (internal_iterator == changed_entries_.end()) return callback_found(external_element);
 
                 element_t const &internal_element = *internal_iterator;
                 if (!versioned_comparator_t {}(external_element, internal_element))
@@ -315,15 +360,16 @@ class transactional_binary_tree {
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
-                auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
+                auto external_element_internal_state = changed_entries_.find(external_element);
+                if (external_element_internal_state != changed_entries_.end() &&
+                    external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                 }
                 else callback_found(external_element);
             };
             auto callback_external_missing = [&] {
-                if (internal_iterator == changes_.end()) callback_missing();
+                if (internal_iterator == changed_entries_.end()) callback_missing();
                 else callback_found(*internal_iterator);
             };
 
@@ -341,7 +387,7 @@ class transactional_binary_tree {
          *    Includes transaction changes.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback   Callback invoked for each element equal to the key. Must be @c noexcept.
+         *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
@@ -353,8 +399,8 @@ class transactional_binary_tree {
         /**
          *  @brief Iterates over all entries in the range [ @p lower, @p upper), including transaction changes.
          *
-         *  @param[in] lower    Lower bound of the range (inclusive).
-         *  @param[in] upper    Upper bound of the range (exclusive).
+         *  @param[in] lower Lower bound of the range (inclusive).
+         *  @param[in] upper Upper bound of the range (exclusive).
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -362,18 +408,19 @@ class transactional_binary_tree {
         void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
             // First, iterate over local changes
             auto less = versioned_comparator_t {};
-            auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
+            auto lower_internal = changed_entries_.lower_bound(std::forward<lower_type_>(lower));
             auto const upper_internal_bound = identifier_t(upper);
-            for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it)
+            for (auto it = lower_internal; it != changed_entries_.end() && less(*it, upper_internal_bound); ++it)
                 if (!it->deleted) callback(it->element);
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
             store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                               [&](element_t const &external_element) {
                                   // Check if this entry exists in local changes
-                                  auto local_state = changes_.find(external_element);
+                                  auto local_state = changed_entries_.find(external_element);
                                   // Not modified locally, include it
-                                  if (local_state == changes_.end()) callback(external_element); // Not modified locally
+                                  if (local_state == changed_entries_.end())
+                                      callback(external_element); // Not modified locally
                                   // If modified locally, we already processed it above
                               });
         }
@@ -383,8 +430,8 @@ class transactional_binary_tree {
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
             auto external_previous_id = identifier_t(comparable);
-            auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
+            auto internal_iterator = changed_entries_.upper_bound(std::forward<comparable_type_>(comparable));
+            while (internal_iterator != changed_entries_.end() && internal_iterator->deleted) ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
             // we might face an entry that was already deleted from here,
@@ -392,7 +439,7 @@ class transactional_binary_tree {
             auto faced_deleted_entry = false;
             auto callback_external_found = [&](element_t const &external_element) {
                 // The simplest case is when we have an external object.
-                if (internal_iterator == changes_.end()) {
+                if (internal_iterator == changed_entries_.end()) {
                     callback_found(external_element);
                     return;
                 }
@@ -405,15 +452,16 @@ class transactional_binary_tree {
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
-                auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
+                auto external_element_internal_state = changed_entries_.find(external_element);
+                if (external_element_internal_state != changed_entries_.end() &&
+                    external_element_internal_state->deleted) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                 }
                 else { callback_found(external_element); }
             };
             auto callback_external_missing = [&] {
-                if (internal_iterator == changes_.end()) callback_missing();
+                if (internal_iterator == changed_entries_.end()) callback_missing();
                 else callback_found(*internal_iterator);
             };
 
@@ -445,14 +493,14 @@ class transactional_binary_tree {
             versioned_comparator_t less;
 
             // Build merged sorted view: iterate both trees in sorted order
-            auto local_it = changes_.begin();
+            auto local_it = changed_entries_.begin();
             versioned_entry_node_t *store_node = versioned_entry_node_t::find_min(store_ref().entries_.root());
 
-            while ((local_it != changes_.end() || store_node) && !found) {
+            while ((local_it != changed_entries_.end() || store_node) && !found) {
                 // Determine which element comes next in sorted order
                 bool take_local = false;
 
-                if (local_it == changes_.end()) { take_local = false; }
+                if (local_it == changed_entries_.end()) { take_local = false; }
                 else if (!store_node) { take_local = true; }
                 else { take_local = less(local_it->element, store_node->entry.element); }
 
@@ -470,10 +518,11 @@ class transactional_binary_tree {
                 else {
                     // Process store entry
                     identifier_t store_id {store_node->entry.element};
-                    auto local_state = changes_.find(store_id);
+                    auto local_state = changed_entries_.find(store_id);
 
                     // Only count if visible and not overridden/deleted locally
-                    if (store_node->entry.visible && !store_node->entry.deleted && local_state == changes_.end()) {
+                    if (store_node->entry.visible && !store_node->entry.deleted &&
+                        local_state == changed_entries_.end()) {
                         if (visible_index == k) {
                             callback_found(store_node->entry.element);
                             found = true;
@@ -511,8 +560,8 @@ class transactional_binary_tree {
             versioned_comparator_t less;
 
             // Check if target exists in local changes or main store
-            auto local_target = changes_.find(target_id);
-            if (local_target != changes_.end() && !local_target->deleted) { found = true; }
+            auto local_target = changed_entries_.find(target_id);
+            if (local_target != changed_entries_.end() && !local_target->deleted) { found = true; }
             else if (store_ref().contains(target_id)) { found = true; }
 
             if (!found) {
@@ -521,13 +570,13 @@ class transactional_binary_tree {
             }
 
             // Count visible elements less than target
-            auto local_it = changes_.begin();
+            auto local_it = changed_entries_.begin();
             versioned_entry_node_t *store_node = versioned_entry_node_t::find_min(store_ref().entries_.root());
 
-            while (local_it != changes_.end() || store_node) {
+            while (local_it != changed_entries_.end() || store_node) {
                 bool take_local = false;
 
-                if (local_it == changes_.end()) { take_local = false; }
+                if (local_it == changed_entries_.end()) { take_local = false; }
                 else if (!store_node) { take_local = true; }
                 else { take_local = less(local_it->element, store_node->entry.element); }
 
@@ -538,11 +587,11 @@ class transactional_binary_tree {
                 }
                 else {
                     identifier_t store_id {store_node->entry.element};
-                    auto local_state = changes_.find(store_id);
+                    auto local_state = changed_entries_.find(store_id);
 
                     // Count if visible, not locally overridden, and less than target
-                    if (store_node->entry.visible && !store_node->entry.deleted && local_state == changes_.end() &&
-                        less(store_node->entry.element, target_id)) {
+                    if (store_node->entry.visible && !store_node->entry.deleted &&
+                        local_state == changed_entries_.end() && less(store_node->entry.element, target_id)) {
                         ++rank_value;
                     }
 
@@ -554,53 +603,44 @@ class transactional_binary_tree {
             callback_found(rank_value);
         }
 
+        /**
+         *  If the staging fails, the transaction contents remain unchanged. On success, all
+         *  changes are merged into the main store but remain invisible until @c commit() is called.
+         *  Otherwise, the user may call @c rollback() to pull back the staged changes into the
+         *  transaction itself, or @c reset() to discard all changes and start fresh.
+         */
         [[nodiscard]] status_t stage() noexcept {
             // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
-            auto entry_missing = missing_watch();
+            auto const entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
-                auto status = store.find_latest_entry_(
+                store.find_latest_entry_(
                     id_and_watch.id,
                     [&](versioned_entry_t const &entry) noexcept {
                         consistency_violated = entry != id_and_watch.watch;
                     },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated) return {errc_t::consistency_k};
-                if (!status) return status;
             }
 
-            // Now all of our watches will be replaced with "links" to entries
-            // we are merging into the main tree.
-            watches_.clear();
-            auto status = watches_.try_reserve(changes_.size());
-            if (!status) return status;
-
-            // No new memory allocations or failures are possible after that.
-            // It is all safe.
-            changes_.for_each([&](versioned_entry_t const &entry) noexcept {
-                [[maybe_unused]] auto push_status =
-                    watches_.try_push_back({identifier_t {entry.element}, watch_t {generation_, entry.deleted}});
-                assert(push_status && "Should never fail after reserve");
-            });
-
-            // Than just merge our current nodes.
-            // The visibility will be updated later in the `commit`.
-            store.entries_.merge(changes_);
+            // Merge our current nodes into the store. The visibility will be updated later in the `commit`.
+            // We can mark all new entries as unique, because no other set of entries can have the same
+            // generation as contents of this transaction.
+            store.entries_.merge(changed_entries_, assume_unique);
             stage_ = stage_t::staged_k;
             return {success_k};
         }
 
         [[nodiscard]] status_t reset() noexcept {
-            // If the transaction was "staged",
-            // we must delete all the entries.
+            // If the transaction was "staged", we must delete all the entries.
             auto &store = store_ref();
             if (stage_ == stage_t::staged_k)
-                for (auto const &id_and_watch : watches_)
-                    store.entries_.erase(dated_identifier_t {id_and_watch.id, id_and_watch.watch.generation});
+                for (auto const &id : changed_ids_) store.entries_.erase(dated_identifier_t {id, generation_});
 
             watches_.clear();
-            changes_.clear();
+            changed_entries_.clear();
+            changed_ids_.clear();
             stage_ = stage_t::created_k;
             generation_ = store.new_generation_();
             return {success_k};
@@ -609,15 +649,13 @@ class transactional_binary_tree {
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
 
-            // If the transaction was "staged",
-            // we must delete all the entries.
+            // Extract staged entries back into the transaction
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k)
-                for (auto const &id_and_watch : watches_)
-                    changes_.merge(
-                        store.entries_.extract(dated_identifier_t {id_and_watch.id, id_and_watch.watch.generation}));
+            for (auto const &id : changed_ids_)
+                changed_entries_.merge(store.entries_.extract(dated_identifier_t {id, generation_}));
 
-            watches_.clear();
+            // Preserve watches_ for future stage operations (read watches persist across rollback)
+            changed_ids_.clear();
             stage_ = stage_t::created_k;
             generation_ = store.new_generation_();
             return {success_k};
@@ -626,13 +664,12 @@ class transactional_binary_tree {
         [[nodiscard]] status_t commit() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
 
-            // Once we make an entry visible,
-            // if there are more than one with the same key,
+            // Once we make an entry visible, if there are more than one with the same key,
             // the older generation must die.
             auto &store = store_ref();
-            for (auto const &id_and_watch : watches_)
-                store.unmask_and_compact_(id_and_watch.id, id_and_watch.watch.generation);
+            for (auto const &id : changed_ids_) store.unmask_and_compact_(id, generation_);
 
+            changed_ids_.clear();
             stage_ = stage_t::created_k;
             return {success_k};
         }
@@ -687,8 +724,8 @@ class transactional_binary_tree {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                              callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                            callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         versioned_entry_node_t *latest = nullptr;
         versioned_entry_node_t::range(entries_.root(), comparable, comparable, entries_.key_comp(),
@@ -698,9 +735,8 @@ class transactional_binary_tree {
                                               latest = node;
                                       });
 
-        return (latest && !latest->entry.deleted)
-                   ? invoke_safely([&] { callback_found(latest->entry); })
-                   : invoke_safely(std::forward<callback_missing_type_>(callback_missing));
+        if (latest && !latest->entry.deleted) callback_found(latest->entry);
+        else callback_missing();
     }
 
     void unmask_and_compact_(identifier_t const &id, generation_t generation_to_unmask) noexcept {
@@ -827,10 +863,7 @@ class transactional_binary_tree {
      *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
      */
     [[nodiscard]] status_t insert(element_t &&element) noexcept {
-        // Check if key already exists
-        identifier_t id {element};
-        if (contains(id)) return {invalid_argument_k};
-
+        if (contains(element)) return {invalid_argument_k};
         return insert_or_assign(std::move(element));
     }
 
@@ -842,10 +875,7 @@ class transactional_binary_tree {
      *  @return status_t Always succeeds (unless OOM). Returns success even if key exists.
      */
     [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
-        // Check if key already exists
-        identifier_t id {element};
-        if (contains(id)) return {success_k};
-
+        if (contains(element)) return {success_k};
         return insert_or_assign(std::move(element));
     }
 
@@ -860,7 +890,6 @@ class transactional_binary_tree {
         auto node = entries_.allocator().allocate(1);
         if (!node) return {out_of_memory_heap_k};
 
-        identifier_t id {element};
         generation_t generation = new_generation_();
         auto &entry = node->entry;
         new (&entry.element) element_t(std::move(element));
@@ -871,7 +900,7 @@ class transactional_binary_tree {
         ++visible_count_;
         assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
 
-        erase_range(id, dated_identifier_t {id, generation});
+        erase_range(entry.element, dated_identifier_t {entry.element, generation});
         return {success_k};
     }
 
