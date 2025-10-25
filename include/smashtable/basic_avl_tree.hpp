@@ -62,9 +62,10 @@
  *  - For @c swap(): If non-propagating, both trees must use equal allocators,
  *    otherwise @c invalid_argument_k is returned
  *
- *  @file   basic_avl_tree.hpp
+ *  @file basic_avl_tree.hpp
+ *  @date October 25, 2025
  *  @author Ash Vardanian
- *  @see    https://en.wikipedia.org/wiki/AVL_tree
+ *  @see https://en.wikipedia.org/wiki/AVL_tree
  */
 #pragma once
 #include <cassert>   // `assert`
@@ -1075,6 +1076,12 @@ class basic_avl_tree {
     using comparator_t = comparator_type_;
     using entry_t = entry_type_;
 
+    // Trait to detect if this is a map-like (association-based) container
+    using is_associative = std::conditional_t<requires {
+        typename entry_t::key_t;
+        typename entry_t::value_t;
+    }, std::true_type, std::false_type>;
+
     // Allocator propagation requirement for exception-free move assignment
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "basic_avl_tree requires allocators that propagate on move assignment");
@@ -1219,6 +1226,91 @@ class basic_avl_tree {
     [[no_unique_address]] comparator_t comparator_;
     [[no_unique_address]] allocator_t allocator_;
 
+    /**
+     *  @brief RAII guard for managing subtree cleanup on copy failure.
+     *    Automatically cleans up allocated nodes if not explicitly released.
+     */
+    struct subtree_guard_ {
+        allocator_t *allocator_;
+        node_t *node_;
+
+        subtree_guard_(allocator_t *allocator, node_t *node) noexcept : allocator_(allocator), node_(node) {}
+
+        ~subtree_guard_() noexcept {
+            if (node_) cleanup_();
+        }
+
+        node_t *release() noexcept { return std::exchange(node_, nullptr); }
+
+        void cleanup_() noexcept {
+            node_t::for_each_bottom_up(node_, [&](node_t *n) noexcept {
+                n->entry.~entry_t();
+                allocator_->deallocate(n, 1);
+            });
+        }
+    };
+
+    /**
+     *  @brief Copies entry from source node into destination node.
+     *  @param[in] source Source node to copy from.
+     *  @param[in] dest Destination node (must have allocated memory, but entry not constructed).
+     *  @return status_t @c success_k if copy succeeded, error code otherwise.
+     */
+    static status_t copy_entry_into_(node_t *source, node_t *dest) noexcept {
+        if constexpr (has_copy_method<entry_t>) {
+            auto entry_copy = source->entry.copy();
+            if (!entry_copy) return entry_copy.status;
+            new (&dest->entry) entry_t(std::move(entry_copy.entry));
+        }
+        else if constexpr (std::is_nothrow_copy_constructible_v<entry_t>) { new (&dest->entry) entry_t(source->entry); }
+        else {
+            static_assert(std::is_nothrow_copy_constructible_v<entry_t> || has_copy_method<entry_t>,
+                          "Entry type must be nothrow copy-constructible or provide .copy() method");
+            return status_t {unknown_k};
+        }
+        return status_t {success_k};
+    }
+
+    /**
+     *  @brief Recursively copies a subtree.
+     *  @param[in] source Root of source subtree to copy.
+     *  @param[inout] allocator Allocator for node allocation.
+     *  @return node_t* Root of copied subtree, or nullptr on failure.
+     */
+    static node_t *copy_subtree_(node_t *source, allocator_t &allocator) noexcept {
+        if (!source) return nullptr;
+
+        // Allocate new node
+        node_t *new_node = allocator.allocate(1);
+        if (!new_node) return nullptr;
+
+        // Copy entry into new node
+        auto status = copy_entry_into_(source, new_node);
+        if (!status) {
+            allocator.deallocate(new_node, 1);
+            return nullptr;
+        }
+
+        // Initialize node structure
+        new_node->height = source->height;
+        new_node->left = nullptr;
+        new_node->right = nullptr;
+
+        // Use RAII guard to ensure cleanup on failure
+        subtree_guard_ guard(&allocator, new_node);
+
+        // Recursively copy left subtree
+        new_node->left = copy_subtree_(source->left, allocator);
+        if (source->left && !new_node->left) return nullptr;
+
+        // Recursively copy right subtree
+        new_node->right = copy_subtree_(source->right, allocator);
+        if (source->right && !new_node->right) return nullptr;
+
+        // Success - release guard and return
+        return guard.release();
+    }
+
   public:
 #pragma mark - Constructors and Assignment
 
@@ -1228,15 +1320,43 @@ class basic_avl_tree {
     basic_avl_tree(basic_avl_tree &&other) noexcept
         : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)),
           comparator_(std::move(other.comparator_)), allocator_(std::move(other.allocator_)) {}
+
+    // Copy operations are explicitly deleted - use .copy() method for deep copies
+    basic_avl_tree(basic_avl_tree const &) = delete;
+    basic_avl_tree &operator=(basic_avl_tree const &) = delete;
+
     basic_avl_tree &operator=(basic_avl_tree &&other) noexcept {
-        std::swap(root_, other.root_);
-        std::swap(size_, other.size_);
-        std::swap(comparator_, other.comparator_);
-        std::swap(allocator_, other.allocator_);
+        if (this == &other) return *this;
+        clear();
+        root_ = std::exchange(other.root_, nullptr);
+        size_ = std::exchange(other.size_, 0);
+        comparator_ = std::move(other.comparator_);
+        allocator_ = std::move(other.allocator_);
         return *this;
     }
 
     ~basic_avl_tree() noexcept { clear(); }
+
+    /**
+     *  @brief Creates a deep copy of the tree.
+     *  @return expected<basic_avl_tree> Copy of the tree, or error status on failure.
+     *  @note This operation may fail due to allocation errors during node duplication.
+     *    The returned tree uses a copy of this tree's allocator.
+     */
+    expected<basic_avl_tree> copy() const noexcept {
+        basic_avl_tree result {allocator_};
+        result.comparator_ = comparator_;
+
+        if (!root_) return expected<basic_avl_tree>(std::move(result), status_t {success_k});
+
+        result.root_ = copy_subtree_(root_, result.allocator_);
+        if (!result.root_) {
+            return expected<basic_avl_tree>(basic_avl_tree(allocator_), status_t {out_of_memory_heap_k});
+        }
+
+        result.size_ = size_;
+        return expected<basic_avl_tree>(std::move(result), status_t {success_k});
+    }
 
 #pragma mark - Capacity
 
@@ -1375,6 +1495,18 @@ class basic_avl_tree {
     template <typename comparable_type_>
     const_iterator find(comparable_type_ &&comparable) const noexcept {
         return const_iterator(this, node_t::find(root_, std::forward<comparable_type_>(comparable), comparator_));
+    }
+
+    /**
+     *  @brief Checks if an element equal to @p comparable exists in the tree.
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c entry_t.
+     *  @return bool True if element found, false otherwise.
+     */
+    template <typename comparable_type_>
+    bool contains(comparable_type_ &&comparable) const noexcept {
+        return node_t::find(root_, std::forward<comparable_type_>(comparable), comparator_) != nullptr;
     }
 
     /**
@@ -1612,13 +1744,13 @@ class basic_avl_tree {
      *  @brief Constructs an element in-place. Matches @c std::set::emplace() semantics.
      *         Does not insert if key already exists.
      *
-     *  @tparam Args Types of arguments to forward to entry_t constructor.
+     *  @tparam args_types_ Types of arguments to forward to entry_t constructor.
      *  @param[in] args Arguments to forward to entry_t constructor.
      *  @return std::pair<iterator, bool> Pair of iterator to inserted/existing element and bool indicating success.
      */
-    template <typename... Args>
-    std::pair<iterator, bool> emplace(Args &&...args) noexcept {
-        return insert(entry_t(std::forward<Args>(args)...));
+    template <typename... args_types_>
+    std::pair<iterator, bool> emplace(args_types_ &&...args) noexcept {
+        return insert(entry_t(std::forward<args_types_>(args)...));
     }
 
     /**
@@ -1626,8 +1758,8 @@ class basic_avl_tree {
      *    AVL trees don't benefit from position hints, and providing unused hints is misleading.
      *    Use @c emplace() instead.
      */
-    template <typename... Args>
-    iterator emplace_hint(const_iterator, Args &&...) noexcept = delete;
+    template <typename... args_types_>
+    iterator emplace_hint(const_iterator, args_types_ &&...) noexcept = delete;
 
     /**
      *  @brief Deleted: Hint-based insert is not supported.
@@ -1896,7 +2028,10 @@ class basic_avl_tree {
      *  @return status_t Always succeeds.
      */
     void clear() noexcept {
-        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return allocator_.deallocate(node, 1); });
+        node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept {
+            node->entry.~entry_t();
+            allocator_.deallocate(node, 1);
+        });
         root_ = nullptr;
         size_ = 0;
     }
@@ -2089,5 +2224,11 @@ class basic_avl_tree {
         other.size_ = 0;
     }
 };
+
+template <typename entry_type_, typename comparator_type_, typename allocator_type_>
+using avl_set = basic_avl_tree<entry_type_, comparator_type_, allocator_type_>;
+
+template <typename key_type_, typename value_type_, typename comparator_type_, typename allocator_type_>
+using avl_map = basic_avl_tree<association<key_type_, value_type_>, comparator_type_, allocator_type_>;
 
 } // namespace ashvardanian::smashtable

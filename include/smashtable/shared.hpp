@@ -338,7 +338,7 @@ concept has_copy_method = requires(type_ const &t) {
  *    This allows types with potentially throwing constructors to participate in safe construction.
  */
 template <typename type_, typename... args_types_>
-concept has_make_method = requires(args_types_&&... args) {
+concept has_make_method = requires(args_types_ &&...args) {
     { type_::make(std::forward<args_types_>(args)...) } noexcept -> std::same_as<expected<type_>>;
 };
 
@@ -379,12 +379,34 @@ template <typename object_type_>
  *  - @p element_type_ must be convertible to the identifier type and constructible from it, enabling the containers to
  *    extract keys for lookups and manufacture key-only tombstones for erases.
  */
+
+// Helper to detect if a type has value_type member
+template <typename, typename = void>
+struct has_value_type_member : std::false_type {};
+
+template <typename T>
+struct has_value_type_member<T, std::void_t<typename T::value_type>> : std::true_type {};
+
+// Helper to safely extract value_type or default to element type
+template <typename comparator_t, typename element_t, bool = has_value_type_member<comparator_t>::value>
+struct identifier_type_for {
+    using type = element_t; // Non-transparent: use element type directly
+};
+
+template <typename comparator_t, typename element_t>
+struct identifier_type_for<comparator_t, element_t, true> {
+    using type = typename comparator_t::value_type; // Transparent: use comparator's value_type
+};
+
 template <typename element_type_, typename comparator_type_>
 struct versioning_for {
 
     using element_t = element_type_;
     using comparator_t = comparator_type_;
-    using identifier_t = typename comparator_t::value_type;
+
+    // For transparent comparators, use comparator_t::value_type; otherwise use element_type_
+    using identifier_t = typename identifier_type_for<comparator_t, element_t>::type;
+
     using generation_t = ashvardanian::smashtable::generation_t;
     using watch_t = ashvardanian::smashtable::watch_t;
 
