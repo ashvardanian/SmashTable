@@ -77,8 +77,10 @@ class transactional_binary_tree {
 #pragma mark - Type Definitions
 
     using element_t = typename basic_tree_type_::entry_t;
+    using entry_t = element_t;
     using comparator_t = typename basic_tree_type_::comparator_t;
     using allocator_t = typename basic_tree_type_::allocator_t;
+    using is_associative = typename basic_tree_type_::is_associative;
 
     using versioning_t = versioning_for<element_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
@@ -169,7 +171,7 @@ class transactional_binary_tree {
             if (store_ref().contains(element)) return {invalid_argument_k};
 
             // Key doesn't exist anywhere, proceed with insertion
-            auto maybe_id = try_copy_identifier(id);
+            auto maybe_id = copy_safely<identifier_t>(element);
             if (!maybe_id) return status_t {out_of_memory_heap_k};
 
             auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
@@ -203,7 +205,7 @@ class transactional_binary_tree {
             if (store_ref().contains(element)) return {success_k};
 
             // Key doesn't exist anywhere, proceed with insertion
-            auto maybe_id = try_copy_identifier(id);
+            auto maybe_id = copy_safely<identifier_t>(element);
             if (!maybe_id) return status_t {out_of_memory_heap_k};
 
             auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
@@ -229,7 +231,7 @@ class transactional_binary_tree {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t insert_or_assign(element_t &&element) noexcept {
-            auto maybe_id = try_copy_identifier(element);
+            auto maybe_id = copy_safely<identifier_t>(element);
             if (!maybe_id) return status_t {out_of_memory_heap_k};
 
             auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
@@ -255,7 +257,7 @@ class transactional_binary_tree {
         [[nodiscard]] status_t upsert(element_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            auto maybe_id = try_copy_identifier(id);
+            auto maybe_id = copy_safely<identifier_t>(id);
             if (!maybe_id) return status_t {out_of_memory_heap_k};
 
             auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
@@ -286,7 +288,7 @@ class transactional_binary_tree {
         }
 
         [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
-            auto maybe_id = try_copy_identifier(identifier_t {entry.element});
+            auto maybe_id = copy_safely<identifier_t>(identifier_t {entry.element});
             if (!maybe_id) return status_t {out_of_memory_heap_k};
             return watches_.try_push_back({std::move(*maybe_id), watch_t {entry.generation, entry.deleted}});
         }
@@ -992,6 +994,21 @@ class transactional_binary_tree {
             std::forward<comparable_type_>(comparable),
             [&](versioned_entry_t const &entry) noexcept { callback_found(entry.element); },
             std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /**
+     *  @brief Checks if an element equal to @p comparable exists in the visible state.
+     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @return bool True if element found and visible, false otherwise.
+     */
+    template <typename comparable_type_ = identifier_t>
+    bool contains(comparable_type_ &&comparable) const noexcept {
+        bool found = false;
+        find_visible_entry_(std::forward<comparable_type_>(comparable),
+                            [&](versioned_entry_t const &) noexcept { found = true; }, {});
+        return found;
     }
 
     /**
