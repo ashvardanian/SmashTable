@@ -1,5 +1,5 @@
-#include <smashtable/transactional_std_set.hpp>
-#include <smashtable/transactional_avl_tree.hpp>
+#include <smashtable/transactional_std_store.hpp>
+#include <smashtable/transactional_binary_tree.hpp>
 #include <smashtable/locked_collection.hpp>
 #include <smashtable/partitioned_collection.hpp>
 
@@ -49,33 +49,26 @@ void api() {
 
     // Exports
     element_t result;
-    container.find(identifier_t {}, copy_to(result), no_op_t {});
+    container.find(identifier_t {}, copy_to(result), no_op_fn_t {});
 }
 
-struct pair_t {
-    std::size_t key;
-    std::size_t value;
-
-    pair_t(std::size_t key = 0, std::size_t value = 0) noexcept : key(key), value(value) {}
-    explicit operator std::size_t() const noexcept { return key; }
-    operator bool() const noexcept { return key; }
-};
+using pair_t = mapping<std::size_t, std::size_t>;
 
 struct pair_compare_t {
     using value_type = std::size_t;
-    bool operator()(pair_t a, pair_t b) const noexcept { return a.key < b.key; }
-    bool operator()(std::size_t a, pair_t b) const noexcept { return a < b.key; }
-    bool operator()(pair_t a, std::size_t b) const noexcept { return a.key < b; }
+    bool operator()(pair_t const &a, pair_t const &b) const noexcept { return a.key < b.key; }
+    bool operator()(std::size_t a, pair_t const &b) const noexcept { return a < b.key; }
+    bool operator()(pair_t const &a, std::size_t b) const noexcept { return a.key < b; }
 };
 
 int main() {
 
-    using stl_t = transactional_std_set<pair_t, pair_compare_t>;
+    using stl_t = transactional_std_store<pair_t, pair_compare_t>;
     api<stl_t>();
     api<locked_collection<stl_t>>();
     api<partitioned_collection<stl_t>>();
 
-    using avl_t = transactional_avl_tree<pair_t, pair_compare_t>;
+    using avl_t = transactional_avl_set<pair_t, pair_compare_t>;
     api<avl_t>();
     api<locked_collection<avl_t>>();
     api<partitioned_collection<avl_t>>();

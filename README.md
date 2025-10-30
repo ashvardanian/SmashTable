@@ -24,7 +24,13 @@ import smashtable as st
 import concurrent.futures
 
 doc = sz.File("enwik9.txt")
+words = sz.SortedSet(dtype=str)
 
+for word in doc.split_iter():
+    words.add(word)
+
+assert len(words) > 0
+assert words[:3] == [ ... ]
 ```
 
 ## C++ Quick Start
@@ -73,7 +79,7 @@ Most APIs are similar to STL containers:
 namespace st = ashvardanian::smashtable;
 
 int main() {
-    using pair_t = association<std::string_view, int>;  // cheaper than `std::pair`
+    using pair_t = mapping<std::string_view, int>;  // cheaper than `std::pair`
     using map_t = st::transactional_std_store<pair_t>;  // builds on top of `std::map`
     auto map = *map_t::make();                          // instead of constructors to return optionals
     _ = map.reserve(100);                               // optionally reserve space
