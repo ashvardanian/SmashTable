@@ -7,15 +7,15 @@ Release build:
 ```bash
 cmake -D CMAKE_BUILD_TYPE=Release -B build_release
 cmake --build build_release --config Release --parallel
-build_release/smashtable_test
+build_release/smashtable_test_avl_tree
 ```
 
 Debug build for the test suite:
 
 ```bash
 cmake -D CMAKE_BUILD_TYPE=Debug -B build_debug
-cmake --build build_debug --config Debug --target smashtable_test
-build_debug/smashtable_test
+cmake --build build_debug --config Debug --target smashtable_test_avl_tree
+build_debug/smashtable_test_avl_tree
 ```
 
 ### Running Tests
@@ -23,7 +23,7 @@ build_debug/smashtable_test
 Run all tests:
 
 ```bash
-build_debug/smashtable_test
+build_debug/smashtable_test_avl_tree
 ```
 
 Run specific test suites:
@@ -63,10 +63,39 @@ uv pip install -e . --force-reinstall   # to build locally from source
 Internal `private` data and functions should be suffixed with an underscore (`_`).
 Avoid obvious inline comments.
 Prefer full words over abbreviations (e.g., `iterator` instead of `iter`, `element` instead of `elem`, `transaction` instead of `tx`, etc.).
+Code is formatted automatically using `clang-format` with the configuration specified in `.clang-format`.
+It's not all-mighty, so avoid the following anti-patterns:
+
+```cpp
+if constexpr (condition) {
+    // Some comment on a separate line
+    one_expression();
+}
+else {
+    // Large, multi-line comment ...
+    // continued here
+    another_expression();
+}
+```
+
+Should be written as:
+
+```cpp
+if constexpr (condition) one_expression(); // Short inline comment
+// Large, multi-line comment ...
+// continued here
+else another_expression(); 
+```
+
+Please, avoid generic variable names that may lead to confusion when debugging, especially in algebraic data types that immediately spread across the repo.
+Typical examples are `value`, `item`, `obj`, `data`, `entry`, etc.
+For example, in this codebase:
+
+- `mapping` replaces `std::pair` for key-value pairs in associative containers (maps). It has a `key` member for the lack of a better name, but the second one isn't a `value` - it's in the `mapped` variable.
+- `expected` replaces `std::optional` augmenting the semantics with error codes. It has an `outcome` always initialized member instead of a generic `value` or `object`, often nested inside some union for uninitialized states.
 
 ## Documentation Styling Guidelines
 
-Code is formatted automatically using `clang-format` with the configuration specified in `.clang-format`.
 CMake is formatted using `cmake-format` with the configuration specified in `.cmake-format.py`.
 Please ensure your code adheres to this style before submitting a pull request.
 
