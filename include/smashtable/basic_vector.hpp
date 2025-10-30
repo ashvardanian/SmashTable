@@ -1,8 +1,5 @@
 /**
  *  @brief Exception-free dynamic array with explicit error handling.
- *  @file basic_vector.hpp
- *  @date October 25, 2025
- *  @author Ash Vardanian
  *
  *  @section Features
  *
@@ -25,6 +22,10 @@
  *  - Must propagate on move assignment @c propagate_on_container_move_assignment==true
  *  - For @c swap(): If non-propagating, both vectors must use equal allocators,
  *    otherwise @c invalid_argument_k is returned
+ *
+ *  @file basic_vector.hpp
+ *  @date October 25, 2025
+ *  @author Ash Vardanian
  *
  *  @see https://en.wikipedia.org/wiki/Vector_(C%2B%2B)
  *  @see https://en.cppreference.com/w/cpp/container/vector
@@ -201,7 +202,7 @@ class basic_vector {
      *  @param[in] value Element to append (moved into the vector).
      *  @return status_t Always returns success for noexcept move construction.
      */
-    [[nodiscard]] status_t push_back(assume_reserved_t, element_t &&value) noexcept {
+    status_t push_back(assume_reserved_t, element_t &&value) noexcept {
         assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
         new (&data_[size_++]) element_t(std::move(value));
         return status_t {success_k};

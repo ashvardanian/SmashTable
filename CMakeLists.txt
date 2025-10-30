@@ -62,11 +62,28 @@ if (SMASHTABLE_BUILD_TESTS)
     add_executable(smashtable_example example.cpp)
     target_link_libraries(smashtable_example PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
 
-    add_executable(smashtable_test test.cpp)
-    target_link_libraries(smashtable_test PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+    # Individual test executables for faster incremental builds
+    add_executable(smashtable_test_std_set scripts/test_std_set.cpp)
+    target_include_directories(smashtable_test_std_set PRIVATE scripts/)
+    target_link_libraries(smashtable_test_std_set PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+
+    add_executable(smashtable_test_avl_tree scripts/test_avl_tree.cpp)
+    target_include_directories(smashtable_test_avl_tree PRIVATE scripts/)
+    target_link_libraries(smashtable_test_avl_tree PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+
+    add_executable(smashtable_test_wb_tree scripts/test_wb_tree.cpp)
+    target_include_directories(smashtable_test_wb_tree PRIVATE scripts/)
+    target_link_libraries(smashtable_test_wb_tree PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+
+    add_executable(smashtable_test_partitioned scripts/test_partitioned.cpp)
+    target_include_directories(smashtable_test_partitioned PRIVATE scripts/)
+    target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
 
     enable_testing()
-    add_test(NAME smashtable_tests COMMAND smashtable_test)
+    add_test(NAME test_std_set COMMAND smashtable_test_std_set)
+    add_test(NAME test_avl_tree COMMAND smashtable_test_avl_tree)
+    add_test(NAME test_wb_tree COMMAND smashtable_test_wb_tree)
+    add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
 endif ()
 
 # Installation

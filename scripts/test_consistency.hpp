@@ -1,28 +1,68 @@
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+/**
+ *  @brief Template test functions for advanced transactional consistency scenarios.
+ *    Includes tests for isolation levels, visibility rules, and conflict resolution.
+ *
+ *  @file test_consistency.hpp
+ *  @date October 26, 2025
+ *  @author Ash Vardanian
+ */
+#pragma once
+#include "test_basic.hpp"
+
+namespace ashvardanian::smashtable::scripts {
+
+/**
+ *  @brief Edge Case: Committing empty transaction succeeds
+ */
+template <typename container_type_>
+void test_empty_transaction_commit() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    auto txn = container.transaction();
+    ASSERT_TRUE(txn.has_value());
+
+    // Don't add anything, just commit
+    EXPECT_TRUE(txn->stage());
+    EXPECT_TRUE(txn->commit());
+
+    EXPECT_EQ(container.size(), 0) << "Empty transaction should leave set empty";
+}
 
 template <typename container_type_>
 void test_no_dirty_reads_multi_key() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     // Initial state: keys 1-5 exist
-    for (std::size_t i = 1; i <= 5; ++i) { EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {i, i})); }
+    container_t container;
+    for (std::size_t i = 1; i <= 5; ++i) {
+        auto new_member = trivial_id_to_member<member_t>(i, i);
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
+    }
 
     // T1 modifies all 5 keys but only stages (doesn't commit)
-    auto t1 = set.transaction();
+    auto t1 = container.transaction();
     ASSERT_TRUE(t1.has_value());
-    for (std::size_t i = 1; i <= 5; ++i) { EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {i, i * 100})); }
+    for (std::size_t i = 1; i <= 5; ++i) {
+        auto new_member = trivial_id_to_member<member_t>(i, i * 100);
+        EXPECT_TRUE(t1->upsert(std::move(new_member)));
+    }
     EXPECT_TRUE(t1->stage());
 
     // External reader should see ORIGINAL values (staged changes invisible)
     for (std::size_t i = 1; i <= 5; ++i) {
-        bool found = false;
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &e) noexcept {
-            found = true;
-            EXPECT_EQ(e.value, i) << "Should see original value, not staged value";
-        });
-        EXPECT_TRUE(found) << "Key " << i << " should exist";
+        auto maybe_found = container.find_copy(trivial_id_to_key<member_t>(i));
+        ASSERT_TRUE(maybe_found) << "Key " << i << " should exist";
+        EXPECT_EQ(maybe_found->mapped, i) << "Should see original value, not staged value";
     }
 }
 
@@ -38,24 +78,27 @@ void test_no_dirty_reads_multi_key() {
  */
 template <typename container_type_>
 void test_new_transaction_sees_nothing_staged() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
 
-    auto t1 = set.transaction();
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 100}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {2, 200}));
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    auto t1 = container.transaction();
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(2)));
     EXPECT_TRUE(t1->stage()); // Staged but not committed
 
     // T2 created AFTER T1 staged - should see nothing
-    auto t2 = set.transaction();
+    auto t2 = container.transaction();
     ASSERT_TRUE(t2.has_value());
 
-    bool found1 = false, found2 = false;
-    t2->find(id_t {1}, [&](uint64_uint64_pair_t const &) noexcept { found1 = true; });
-    t2->find(id_t {2}, [&](uint64_uint64_pair_t const &) noexcept { found2 = true; });
+    auto maybe1 = t2->find_copy(trivial_id_to_key<member_t>(1));
+    auto maybe2 = t2->find_copy(trivial_id_to_key<member_t>(2));
 
-    EXPECT_FALSE(found1) << "T2 should not see T1's staged key 1";
-    EXPECT_FALSE(found2) << "T2 should not see T1's staged key 2";
+    EXPECT_FALSE(maybe1) << "T2 should not see T1's staged key 1";
+    EXPECT_FALSE(maybe2) << "T2 should not see T1's staged key 2";
 }
 
 /**
@@ -70,35 +113,31 @@ void test_new_transaction_sees_nothing_staged() {
  */
 template <typename container_type_>
 void test_committed_immediately_visible() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
 
-    auto t1 = set.transaction();
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 111}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {2, 222}));
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    auto t1 = container.transaction();
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 111)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(2, 222)));
     EXPECT_TRUE(t1->stage());
     EXPECT_TRUE(t1->commit()); // NOW committed
 
     // T2 created AFTER commit - should see everything
-    auto t2 = set.transaction();
+    auto t2 = container.transaction();
     ASSERT_TRUE(t2.has_value());
 
-    std::size_t val1 = 0, val2 = 0;
-    bool found1 = false, found2 = false;
+    auto maybe1 = t2->find_copy(trivial_id_to_key<member_t>(1));
+    auto maybe2 = t2->find_copy(trivial_id_to_key<member_t>(2));
 
-    t2->find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept {
-        found1 = true;
-        val1 = e.value;
-    });
-    t2->find(id_t {2}, [&](uint64_uint64_pair_t const &e) noexcept {
-        found2 = true;
-        val2 = e.value;
-    });
-
-    EXPECT_TRUE(found1) << "T2 should see committed key 1";
-    EXPECT_TRUE(found2) << "T2 should see committed key 2";
-    EXPECT_EQ(val1, 111);
-    EXPECT_EQ(val2, 222);
+    EXPECT_TRUE(maybe1) << "T2 should see committed key 1";
+    EXPECT_TRUE(maybe2) << "T2 should see committed key 2";
+    EXPECT_EQ(maybe1->mapped, 111);
+    EXPECT_EQ(maybe2->mapped, 222);
 }
 
 /**
@@ -121,38 +160,35 @@ void test_committed_immediately_visible() {
  */
 template <typename container_type_>
 void test_multi_key_atomicity_10_keys() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
 
-    auto txn = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    auto txn = container.transaction();
     ASSERT_TRUE(txn.has_value());
 
     // Insert 10 keys in transaction
-    for (std::size_t i = 0; i < 10; ++i) { EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {i, i * 10})); }
+    for (std::size_t i = 0; i < 10; ++i) EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(i, i * 10)));
 
     // Before stage: should see 0
-    int count_before_stage = 0;
-    for (std::size_t i = 0; i < 10; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count_before_stage++; });
-    }
+    std::size_t count_before_stage = 0;
+    for (std::size_t i = 0; i < 10; ++i) count_before_stage += container.count(trivial_id_to_key<member_t>(i));
     EXPECT_EQ(count_before_stage, 0) << "Before stage: should see 0 keys";
-
     EXPECT_TRUE(txn->stage());
 
     // After stage, before commit: should see 0
-    int count_after_stage = 0;
-    for (std::size_t i = 0; i < 10; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count_after_stage++; });
-    }
+    std::size_t count_after_stage = 0;
+    for (std::size_t i = 0; i < 10; ++i) count_after_stage += container.count(trivial_id_to_key<member_t>(i));
     EXPECT_EQ(count_after_stage, 0) << "After stage, before commit: should see 0 keys";
-
     EXPECT_TRUE(txn->commit());
 
     // After commit: should see ALL 10
-    int count_after_commit = 0;
-    for (std::size_t i = 0; i < 10; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count_after_commit++; });
-    }
+    std::size_t count_after_commit = 0;
+    for (std::size_t i = 0; i < 10; ++i) count_after_commit += container.count(trivial_id_to_key<member_t>(i));
     EXPECT_EQ(count_after_commit, 10) << "After commit: should see ALL 10 keys atomically";
 }
 
@@ -172,32 +208,33 @@ void test_multi_key_atomicity_10_keys() {
  */
 template <typename container_type_>
 void test_rollback_makes_all_invisible() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 1}));
 
-    auto txn = set.transaction();
-    EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {1, 100})); // Modify existing
-    EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {2, 200})); // Add new
-    EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {3, 300})); // Add new
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 1))); // Initial state
+
+    auto txn = container.transaction();
+    EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(1, 100))); // Modify existing
+    EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(2, 200))); // Add new
+    EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(3, 300))); // Add new
     EXPECT_TRUE(txn->stage());
     EXPECT_TRUE(txn->rollback()); // ROLLBACK instead of commit
 
     // Key 1 should have original value
-    bool found1 = false;
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept {
-        found1 = true;
-        EXPECT_EQ(e.value, 1) << "Rollback should restore original value";
-    });
-    EXPECT_TRUE(found1);
+    auto maybe1 = container.find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(maybe1) << "Key 1 should exist after rollback";
+    EXPECT_EQ(maybe1->mapped, 1) << "Key 1 should have original value after rollback";
 
     // Keys 2 and 3 should not exist
-    bool found2 = false, found3 = false;
-    set.find(id_t {2}, [&](uint64_uint64_pair_t const &) noexcept { found2 = true; });
-    set.find(id_t {3}, [&](uint64_uint64_pair_t const &) noexcept { found3 = true; });
-
-    EXPECT_FALSE(found2) << "Rolled back key 2 should not exist";
-    EXPECT_FALSE(found3) << "Rolled back key 3 should not exist";
+    auto maybe2 = container.find_copy(trivial_id_to_key<member_t>(2));
+    auto maybe3 = container.find_copy(trivial_id_to_key<member_t>(3));
+    EXPECT_FALSE(maybe2) << "Key 2 should not exist after rollback";
+    EXPECT_FALSE(maybe3) << "Key 3 should not exist after rollback";
 }
 
 /**
@@ -220,23 +257,29 @@ void test_rollback_makes_all_invisible() {
  */
 template <typename container_type_>
 void test_range_query_sees_atomic_boundaries() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
 
-    auto txn = set.transaction();
-    for (std::size_t i = 10; i < 20; ++i) { EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {i, i})); }
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    auto txn = container.transaction();
+    for (std::size_t i = 10; i < 20; ++i) EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(i)));
 
     // Before commit: range query sees 0
-    int count_before = 0;
-    set.range(id_t {10}, id_t {20}, [&](uint64_uint64_pair_t const &) noexcept { count_before++; });
+    std::size_t count_before = 0;
+    container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
+                    [&](member_t const &) noexcept { count_before++; });
     EXPECT_EQ(count_before, 0) << "Range query before commit sees nothing";
 
     EXPECT_TRUE(txn->stage());
     EXPECT_TRUE(txn->commit());
 
     // After commit: range query sees ALL 10
-    int count_after = 0;
-    set.range(id_t {10}, id_t {20}, [&](uint64_uint64_pair_t const &) noexcept { count_after++; });
+    std::size_t count_after = 0;
+    container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
+                    [&](member_t const &) noexcept { count_after++; });
     EXPECT_EQ(count_after, 10) << "Range query after commit sees all atomically";
 }
 
@@ -261,50 +304,49 @@ void test_range_query_sees_atomic_boundaries() {
  */
 template <typename container_type_>
 void test_fractured_read_prevention() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
 
     // T1 will insert keys 1-3
-    auto t1 = set.transaction();
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 10}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {2, 20}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {3, 30}));
+    auto t1 = container.transaction();
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 10)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(2, 20)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(3, 30)));
 
     // T2 will insert keys 4-6
-    auto t2 = set.transaction();
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {4, 40}));
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {5, 50}));
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {6, 60}));
+    auto t2 = container.transaction();
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(4, 40)));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(5, 50)));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(6, 60)));
 
     // Stage both
     EXPECT_TRUE(t1->stage());
     EXPECT_TRUE(t2->stage());
 
     // Before any commits: see 0
-    int count_0 = 0;
-    for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count_0++; });
-    }
-    EXPECT_EQ(count_0, 0);
-
-    // Commit T1
-    EXPECT_TRUE(t1->commit());
+    std::size_t count_initial = 0;
+    for (std::size_t i = 1; i <= 6; ++i)
+        container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_initial++; });
+    EXPECT_EQ(count_initial, 0);
+    EXPECT_TRUE(t1->commit()); // Commit T1
 
     // Should see exactly T1's keys (1-3), not T2's (4-6)
-    int count_t1 = 0;
-    for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count_t1++; });
-    }
+    std::size_t count_t1 = 0;
+    for (std::size_t i = 1; i <= 6; ++i)
+        container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_t1++; });
     EXPECT_EQ(count_t1, 3) << "Should see only T1's 3 keys, not T2's";
-
-    // Commit T2
-    EXPECT_TRUE(t2->commit());
+    EXPECT_TRUE(t2->commit()); // Commit T2
 
     // Now should see ALL 6
-    int count_both = 0;
-    for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count_both++; });
-    }
+    std::size_t count_both = 0;
+    for (std::size_t i = 1; i <= 6; ++i)
+        container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_both++; });
     EXPECT_EQ(count_both, 6) << "Should see both transactions' keys";
 }
 
@@ -313,22 +355,32 @@ void test_fractured_read_prevention() {
  */
 template <typename container_type_>
 void test_sequential_updates_never_regress() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 10}));
 
-    std::vector<std::size_t> observed_values;
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+    static_assert(std::is_integral<typename member_t::mapped_type>::value, "Mapped type must be integral");
+
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 10)));
+
+    std::vector<int> observed_values;
 
     // Observe initial value
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { observed_values.push_back(e.value); });
+    container.find(trivial_id_to_key<member_t>(1),
+                   [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); });
 
     // Update to 20
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 20}));
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { observed_values.push_back(e.value); });
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 20)));
+    container.find(trivial_id_to_key<member_t>(1),
+                   [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); });
 
     // Update to 30
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 30}));
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { observed_values.push_back(e.value); });
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 30)));
+    container.find(trivial_id_to_key<member_t>(1),
+                   [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); });
 
     // Verify monotonicity: each value >= previous
     ASSERT_EQ(observed_values.size(), 3);
@@ -336,9 +388,8 @@ void test_sequential_updates_never_regress() {
     EXPECT_EQ(observed_values[1], 20);
     EXPECT_EQ(observed_values[2], 30);
 
-    for (size_t i = 1; i < observed_values.size(); ++i) {
+    for (size_t i = 1; i < observed_values.size(); ++i)
         EXPECT_GE(observed_values[i], observed_values[i - 1]) << "Monotonic violation: value went backwards!";
-    }
 }
 
 /**
@@ -346,31 +397,36 @@ void test_sequential_updates_never_regress() {
  */
 template <typename container_type_>
 void test_transaction_commits_maintain_order() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     // T1: value = 100
-    auto t1 = set.transaction();
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 100}));
+    auto t1 = container.transaction();
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 100)));
     EXPECT_TRUE(t1->stage());
     EXPECT_TRUE(t1->commit());
 
     // Observe T1's value
-    std::size_t val1 = 0;
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { val1 = e.value; });
-    EXPECT_EQ(val1, 100);
+    auto val1 = container.find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(val1.has_value());
+    EXPECT_EQ(val1->mapped, 100);
 
     // T2: value = 200 (higher)
-    auto t2 = set.transaction();
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {1, 200}));
+    auto t2 = container.transaction();
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(1, 200)));
     EXPECT_TRUE(t2->stage());
     EXPECT_TRUE(t2->commit());
 
     // Observe T2's value - should be >= T1's value
-    std::size_t val2 = 0;
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { val2 = e.value; });
-    EXPECT_EQ(val2, 200);
-    EXPECT_GE(val2, val1) << "Monotonic violation across transactions!";
+    auto val2 = container.find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(val2.has_value());
+    EXPECT_EQ(val2->mapped, 200);
+    EXPECT_GE(val2->mapped, val1->mapped) << "Monotonic violation across transactions!";
 }
 
 /**
@@ -385,20 +441,26 @@ void test_transaction_commits_maintain_order() {
  */
 template <typename container_type_>
 void test_concurrent_transactions_on_same_key() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 1}));
 
-    auto t1 = set.transaction();
-    auto t2 = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 1)));
+
+    auto t1 = container.transaction();
+    auto t2 = container.transaction();
 
     // Both watch the same key
-    EXPECT_TRUE(t1->watch(id_t {1}));
-    EXPECT_TRUE(t2->watch(id_t {1}));
+    EXPECT_TRUE(t1->watch(trivial_id_to_key<member_t>(1)));
+    EXPECT_TRUE(t2->watch(trivial_id_to_key<member_t>(1)));
 
     // Both modify it
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 100}));
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {1, 200}));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 100)));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(1, 200)));
 
     // T1 commits successfully
     EXPECT_TRUE(t1->stage());
@@ -410,9 +472,9 @@ void test_concurrent_transactions_on_same_key() {
     EXPECT_EQ(status.errc, errc_t::consistency_k);
 
     // Verify T1's value persisted, T2's did not
-    std::size_t final_value = 0;
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { final_value = e.value; });
-    EXPECT_EQ(final_value, 100) << "Only T1's value should persist";
+    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(maybe_final.has_value());
+    EXPECT_EQ(maybe_final->mapped, 100) << "Only T1's value should persist";
 }
 
 /**
@@ -429,32 +491,38 @@ void test_concurrent_transactions_on_same_key() {
  */
 template <typename container_type_>
 void test_multi_key_conflict_any_key_fails() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 1}));
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {2, 2}));
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {3, 3}));
 
-    auto t1 = set.transaction();
-    auto t2 = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 1)));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(2, 2)));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(3, 3)));
+
+    auto t1 = container.transaction();
+    auto t2 = container.transaction();
 
     // T1 watches keys 1, 2, 3
-    EXPECT_TRUE(t1->watch(id_t {1}));
-    EXPECT_TRUE(t1->watch(id_t {2}));
-    EXPECT_TRUE(t1->watch(id_t {3}));
+    EXPECT_TRUE(t1->watch(trivial_id_to_key<member_t>(1)));
+    EXPECT_TRUE(t1->watch(trivial_id_to_key<member_t>(2)));
+    EXPECT_TRUE(t1->watch(trivial_id_to_key<member_t>(3)));
 
     // T2 watches same keys
-    EXPECT_TRUE(t2->watch(id_t {1}));
-    EXPECT_TRUE(t2->watch(id_t {2}));
-    EXPECT_TRUE(t2->watch(id_t {3}));
+    EXPECT_TRUE(t2->watch(trivial_id_to_key<member_t>(1)));
+    EXPECT_TRUE(t2->watch(trivial_id_to_key<member_t>(2)));
+    EXPECT_TRUE(t2->watch(trivial_id_to_key<member_t>(3)));
 
     // External update to just ONE key (key 2)
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {2, 999}));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(2, 999)));
 
     // T1 modifies all three
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 10}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {2, 20}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {3, 30}));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 10)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(2, 20)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(3, 30)));
 
     // T1's stage should FAIL (key 2 was modified externally)
     auto status = t1->stage();
@@ -476,18 +544,24 @@ void test_multi_key_conflict_any_key_fails() {
  */
 template <typename container_type_>
 void test_watch_detects_external_direct_modification() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 1}));
 
-    auto txn = set.transaction();
-    EXPECT_TRUE(txn->watch(id_t {1}));
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 1)));
+
+    auto txn = container.transaction();
+    EXPECT_TRUE(txn->watch(trivial_id_to_key<member_t>(1)));
 
     // Direct modification to the set (not through a transaction)
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 777}));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 777)));
 
     // Transaction attempts to modify
-    EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {1, 888}));
+    EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(1, 888)));
 
     // Stage should detect the external change
     auto status = txn->stage();
@@ -507,21 +581,26 @@ void test_watch_detects_external_direct_modification() {
  */
 template <typename container_type_>
 void test_disjoint_keys_both_succeed() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
 
-    auto t1 = set.transaction();
-    auto t2 = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    auto t1 = container.transaction();
+    auto t2 = container.transaction();
 
     // T1 modifies keys 1-3
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 10}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {2, 20}));
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {3, 30}));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 10)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(2, 20)));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(3, 30)));
 
     // T2 modifies keys 4-6 (disjoint!)
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {4, 40}));
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {5, 50}));
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {6, 60}));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(4, 40)));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(5, 50)));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(6, 60)));
 
     // Both should succeed
     EXPECT_TRUE(t1->stage());
@@ -530,10 +609,8 @@ void test_disjoint_keys_both_succeed() {
     EXPECT_TRUE(t2->commit());
 
     // Verify all 6 keys exist
-    int count = 0;
-    for (std::size_t i = 1; i <= 6; ++i) {
-        set.find(id_t {i}, [&](uint64_uint64_pair_t const &) noexcept { count++; });
-    }
+    std::size_t count = 0;
+    for (std::size_t i = 1; i <= 6; ++i) count += container.count(trivial_id_to_key<member_t>(i));
     EXPECT_EQ(count, 6) << "Both transactions should succeed with disjoint keys";
 }
 
@@ -554,27 +631,33 @@ void test_disjoint_keys_both_succeed() {
  */
 template <typename container_type_>
 void test_non_repeatable_reads_are_allowed() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 100}));
 
-    auto txn = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 100)));
+
+    auto txn = container.transaction();
 
     // First read
-    std::size_t first_read = 0;
-    txn->find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { first_read = e.value; });
-    EXPECT_EQ(first_read, 100);
+    auto first_read = txn->find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(first_read.has_value());
+    EXPECT_EQ(first_read->mapped, 100);
 
     // External modification
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 999}));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 999)));
 
     // Second read in SAME transaction - CAN see new value (this is correct!)
-    std::size_t second_read = 0;
-    txn->find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { second_read = e.value; });
+    auto second_read = txn->find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(second_read.has_value());
 
     // With Read Committed, second read sees committed changes
-    EXPECT_EQ(second_read, 999) << "Non-repeatable reads are ALLOWED in Read Committed";
-    EXPECT_NE(first_read, second_read) << "This is correct behavior!";
+    EXPECT_EQ(second_read->mapped, 999) << "Non-repeatable reads are ALLOWED in Read Committed";
+    EXPECT_NE(first_read->mapped, second_read->mapped) << "This is correct behavior!";
 }
 
 /**
@@ -594,45 +677,35 @@ void test_non_repeatable_reads_are_allowed() {
  */
 template <typename container_type_>
 void test_phantom_reads_are_allowed() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    for (std::size_t i = 0; i < 5; ++i) { EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {i, i})); }
 
-    auto txn = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    for (std::size_t i = 0; i < 5; ++i) EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(i)));
+
+    auto txn = container.transaction();
 
     // First range query: see 5 items (reads are on committed state)
-    int first_count = 0;
-    set.range(id_t {0}, id_t {10}, [&](uint64_uint64_pair_t const &) noexcept { first_count++; });
+    std::size_t first_count = 0;
+    container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
+                    [&](member_t const &) noexcept { first_count++; });
     EXPECT_EQ(first_count, 5);
 
     // External insert
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {5, 5}));
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {6, 6}));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(5, 5)));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(6, 6)));
 
     // Second range query while txn still active - CAN see new items (phantom reads)
     // In Read Committed, reads always see latest committed state
-    int second_count = 0;
-    set.range(id_t {0}, id_t {10}, [&](uint64_uint64_pair_t const &) noexcept { second_count++; });
+    std::size_t second_count = 0;
+    container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
+                    [&](member_t const &) noexcept { second_count++; });
 
     EXPECT_EQ(second_count, 7) << "Phantom reads are ALLOWED in Read Committed";
     EXPECT_GT(second_count, first_count) << "This is correct behavior!";
-}
-
-/**
- *  @brief Edge Case: Committing empty transaction succeeds
- */
-template <typename container_type_>
-void test_empty_transaction_commit() {
-    auto set = *container_type_::make();
-
-    auto txn = set.transaction();
-    ASSERT_TRUE(txn.has_value());
-
-    // Don't add anything, just commit
-    EXPECT_TRUE(txn->stage());
-    EXPECT_TRUE(txn->commit());
-
-    EXPECT_EQ(set.size(), 0) << "Empty transaction should leave set empty";
 }
 
 /**
@@ -640,20 +713,22 @@ void test_empty_transaction_commit() {
  */
 template <typename container_type_>
 void test_delete_visibility() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 1}));
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {2, 2}));
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1)));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(2)));
 
     // Delete via erase_range
-    set.erase_range(id_t {1}, id_t {2});
+    container.erase_range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(2));
 
     // Verify deleted key is invisible
-    bool found = false;
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-    EXPECT_FALSE(found) << "Deleted entry should not be visible";
-
-    EXPECT_EQ(set.size(), 1) << "Should have 1 item (key 2)";
+    EXPECT_FALSE(container.contains(trivial_id_to_key<member_t>(1))) << "Deleted entry should not be visible";
+    EXPECT_EQ(container.size(), 1) << "Should have 1 item (key 2)";
 }
 
 /**
@@ -661,26 +736,32 @@ void test_delete_visibility() {
  */
 template <typename container_type_>
 void test_reset_clears_transaction_state() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 1}));
 
-    auto txn = set.transaction();
-    EXPECT_TRUE(txn->watch(id_t {1}));
-    EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {2, 2}));
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1)));
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(2)));
+
+    auto txn = container.transaction();
+    EXPECT_TRUE(txn->watch(trivial_id_to_key<member_t>(1)));
+    EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(2)));
 
     // Reset the transaction
     EXPECT_TRUE(txn->reset());
 
     // After reset, can stage/commit successfully (watches cleared)
-    EXPECT_TRUE(txn->upsert(uint64_uint64_pair_t {3, 3}));
+    EXPECT_TRUE(txn->upsert(trivial_id_to_member<member_t>(3)));
     EXPECT_TRUE(txn->stage());
     EXPECT_TRUE(txn->commit());
 
     // Key 3 should exist, key 2 should not
-    bool found2 = false, found3 = false;
-    set.find(id_t {2}, [&](uint64_uint64_pair_t const &) noexcept { found2 = true; });
-    set.find(id_t {3}, [&](uint64_uint64_pair_t const &) noexcept { found3 = true; });
+    auto found2 = container.contains(trivial_id_to_key<member_t>(2));
+    auto found3 = container.contains(trivial_id_to_key<member_t>(3));
 
     EXPECT_FALSE(found2) << "Reset should have cleared key 2";
     EXPECT_TRUE(found3) << "New transaction should have added key 3";
@@ -705,31 +786,39 @@ void test_reset_clears_transaction_state() {
  */
 template <typename container_type_>
 void test_watch_detects_staged_invisible_writes() {
-    using id_t = typename container_type_::identifier_t;
-    auto set = *container_type_::make();
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {1, 100}));
 
-    auto t1 = set.transaction();
-    auto t2 = set.transaction();
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(1, 100)));
+
+    auto t1 = container.transaction();
+    auto t2 = container.transaction();
 
     // Both watch the same key at generation 1, value 100
-    EXPECT_TRUE(t1->watch(id_t {1}));
-    EXPECT_TRUE(t2->watch(id_t {1}));
+    EXPECT_TRUE(t1->watch(trivial_id_to_key<member_t>(1)));
+    EXPECT_TRUE(t2->watch(trivial_id_to_key<member_t>(1)));
 
     // T2 modifies and stages (but doesn't commit)
-    EXPECT_TRUE(t2->upsert(uint64_uint64_pair_t {1, 999}));
+    EXPECT_TRUE(t2->upsert(trivial_id_to_member<member_t>(1, 999)));
     EXPECT_TRUE(t2->stage()); // Now gen=2, visible=false
 
     // T1 should FAIL to stage because T2 has a staged (invisible) write
     // This tests that find_latest_for_watch() is used, not find()
-    EXPECT_TRUE(t1->upsert(uint64_uint64_pair_t {1, 777}));
+    EXPECT_TRUE(t1->upsert(trivial_id_to_member<member_t>(1, 777)));
     auto status = t1->stage();
     EXPECT_FALSE(status) << "T1 should fail - T2 has staged invisible write on watched key";
     EXPECT_EQ(status.errc, errc_t::consistency_k);
 
     // Clean up: rollback T2, verify original value persists
     EXPECT_TRUE(t2->rollback());
-    std::size_t final_value = 0;
-    set.find(id_t {1}, [&](uint64_uint64_pair_t const &e) noexcept { final_value = e.value; });
-    EXPECT_EQ(final_value, 100) << "Original value should persist after rollback";
+    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
+    ASSERT_TRUE(maybe_final.has_value());
+    EXPECT_EQ(maybe_final->mapped, 100) << "Original value should persist after T2 rollback";
 }
+
+} // namespace ashvardanian::smashtable::scripts

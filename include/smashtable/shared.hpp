@@ -34,6 +34,9 @@ enum errc_t {
     operation_would_block_k = EWOULDBLOCK,
     operation_canceled_k = ECANCELED,
 
+    key_already_exists_k = EEXIST, // For `insert_if_missing` conflicts
+    key_not_found_k = ENOENT,      // For `update` operations on missing keys
+
     connection_broken_k = EPIPE,
     connection_aborted_k = ECONNABORTED,
     connection_already_in_progress_k = EALREADY,
@@ -52,42 +55,43 @@ struct status_t {
 };
 
 /**
- *  @brief Simple key-value association type, cleaner & lighter than @c std::pair used by @c std::map.
+ *  @brief Simple key-value mapping type, cleaner & lighter than @c std::pair used by @c std::map.
  *  @see https://en.cppreference.com/w/cpp/utility/pair.html
  */
 template <typename key_type_, typename value_type_>
-struct association {
+struct mapping {
     using key_type = key_type_;
-    using value_type = value_type_;
+    using mapped_type = value_type_;
 
     key_type key {};
-    value_type value {};
+    mapped_type mapped {};
 
-    constexpr association() = default;
-    constexpr association(association const &) = default;
-    constexpr association(association &&) noexcept = default;
-    constexpr association &operator=(association const &) = default;
-    constexpr association &operator=(association &&) noexcept = default;
+    constexpr mapping() = default;
+    constexpr mapping(mapping const &) = default;
+    constexpr mapping(mapping &&) noexcept = default;
+    constexpr mapping &operator=(mapping const &) = default;
+    constexpr mapping &operator=(mapping &&) noexcept = default;
 
-    template <typename key_arg_, typename value_arg_>
-    constexpr association(key_arg_ &&key_arg, value_arg_ &&value_arg)
-        : key(std::forward<key_arg_>(key_arg)), value(std::forward<value_arg_>(value_arg)) {}
+    template <typename key_convertible_type_, typename mapped_convertible_type_>
+    constexpr mapping(key_convertible_type_ &&key_arg, mapped_convertible_type_ &&value_arg)
+        : key(std::forward<key_convertible_type_>(key_arg)), mapped(std::forward<mapped_convertible_type_>(value_arg)) {
+    }
 
-    template <typename key_arg_>
-    constexpr explicit association(key_arg_ &&key_arg) : key(std::forward<key_arg_>(key_arg)), value() {}
+    template <typename key_convertible_type_>
+    constexpr explicit mapping(key_convertible_type_ &&key_arg)
+        : key(std::forward<key_convertible_type_>(key_arg)), mapped() {}
 
     constexpr explicit operator key_type const &() const noexcept { return key; }
-
-    constexpr explicit operator std::pair<key_type, value_type>() const { return {key, value}; }
+    constexpr explicit operator std::pair<key_type, mapped_type>() const { return {key, mapped}; }
 };
 
 /**
- *  @brief Concept to detect if a type is an association (has key_type and value_type members).
+ *  @brief Concept to detect if a type is an mapping (has key_type and mapped_type members).
  */
 template <typename type_>
-concept is_association = requires {
-    typename type_::key_type;
-    typename type_::value_type;
+concept is_mapping = requires {
+    typename std::remove_cvref_t<type_>::key_type;
+    typename std::remove_cvref_t<type_>::mapped_type;
 };
 
 /**
@@ -118,28 +122,46 @@ inline constexpr bool is_safe_callback = true;
 struct end_sentinel_t {};
 
 /** @brief Placeholder type for template conditional where no type is needed. */
-struct dummy_t {};
+struct placeholder_t {};
 
 /** @brief Sink type that discards assigned values. */
-struct black_hole_t {
+struct discard_t {
     template <typename type_>
-    black_hole_t &operator=(type_ &&) noexcept {
+    discard_t &operator=(type_ &&) noexcept {
         return *this;
     }
 };
 
-struct no_op_t {
-    constexpr void operator()() const noexcept {}
-    template <typename type_>
+template <typename type_>
+struct no_op_fn {
     constexpr void operator()(type_ &&) const noexcept {}
+    constexpr void operator()(type_ const &) const noexcept {}
 };
 
-struct identity_fn_t {
+template <>
+struct no_op_fn<void> {
+    template <typename type_>
+    constexpr void operator()(type_ &&) const noexcept {}
+    constexpr void operator()() const noexcept {}
+};
+
+using no_op_fn_t = no_op_fn<void>;
+
+template <typename type_>
+struct identity_fn {
+    type_ &&operator()(type_ &&value) const noexcept { return std::forward<type_ &&>(value); }
+    type_ const &operator()(type_ const &value) const noexcept { return value; }
+};
+
+template <>
+struct identity_fn<void> {
     template <typename type_>
     decltype(auto) operator()(type_ &&value) const noexcept {
         return std::forward<type_>(value);
     }
 };
+
+using identity_fn_t = identity_fn<void>;
 
 template <typename element_type_>
 struct copy_to_fn {
@@ -245,7 +267,7 @@ consteval bool contains_type() {
  *  @return Reference to found value or default-constructed value.
  */
 template <typename needle_type_, typename default_type_, typename... haystack_types_>
-decltype(auto) get_type_or(haystack_types_ &&...args) {
+decltype(auto) get_value_by_type_or(haystack_types_ &&...args) {
     if constexpr ((std::is_same_v<std::decay_t<haystack_types_>, needle_type_> || ...)) {
         default_type_ result {};
         (..., (std::is_same_v<std::decay_t<haystack_types_>, needle_type_>
@@ -271,57 +293,69 @@ struct watch_t {
 
 /**
  *  @brief Alternative to C++ 23 @c std::expected and C++ 17 @c std::optional with error code.
- *    Wraps a @c noexcept default-constructible @c entry_type_, without all the complexity of
+ *    Wraps a @c noexcept default-constructible @c value_type_, without all the complexity of
  *    implementing a @c union -based uninitialized storage state.
  */
-template <typename entry_type_>
+template <typename value_type_>
 struct expected {
-    using entry_t = entry_type_;
-    static_assert(std::is_nothrow_default_constructible_v<entry_t>,
+    using value_t = value_type_;
+    using value_type = value_t; // ? STL style
+
+    static_assert(std::is_nothrow_default_constructible_v<value_t>,
                   "expected<T> requires T to be nothrow default-constructible");
 
-    entry_t entry;
+    // Named `outcome` to avoid ambiguity with generic terms like `value` or `entry` during debugging.
+    value_t outcome;
     status_t status;
 
     expected() = default;
-    expected(entry_t &&e, status_t s = status_t {}) noexcept : entry(std::move(e)), status(s) {}
-    expected(entry_t const &e, status_t s = status_t {}) noexcept : entry(e), status(s) {}
+    expected(value_t &&e, status_t s = status_t {}) noexcept : outcome(std::move(e)), status(s) {}
+    expected(value_t const &e, status_t s = status_t {}) noexcept : outcome(e), status(s) {}
+    expected(status_t s) noexcept : outcome(), status(s) {}
+
+    expected(std::optional<value_t> const &opt) noexcept
+        : outcome(opt.value_or(value_t {})), status(opt.has_value() ? status_t {success_k} : status_t {unknown_k}) {}
+
+    expected(std::optional<value_t> &&opt) noexcept
+        : outcome(opt.has_value() ? std::move(*opt) : value_t {}),
+          status(opt.has_value() ? status_t {success_k} : status_t {unknown_k}) {}
 
     /**
      *  @brief Checks if the expected contains a successful value.
      *  @return @c true if status is success, @c false otherwise.
      */
     explicit operator bool() const noexcept { return status; }
+    bool has_value() const noexcept { return status; }
 
     /**
      *  @brief Accesses the contained value (like @c std::optional).
-     *  @return Reference to the entry.
+     *  @return Reference to the outcome.
      */
-    entry_t &operator*() & noexcept { return entry; }
+    value_t &operator*() & noexcept { return outcome; }
 
     /**
      *  @brief Accesses the contained value (like @c std::optional, const version).
-     *  @return Const reference to the entry.
+     *  @return Const reference to the outcome.
      */
-    entry_t const &operator*() const & noexcept { return entry; }
+    value_t const &operator*() const & noexcept { return outcome; }
 
     /**
      *  @brief Accesses the contained value (like @c std::optional, rvalue version).
-     *  @return Rvalue reference to the entry.
+     *  @return Rvalue reference to the outcome.
      */
-    entry_t &&operator*() && noexcept { return std::move(entry); }
+    value_t &&operator*() && noexcept { return std::move(outcome); }
 
     /**
      *  @brief Member access operator (like @c std::optional).
-     *  @return Pointer to the entry.
+     *  @return Pointer to the outcome.
      */
-    entry_t *operator->() noexcept { return &entry; }
+    value_t *operator->() noexcept { return &outcome; }
 
     /**
      *  @brief Member access operator (like @c std::optional, const version).
-     *  @return Const pointer to the entry.
+     *  @return Const pointer to the outcome.
      */
-    entry_t const *operator->() const noexcept { return &entry; }
+    value_t const *operator->() const noexcept { return &outcome; }
 };
 
 /**
@@ -369,53 +403,147 @@ template <typename object_type_>
 }
 
 /**
- *  @brief Decorates an element type with generation and visibility metadata for transactional containers.
+ *  @brief Checks if a type has a @c comparable_particle member.
+ *
+ *  @code{cpp}
+ *  struct with_particle { using comparable_particle = int; };
+ *  struct without_particle {};
+ *  static_assert(has_comparable_particle<with_particle>::value, "Should have comparable_particle");
+ *  static_assert(!has_comparable_particle<without_particle>::value, "Should not have comparable_particle");
+ *  @endcode
+ */
+template <typename, typename = void>
+struct has_comparable_particle : std::false_type {};
+
+template <typename value_type_>
+struct has_comparable_particle<value_type_, std::void_t<typename value_type_::comparable_particle>> : std::true_type {};
+
+/**
+ *  @brief If @c can_be_mapping_type_ is a mapping, exposes its @c key_type as @c ::type.
+ *    Otherwise, exposes @c can_be_mapping_type_ itself as @c ::type.
+ *
+ *  @code{cpp}
+ *  using pair = mapping<int, std::string>;
+ *  static_assert(std::is_same_v<mapping_key_type_or_itself<pair>::type, int>, "Must be int");
+ *  static_assert(std::is_same_v<mapping_key_type_or_itself<double>::type, double>, "Must be double");
+ *  @endcode
+ */
+template <typename can_be_mapping_type_, bool = is_mapping<can_be_mapping_type_>>
+struct mapping_key_type_or_itself {
+    using type = can_be_mapping_type_;
+};
+
+template <typename can_be_mapping_type_>
+struct mapping_key_type_or_itself<can_be_mapping_type_, true> {
+    using type = typename can_be_mapping_type_::key_type;
+};
+
+/**
+ *  @brief Helper method to extract mapping key or return the object itself.
+ *    Useful for generic code that works with both mappings and simple keys.
+ */
+template <typename can_be_mapping_type_>
+typename mapping_key_type_or_itself<can_be_mapping_type_>::type const & //
+mapping_key_or_itself(can_be_mapping_type_ const &can_be_mapping) noexcept {
+    if constexpr (is_mapping<can_be_mapping_type_>) return can_be_mapping.key;
+    else return can_be_mapping;
+}
+
+/**
+ *  @brief If @c can_be_mapping_type_ is a mapping, exposes its @c mapped_type as @c ::type.
+ *    Otherwise, exposes @c void as @c ::type.
+ *
+ *  @code{cpp}
+ *  using pair = mapping<int, std::string>;
+ *  static_assert(std::is_same_v<mapped_value_type_or_void<pair>::type, std::string>, "Must be string");
+ *  static_assert(std::is_same_v<mapped_value_type_or_void<double>::type, void>, "Must be void");
+ *  @endcode
+ */
+template <typename can_be_mapping_type_, bool = is_mapping<can_be_mapping_type_>>
+struct mapped_value_type_or_void {
+    using type = void;
+};
+
+template <typename can_be_mapping_type_>
+struct mapped_value_type_or_void<can_be_mapping_type_, true> {
+    using type = typename can_be_mapping_type_::mapped_type;
+};
+
+/**
+ *  @section Correctness of Comparisons
+ *
+ *  For @c std::set, @c std::map, or similar containers we only require the keys to provide
+ *  @b strict-weak-ordering comparisons. It's enough to simply define a comparator that can
+ *  returns a boolean result for two comparable objects. Since C++ 20 comparisons are better
+ *  formalized:
+ *
+ *  - @c std::strong_ordering - equivalent values are fully interchangeable, everything is comparable!
+ *  - @c std::weak_ordering - equivalent values may be non-interchangeable, but everything is comparable!
+ *  - @c std::partial_ordering - equivalent values may be non-interchangeable, and may be incomparable!
+ *
+ *  Assuming that @c float values can be @c NaN and thus incomparable, we shouldn't be able
+ *  to construct a @c std::set<float> since the ordering is only partial, but GCC still compiles it.
+ *
+ *  @section Optimization Opportunities
+ *
+ *  Oftentimes, when dealing with heavy objects as keys (e.g., strings, composite structures),
+ *  we want to avoid storing many copies of the full object just to perform comparisons and lookups.
+ *  Instead, we can distill a lightweight "particle" from the heavy object that captures
+ *  its identity for ordering purposes. Examples may be:
+ *
+ *  - Non-owning @c std::string_view for @c std::string keys
+ *  - Integer IDs extracted from composite structures
+ *
+ *  If the @c comparator_type_ has a @c value_type member - indicating some form of a unique
+ *  identifier can be distilled from @c comparable_type_ - we expose it via @c ::type.
+ *  Else, if the @c comparable_type_ is a @c mapping, we use its @c key_type as the identifier.
+ *  Else, we use the @c comparable_type_ itself as the identifier.
+ */
+template <typename comparator_type_, typename comparable_type_, bool = has_comparable_particle<comparator_type_>::value>
+struct comparable_particle_of {
+    using type = typename mapping_key_type_or_itself<comparable_type_>::type;
+};
+
+template <typename comparator_type_, typename comparable_type_>
+struct comparable_particle_of<comparator_type_, comparable_type_, true> {
+    using type = typename comparator_type_::comparable_particle;
+};
+
+/**
+ *  @brief Decorates a value type with generation and visibility metadata for transactional containers.
  *
  *  @par Template requirements
- *  - @p element_type_ must be a value type (no references), nothrow default-constructible, and nothrow move
+ *  - @p value_type_ must be a value type (no references), nothrow default-constructible, and nothrow move
  *    constructible/assignable so that transactional staging can remain noexcept.
  *  - @p comparator_type_ must expose @c value_type describing the identifier used for ordering, and that identifier
  *    type must be nothrow copy-constructible to support watch bookkeeping.
- *  - @p element_type_ must be convertible to the identifier type and constructible from it, enabling the containers to
+ *  - @p value_type_ must be convertible to the identifier type and constructible from it, enabling the containers to
  *    extract keys for lookups and manufacture key-only tombstones for erases.
  */
-
-// Helper to detect if a type has value_type member
-template <typename, typename = void>
-struct has_value_type_member : std::false_type {};
-
-template <typename T>
-struct has_value_type_member<T, std::void_t<typename T::value_type>> : std::true_type {};
-
-// Helper to safely extract value_type or default to element type
-template <typename comparator_t, typename element_t, bool = has_value_type_member<comparator_t>::value>
-struct identifier_type_for {
-    using type = element_t; // Non-transparent: use element type directly
-};
-
-template <typename comparator_t, typename element_t>
-struct identifier_type_for<comparator_t, element_t, true> {
-    using type = typename comparator_t::value_type; // Transparent: use comparator's value_type
-};
-
-template <typename element_type_, typename comparator_type_>
+template <typename value_type_, typename comparator_type_>
 struct versioning_for {
 
-    using element_t = element_type_;
-    using comparator_t = comparator_type_;
+    using value_t = value_type_;
+    using value_type = value_t; // ? STL style
 
-    // For transparent comparators, use comparator_t::value_type; otherwise use element_type_
-    using identifier_t = typename identifier_type_for<comparator_t, element_t>::type;
+    using comparator_t = comparator_type_;
+    using comparator_type = comparator_t; // ? STL style
+
+    using identifier_t = typename comparable_particle_of<comparator_t, value_t>::type;
+    using identifier_type = identifier_t; // ? STL style
 
     using generation_t = ashvardanian::smashtable::generation_t;
-    using watch_t = ashvardanian::smashtable::watch_t;
+    using generation_type = generation_t; // ? STL style
 
-    static_assert(!std::is_reference<element_t>(), "Only value types are supported.");
+    using watch_t = ashvardanian::smashtable::watch_t;
+    using watch_type = watch_t; // ? STL style
+
+    static_assert(!std::is_reference<value_t>(), "Only value types are supported.");
     static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
-                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() -> expected<T> "
-                  "method");
-    static_assert(std::is_nothrow_default_constructible<element_t>(), "We need an empty state.");
-    static_assert(std::is_nothrow_move_constructible<element_t>() && std::is_nothrow_move_assignable<element_t>(),
+                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() method returning an "
+                  "expected-like type");
+    static_assert(std::is_nothrow_default_constructible<value_t>(), "We need an empty state.");
+    static_assert(std::is_nothrow_move_constructible<value_t>() && std::is_nothrow_move_assignable<value_t>(),
                   "To make all the methods `noexcept`, the moves must be safe too.");
 
     struct dated_identifier_t {
@@ -428,20 +556,20 @@ struct versioning_for {
         watch_t watch;
     };
 
-    struct versioned_entry_t {
-        element_t element;
+    struct versioned_t {
+        value_t unversioned;
         generation_t generation {0};
         bool deleted {false};
         bool visible {true};
 
-        versioned_entry_t() = default;
-        versioned_entry_t(versioned_entry_t &&) noexcept = default;
-        versioned_entry_t &operator=(versioned_entry_t &&) noexcept = default;
-        versioned_entry_t(versioned_entry_t const &) noexcept = delete;
-        versioned_entry_t &operator=(versioned_entry_t const &) noexcept = delete;
-        versioned_entry_t(element_t &&element) noexcept : element(std::move(element)) {}
+        versioned_t() = default;
+        versioned_t(versioned_t &&) noexcept = default;
+        versioned_t &operator=(versioned_t &&) noexcept = default;
+        versioned_t(versioned_t const &) noexcept = delete;
+        versioned_t &operator=(versioned_t const &) noexcept = delete;
+        versioned_t(value_t &&unversioned) noexcept : unversioned(std::move(unversioned)) {}
 
-        operator element_t const &() const & noexcept { return element; }
+        operator value_t const &() const & noexcept { return unversioned; }
         bool operator==(watch_t const &watch) const noexcept {
             return watch.deleted == deleted && watch.generation == generation;
         }
@@ -453,7 +581,7 @@ struct versioning_for {
     template <typename type_>
     constexpr static bool knows_generation() {
         using dereferenced_t = std::remove_reference_t<type_>;
-        return std::is_same<dereferenced_t, versioned_entry_t>() || std::is_same<dereferenced_t, dated_identifier_t>();
+        return std::is_same<dereferenced_t, versioned_t>() || std::is_same<dereferenced_t, dated_identifier_t>();
     }
 
     struct versioned_comparator_t {
@@ -462,7 +590,7 @@ struct versioning_for {
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
             using dereferenced_t = std::remove_reference_t<type_>;
-            if constexpr (std::is_same<dereferenced_t, versioned_entry_t>()) return (element_t const &)object.element;
+            if constexpr (std::is_same<dereferenced_t, versioned_t>()) return (value_t const &)object.unversioned;
             else if constexpr (std::is_same<dereferenced_t, dated_identifier_t>())
                 return (identifier_t const &)object.id;
             else return (dereferenced_t const &)object;
@@ -548,9 +676,9 @@ constexpr value_type_ roundup_to_multiple(value_type_ x) noexcept {
  */
 template <typename tree_type_>
 concept supports_order_statistics =
-    requires(tree_type_ const &tree, std::size_t k, typename tree_type_::entry_t const &entry) {
+    requires(tree_type_ const &tree, std::size_t k, typename tree_type_::value_t const &value) {
         { tree.select(k) } -> std::convertible_to<typename tree_type_::node_t const *>;
-        { tree.rank(entry) } -> std::same_as<std::size_t>;
+        { tree.rank(value) } -> std::same_as<std::size_t>;
     };
 
 /**
@@ -562,10 +690,10 @@ concept supports_order_statistics =
  */
 template <typename node_type_>
 concept node_supports_order_statistics =
-    requires(node_type_ *node, std::size_t k, typename node_type_::entry_t const &entry,
+    requires(node_type_ *node, std::size_t k, typename node_type_::value_t const &value,
              typename node_type_::comparator_t const &comp) {
         { node_type_::select(node, k, comp) } -> std::convertible_to<node_type_ *>;
-        { node_type_::rank(node, entry, comp) } -> std::same_as<std::size_t>;
+        { node_type_::rank(node, value, comp) } -> std::same_as<std::size_t>;
     };
 
 } // namespace ashvardanian::smashtable

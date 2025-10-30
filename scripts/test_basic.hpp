@@ -1,36 +1,34 @@
 /**
- *  @brief  Template test functions for basic container operations.
+ *  @brief Template test functions for basic container operations.
  *    Includes insert/erase/find/range operations and heterogeneous lookup tests.
  *    Templates can be instantiated for any container supporting the common interface.
  *
- *  @file   test_basic.hpp
+ *  @file test_basic.hpp
+ *  @date October 26, 2025
+ *  @author Ash Vardanian
  */
 #pragma once
-#include <iostream>
-#include <vector>
-#include <cstdlib>
-#include <thread>
-#include <ctime>
-
 #include <gtest/gtest.h>
-
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
-#include <smashtable/transactional_std_store.hpp>
-#include <smashtable/transactional_binary_tree.hpp>
+#include <smashtable/basic_vector.hpp>
 
 namespace ashvardanian::smashtable::scripts {
-
-constexpr std::size_t size = 128;
 
 #pragma mark - Keys and Associations
 
 /**
- *  @brief Strongly-typed trivial key without any payload or heterogenous comparisons.
+ *  @brief Even when testing some non-trivial keys, to make tests more uniform, they
+ *    should be constructible from a single unsigned integer identifier and comparable to it,
+ *    unless we are explicitly testing a non-heterogeneous comparator.
+ */
+using trivial_id_t = std::size_t;
+
+/**
+ *  @brief Strongly-typed trivial key @b without any payload or heterogenous comparisons.
  */
 struct trivial_key_t {
-    std::uint64_t unique_id = 0;
+    trivial_id_t unique_id = 0;
 
-    explicit trivial_key_t(std::uint64_t i = 0) noexcept : unique_id(i) {}
+    explicit trivial_key_t(trivial_id_t i = 0) noexcept : unique_id(i) {}
 
     trivial_key_t(trivial_key_t &&) noexcept = default;
     trivial_key_t(trivial_key_t const &) noexcept = default;
@@ -39,6 +37,10 @@ struct trivial_key_t {
 
     bool operator<(trivial_key_t const &other) const noexcept { return unique_id < other.unique_id; }
     bool operator==(trivial_key_t const &other) const noexcept { return unique_id == other.unique_id; }
+    bool operator!=(trivial_key_t const &other) const noexcept { return unique_id != other.unique_id; }
+    bool operator>(trivial_key_t const &other) const noexcept { return unique_id > other.unique_id; }
+    bool operator<=(trivial_key_t const &other) const noexcept { return unique_id <= other.unique_id; }
+    bool operator>=(trivial_key_t const &other) const noexcept { return unique_id >= other.unique_id; }
 };
 
 /**
@@ -48,24 +50,28 @@ struct trivial_key_t {
  */
 struct composite_key_t {
     std::uint64_t some_metadata = 0;
-    std::uint64_t unique_id = 0;
+    trivial_id_t unique_id = 0;
     double some_float = 0.0;
 
-    explicit composite_key_t(std::uint64_t i = 0) noexcept : unique_id(i) {}
+    explicit composite_key_t(trivial_id_t i = 0) noexcept : unique_id(i) {}
 
     composite_key_t(composite_key_t &&) noexcept = default;
     composite_key_t(composite_key_t const &) noexcept = default;
     composite_key_t &operator=(composite_key_t &&) noexcept = default;
     composite_key_t &operator=(composite_key_t const &) noexcept = default;
 
-    explicit operator std::uint64_t() const noexcept { return unique_id; }
+    explicit operator trivial_id_t() const noexcept { return unique_id; }
     bool operator<(composite_key_t const &other) const noexcept { return unique_id < other.unique_id; }
     bool operator==(composite_key_t const &other) const noexcept { return unique_id == other.unique_id; }
+    bool operator!=(composite_key_t const &other) const noexcept { return unique_id != other.unique_id; }
+    bool operator>(composite_key_t const &other) const noexcept { return unique_id > other.unique_id; }
+    bool operator<=(composite_key_t const &other) const noexcept { return unique_id <= other.unique_id; }
+    bool operator>=(composite_key_t const &other) const noexcept { return unique_id >= other.unique_id; }
 };
 
 struct composite_key_compare_t {
-    using is_transparent = void;      // ? Enable heterogeneous lookup by prefix
-    using value_type = std::uint64_t; // ? The only part we need to resolve transactions without carrying full object
+    using is_transparent = void;     // ? Enable heterogeneous lookup by prefix
+    using value_type = trivial_id_t; // ? The only part we need to resolve transactions without carrying full object
 
     inline bool operator()(composite_key_t const &a, composite_key_t const &b) const noexcept {
         return a.unique_id < b.unique_id;
@@ -78,7 +84,8 @@ struct composite_key_compare_t {
  *  @brief Strongly-typed key with heavy payload, that doesn't have a @c noexcept constructors,
  *    but provides @c ::make(...) and @c .copy() interfaces for safe construction and copying.
  *
- *  For compatibility with integer-based tests,
+ *  For compatibility with integer-based tests, provides @c ::make(trivial_id_t) that encodes
+ *  the integer as a hexadecimal string and @c <=> and @c == operators for comparisons.
  */
 struct heavy_key_t {
 
@@ -89,11 +96,11 @@ struct heavy_key_t {
     heavy_key_t &operator=(heavy_key_t &&) noexcept = default;
 
     /**
-     *  @brief Creates a heavy_key_t from an integer by converting to hex string.
-     *  @param integer_to_encode Integer to encode as hexadecimal string.
+     *  @brief Creates a @c heavy_key_t from an integer by converting to hex string.
+     *  @param[in] integer_to_encode Integer to encode as hexadecimal string.
      *  @return expected<heavy_key_t> containing the key or error on OOM.
      */
-    static expected<heavy_key_t> make(std::uint64_t integer_to_encode) noexcept {
+    static expected<heavy_key_t> make(trivial_id_t integer_to_encode) noexcept {
         heavy_key_t result;
         char buf[32];
         int len = std::snprintf(buf, sizeof(buf), "%016lx", integer_to_encode);
@@ -108,8 +115,8 @@ struct heavy_key_t {
     }
 
     /**
-     *  @brief Creates a heavy_key_t from a string by copying into internal buffer.
-     *  @param std_string String to copy.
+     *  @brief Creates a @c heavy_key_t from a string by copying into internal buffer.
+     *  @param[in] std_string String to copy.
      *  @return expected<heavy_key_t> containing the key or error on OOM.
      */
     static expected<heavy_key_t> make(std::string_view std_string) noexcept {
@@ -122,7 +129,7 @@ struct heavy_key_t {
     }
 
     /**
-     *  @brief Deep copies this heavy_key_t.
+     *  @brief Deep copies this @c heavy_key_t.
      *  @return expected<heavy_key_t> containing the copy or error on OOM.
      */
     expected<heavy_key_t> copy() const noexcept {
@@ -163,20 +170,175 @@ struct heavy_key_t {
     }
 };
 
-#pragma mark - Association Types Using Keys
+static_assert(std::is_same_v<versioning_for<heavy_key_t, std::less<void>>::value_type, heavy_key_t>);
+static_assert(std::is_same_v<versioning_for<heavy_key_t, std::less<void>>::identifier_type, heavy_key_t>);
 
 /**
- *  @brief Association types built from our test keys.
- *    These can be used with containers as element types.
+ *  @brief Lifecycle-guarded payload that detects common anti-patterns.
+ *    All state is self-contained - no globals, thread-safe.
+ *
+ *  Detects:
+ *  - Double construction (constructor called twice)
+ *  - Double destruction (destructor called twice)
+ *  - Use-after-free (operations after destructor)
+ *  - Use-after-move (reading moved-from object)
+ *  - Operations on uninitialized memory
+ *  - Memory corruption (via canaries)
  */
+class guarded_payload_t {
+    enum class state_t : std::uint8_t {
+        uninitialized_k = 0x00, // Fresh memory, never constructed
+        constructed_k = 0xC0,   // Valid, living object
+        moved_from_k = 0x3F,    // Source of move (still destructible)
+        destroyed_k = 0xDE      // Destructor was called
+    };
 
-// Simple uint64 key-value pairs
-using trivial_uint64_pair_t = association<trivial_key_t, std::uint64_t>;
-using composite_uint64_pair_t = association<composite_key_t, std::uint64_t>;
-using heavy_uint64_pair_t = association<heavy_key_t, std::uint64_t>;
+    // Canaries to detect buffer overflows and memcpy misuse
+    static constexpr std::uint32_t canary_front_k = 0xCAFEBABE;
+    static constexpr std::uint32_t canary_back_k = 0xDEADC0DE;
 
-// Simple uint64-uint64 for baseline integer tests
-using uint64_uint64_pair_t = association<std::uint64_t, std::uint64_t>;
+    std::uint32_t canary_front_ = 0;
+    state_t state_ = state_t::uninitialized_k;
+    std::uint8_t construction_count_ = 0; // Should be 0 or 1
+    std::uint8_t destruction_count_ = 0;  // Should be 0 or 1
+    std::uint32_t generation_ = 0;        // Mutation counter
+    trivial_id_t value_ = 0;
+    std::uint32_t canary_back_ = 0;
+
+  public:
+    guarded_payload_t() noexcept {
+        verify_not_double_constructed();
+        canary_front_ = canary_front_k;
+        canary_back_ = canary_back_k;
+        state_ = state_t::constructed_k;
+        construction_count_ = 1;
+    }
+
+    explicit guarded_payload_t(trivial_id_t v) noexcept {
+        verify_not_double_constructed();
+        canary_front_ = canary_front_k;
+        canary_back_ = canary_back_k;
+        state_ = state_t::constructed_k;
+        construction_count_ = 1;
+        value_ = v;
+        generation_ = 1;
+    }
+
+    ~guarded_payload_t() noexcept {
+        verify_canaries();
+        assert(destruction_count_ == 0 && "Double destruction detected!");
+        assert(state_ != state_t::destroyed_k && "Destructor called twice!");
+        assert((state_ == state_t::constructed_k || state_ == state_t::moved_from_k) &&
+               "Destructing unconstructed object!");
+
+        destruction_count_ = 1;
+        state_ = state_t::destroyed_k;
+        value_ = static_cast<trivial_id_t>(0xDEADBEEFDEADBEEFULL);
+    }
+
+    // Copy constructor - creates new independent object
+    guarded_payload_t(guarded_payload_t const &other) noexcept {
+        other.verify_readable();
+        verify_not_double_constructed();
+
+        canary_front_ = canary_front_k;
+        canary_back_ = canary_back_k;
+        value_ = other.value_;
+        generation_ = other.generation_;
+        state_ = state_t::constructed_k;
+        construction_count_ = 1;
+        destruction_count_ = 0;
+    }
+
+    // Move constructor - transfers value, marks source
+    guarded_payload_t(guarded_payload_t &&other) noexcept {
+        other.verify_readable();
+        verify_not_double_constructed();
+
+        canary_front_ = canary_front_k;
+        canary_back_ = canary_back_k;
+        value_ = other.value_;
+        generation_ = other.generation_;
+        state_ = state_t::constructed_k;
+        construction_count_ = 1;
+        destruction_count_ = 0;
+
+        // Mark source as moved-from (still destructible, but not readable)
+        other.state_ = state_t::moved_from_k;
+    }
+
+    guarded_payload_t &operator=(guarded_payload_t const &other) noexcept {
+        other.verify_readable();
+        verify_writable();
+        value_ = other.value_;
+        generation_++;
+        return *this;
+    }
+
+    guarded_payload_t &operator=(guarded_payload_t &&other) noexcept {
+        other.verify_readable();
+        verify_writable();
+        value_ = other.value_;
+        generation_++;
+        other.state_ = state_t::moved_from_k;
+        return *this;
+    }
+
+    guarded_payload_t &operator=(trivial_id_t v) noexcept {
+        verify_writable();
+        value_ = v;
+        generation_++;
+        return *this;
+    }
+
+    trivial_id_t get() const noexcept {
+        verify_readable();
+        return value_;
+    }
+
+    std::uint32_t generation() const noexcept {
+        verify_readable();
+        return generation_;
+    }
+
+    bool operator==(trivial_id_t other) const noexcept {
+        verify_readable();
+        return value_ == other;
+    }
+
+    bool operator!=(trivial_id_t other) const noexcept { return !(*this == other); }
+
+    bool operator==(guarded_payload_t const &other) const noexcept {
+        verify_readable();
+        other.verify_readable();
+        return value_ == other.value_;
+    }
+
+  private:
+    void verify_canaries() const noexcept {
+        assert(canary_front_ == canary_front_k && "Front canary corrupted - buffer overflow or memcpy?");
+        assert(canary_back_ == canary_back_k && "Back canary corrupted - buffer overflow or memcpy?");
+    }
+
+    void verify_not_double_constructed() const noexcept {
+        assert(construction_count_ == 0 && "Double construction detected!");
+        assert(state_ == state_t::uninitialized_k && "Constructing over existing object!");
+    }
+
+    void verify_readable() const noexcept {
+        verify_canaries();
+        assert(state_ == state_t::constructed_k && "Reading invalid object (use-after-free or use-after-move)!");
+        assert(construction_count_ == 1 && "Reading unconstructed object!");
+        assert(destruction_count_ == 0 && "Use after free!");
+    }
+
+    void verify_writable() noexcept {
+        verify_canaries();
+        assert(state_ == state_t::constructed_k && "Writing to invalid object!");
+        assert(construction_count_ == 1 && "Writing to unconstructed object!");
+        assert(destruction_count_ == 0 && "Writing to destroyed object!");
+    }
+};
 
 #pragma mark - Stateful Comparator
 
@@ -202,20 +364,35 @@ struct stateful_comparator {
 
 using stateful_comparator_t = stateful_comparator<>;
 
-#pragma mark - Entry Construction Helpers
+#pragma mark - new_member Construction Helpers
 
 /**
- * @brief Helper to construct an entry from an integer value
+ * @brief Helper to construct a new key matching the @c member_type_ from an integer value
  */
-template <typename entry_type_>
-auto make_entry_from_int(std::size_t val) {
-    // Type has static .make() method (like heavy_key_t)
-    if constexpr (requires { entry_type_::make(val); }) return *entry_type_::make(val);
-    // Association type: {key, value}
-    else if constexpr (requires { entry_type_ {val, static_cast<int>(val)}; })
-        return entry_type_ {val, static_cast<int>(val)};
-    // Plain type: {value}
-    else return entry_type_ {val};
+template <typename member_type_>
+auto trivial_id_to_key(trivial_id_t val) {
+    if constexpr (has_make_method<member_type_, trivial_id_t>) return *member_type_::make(val);
+    else if constexpr (is_mapping<member_type_>) return trivial_id_to_key<typename member_type_::key_type>(val);
+    else return member_type_ {val};
+}
+
+/**
+ * @brief Helper to construct a new @c member_type_ from an integer value
+ */
+template <typename member_type_>
+auto trivial_id_to_member(trivial_id_t val) {
+    if constexpr (has_make_method<member_type_, trivial_id_t>) return *member_type_::make(val);
+    else if constexpr (is_mapping<member_type_>)
+        return member_type_ {trivial_id_to_key<member_type_>(val), static_cast<int>(val)};
+    else return member_type_ {val};
+}
+
+/**
+ * @brief Helper to construct a new @c member_type_ from an integer value
+ */
+template <typename member_type_, typename value_type_>
+member_type_ trivial_id_to_member(trivial_id_t id, value_type_ val) {
+    return {trivial_id_to_key<member_type_>(id), val};
 }
 
 #pragma mark - Stateful Allocator
@@ -263,293 +440,20 @@ using stateful_allocator_t = stateful_allocator<std::byte>;
 
 #pragma mark - Basic Operation Test Templates
 
-template <typename container_type_>
-void test_with_threads(std::size_t threads_count) {
-    container_type_ cont;
-    std::vector<std::thread> threads;
-    threads.reserve(threads_count);
-
-    auto upsert = [&](std::size_t offset, std::size_t length) {
-        for (std::size_t idx = offset; idx < length; ++idx) EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-    };
-
-    std::size_t shift = (size / threads_count);
-    for (std::size_t idx = 0; idx < threads_count; ++idx)
-        threads.push_back(std::thread(upsert, idx * shift, idx * shift + shift));
-
-    for (std::size_t idx = 0; idx < threads_count; ++idx) threads[idx].join();
-
-    EXPECT_EQ(cont.size(), size);
-    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.contains(idx));
-}
-
-/**
- * @brief Tests insertion in ascending, descending, and random order (exercises AVL rebalancing)
- */
-template <typename container_type_>
-void test_basic_insertion_patterns() {
-    using entry_t = typename container_type_::entry_t;
-    container_type_ cont;
-
-    // Test 1: Ascending insertion
-    for (std::size_t idx = 0; idx < size; ++idx) {
-        auto entry = make_entry_from_int<entry_t>(idx);
-        EXPECT_TRUE(cont.insert(std::move(entry)));
-        EXPECT_TRUE(cont.contains(idx));
-    }
-    EXPECT_EQ(cont.size(), size);
-    cont.clear();
-
-    // Test 2: Descending insertion (tests AVL rebalancing)
-    for (std::size_t idx = size; idx > 0; --idx) {
-        auto entry = make_entry_from_int<entry_t>(idx);
-        EXPECT_TRUE(cont.insert(std::move(entry)));
-        EXPECT_TRUE(cont.contains(idx));
-    }
-    EXPECT_EQ(cont.size(), size);
-    cont.clear();
-
-    // Test 3: Random insertion (tests worst-case AVL patterns)
-    std::srand(42); // Fixed seed for reproducibility
-    for (std::size_t idx = 0; idx < size; ++idx) {
-        std::size_t val = std::rand();
-        auto entry = make_entry_from_int<entry_t>(val);
-        EXPECT_TRUE(cont.insert(std::move(entry)));
-        EXPECT_TRUE(cont.contains(val));
-    }
-}
-
-/**
- *  @brief Tests bulk insertion via move iterators
- */
-template <typename container_type_>
-void test_bulk_insertion_from_iterators() {
-    using entry_t = typename container_type_::entry_t;
-    std::vector<entry_t> vec;
-    vec.reserve(size);
-    container_type_ cont;
-
-    for (std::size_t idx = 0; idx < size; ++idx) { vec.push_back(make_entry_from_int<entry_t>(idx)); }
-
-    EXPECT_TRUE(cont.insert(std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end())));
-    EXPECT_EQ(cont.size(), size);
-
-    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.contains(idx));
-}
-
-/**
- *  @brief Tests bulk insert_or_assign (upsert) correctly overwrites duplicate keys
- *
- *  This test verifies that when bulk inserting elements with duplicate keys,
- *  the implementation uses insert_or_assign semantics (overwrite) rather than
- *  insert_if_missing semantics (skip).
- */
-template <typename container_type_>
-void test_bulk_insert_or_assign_with_duplicates() {
-    container_type_ cont;
-
-    // First, insert some initial values
-    for (std::size_t idx = 0; idx < 10; ++idx) { EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx})); }
-    EXPECT_EQ(cont.size(), 10);
-
-    // Verify initial values
-    cont.find(
-        5, [](uint64_uint64_pair_t const &p) noexcept { EXPECT_EQ(p.value, 5); },
-        []() noexcept { FAIL() << "Key 5 should exist"; });
-
-    // Now bulk insert with overlapping keys but different values
-    std::vector<uint64_uint64_pair_t> vec;
-    for (std::size_t idx = 5; idx < 15; ++idx) {
-        vec.push_back(uint64_uint64_pair_t {idx, idx * 100}); // Different values
-    }
-
-    EXPECT_TRUE(cont.upsert(std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end())));
-
-    // Size should be 15 (0-14), not 20
-    EXPECT_EQ(cont.size(), 15) << "Bulk upsert should handle duplicates correctly";
-
-    // Verify that overlapping keys (5-9) have UPDATED values
-    for (std::size_t idx = 5; idx < 10; ++idx) {
-        bool found = false;
-        cont.find(
-            idx,
-            [&](uint64_uint64_pair_t const &p) noexcept {
-                found = true;
-                EXPECT_EQ(p.value, idx * 100) << "Key " << idx << " should have updated value from bulk upsert";
-            },
-            [&]() noexcept { FAIL() << "Key " << idx << " should exist after bulk upsert"; });
-        EXPECT_TRUE(found);
-    }
-
-    // Verify new keys (10-14) were inserted
-    for (std::size_t idx = 10; idx < 15; ++idx) {
-        bool found = false;
-        cont.find(
-            idx,
-            [&](uint64_uint64_pair_t const &p) noexcept {
-                found = true;
-                EXPECT_EQ(p.value, idx * 100);
-            },
-            [&]() noexcept { FAIL() << "Key " << idx << " should exist after bulk upsert"; });
-        EXPECT_TRUE(found);
-    }
-
-    // Verify old keys (0-4) retain original values
-    for (std::size_t idx = 0; idx < 5; ++idx) {
-        bool found = false;
-        cont.find(
-            idx,
-            [&](uint64_uint64_pair_t const &p) noexcept {
-                found = true;
-                EXPECT_EQ(p.value, idx) << "Key " << idx << " should retain original value";
-            },
-            [&]() noexcept { FAIL() << "Key " << idx << " should exist"; });
-        EXPECT_TRUE(found);
-    }
-}
-
-/**
- *  @brief Tests range queries on committed HEAD state
- */
-template <typename container_type_>
-void test_range_query_head_state() {
-    container_type_ cont;
-
-    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-
-    // Query in windows and verify we get elements within the range
-    for (std::size_t idx = 0; idx < size; idx += 10) {
-        std::size_t count = 0;
-        std::size_t min_key = size, max_key = 0;
-        cont.range(idx, idx + 9, [&](uint64_uint64_pair_t const &rhs) noexcept {
-            min_key = std::min(min_key, rhs.key);
-            max_key = std::max(max_key, rhs.key);
-            count++;
-        });
-        EXPECT_GT(count, 0) << "Range query should return at least some elements";
-        if (count > 0) {
-            EXPECT_GE(min_key, idx) << "Min key should be >= lower bound";
-            EXPECT_LE(max_key, idx + 10) << "Max key should be near upper bound";
-        }
-    }
-}
-
-/**
- *  @brief Tests `erase_range` on committed HEAD state
- */
-template <typename container_type_>
-void test_erase_range_head_state() {
-    container_type_ cont;
-
-    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-
-    bool state = true;
-    for (std::size_t idx = 0; idx < size; idx += 10) {
-        cont.erase_range(idx, idx + 10, [](auto const &) noexcept {});
-        for (std::size_t i = idx; i < idx + 10; ++i) {
-            cont.find(i, [&](uint64_uint64_pair_t const &) noexcept { state = false; });
-            EXPECT_TRUE(state);
-        }
-    }
-}
-
-/**
- *  @brief Tests `upper_bound` query returns first `element > key`
- */
-template <typename container_type_>
-void test_upper_bound() {
-    container_type_ cont;
-
-    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-
-    for (std::size_t idx = 0; idx < size - 1; ++idx) {
-        cont.upper_bound(idx, [&](uint64_uint64_pair_t const &rhs) noexcept { EXPECT_GT(rhs.key, idx); });
-    }
-}
-
-/**
- *  @brief Tests `clear` operation resets size to 0
- */
-template <typename container_type_>
-void test_clear() {
-    container_type_ cont;
-
-    EXPECT_EQ(cont.size(), 0);
-
-    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-
-    EXPECT_EQ(cont.size(), size);
-    EXPECT_TRUE(cont.clear());
-    EXPECT_EQ(cont.size(), 0);
-}
-
-/**
- *  @brief Tests `size` increments correctly after each upsert
- */
-template <typename container_type_>
-void test_size_after_upserts() {
-    container_type_ cont;
-    EXPECT_EQ(cont.size(), 0);
-
-    for (std::size_t idx = 0; idx < 50; ++idx) {
-        EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-        EXPECT_EQ(cont.size(), idx + 1);
-    }
-}
-
-/**
- *  @brief Tests size remains unchanged when upserting duplicate keys
- */
-template <typename container_type_>
-void test_size_invariant_on_duplicate_upserts() {
-    container_type_ cont;
-
-    // Insert initial keys
-    for (std::size_t idx = 0; idx < 50; ++idx) { EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx})); }
-    EXPECT_EQ(cont.size(), 50);
-
-    // Upsert same keys again with different values - size should remain same
-    for (std::size_t idx = 0; idx < 50; ++idx) {
-        EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx * 2}));
-        EXPECT_EQ(cont.size(), 50) << "Duplicate upsert should not change size";
-    }
-}
-
-/**
- *  @brief Tests size decrements correctly after erase_range
- */
-template <typename container_type_>
-void test_size_after_erase() {
-    container_type_ cont;
-
-    for (std::size_t idx = 0; idx < 50; ++idx) EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {idx, idx}));
-    EXPECT_EQ(cont.size(), 50);
-
-    // Erase in ranges
-    for (std::size_t idx = 0; idx < 50; idx += 10) {
-        cont.erase_range(id_t {idx}, id_t {idx + 10});
-        EXPECT_EQ(cont.size(), 50 - (idx + 10));
-    }
-    EXPECT_EQ(cont.size(), 0);
-}
-
 /**
  *  @brief Tests operations on empty container don't crash
  */
 template <typename container_type_>
 void test_empty_container_operations() {
-    container_type_ cont;
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
 
     // Operations on empty container should not crash
-    bool found = false;
-    cont.find(id_t {1}, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-    EXPECT_FALSE(found);
-
-    cont.upper_bound(id_t {1}, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-    EXPECT_FALSE(found);
-
-    cont.erase_range(id_t {0}, id_t {10});
-    EXPECT_EQ(cont.size(), 0);
+    EXPECT_FALSE(container.contains(trivial_id_to_key<member_t>(1)));
+    container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10));
+    EXPECT_EQ(container.size(), 0);
 }
 
 /**
@@ -557,260 +461,311 @@ void test_empty_container_operations() {
  */
 template <typename container_type_>
 void test_single_element_operations() {
-    container_type_ cont;
-    EXPECT_TRUE(cont.upsert(uint64_uint64_pair_t {42, 42}));
-    EXPECT_EQ(cont.size(), 1);
 
-    bool found = false;
-    cont.find(id_t {42}, [&](uint64_uint64_pair_t const &e) noexcept {
-        found = true;
-        EXPECT_EQ(e.value, 42);
-    });
-    EXPECT_TRUE(found);
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
 
-    cont.erase_range(id_t {42}, id_t {43});
-    EXPECT_EQ(cont.size(), 0);
+    auto new_member = trivial_id_to_member<member_t>(42);
+    EXPECT_TRUE(container.upsert(std::move(new_member)));
+    EXPECT_EQ(container.size(), 1);
+    EXPECT_TRUE(container.contains(trivial_id_to_key<member_t>(42)));
+    container.erase_range(trivial_id_to_key<member_t>(42), trivial_id_to_key<member_t>(43));
+    EXPECT_EQ(container.size(), 0);
 }
 
 /**
- *  @brief Tests reserve() pre-allocates capacity (STL containers only)
+ * @brief Tests insertion in ascending, descending, and random order
+ */
+template <typename container_type_>
+void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 42) {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
+
+    // Test 1: Ascending insertion
+    for (std::size_t idx = 0; idx < size; ++idx) {
+        auto new_member = trivial_id_to_member<member_t>(idx);
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
+        EXPECT_TRUE(container.contains(idx));
+        EXPECT_EQ(container.size(), idx + 1);
+    }
+    EXPECT_EQ(container.size(), size);
+    container.clear();
+    EXPECT_EQ(container.size(), 0);
+
+    // Test 2: Descending insertion (tests AVL rebalancing)
+    for (std::size_t idx = size; idx > 0; --idx) {
+        auto new_member = trivial_id_to_member<member_t>(idx);
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
+        EXPECT_TRUE(container.contains(idx));
+    }
+    EXPECT_EQ(container.size(), size);
+    container.clear();
+    EXPECT_EQ(container.size(), 0);
+
+    // Test 3: Random insertion (tests worst-case AVL patterns)
+    std::srand(seed); // Fixed seed for reproducibility
+    for (std::size_t idx = 0; idx < size; ++idx) {
+        trivial_id_t random_id = static_cast<trivial_id_t>(std::rand());
+        auto new_member = trivial_id_to_member<member_t>(random_id);
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
+        EXPECT_TRUE(container.contains(random_id));
+    }
+}
+
+/**
+ *  @brief Tests bulk insertion via @b move iterators
+ */
+template <typename container_type_>
+void test_bulk_insertion_from_iterators(std::size_t size = 100) {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
+
+    std::vector<member_t> vec;
+    vec.reserve(size);
+    for (std::size_t idx = 0; idx < size; ++idx) vec.push_back(trivial_id_to_member<member_t>(idx));
+
+    EXPECT_TRUE(container.insert_if_missing(std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end())));
+    EXPECT_EQ(container.size(), size);
+    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(container.contains(idx));
+    container.clear();
+    EXPECT_EQ(container.size(), 0);
+
+    // Lets do the same with update-or-insert semantics
+    EXPECT_TRUE(container.upsert(std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end())));
+    EXPECT_EQ(container.size(), size);
+    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(container.contains(idx));
+    container.clear();
+    EXPECT_EQ(container.size(), 0);
+}
+
+/**
+ *  @brief Tests bulk upsert correctly overwrites duplicate keys
  *
- *  AVL trees don't support collection-level reserve
+ *  This test verifies that when bulk inserting elements with duplicate keys,
+ *  the implementation uses upsert semantics (overwrite) rather than
+ *  insert_if_missing semantics (skip).
  */
 template <typename container_type_>
-void test_reserve() {
-    container_type_ cont;
-    EXPECT_TRUE(cont.reserve(100));
-    EXPECT_TRUE(cont.empty());
-    EXPECT_EQ(cont.size(), 0);
+void test_bulk_upsert_with_duplicates() {
+
+    static_assert(container_type_::is_associative::value, //
+                  "Container must be associative for upsert test");
+    static_assert(std::is_same_v<typename container_type_::value_type::mapped_type, int>,
+                  "Container value_type must be int for value verification");
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
+
+    // First, insert some initial values
+    for (std::size_t idx = 0; idx < 10; ++idx) {
+        auto new_member = trivial_id_to_member<member_t>(idx);
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
+    }
+    EXPECT_EQ(container.size(), 10);
+
+    // Verify initial values exist
+    EXPECT_TRUE(container.contains(std::size_t {5}));
+
+    // Now bulk insert with overlapping keys but different values
+    std::vector<member_t> vec;
+    for (std::size_t idx = 5; idx < 15; ++idx) {
+        auto new_member = trivial_id_to_member<member_t>(idx);
+        new_member.mapped = static_cast<int>(idx * 100);
+        vec.push_back(std::move(new_member));
+    }
+
+    EXPECT_TRUE(container.upsert(std::make_move_iterator(vec.begin()), std::make_move_iterator(vec.end())));
+
+    // Size should be 15 (0-14), not 20
+    EXPECT_EQ(container.size(), 15) << "Bulk upsert should handle duplicates correctly";
+
+    // Verify that overlapping keys (5-9) have UPDATED values (for int-valued maps only)
+    for (std::size_t idx = 5; idx < 10; ++idx) {
+        auto found_entry = container.find_copy(idx);
+        ASSERT_TRUE(found_entry) << "Key " << idx << " should exist after bulk upsert";
+        EXPECT_EQ(found_entry->mapped, static_cast<int>(idx * 100));
+    }
+
+    // Verify new keys (10-14) were inserted
+    for (std::size_t idx = 10; idx < 15; ++idx) EXPECT_TRUE(container.contains(idx));
+
+    // Verify old keys (0-4) still exist
+    for (std::size_t idx = 0; idx < 5; ++idx) EXPECT_TRUE(container.contains(idx));
 }
 
 /**
- *  @brief Tests split/join work correctly for range deletion edge cases
+ *  @brief Tests range queries on committed HEAD state
  */
 template <typename container_type_>
-void test_erase_range_edge_cases() {
-    container_type_ set;
+void test_range_query_head_state(std::size_t size = 100) {
 
-    // Insert elements
-    for (std::size_t i = 0; i < 100; ++i) { EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {i, i})); }
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using key_t = typename mapping_key_type_or_itself<member_t>::type;
+    static_assert(std::is_nothrow_copy_constructible_v<key_t>,
+                  "Key type must be noexcept copy constructible for this test");
 
-    // Test: Erase empty range (should be no-op)
-    set.erase_range(50, 50);
-    EXPECT_EQ(set.size(), 100);
+    container_t container;
+    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(idx)));
 
-    // Test: Erase single element range
-    set.erase_range(50, 51);
-    EXPECT_EQ(set.size(), 99);
-    bool found = false;
-    set.find(50, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-    EXPECT_FALSE(found);
+    // Query in windows and verify we get elements within the range
+    for (std::size_t idx = 0; idx < size; idx += 10) {
+        std::size_t count = 0;
+        auto min_key = trivial_id_to_key<member_t>(size);
+        auto max_key = trivial_id_to_key<member_t>(0);
+        container.range(trivial_id_to_key<member_t>(idx), trivial_id_to_key<member_t>(idx + 9),
+                        [&](member_t const &member) noexcept {
+                            min_key = std::min(min_key, mapping_key_or_itself<member_t>(member));
+                            max_key = std::max(max_key, mapping_key_or_itself<member_t>(member));
+                            count++;
+                        });
+        EXPECT_GT(count, 0) << "Range query should return at least some elements";
+        if (count > 0) {
+            EXPECT_GE(min_key, trivial_id_to_key<member_t>(idx)) << "Min key should be >= lower bound";
+            EXPECT_LE(max_key, trivial_id_to_key<member_t>(idx + 10)) << "Max key should be near upper bound";
+        }
+    }
 
-    // Test: Erase from beginning
-    set.erase_range(0, 10);
-    EXPECT_EQ(set.size(), 89);
+    for (std::size_t idx = 0; idx < size - 1; ++idx) {
+        auto idx_key = trivial_id_to_key<member_t>(idx);
+        auto maybe_member = container.upper_bound_copy(idx_key);
+        ASSERT_TRUE(maybe_member);
+        EXPECT_GE(mapping_key_or_itself(*maybe_member), idx_key);
+    }
 
-    // Test: Erase to end
-    set.erase_range(90, 100);
-    EXPECT_EQ(set.size(), 79);
-
-    // Verify remaining range is correct [11, 90)
-    for (std::size_t i = 11; i < 90; ++i) {
-        if (i == 50) continue; // Already deleted
-        bool found_elem = false;
-        set.find(i, [&](uint64_uint64_pair_t const &) noexcept { found_elem = true; });
-        EXPECT_TRUE(found_elem);
+    for (std::size_t idx = 0; idx < size - 1; ++idx) {
+        auto idx_key = trivial_id_to_key<member_t>(idx);
+        auto maybe_member = container.lower_bound_copy(idx_key);
+        ASSERT_TRUE(maybe_member);
+        EXPECT_GE(mapping_key_or_itself(*maybe_member), idx_key);
     }
 }
 
 /**
- *  @brief Tests erase_range with large ranges uses split/join efficiently
+ *  @brief Tests `erase_range` on committed HEAD state
  */
 template <typename container_type_>
-void test_erase_range_large() {
-    container_type_ set;
+void test_erase_range_head_state(std::size_t size = 100) {
 
-    // Insert 1000 elements
-    for (std::size_t i = 0; i < 1000; ++i) { EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {i, i})); }
-    EXPECT_EQ(set.size(), 1000);
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
 
-    // Erase middle 800 elements [100, 900)
-    std::size_t callback_count = 0;
-    set.erase_range(100, 900, [&](uint64_uint64_pair_t const &p) noexcept {
-        EXPECT_GE(p.key, 100);
-        EXPECT_LT(p.key, 900);
-        ++callback_count;
-    });
+    for (std::size_t idx = 0; idx < size; ++idx) EXPECT_TRUE(container.upsert(trivial_id_to_member<member_t>(idx)));
 
-    // Verify correct number of callbacks
-    EXPECT_EQ(callback_count, 800);
-
-    // Verify size is correct
-    EXPECT_EQ(set.size(), 200);
-
-    // Verify remaining elements are correct
-    for (std::size_t i = 0; i < 100; ++i) {
-        bool found = false;
-        set.find(i, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-        EXPECT_TRUE(found);
-    }
-    for (std::size_t i = 900; i < 1000; ++i) {
-        bool found = false;
-        set.find(i, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-        EXPECT_TRUE(found);
-    }
-    for (std::size_t i = 100; i < 900; ++i) {
-        bool found = false;
-        set.find(i, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-        EXPECT_FALSE(found);
-    }
-}
-
-/**
- *  @brief Tests erase_range maintains AVL balance property
- */
-template <typename container_type_>
-void test_erase_range_maintains_balance() {
-    container_type_ set;
-
-    // Insert elements
-    for (std::size_t i = 0; i < 200; ++i) { EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {i, i})); }
-
-    // Erase multiple ranges
-    set.erase_range(50, 60);
-    set.erase_range(100, 120);
-    set.erase_range(150, 180);
-
-    // Tree should still be functional (this implicitly tests balance)
-    // Verify we can still insert and find
-    EXPECT_TRUE(set.upsert(uint64_uint64_pair_t {55, 55}));
-    bool found = false;
-    set.find(55, [&](uint64_uint64_pair_t const &) noexcept { found = true; });
-    EXPECT_TRUE(found);
-
-    // Verify correct elements are missing
-    for (std::size_t i = 51; i < 60; ++i) {
-        if (i == 55) continue; // We re-inserted this one
-        bool found_missing = false;
-        set.find(i, [&](uint64_uint64_pair_t const &) noexcept { found_missing = true; });
-        EXPECT_FALSE(found_missing);
+    for (std::size_t idx = 0; idx < size; idx += 10) {
+        auto start_key = trivial_id_to_key<member_t>(idx);
+        auto end_key = trivial_id_to_key<member_t>(idx + 10);
+        container.erase_range(start_key, end_key);
+        for (std::size_t i = idx; i < idx + 10; ++i) EXPECT_FALSE(container.contains(trivial_id_to_key<member_t>(i)));
     }
 }
 
 #pragma mark - Heterogeneous Lookup Test Templates
 
 /**
- *  @brief Tests heterogeneous lookup for composite_key_t by uint64_t identifier.
- *    composite_key_t stores metadata + unique_id, but supports lookup by just the id.
+ *  @brief Tests heterogeneous lookup for @c composite_key_t by @c trivial_id_t identifier.
+ *    @c composite_key_t stores metadata + unique_id, but supports lookup by just the id.
  *    Verifies transparent comparator allows searching without materializing full key.
  */
 template <typename container_type_>
 void test_heterogeneous_composite_find() {
-    container_type_ cont;
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    container_t container;
 
     // Insert composite keys
     for (std::size_t i = 0; i < 10; ++i) {
-        composite_key_t key {i};
-        key.some_metadata = i * 100;
-        key.some_float = i * 1.5;
-        EXPECT_TRUE(cont.upsert(key));
+        auto new_member = trivial_id_to_member<member_t>(i);
+        if constexpr (container_t::is_associative::value) {
+            new_member.key.some_metadata = i * 100;
+            new_member.key.some_float = static_cast<double>(i) / 3.0;
+        }
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
     }
 
-    // Test heterogeneous lookup by uint64_t (without constructing full composite_key_t)
+    // Test heterogeneous lookups
     for (std::size_t i = 0; i < 10; ++i) {
-        bool found = false;
-        cont.find(static_cast<std::uint64_t>(i), [&](auto const &elem) noexcept {
-            found = true;
-            // For sets: elem is composite_key_t
-            // For maps: elem is association<composite_key_t, V>
-            if constexpr (requires { elem.key; }) {
-                // Map case
-                EXPECT_EQ(elem.key.unique_id, i);
-                EXPECT_EQ(elem.key.some_metadata, i * 100);
-            }
-            else {
-                // Set case
-                EXPECT_EQ(elem.unique_id, i);
-                EXPECT_EQ(elem.some_metadata, i * 100);
-            }
-        });
-        EXPECT_TRUE(found) << "Should find key " << i << " via heterogeneous lookup";
+        auto lookup_by_id = container.find_copy(static_cast<trivial_id_t>(i));
+        auto lookup_by_key = container.find_copy(trivial_id_to_key<member_t>(i));
+
+        EXPECT_TRUE(lookup_by_id) << "Should find key " << i << " via heterogeneous lookup";
+        EXPECT_TRUE(lookup_by_key) << "Should find key " << i << " via key lookup";
+
+        EXPECT_EQ(mapping_key_or_itself<member_t>(*lookup_by_id).unique_id, i);
+        EXPECT_EQ(mapping_key_or_itself<member_t>(*lookup_by_key).unique_id, i);
+
+        if constexpr (container_t::is_associative::value) {
+            EXPECT_EQ(lookup_by_id->key.some_metadata, i * 100);
+            EXPECT_EQ(lookup_by_key->key.some_metadata, i * 100);
+        }
     }
 
     // Test that non-existent keys are not found
-    bool found = false;
-    cont.find(static_cast<std::uint64_t>(999), [&](auto const &) noexcept { found = true; });
-    EXPECT_FALSE(found);
+    {
+        auto lookup_by_id = container.find_copy(static_cast<trivial_id_t>(999));
+        auto lookup_by_key = container.find_copy(trivial_id_to_key<member_t>(999));
+
+        EXPECT_FALSE(lookup_by_id) << "Should not find key 999 via heterogeneous lookup";
+        EXPECT_FALSE(lookup_by_key) << "Should not find key 999 via key lookup";
+    }
 }
 
 /**
- *  @brief Tests heterogeneous lookup for heavy_key_t by string_view.
- *    heavy_key_t stores heap-allocated text, but supports lookup by string_view.
- *    Verifies we can search without allocating temporary heavy_key_t objects.
+ *  @brief Tests heterogeneous lookup for @c heavy_key_t by @c std::string_view.
+ *    @c heavy_key_t stores heap-allocated text, but supports lookup by @c string_view.
+ *    Verifies transparent comparator allows searching without materializing full key.
  */
 template <typename container_type_>
 void test_heterogeneous_heavy_string_view_find() {
-    container_type_ cont;
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using mapped_t = typename mapped_value_type_or_void<member_t>::type;
+    container_t container;
+
+    using namespace std::literals::string_view_literals;
+    std::vector<std::string_view> test_strings = {"hello"sv, "world"sv, "foo"sv, "bar"sv, "baz"sv};
+
+    auto make_new_key = [&](std::string_view str) { return *heavy_key_t::make(str); };
+    auto make_new_member = [&](std::string_view str) {
+        if constexpr (container_t::is_associative::value) return member_t {make_new_key(str), mapped_t {}};
+        else return member_t {make_new_key(str)};
+    };
 
     // Insert heavy keys from strings
-    std::vector<std::string> test_strings = {"hello", "world", "foo", "bar", "baz"};
     for (auto const &str : test_strings) {
-        auto key = heavy_key_t::make(str);
-        EXPECT_TRUE(key);
-        EXPECT_TRUE(cont.upsert(std::move(*key)));
+        auto new_member = make_new_member(str);
+        EXPECT_TRUE(container.upsert(std::move(new_member)));
     }
 
-    // Test heterogeneous lookup by string_view (without allocating heavy_key_t)
+    // Test heterogeneous lookup
     for (auto const &str : test_strings) {
-        bool found = false;
-        std::string_view sv {str};
-        cont.find(sv, [&](auto const &elem) noexcept {
-            found = true;
-            if constexpr (requires { elem.key; }) {
-                // Map case
-                EXPECT_EQ(elem.key.view(), str);
-            }
-            else {
-                // Set case
-                EXPECT_EQ(elem.view(), str);
-            }
-        });
-        EXPECT_TRUE(found) << "Should find key '" << str << "' via string_view lookup";
+
+        auto lookup_by_id = container.find_copy(str);
+        auto lookup_by_key = container.find_copy(make_new_key(str));
+
+        EXPECT_TRUE(lookup_by_id) << "Should find key " << str << " via heterogeneous lookup";
+        EXPECT_TRUE(lookup_by_key) << "Should find key " << str << " via key lookup";
+
+        EXPECT_EQ(mapping_key_or_itself<member_t>(*lookup_by_id), str);
+        EXPECT_EQ(mapping_key_or_itself<member_t>(*lookup_by_key), str);
     }
 
     // Test that non-existent keys are not found
-    bool found = false;
-    cont.find(std::string_view {"nonexistent"}, [&](auto const &) noexcept { found = true; });
-    EXPECT_FALSE(found);
-}
+    {
+        auto lookup_by_id = container.find_copy("missing"sv);
+        auto lookup_by_key = container.find_copy(make_new_key("missing"sv));
 
-/**
- *  @brief Tests heterogeneous lookup for heavy_key_t by integer (via make).
- *    Tests that heavy_key_t created from integers can be found heterogeneously.
- */
-template <typename container_type_>
-void test_heterogeneous_heavy_integer_find() {
-    container_type_ cont;
-
-    // Insert heavy keys from integers (converted to hex strings)
-    for (std::size_t i = 0; i < 10; ++i) {
-        auto key = heavy_key_t::make(i);
-        EXPECT_TRUE(key);
-        EXPECT_TRUE(cont.upsert(std::move(*key)));
-    }
-
-    // Test heterogeneous lookup by reconstructing the hex string
-    for (std::size_t i = 0; i < 10; ++i) {
-        auto search_key = heavy_key_t::make(i);
-        EXPECT_TRUE(search_key);
-
-        bool found = false;
-        cont.find(search_key->view(), [&](auto const &elem) noexcept {
-            found = true;
-            if constexpr (requires { elem.key; }) { EXPECT_EQ(elem.key.view(), search_key->view()); }
-            else { EXPECT_EQ(elem.view(), search_key->view()); }
-        });
-        EXPECT_TRUE(found);
+        EXPECT_FALSE(lookup_by_id) << "Should not find key 'missing' via heterogeneous lookup";
+        EXPECT_FALSE(lookup_by_key) << "Should not find key 'missing' via key lookup";
     }
 }
 
