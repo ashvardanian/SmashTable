@@ -72,8 +72,8 @@ class locked_collection {
             return unlocked_.commit();
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
             std::shared_lock _ {store_.mutex_};
@@ -82,8 +82,8 @@ class locked_collection {
                            std::forward<callback_missing_type_>(callback_missing));
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
             std::shared_lock _ {store_.mutex_};
@@ -143,8 +143,8 @@ class locked_collection {
         return unlocked_.upsert(begin, end);
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
         std::shared_lock _ {mutex_};
@@ -152,8 +152,8 @@ class locked_collection {
                        std::forward<callback_missing_type_>(callback_missing));
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
         std::shared_lock _ {mutex_};
@@ -163,7 +163,7 @@ class locked_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         std::shared_lock _ {mutex_};
         unlocked_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -171,7 +171,7 @@ class locked_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         std::unique_lock _ {mutex_};
         unlocked_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -179,7 +179,7 @@ class locked_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         std::unique_lock _ {mutex_};
         unlocked_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -196,7 +196,8 @@ class locked_collection {
         return unlocked_.reserve(size);
     }
 
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              typename callback_type_ = no_op_fn_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
         std::shared_lock _ {mutex_};
