@@ -1,237 +1,499 @@
 /**
- *  @brief  Thread-Safe Hash-Table implementation with flat layout and open addressing.
- *          Doesn't raise any exceptions unlike STL-based alternatives, like `std::unordered_map`
- *          and `std::unordered_set`.
+ *  @brief  Lock-free concurrent hash-table optimized for CPU and GPU workloads.
  *
- *  @file   basic_hash_table.hpp
+ *  @file   basic_hash_table2.hpp
  *  @author Ash Vardanian
- *  @see    https://en.wikipedia.org/wiki/Hash_table
+ *
+ *  @section Overview
+ *
+ *  This file implements @c basic_hash_table, a high-performance open-addressing hash table
+ *  designed for both CPU and GPU execution. Unlike STL containers, like @c std::unordered_map,
+ *  this implementation:
+ *  - Never throws exceptions (all operations are @c noexcept)
+ *  - Supports lock-free concurrent operations without external synchronization
+ *  - Avoids Compare-And-Swap (CAS) in favor of much-cheaper atomic ORs and XORs
+ *  - Uses only 2 bits of metadata per slot (vs 1 byte in Google's SwissTable)
+ *  - Organizes data in Structure-of-Arrays layout for better cache efficiency
+ *  - Being SIMD-friendly and GPU-friendly with minimal modifications
+ *
+ *  @section Core Design Goals
+ *
+ *  @b Concurrency: Non-allocating operations have lock-free atomic variants ( @c emplace_atomic(),
+ *  @c find_atomic(), @c erase_atomic(), @c update_atomic()) that enable fine-grained concurrent
+ *  access from multiple threads without external synchronization. Atomic operations require prior
+ *  @c reserve() to prevent reallocations. Never mix atomic and non-atomic operations on the same table.
+ *
+ *  @b Compactness: Each slot requires only 2 bits of overhead stored in a shared bucket header,
+ *  encoding four states: free (00), deleted (01), populated (10), and locked (11). This is 4×
+ *  more space-efficient than SwissTable's 1 byte per slot. We colocate 32× such slots, cause
+ *  single- and dual-bit atomic operations aren't possible, but 64-bit ones are!
+ *
+ *  @b Cache-Efficiency: Keys and values are stored separately (Structure-of-Arrays) rather
+ *  than interleaved (Array-of-Structures). During lookups that don't need values, only keys are
+ *  loaded into cache, halving memory traffic for failed lookups.
+ *
+ *  @b Portability: The bucket size of 32 slots is chosen to:
+ *  - Enable 64-bit atomic operations (2 bits × 32 = 64 bits) on all modern platforms
+ *  - Match Nvidia GPU warp size for optimal cooperative thread group probing
+ *  - Avoid 128-bit atomics which aren't universally supported
+ *
+ *  @b Performance: Optimized for bulk operations and set operations common in analytical and
+ *  database workloads. Methods like @c intersection_size() and @c merge_size() enable efficient
+ *  multi-table operations. Explicit API methods ( @c emplace_reserved(), @c emplace_atomic()) provide
+ *  zero-overhead access to specialized code paths without runtime branching.
+ *
+ *  @section Key Design Decisions
+ *
+ *  @par Load and Probing Strategy
+ *  Uses linear probing with step size 1: @code (hash + i) % capacity @endcode.
+ *  While simpler than quadratic probing or double hashing, linear probing offers:
+ *  - Excellent cache locality (sequential memory access)
+ *  - Predictable patterns for hardware prefetchers
+ *  - Natural fit for GPU cooperative group strategies (threads probe adjacent slots)
+ *  - Minimal instruction overhead in the critical path
+ *
+ *  It's recommended to keep the 75% load factor cap to ensure reasonable probe sequence lengths.
+ *  Keep it under 40% for best performance to maximize single-probe hits leveraging @b SIMD-gathers.
+ *
+ *  @par Memory Layout
+ *  Single allocation with three cache-line-aligned regions organized for efficient compaction:
+ *  @code
+ *  // Layout: [keys_region | values_region | headers_region]
+ *  std::byte* memory_ = allocate(keys_bytes + values_bytes + header_bytes);
+ *
+ *  key_t* keys_ = (key_t*)memory_;                           // Direct indexing: keys_[slot]
+ *  value_t* values_ = (value_t*)(memory_ + keys_bytes);     // Direct indexing: values_[slot]
+ *  bht_bucket_head_t* headers_ = (bht_bucket_head_t*)(memory_ + keys_bytes + values_bytes);
+ *                                                            // Bucket indexing: headers_[slot/32]
+ *
+ *  // Each region padded to 64-byte cache lines to prevent false sharing
+ *  keys_bytes = roundup_to_cache_line(slots * sizeof(key_t));
+ *  values_bytes = roundup_to_cache_line(slots * sizeof(value_t));
+ *  header_bytes = (slots / 32) * sizeof(bht_bucket_head_t);
+ *  @endcode
+ *
+ *  This ordering enables @b compaction: when squeezing the hash table into a dense array, the
+ *  keys and values are already contiguous at the start of @c memory_. The headers at the end can be
+ *  discarded, and the buffer directly reused for storage without copying.
+ *
+ *  @par SIMD Acceleration
+ *  Bulk operations ( @c intersection_size, batch insertions) can benefit from vectorized hashing:
+ *  - AVX-512: Hash many strings in parallel
+ *  - SIMD metadata scanning for iteration
+ *  - Prefetching probe sequences to hide memory latency
+ *
+ *  Note: Line Fill Buffer (LFB) limits on x86 (10 concurrent L1D misses) can bottleneck gather
+ *  instructions, so vectorized hashing provides more benefit than vectorized probing.
+ *
+ *  @par GPU Deployment
+ *  The SoA layout and bucket size are GPU-friendly. Cooperative group probing (4-8 threads per
+ *  key) achieves coalesced memory access despite random hashing:
+ *  @code
+ *  // Threads 0-3 probe slots [hash+0, hash+1, hash+2, hash+3] in parallel
+ *  // → 4 adjacent addresses = single coalesced transaction
+ *  probe_idx = (hash + group.thread_rank()) % capacity;
+ *  @endcode
+ *
+ *  This strategy, used by NVIDIA's cuCollections, shows 13% faster inserts and 40% faster
+ *  lookups under high load factors (≥60%) compared to one-thread-per-key approaches. The larger
+ *  improvement for lookups occurs because reads don't contend for atomic operations - the full
+ *  benefit of coalesced memory access is realized. Inserts see smaller gains as they still
+ *  serialize on atomic compare-and-swap operations for the bucket header. Performance measured on
+ *  H100 with 64-bit key-value pairs. Cooperative groups of size 4 provide the sweet spot: smaller
+ *  groups (1-2) suffer from uncoalesced access, larger groups (16-32) underutilize threads when
+ *  probe sequences terminate early.
+ *
+ *  @par Small String Optimization
+ *  Inline storage for keys under 16 bytes can eliminate heap allocations and enable efficient
+ *  vectorized hashing of fixed-size data. Two approaches possible:
+ *  - Dual tables: separate @c basic_hash_table<array<char,16>, V> for short strings
+ *  - Variant storage: @c union of inline buffer and pointer (standard SSO pattern)
+ *
+ *  @see https://en.wikipedia.org/wiki/Hash_table
+ *  @see Google's SwissTable: https://abseil.io/docs/cpp/guides/container
+ *  @see Nvidia's GPU-friendly cuCollections: https://github.com/NVIDIA/cuCollections
  */
 #pragma once
-#include <cassert>   // `assert`
-#include <algorithm> // `std::max`
-#include <memory>    // `std::allocator`
-#include <optional>  // `std::optional`
-#include <random>    // `std::uniform_int_distribution`
-#include <utility>   // `std::exchange`
+#include <cassert>     // `assert`
+#include <algorithm>   // `std::max`
+#include <bit>         // `std::popcount`, `std::countl_zero`
+#include <cstdint>     // `std::uint32_t`, `std::uint64_t`
+#include <cstring>     // `std::memcpy`
+#include <iterator>    // `std::input_iterator_tag`
+#include <memory>      // `std::allocator`, `std::assume_aligned`
+#include <atomic>      // `std::atomic_ref`
+#include <optional>    // `std::optional`
+#include <random>      // `std::uniform_int_distribution`
+#include <type_traits> // `std::is_same`, `std::enable_if`
+#include <utility>     // `std::exchange`, `std::pair`
 
-#include "status.hpp"
+#include "shared.hpp"
 
 namespace ashvardanian::smashtable {
 
-/**
- * @brief The length of a bucket, where that many keys are
- * followed by that many values.
- * This must be a power of two, to allow division-by-shifting.
- * This isn't 64, as we need two extra bits of information per
- * element and can't have 128-bit atomic operations on most
- * platforms.
- * Furthermore, picking a number too big would put too much
- * pressure on the stack size, when exporting hash-tables
- * into contiguous state.
- */
-inline static constexpr size_t htx_slots_in_bucket_k = 32;
-using htx_bucket_mask_t = u32_t;
+/** @brief Platform cache line size in bytes, typically 64 on modern CPUs. */
+inline constexpr std::size_t cache_line_bytes_k = 64;
 
-/**
- * @brief Header for next `htx_slots_in_bucket_k` slots.
- * It contains 2x lanes: population and deletion states.
- * Two bits of indicators for every slot:
- *  - 00: "free" slot
- *  - 01: "deleted" slot
- *  - 10: "populated" slot
- *  - 11: "locked" slot
- */
-union htx_bucket_head_t {
-    struct {
-        htx_bucket_mask_t populations;
-        htx_bucket_mask_t deletions;
-    };
-    u64_t u64;
+/** @brief Type trait to check if a type is an iterator. */
+template <typename type_>
+constexpr bool is_iterator() {
+    return std::is_base_of<std::input_iterator_tag, typename std::iterator_traits<type_>::iterator_category>::value ||
+           std::is_same<typename std::iterator_traits<type_>::iterator_category, std::output_iterator_tag>::value;
+}
+
+/** @brief Function object that extracts the second element of a mapping. */
+struct take_second_t {
+    template <typename key_type_, typename value_type_>
+    decltype(auto) operator()(mapping<key_type_, value_type_> const &p) const noexcept {
+        return p.value;
+    }
+    template <typename key_type_, typename value_type_>
+    decltype(auto) operator()(mapping<key_type_, value_type_> &p) const noexcept {
+        return p.value;
+    }
 };
 
-static_assert(sizeof(htx_bucket_head_t) == 2 * sizeof(htx_bucket_mask_t));
+inline static constexpr std::size_t bht_bucket_capacity_k = 32;
 
 /**
- * @brief Scaling schema, that sugests the number of slots for requested
- * volume of useful data. Some of the slots must remain vacant, to avoid
- * endless loops of probing. Currently, we wait until HTs are 75% full.
+ *  @brief Bucket header containing metadata for @c bht_bucket_capacity_k slots.
+ *    Stores two parallel 32-bit bitmasks (population and deletion states) that combine to encode
+ *    four possible states per slot using 2 bits each.
+ *
+ *  @section Slot State Encoding
+ *  Each slot's state is determined by corresponding bits in both masks:
+ *  - @c 00 (populations=0, deletions=0): Free slot, never used or fully freed
+ *  - @c 01 (populations=0, deletions=1): Deleted slot, tombstone from lazy deletion
+ *  - @c 10 (populations=1, deletions=0): Populated slot with valid key-value pair
+ *  - @c 11 (populations=1, deletions=1): Locked slot, temporarily held for atomic operations
+ *
+ *  The @c u64 field enables atomic operations on the entire header (2 × 32 bits = 64 bits).
  */
-struct htx_slots_count_t {
-    size_t raw = 0;
+union bht_bucket_head_t {
 
-    inline_m operator size_t() const noexcept { return raw; }
-    inline_m explicit constexpr htx_slots_count_t() noexcept {}
-    inline_m explicit constexpr htx_slots_count_t(size_t elems) noexcept {
+    struct {
+        std::uint32_t populations; /**< Bitmask where set bits indicate populated/locked slots. */
+        std::uint32_t deletions;   /**< Bitmask where set bits indicate deleted/locked slots. */
+    } u32s;                        /**< Separate 32-bit views for populations and deletions. */
+    std::uint64_t u64;             /**< Combined 64-bit view for atomic operations. */
+};
+
+static_assert(sizeof(bht_bucket_head_t) == sizeof(std::uint64_t));
+
+/**
+ *  @brief Scaling schema that computes the required number of slots for a target element count.
+ *    Enforces a 75% maximum load factor (4/3 multiplier) to prevent pathological linear probing behavior.
+ *    All slot counts are rounded up to powers of two to enable fast modulo operations via bitwise AND masks.
+ *
+ *  @note The 75% load factor strikes a balance between memory efficiency and probe length:
+ *    - Too high (>85%): Linear probing degrades into long search chains
+ *    - Too low (<60%): Wastes memory without significant performance gain
+ *    - 75%: Industry standard, keeps average probe length under 2 hops
+ *
+ *  @note The minimum slot count equals @c bht_bucket_capacity_k to ensure at least one full bucket.
+ */
+struct bht_slots_count_t {
+    std::size_t raw = 0;
+
+    operator std::size_t() const noexcept { return raw; }
+    explicit constexpr bht_slots_count_t() noexcept {}
+    explicit constexpr bht_slots_count_t(std::size_t elems) noexcept {
         if (elems == 0) return;
-        size_t needed_slots = (elems * 4ul) / 3ul;
-        // We calculate the bucket index with AND masks,
-        // so it must be a power of two.
+        std::size_t needed_slots = (elems * 4ul) / 3ul;
+        // We calculate the bucket index with AND masks, so it must be a power of two.
         raw = roundup_to_pow2(needed_slots);
-        raw = std::max(raw, size_t(htx_slots_in_bucket_k));
+        raw = std::max(raw, bht_bucket_capacity_k);
     }
 };
 
 /**
- * @brief SFINAE to extract metadata about Hash-Tables
- * keys and values. Uses the return type of the hash-function
- * as the offset and counter for slots (`size_t` for `std::hash`).
- * https://en.cppreference.com/w/cpp/utility/hash
+ *  @brief Smart reference to a hash table slot with metadata accessors.
+ *  @tparam key_type_ Key type stored in the hash table, can't be an mapping.
  */
-template <typename key_at, typename val_at, typename hasher_at>
-struct htx_element_resolver_gt {
-    using key_t = std::remove_reference_t<key_at>;
-    using val_t = std::remove_reference_t<val_at>;
-    using element_t = key_value_pair_gt<key_t const &, val_t &>;
-    using element_const_t = key_value_pair_gt<key_t const &, val_t const &>;
-    using element_copy_t = key_value_pair_gt<key_t, val_t>;
-    using hasher_t = hasher_at;
-    using offset_t = decltype(hasher_at {}(std::declval<key_t>()));
+template <typename key_type_>
+struct bht_slot_ref {
 
-    inline static constexpr bool_t has_values_k = true;
-    inline static constexpr size_t usefull_bytes_in_bucket_k =
-        sizeof(htx_bucket_head_t) + (sizeof(key_t) + sizeof(val_t)) * htx_slots_in_bucket_k;
-    inline static constexpr size_t bytes_in_bucket_k =
-        roundup_to_multiple<size_t, cache_line_bytes_k>(usefull_bytes_in_bucket_k);
+    static_assert(!is_mapping<key_type_>(), "for associations use bht_slot_ref.");
+    using key_t = key_type_;
 
-    template <typename value_transform_at>
-    using transformed_value_gt = decltype(value_transform_at {}(*reinterpret_cast<val_t const *>(NULL)));
+  protected:
+    key_t *key_ptr_;                 /**< Pointer to key entry. */
+    bht_bucket_head_t *header_ptr_;  /**< Pointer to the entire buckets header. */
+    std::uint32_t bit_mask_;         /**< Mask for accessing relevant parts of the header. */
+    std::uint32_t offset_in_bucket_; /**< Offset of this slot within its bucket (0-31). */
 
-    static constexpr bool_t will_memcpy_keys() { return std::is_trivially_copy_constructible<key_t>(); }
-    static constexpr bool_t will_memcpy_vals() { return std::is_trivially_copy_constructible<val_t>(); }
-};
+    bht_bucket_head_t header_mask_() const noexcept {
+        bht_bucket_head_t mask;
+        mask.u32s.populations = bit_mask_;
+        mask.u32s.deletions = bit_mask_;
+        return mask;
+    }
 
-template <typename key_at, typename hasher_at>
-struct htx_element_resolver_gt<key_at, void, hasher_at> {
-    using key_t = std::remove_reference_t<key_at>;
-    using val_t = void;
-    using element_t = key_t;
-    using element_const_t = key_t;
-    using element_copy_t = key_t;
-    using hasher_t = hasher_at;
-    using offset_t = decltype(hasher_at {}(std::declval<key_t>()));
-
-    inline static constexpr bool_t has_values_k = false;
-    inline static constexpr size_t usefull_bytes_in_bucket_k =
-        sizeof(htx_bucket_head_t) + sizeof(key_t) * htx_slots_in_bucket_k;
-    inline static constexpr size_t bytes_in_bucket_k =
-        roundup_to_multiple<size_t, cache_line_bytes_k>(usefull_bytes_in_bucket_k);
-
-    template <typename value_transform_at>
-    using transformed_value_gt = void;
-
-    static constexpr bool_t will_memcpy_keys() { return std::is_trivially_copy_constructible<key_t>(); }
-    static constexpr bool_t will_memcpy_vals() { return false; }
-};
-
-template <typename key_at, typename hasher_at>
-struct htx_element_resolver_gt<key_at, void const, hasher_at>
-    : public htx_element_resolver_gt<key_at, void, hasher_at> {};
-
-static_assert(htx_element_resolver_gt<int, void, hash_gt<int>>::will_memcpy_keys());
-static_assert(htx_element_resolver_gt<int, int, hash_gt<int>>::will_memcpy_keys());
-
-/**
- * @brief Reference for an element at certain index within a bucket.
- * It has a thread-safe alternative @b `htx_element_atomic_ref_gt`,
- * used for concurrent `tag_atomic_t` operations.
- *
- * @section Further Optimizations.
- * On both x86 and ARM specialized functions exist for faster bit-testing.
- * Those are often unavailable in a form of intrinsics and have a significant
- * development overhead. Furthermore, the main bottleneck
- */
-template <typename key_at, typename val_at, typename hasher_at>
-struct htx_element_ref_gt {
-
-    using element_resolver_t = htx_element_resolver_gt<key_at, val_at, hasher_at>;
-    using key_t = typename element_resolver_t::key_t;
-    using val_t = typename element_resolver_t::val_t;
-    using element_t = typename element_resolver_t::element_t;
-    using element_const_t = typename element_resolver_t::element_const_t;
-    using offset_t = typename element_resolver_t::offset_t;
-    inline static constexpr size_t has_values_k = element_resolver_t::has_values_k;
-    inline static constexpr size_t bytes_in_bucket_k = element_resolver_t::bytes_in_bucket_k;
-
-    byte_t *head_bytes;
-    offset_t idx_in_bucket;
-
+  public:
     constexpr void lock() noexcept {}
     constexpr void unlock() noexcept {}
     constexpr bool try_lock() noexcept { return true; }
 
-    inline_m htx_bucket_head_t &head_ref() const noexcept {
-        return *reinterpret_cast<htx_bucket_head_t *>(__builtin_assume_aligned(head_bytes, cache_line_bytes_k));
+    bht_bucket_head_t &header_ref() noexcept { return *header_ptr_; }
+
+    bool is_freed() noexcept { return header_ref().u64 & header_mask_().u64 == 0; }
+
+    // TODO: These may be wrong, as they are not checking the other 32-bit lane
+    bool is_populated() noexcept; // { return header_ref().populations & bit_mask_; }
+    bool is_deleted() noexcept;   // { return header_ref().deletions & bit_mask_; }
+
+    void mark_freed() noexcept {
+        header_ref().populations &= ~bit_mask_;
+        header_ref().deletions &= ~bit_mask_;
+    }
+    void mark_populated() noexcept {
+        header_ref().populations |= bit_mask_;
+        header_ref().deletions &= ~bit_mask_;
+    }
+    void mark_deleted() noexcept {
+        header_ref().populations &= ~bit_mask_;
+        header_ref().deletions |= bit_mask_;
     }
 
-    inline_m htx_bucket_mask_t mask_in_bucket() const noexcept {
-        return enabled_top_bit<htx_bucket_mask_t>() >> idx_in_bucket;
+    key_t &key_ref() const noexcept { return *key_ptr_; }
+    key_t const &key() const noexcept { return *key_ptr_; }
+
+    key_t &operator*() noexcept { return key(); }
+    key_t const &operator*() const noexcept { return key(); }
+};
+
+/**
+ *  @brief Smart reference to a hash table slot with metadata accessors.
+ *  @tparam key_type_ Key type stored in the hash table, can't be an mapping.
+ *  @tparam value_type_ Value type stored in the hash table, or @c void for hash sets.
+ */
+template <typename key_type_, typename value_type_>
+struct bht_slot_ref<mapping<key_type_, value_type_>> {
+
+    using key_t = key_type_;
+    using value_t = value_type_;
+
+  protected:
+    key_t *key_ptr_;                 /**< Pointer to key entry. */
+    value_t *value_ptr_;             /**< Pointer to value entry. */
+    bht_bucket_head_t *header_ptr_;  /**< Pointer to the entire buckets header. */
+    std::uint32_t bit_mask_;         /**< Mask for accessing relevant parts of the header. */
+    std::uint32_t offset_in_bucket_; /**< Offset of this slot within its bucket (0-31). */
+  public:
+    constexpr void lock() noexcept {}
+    constexpr void unlock() noexcept {}
+    constexpr bool try_lock() noexcept { return true; }
+
+    bht_bucket_head_t &header_ref() noexcept { return *header_ptr_; }
+    bool is_freed() noexcept { return header_ref().u64 & header_mask_().u64 == 0; }
+
+    // TODO: These may be wrong, as they are not checking the other 32-bit lane
+    bool is_populated() noexcept; // { return header_ref().populations & bit_mask_; }
+    bool is_deleted() noexcept;   // { return header_ref().deletions & bit_mask_; }
+
+    void mark_freed() noexcept {
+        header_ref().populations &= ~bit_mask_;
+        header_ref().deletions &= ~bit_mask_;
+    }
+    void mark_populated() noexcept {
+        header_ref().populations |= bit_mask_;
+        header_ref().deletions &= ~bit_mask_;
+    }
+    void mark_deleted() noexcept {
+        header_ref().populations &= ~bit_mask_;
+        header_ref().deletions |= bit_mask_;
     }
 
-    inline_m bool is_populated() noexcept { return head_ref().populations & mask_in_bucket(); }
-    inline_m bool is_deleted() noexcept { return head_ref().deletions & mask_in_bucket(); }
-    inline_m bool is_freed() noexcept { return ~(is_populated() | is_deleted()); }
+    key_t &key_ref() const noexcept { return *key_ptr_; }
+    key_t const &key() const noexcept { return *key_ptr_; }
 
-    inline_m void mark_populated() noexcept {
-        head_ref().populations |= mask_in_bucket();
-        head_ref().deletions &= ~mask_in_bucket();
+    value_t &value_ref() const noexcept { return *value_ptr_; }
+    value_t const &value() const noexcept { return *value_ptr_; }
+
+    mapping<key_t const &, value_t &> operator*() noexcept { return {key(), value_ref()}; }
+    mapping<key_t const &, value_t const &> operator*() const noexcept { return {key(), value()}; }
+};
+
+/**
+ *  @brief Thread-safe smart reference to a hash table slot with metadata accessors.
+ *  @tparam element_type_ Element type stored in the hash table, either key or mapping.
+ *
+ *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots.
+ *  On the locking path, we can use a @c fetch_or atomic operation to set both bits (populated + deleted)
+ *  simultaneously and transition to the locked state. If the previous value indicates the slot was
+ *  already locked, we retry until we acquire the lock.
+ *
+ *  The intuition of using the @c fetch_and for the inverse operation, however, is wrong. When unlocking,
+ *  we need to restore the previous state (populated/deleted) of the slot or transition to the new one,
+ *  depending on the @c mark_populated()/mark_deleted()/mark_freed() calls made while the slot was locked.
+ *
+ *  The bits outside the active ones in each 32-bit word shouldn't be changed. The active ones may have
+ *  to be flipped. Assuming the value of the relevant bits couldn't have changed, we can use @c fetch_xor
+ *  to control the result in the same lock-free manner. @b XOR-is-all-you-need!
+ *
+ *  This doesn't resolve @b false-sharing issues native to such a densely packed design, but still results
+ *  in very low contention if the duration of atomic operations under the lock is comparable to CPU's
+ *  memory latency.
+ */
+template <typename element_type_>
+class bht_atomic_slot_ref : public bht_element_ref<element_type_> {
+
+    using base_t = bht_element_ref<element_type_>;
+    using base_t::bit_mask_;
+
+    bht_bucket_head_t mutable future_header_ {0ul};
+
+  public:
+    bht_bucket_head_t &header_ref() const noexcept { return future_header_; }
+    bool is_freed() noexcept { return header_ref().u64 & header_mask_().u64 == 0; }
+
+    // TODO: These may be wrong, as they are not checking the other 32-bit lane
+    bool is_populated() noexcept; // { return header_ref().populations & bit_mask_; }
+    bool is_deleted() noexcept;   // { return header_ref().deletions & bit_mask_; }
+
+    void mark_freed() noexcept {
+        header_ref().populations &= ~bit_mask_;
+        header_ref().deletions &= ~bit_mask_;
     }
-    inline_m void mark_deleted() noexcept {
-        head_ref().populations &= ~mask_in_bucket();
-        head_ref().deletions |= mask_in_bucket();
+    void mark_populated() noexcept {
+        header_ref().populations |= bit_mask_;
+        header_ref().deletions &= ~bit_mask_;
     }
-    inline_m void mark_freed() noexcept {
-        head_ref().populations &= ~mask_in_bucket();
-        head_ref().deletions &= mask_in_bucket();
+    void mark_deleted() noexcept {
+        header_ref().populations &= ~bit_mask_;
+        header_ref().deletions |= bit_mask_;
     }
 
-    inline_m key_t &key_ref() const noexcept {
-        return *reinterpret_cast<key_t *>(head_bytes + sizeof(htx_bucket_head_t) + sizeof(key_t) * idx_in_bucket);
+    void lock() noexcept {
+        bht_bucket_head_t header_mask = header_mask_();
+        // Lock the object and make sure it wasn't locked before us:
+    relock:
+        std::atomic_ref<std::uint64_t> atomic_header(base_t::header_ref().u64);
+        future_header_.u64 = atomic_header.fetch_or(header_mask.u64, std::memory_order_acquire) //
+                             & header_mask.u64;
+        if (future_header_.u64 == header_mask.u64) goto relock;
     }
 
-    inline_m decltype(auto) val_ref() const noexcept {
-        if constexpr (has_values_k)
-            return (val_t &)*reinterpret_cast<val_t *>(head_bytes + sizeof(htx_bucket_head_t) +
-                                                       sizeof(key_t) * htx_slots_in_bucket_k +
-                                                       sizeof(val_t) * idx_in_bucket);
+    void unlock() noexcept {
+        // The bits we care about are now set to 11 (locked).
+        // After this procedure they must be set to either 00, 01, or 10, depending on the "future header".
+        bht_bucket_head_t header_mask = header_mask_();
+        assert(std::popcount(header_mask.u64) == 2 && "only 2 bits must be set in the mask.");
+
+        // Let's compute the "differences" between the old locked state and the new desired state:
+        // - for "freed" slots 00: 11 ^ 00 = 11
+        // - for "deleted" slots 01: 11 ^ 01 = 10
+        // - for "populated" slots 10: 11 ^ 10 = 01
+        std::uint64_t header_differences = header_mask.u64 ^ future_header_.u64;
+        assert(std::popcount(header_differences) >= 1 && std::popcount(header_differences) <= 2 &&
+               "only 1 or 2 bits can form the difference.");
+
+        // Now if we only XOR the differences:
+        // - going from "locked" state to "freed" state: 11 ^ 11 = 00
+        // - going from "locked" state to "deleted" state: 11 ^ 10 = 01
+        // - going from "locked" state to "populated" state: 11 ^ 01 = 10
+        std::atomic_ref<std::uint64_t> atomic_header(base_t::header_ref().u64);
+        atomic_header.fetch_xor(header_differences, std::memory_order_release);
     }
 
-    inline_m key_t const &key() const noexcept { return key_ref(); }
-    inline_m decltype(auto) value() const noexcept { return val_ref(); }
-
-    inline_m element_const_t operator*() const noexcept {
-        if constexpr (has_values_k) return element_const_t {key(), value()};
-        else
-            return key();
-    }
-
-    inline_m element_t operator*() noexcept {
-        if constexpr (has_values_k) return element_t {key(), val_ref()};
-        else
-            return key();
+    bool try_lock() noexcept {
+        bht_bucket_head_t header_mask = header_mask_();
+        // Lock the object and make sure it wasn't locked before us:
+        std::atomic_ref<std::uint64_t> atomic_header(base_t::header_ref().u64);
+        future_header_.u64 = atomic_header.fetch_or(header_mask.u64, std::memory_order_acquire) //
+                             & header_mask.u64;
+        return future_header_.u64 != header_mask.u64;
     }
 };
 
 /**
- * @brief The most efficient intra-bucket iteration variant.
- * https://en.cppreference.com/w/cpp/algorithm/for_each
+ *  @brief Metadata extraction template that derives type information for hash table elements.
+ *    Computes element types, sizes, and alignment requirements from key/value/hasher template parameters.
+ *    Uses the hasher's return type as @c offset_t for slot indexing (typically @c std::size_t).
  *
- * @param addr Address pointing to the first element in the bucket.
- * @param callback Receives the `htx_element_ref_gt` of "populated" slots.
+ *  @tparam key_type_ Key type stored in the hash table, references are stripped to value types.
+ *  @tparam value_type_ Value type stored in the hash table, or @c void for hash sets.
+ *  @tparam hasher_type_ Hash function object, must be callable with @c key_type_.
+ *
+ *  @note Provides three element views:
+ *    - @c element_t: Mutable reference pair @code mapping<key const&, value&> @endcode for iteration
+ *    - @c element_const_t: Immutable reference pair @code mapping<key const&, value const&> @endcode for lookups
+ *    - @c element_copy_t: Owned value pair @code mapping<key, value> @endcode for extraction operations
+ *
+ *  @see https://en.cppreference.com/w/cpp/utility/hash
  */
-template <typename key_at, typename val_at, typename hasher_at, typename callback_at>
-inline_m void htx_for_each_in_bucket(htx_element_ref_gt<key_at, val_at, hasher_at> &addr,
-                                     callback_at &&callback) noexcept {
+template <typename element_type_, typename hasher_type_>
+struct bht_layout_for {
+    using key_t = std::remove_reference_t<element_type_>;
+    using value_t = void;
+    using element_t = key_t;
+    using element_const_t = key_t;
+    using element_copy_t = key_t;
+    using hasher_t = hasher_type_;
+    using offset_t = decltype(hasher_type_ {}(std::declval<key_t>()));
+    using ref_t = bht_slot_ref<key_t>;
 
-    // Classical iterator won't be as fast as the approach below.
-    // for (addr.idx_in_bucket = 0; addr.idx_in_bucket != htx_slots_in_bucket_k; ++addr.idx_in_bucket)
-    //     if (addr.head_ref().populations & addr.mask_in_bucket())
-    //         callback(addr);
+    inline static constexpr std::size_t bytes_for_keys_k =
+        roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(key_t) * bht_bucket_capacity_k);
+    inline static constexpr std::size_t bytes_for_values_k = 0;
 
-    htx_bucket_mask_t populations_left = addr.head_ref().populations;
-    int count_populated = popcount(populations_left);
+    template <typename value_transform_>
+    using transformed_value = void;
+
+    static constexpr bool will_memcpy_keys() { return std::is_trivially_copy_constructible<key_t>(); }
+    static constexpr bool will_memcpy_vals() { return false; }
+};
+
+template <typename key_type_, typename value_type_, typename hasher_type_>
+struct bht_layout_for<mapping<key_type_, value_type_>, hasher_type_> {
+
+    using key_t = std::remove_reference_t<key_type_>;
+    using value_t = std::remove_reference_t<value_type_>;
+    using element_t = mapping<key_t const &, value_t &>;
+    using element_const_t = mapping<key_t const &, value_t const &>;
+    using element_copy_t = mapping<key_t, value_t>;
+    using hasher_t = hasher_type_;
+    using offset_t = decltype(hasher_type_ {}(std::declval<key_t>()));
+    using ref_t = bht_slot_ref<key_t, value_t>;
+
+    inline static constexpr std::size_t bytes_for_keys_k =
+        roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(key_t) * bht_bucket_capacity_k);
+    inline static constexpr std::size_t bytes_for_values_k =
+        roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(value_t) * bht_bucket_capacity_k);
+
+    template <typename value_transform_>
+    using transformed_value = decltype(value_transform_ {}(*reinterpret_cast<value_t const *>(NULL)));
+
+    static constexpr bool will_memcpy_keys() { return std::is_trivially_copy_constructible<key_t>(); }
+    static constexpr bool will_memcpy_vals() { return std::is_trivially_copy_constructible<value_t>(); }
+};
+
+static_assert(bht_layout_for<int, std::hash<int>>::will_memcpy_keys());
+static_assert(bht_layout_for<mapping<int, int>, std::hash<int>>::will_memcpy_keys());
+
+/**
+ *  @brief Iterates over all populated slots in a bucket using optimized bit-scanning.
+ *    More efficient than sequential iteration as it skips empty/deleted slots by analyzing
+ *    the population bitmap using @c std::popcount and @c std::countl_zero intrinsics.
+ *
+ *  @see https://en.cppreference.com/w/cpp/algorithm/for_each
+ *
+ *  @param[in,out] addr Reference to bucket element. The @c slot_ field is modified
+ *    during iteration to point to each populated slot sequentially.
+ *  @param[in] callback Functor invoked for each populated slot, receiving @c bht_slot_ref.
+ */
+template <typename key_type_, typename value_type_, typename hasher_type_, typename callback_type_>
+void bht_for_each_in_bucket_(bht_slot_ref<key_type_, value_type_, hasher_type_> &addr,
+                             callback_type_ &&callback) noexcept {
+
+    using offset_t = typename bht_slot_ref<key_type_, value_type_, hasher_type_>::offset_t;
+    offset_t bucket_start = (addr.slot_ / bht_bucket_capacity_k) * bht_bucket_capacity_k;
+
+    bht_bucket_mask_t populations_left = addr.header_ref().populations;
+    int count_populated = std::popcount(populations_left);
     while (count_populated) {
-        addr.idx_in_bucket = clz(populations_left);
+        offset_t idx_in_bucket = std::countl_zero(populations_left);
+        addr.slot_ = bucket_start + idx_in_bucket;
         callback(addr);
         populations_left &= ~addr.mask_in_bucket();
         --count_populated;
@@ -239,39 +501,53 @@ inline_m void htx_for_each_in_bucket(htx_element_ref_gt<key_at, val_at, hasher_a
 }
 
 /**
- * @brief Trivially iterates through all the slots in the bucket,
- * not just the populated ones, but also the free and deleted.
- * https://en.cppreference.com/w/cpp/algorithm/for_each
+ *  @brief Iterates through all slots in a bucket, including empty and deleted ones.
+ *    Unlike @c bht_for_each_in_bucket_, this performs sequential iteration without
+ *    checking the population bitmap. Useful for low-level operations like bucket copying.
  *
- * @param addr Address pointing to the first element in the bucket.
- * @param callback Receives the `htx_element_ref_gt` of "populated" slots.
+ *  @see https://en.cppreference.com/w/cpp/algorithm/for_each
+ *
+ *  @param[in,out] addr Reference to bucket element. The @c slot_ field is modified
+ *    to iterate through all 32 slots in the bucket.
+ *  @param[in] callback Functor invoked for every slot, receiving @c bht_slot_ref.
  */
-template <typename key_at, typename val_at, typename hasher_at, typename callback_at>
-inline_m void htx_for_slots_in_bucket(htx_element_ref_gt<key_at, val_at, hasher_at> &addr,
-                                      callback_at &&callback) noexcept {
+template <typename key_type_, typename value_type_, typename hasher_type_, typename callback_type_>
+void bht_for_slots_in_bucket(bht_slot_ref<key_type_, value_type_, hasher_type_> &addr,
+                             callback_type_ &&callback) noexcept {
 
-    for (addr.idx_in_bucket = 0; addr.idx_in_bucket != htx_slots_in_bucket_k; ++addr.idx_in_bucket) callback(addr);
+    using offset_t = typename bht_slot_ref<key_type_, value_type_, hasher_type_>::offset_t;
+    offset_t bucket_start = (addr.slot_ / bht_bucket_capacity_k) * bht_bucket_capacity_k;
+    offset_t bucket_end = bucket_start + bht_bucket_capacity_k;
+
+    for (addr.slot_ = bucket_start; addr.slot_ != bucket_end; ++addr.slot_) { callback(addr); }
 }
 
 /**
- * @brief The most efficient intra-bucket search variant.
- * https://en.cppreference.com/w/cpp/algorithm/find
+ *  @brief Searches for an element within a bucket using optimized bit-scanning.
+ *    Stops iteration early when the predicate returns @c true. More efficient than
+ *    @c bht_for_each_in_bucket_ for lookups as it can short-circuit.
  *
- * @param addr Address pointing to the first element in the bucket.
- * @param predicate Receives the `htx_element_ref_gt` of "populated" slots
- * and must return a boolean, if the object matches and further iteration
- * isn't needed.
- * @return True if match was found.
+ *  @see https://en.cppreference.com/w/cpp/algorithm/find
+ *
+ *  @param[in,out] addr Reference to bucket element. The @c slot_ field is modified
+ *    during iteration to point to each populated slot until a match is found.
+ *  @param[in] predicate Functor invoked for each populated slot. Must return @c true if the
+ *    element matches (terminating the search) or @c false to continue.
+ *  @return True if a matching element was found, false otherwise.
  */
-template <typename key_at, typename val_at, typename hasher_at, typename predicate_at>
-inline_m bool_t htx_find_in_bucket(htx_element_ref_gt<key_at, val_at, hasher_at> &addr,
-                                   predicate_at &&predicate) noexcept {
+template <typename key_type_, typename value_type_, typename hasher_type_, typename predicate_type_>
+bool bht_find_in_bucket_(bht_slot_ref<key_type_, value_type_, hasher_type_> &addr,
+                         predicate_type_ &&predicate) noexcept {
 
-    htx_bucket_mask_t populations_left = addr.head_ref().populations;
-    int count_populated = popcount(populations_left);
-    bool_t found_match = false;
+    using offset_t = typename bht_slot_ref<key_type_, value_type_, hasher_type_>::offset_t;
+    offset_t bucket_start = (addr.slot_ / bht_bucket_capacity_k) * bht_bucket_capacity_k;
+
+    bht_bucket_mask_t populations_left = addr.header_ref().populations;
+    int count_populated = std::popcount(populations_left);
+    bool found_match = false;
     while ((count_populated != 0) & !found_match) {
-        addr.idx_in_bucket = clz(populations_left);
+        offset_t idx_in_bucket = std::countl_zero(populations_left);
+        addr.slot_ = bucket_start + idx_in_bucket;
         found_match = predicate(addr);
         populations_left &= ~addr.mask_in_bucket();
         --count_populated;
@@ -280,153 +556,104 @@ inline_m bool_t htx_find_in_bucket(htx_element_ref_gt<key_at, val_at, hasher_at>
 }
 
 /**
- * @brief Maps elements of one bucket into another bucket.
- * In other words, it's a bucket-level `std::transform`.
- * https://en.cppreference.com/w/cpp/algorithm/transform
+ *  @brief Maps elements from a source bucket to a target bucket, applying a transformation to values.
+ *    Equivalent to bucket-level @c std::transform. Preserves the exact bucket layout including deleted
+ *    slots to accelerate copy operations. Automatically uses @c std::memcpy for trivially copyable types.
  *
- * @param value_transform The functor to be applied to values.
- * > With `identity_t` is used for copy-construction.
- *   Will use `memcpy` if elements are trivially copy-constructible.
- * > With `null_operator_t` or other `void` returning function
- *   exports Hash-Maps into Hash-Sets.
+ *  @tparam key_type_ Source key type (const-qualified for immutable source).
+ *  @tparam value_type_ Source value type (const-qualified for immutable source).
+ *  @tparam transformed_value_type_ Target value type after transformation.
+ *  @tparam hasher_type_ Hash function type.
+ *  @tparam value_transform_ Transformation function type, defaults to @c identity_fn_t.
  *
- * ! The deleted slots won't be reused, no entries will be rehashed!
- * ! That is done to accelerate the copy-construction!
+ *  @param[in] src_addr Reference to source bucket containing elements to transform.
+ *  @param[out] tgt_addr Reference to target bucket where transformed elements are written.
+ *  @param[in] value_transform Functor applied to each value during transformation. Common patterns:
+ *    @c identity_fn_t for copy-construction (uses @c std::memcpy when elements are trivially
+ *    copy-constructible), or @c null_operator_t for exporting Hash-Maps to Hash-Sets by discarding values.
+ *
+ *  @note Deleted slots are not reused and entries are not rehashed. This preserves the source bucket's
+ *    exact layout, accelerating copy-construction at the cost of potential inefficiency if the source
+ *    bucket had many deleted entries.
+ *
+ *  @see https://en.cppreference.com/w/cpp/algorithm/transform
  */
-template <typename key_at, typename val_at, typename transformed_val_at, typename hasher_at,
-          typename value_transform_at = identity_t>
-inline_m void htx_transform_bucket(htx_element_ref_gt<key_at const, val_at const, hasher_at> &src_addr,
-                                   htx_element_ref_gt<key_at, transformed_val_at, hasher_at> &tgt_addr,
-                                   value_transform_at &&value_transform = {}) noexcept {
+template <typename key_type_, typename value_type_, typename transformed_value_type_, typename hasher_type_,
+          typename value_transform_ = identity_fn_t>
+void bht_transform_bucket(bht_slot_ref<key_type_ const, value_type_ const, hasher_type_> &src_addr,
+                          bht_slot_ref<key_type_, transformed_value_type_, hasher_type_> &tgt_addr,
+                          value_transform_ &&value_transform = {}) noexcept {
 
     // Check what can be done with a simple memcpy.
-    // using new_val_t = typename element_resolver_t::transformed_value_gt<value_transform_at>;
-    using element_resolver_t = htx_element_resolver_gt<key_at const, val_at const, hasher_at>;
-    constexpr bool_t outputs_vals_k = !std::is_same<transformed_val_at, void>();
-    constexpr bool_t changes_vals_k = std::is_same<value_transform_at, identity_t>();
-    constexpr bool_t memcpy_keys_k = element_resolver_t::will_memcpy_keys();
-    constexpr bool_t memcpy_vals_k = !changes_vals_k && element_resolver_t::will_memcpy_vals() && outputs_vals_k;
-    static_assert(outputs_vals_k <= element_resolver_t::has_values_k,
-                  "It's hard to output something that doesn't exist!");
+    // using new_val_t = typename layout_t::transformed_value<value_transform_>;
+    using layout_t = bht_layout_for<key_type_ const, value_type_ const, hasher_type_>;
+    constexpr bool outputs_vals_k = !std::is_same<transformed_value_type_, void>();
+    constexpr bool changes_vals_k = std::is_same<value_transform_, identity_fn_t>();
+    constexpr bool memcpy_keys_k = layout_t::will_memcpy_keys();
+    constexpr bool memcpy_vals_k = !changes_vals_k && layout_t::will_memcpy_vals() && outputs_vals_k;
+    static_assert(outputs_vals_k <= layout_t::has_values_k, "It's hard to output something that doesn't exist!");
 
-    // Trivially copy what is possible
-    std::memcpy(tgt_addr.head_bytes, src_addr.head_bytes, sizeof(htx_bucket_head_t));
+    using offset_t = typename bht_slot_ref<key_type_, value_type_, hasher_type_>::offset_t;
+    offset_t src_bucket_start = (src_addr.slot_ / bht_bucket_capacity_k) * bht_bucket_capacity_k;
+    offset_t tgt_bucket_start = (tgt_addr.slot_ / bht_bucket_capacity_k) * bht_bucket_capacity_k;
 
-    constexpr size_t bytes_in_buckets_keys_k = htx_slots_in_bucket_k * sizeof(key_at);
+    // Copy bucket header
+    *tgt_addr.headers_ = *src_addr.headers_;
+
+    // Trivially copy keys if possible
+    constexpr std::size_t bytes_in_buckets_keys_k = bht_bucket_capacity_k * sizeof(key_type_);
     if constexpr (memcpy_keys_k)
-        std::memcpy(tgt_addr.head_bytes + sizeof(htx_bucket_head_t), src_addr.head_bytes + sizeof(htx_bucket_head_t),
-                    bytes_in_buckets_keys_k);
+        std::memcpy(&tgt_addr.keys_[tgt_bucket_start], &src_addr.keys_[src_bucket_start], bytes_in_buckets_keys_k);
 
-    if constexpr (memcpy_vals_k) {
-        constexpr size_t bytes_in_buckets_vals_k = htx_slots_in_bucket_k * sizeof(val_at);
-        std::memcpy(tgt_addr.head_bytes + sizeof(htx_bucket_head_t) + bytes_in_buckets_keys_k,
-                    src_addr.head_bytes + sizeof(htx_bucket_head_t) + bytes_in_buckets_keys_k, bytes_in_buckets_vals_k);
-    }
+    // Trivially copy values if possible
+    constexpr std::size_t bytes_in_buckets_vals_k = bht_bucket_capacity_k * sizeof(value_type_);
+    if constexpr (memcpy_vals_k)
+        std::memcpy(&tgt_addr.values_[tgt_bucket_start], &src_addr.values_[src_bucket_start], bytes_in_buckets_vals_k);
 
     // Manually copy the rest
     if constexpr (!memcpy_keys_k || (!memcpy_vals_k && outputs_vals_k)) {
-        htx_for_each_in_bucket(src_addr, [&tgt_addr, &value_transform](auto const &src_addr) {
-            tgt_addr.idx_in_bucket = src_addr.idx_in_bucket;
-            if constexpr (!memcpy_keys_k) new (&tgt_addr.key_ref()) key_at(src_addr.key());
+        bht_for_each_in_bucket_(src_addr, [&tgt_addr, &value_transform](auto const &src_addr) {
+            tgt_addr.slot_ = src_addr.slot_;
+            if constexpr (!memcpy_keys_k) new (&tgt_addr.key_ref()) key_type_(src_addr.key());
             if constexpr (!memcpy_vals_k && outputs_vals_k) {
                 if constexpr (changes_vals_k)
-                    new (&tgt_addr.val_ref()) transformed_val_at(value_transform(src_addr.value()));
-                else
-                    new (&tgt_addr.val_ref()) transformed_val_at(src_addr.value());
+                    new (&tgt_addr.value_ref()) transformed_value_type_(value_transform(src_addr.value()));
+                else new (&tgt_addr.value_ref()) transformed_value_type_(src_addr.value());
             }
         });
     }
 }
 
-template <typename key_at, typename val_at, typename hasher_at>
-struct htx_element_atomic_ref_gt : public htx_element_ref_gt<key_at, val_at, hasher_at> {
-
-    using base_t = htx_element_ref_gt<key_at, val_at, hasher_at>;
-    using base_t::head_bytes;
-    using base_t::idx_in_bucket;
-    using base_t::key_ref;
-    using base_t::mask_in_bucket;
-    using base_t::val_ref;
-    using base_t::operator*;
-
-    htx_bucket_head_t bilane_mask {0ul};
-    htx_bucket_head_t mutable replacement_head {0ul};
-
-    inline_m htx_bucket_head_t &head_ref() const noexcept { return replacement_head; }
-
-    inline_m bool is_populated() noexcept { return head_ref().populations & mask_in_bucket(); }
-    inline_m bool is_deleted() noexcept { return head_ref().deletions & mask_in_bucket(); }
-    inline_m bool is_freed() noexcept { return ~(is_populated() | is_deleted()); }
-
-    inline_m void mark_populated() noexcept {
-        head_ref().populations |= mask_in_bucket();
-        head_ref().deletions &= ~mask_in_bucket();
-    }
-    inline_m void mark_deleted() noexcept {
-        head_ref().populations &= ~mask_in_bucket();
-        head_ref().deletions |= mask_in_bucket();
-    }
-    inline_m void mark_freed() noexcept {
-        head_ref().populations &= ~mask_in_bucket();
-        head_ref().deletions &= mask_in_bucket();
-    }
-
-    inline_m void lock() noexcept {
-        // The unique aspect of this implementation is that we don't use
-        // Compare-And-Swap intrinsics, just an atomic bitwise OR.
-        bilane_mask.populations = mask_in_bucket();
-        bilane_mask.deletions = mask_in_bucket();
-        // Lock the object and make sure it wasn't locked before us:
-        // https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html
-    relock:
-        replacement_head.u64 =
-            __atomic_fetch_or(&base_t::head_ref().u64, bilane_mask.u64, __ATOMIC_ACQUIRE) & bilane_mask.u64;
-        if (replacement_head.u64 == bilane_mask.u64) goto relock;
-    }
-
-    inline_m void unlock() noexcept {
-        // Both bits are set after the lock.
-        // We only need to disable one or two of them.
-        __atomic_and_fetch(&base_t::head_ref().u64, ~bilane_mask.u64 | replacement_head.u64, __ATOMIC_RELEASE);
-    }
-
-    inline_m bool try_lock() noexcept {
-        // The unique aspect of this implementation is that we don't use
-        // Compare-And-Swap intrinsics, just an atomic bitwise OR.
-        bilane_mask.populations = mask_in_bucket();
-        bilane_mask.deletions = mask_in_bucket();
-        // Lock the object and make sure it wasn't locked before us:
-        // https://gcc.gnu.org/onlinedocs/gcc/_005f_005fatomic-Builtins.html
-        replacement_head.u64 =
-            __atomic_fetch_or(&base_t::head_ref().u64, bilane_mask.u64, __ATOMIC_ACQUIRE) & bilane_mask.u64;
-        return replacement_head.u64 != bilane_mask.u64;
-    }
-};
-
-/* Make sure these objects are lightweight, to avoid extra register pressure. */
-static_assert(sizeof(htx_element_ref_gt<int, int, hash_gt<int>>) <= 2 * sizeof(void *));
-static_assert(sizeof(htx_element_atomic_ref_gt<int, int, hash_gt<int>>) <= 4 * sizeof(void *));
-
 /**
- * @brief A heavy iterator for Hash-Tables, occupies 3x8 = 24 bytes.
- * To make it a `std::bidirectional_iterator_tag` we would need one more pointer.
- * Instead of keeping the end pointer, we look for `hash_table_end_marker_k`.
+ *  @brief Forward iterator for hash tables using simplified slot-based addressing.
+ *    Inherits 4 pointers from @c bht_slot_ref plus @c slots_remaining counter.
+ *    Implements @c std::forward_iterator_tag for sequential traversal of populated slots.
  *
- * End state is reached when `head_bytes == end_bytes`.
- * The value of `idx_in_bucket` will be zero.
+ *  @section Memory Layout
+ *  Inherits from @c bht_slot_ref (32 bytes on 64-bit):
+ *  - @c keys_: Pointer to keys array (8 bytes)
+ *  - @c values_: Pointer to values array (8 bytes)
+ *  - @c headers_: Pointer to headers array (8 bytes)
+ *  - @c slot_: Current absolute slot index (8 bytes)
+ *  Plus iterator-specific:
+ *  - @c slots_remaining: Count of unvisited slots (8 bytes)
  *
- * ! This doesn't support atomic iteration.
+ *  When @c slots_remaining reaches zero, the iterator is at end.
+ *
+ *  @note This iterator is not thread-safe. For concurrent iteration, use @c for_each with
+ *    appropriate synchronization or operate on a snapshot of the table.
  */
-template <typename key_at, typename val_at, typename hasher_at>
-struct htx_iterator_gt : public htx_element_ref_gt<key_at, val_at, hasher_at> {
+template <typename key_type_, typename value_type_, typename hasher_type_>
+struct bht_iterator_gt : public bht_slot_ref<key_type_, value_type_, hasher_type_> {
 
-    using base_t = htx_element_ref_gt<key_at, val_at, hasher_at>;
+    using base_t = bht_slot_ref<key_type_, value_type_, hasher_type_>;
     using element_t = typename base_t::element_t;
     using offset_t = typename base_t::offset_t;
-    using base_t::bytes_in_bucket_k;
-    using base_t::head_bytes;
-    using base_t::head_ref;
-    using base_t::idx_in_bucket;
+    using base_t::keys_;
+    using base_t::values_;
+    using base_t::headers_;
+    using base_t::slot_;
+    using base_t::header_ref;
     using base_t::mask_in_bucket;
 
     using iterator_category = std::forward_iterator_tag;
@@ -435,210 +662,140 @@ struct htx_iterator_gt : public htx_element_ref_gt<key_at, val_at, hasher_at> {
     using reference = element_t;
     using pointer = void;
 
-    offset_t slots_remaining;
+    offset_t slots_remaining; /**< Number of slots left to visit (0 = end). */
 
-    [[nodiscard]] inline_m bool_t operator==(end_sentinel_t) const noexcept { return is_end(); }
-    [[nodiscard]] inline_m bool_t operator!=(end_sentinel_t) const noexcept { return isnt_end(); }
-    [[nodiscard]] inline_m bool_t isnt_end() const noexcept { return slots_remaining != 0; }
-    [[nodiscard]] inline_m bool_t is_end() const noexcept { return slots_remaining == 0; }
+    [[nodiscard]] bool operator==(end_sentinel_t) const noexcept { return is_end(); }
+    [[nodiscard]] bool operator!=(end_sentinel_t) const noexcept { return isnt_end(); }
+    [[nodiscard]] bool isnt_end() const noexcept { return slots_remaining != 0; }
+    [[nodiscard]] bool is_end() const noexcept { return slots_remaining == 0; }
 
-    inline_m bool_t operator==(htx_iterator_gt const &o) const noexcept {
-        return (head_bytes == o.head_bytes) & (idx_in_bucket == o.idx_in_bucket);
+    bool operator==(bht_iterator_gt const &o) const noexcept { return (keys_ == o.keys_) & (slot_ == o.slot_); }
+    bool operator!=(bht_iterator_gt const &o) const noexcept { return (keys_ != o.keys_) | (slot_ != o.slot_); }
+
+    bht_iterator_gt &operator++() noexcept {
+        advance();
+        return *this;
     }
-    inline_m bool_t operator!=(htx_iterator_gt const &o) const noexcept {
-        return (head_bytes != o.head_bytes) | (idx_in_bucket != o.idx_in_bucket);
-    }
 
-    operators_increment_m(htx_iterator_gt);
+    bht_iterator_gt operator++(int) noexcept {
+        bht_iterator_gt copy = *this;
+        advance();
+        return copy;
+    }
 
     /**
-     * @brief Mostly branchless iterator increment.
-     * ! Can only be called if `is_end() == false`.
+     *  @brief Advances iterator to next populated slot.
+     *    Simplified from bucket arithmetic to direct slot increment.
+     *    Must not be called when @c is_end() is true.
      */
-    inline_m void advance() noexcept_in_release_m {
-        validate_m(!is_end(), "Going out of range!");
+    void advance() noexcept {
+        assert(!is_end() && "Going out of range!");
         --slots_remaining;
-        idx_in_bucket = (idx_in_bucket + 1) & (htx_slots_in_bucket_k - 1);
-        head_bytes += bytes_in_bucket_k * (idx_in_bucket == 0);
+        ++slot_;
         skip_non_populated();
     }
 
-    inline_m void skip_non_populated() noexcept {
-        while ((slots_remaining != 0) && (~head_ref().populations & mask_in_bucket())) {
-            --slots_remaining;
-            idx_in_bucket = (idx_in_bucket + 1) & (htx_slots_in_bucket_k - 1);
-            head_bytes += bytes_in_bucket_k * (idx_in_bucket == 0);
-        }
-    }
-
     /**
-     * @brief DEPRECATED almost-brnachless approach to iteration.
-     * Performs worse than brancheing approach. For much faster
-     * internal iteration use the `hash_table.for_each(...)`
-     * and the underlying `htx_for_each_in_bucket`.
+     *  @brief Skips over empty and deleted slots until finding a populated one or reaching end.
+     *    Uses bitmap checking via @c header_ref().populations for efficient skipping.
      */
-    inline_m void skip_non_populated_branchless(bool_t skip_current = false) noexcept {
-
-        // The trick here is to temporarily forget about updating our `head_bytes`
-        // pointer and forget that our `idx_in_bucket` can't be greater than
-        // the `htx_slots_in_bucket_k`.
-        auto new_idx = idx_in_bucket;
-    increment_more:
-        auto wrapped_idx_in_bucket = new_idx & (htx_slots_in_bucket_k - 1);
-        auto mask_in_bucket = enabled_top_bit<htx_bucket_mask_t>() >> wrapped_idx_in_bucket;
-
-        auto new_wrapped_idx_in_bucket = clz(*reinterpret_cast<htx_bucket_mask_t const *>(
-                                                 head_bytes + (new_idx / htx_slots_in_bucket_k) * bytes_in_bucket_k) &
-                                             ((mask_in_bucket | (mask_in_bucket - 1)) >> skip_current));
-
-        new_idx += new_wrapped_idx_in_bucket - wrapped_idx_in_bucket;
-        skip_current = false;
-
-        if ((new_wrapped_idx_in_bucket == htx_slots_in_bucket_k) & (new_idx != slots_remaining)) goto increment_more;
-
-        // Once we finish pushing the `idx_in_bucket`, we update the head,
-        // as well as the `slots_count`.
-        head_bytes += (new_idx / htx_slots_in_bucket_k) * bytes_in_bucket_k;
-        slots_remaining -= (new_idx / htx_slots_in_bucket_k) * htx_slots_in_bucket_k;
-        idx_in_bucket = new_idx & (htx_slots_in_bucket_k - 1);
+    void skip_non_populated() noexcept {
+        while ((slots_remaining != 0) && (~header_ref().populations & mask_in_bucket())) {
+            --slots_remaining;
+            ++slot_;
+        }
     }
 };
 
 /**
- * @brief Open-Addressing Constant-Probing Hash-Table inspired by `google::dense_hash_map`.
- * A direct competitor of @c `std::unordered_map`: https://en.cppreference.com/w/cpp/container/unordered_map
- *
- * Unlike Google, uses constant "single step" probing, not the linear version.
- * Unlike Google, keeps keys and values separately, for denser packing.
- * Unlike Google, supports deletions without reserved "empty" values.
- * Unlike Google, supports concurrent operations out of the box.
- * Unlike Google, supports `merge`-like fast set operations.
- * Uses only 2 extra bits per key-value pair to indicate the validity of
- * the slots and atomic locks.
- *
- * @section Insert vs Emplace
- * We don't separate insert/update/emplace semantically, as that functionality is
- * rarely used. The only difference is that `insert(...)` receives a pre-constructed
- * key-value-pair, while `emplace` avoid temporary copies and constructs in-place.
- *
- * @section Memory Usage
- * Similar to Google we allows Hash-Tables to be upto 75% full,
- * meaning 1 in 4 slots will be UNUSED even in the best case.
- * It's still generally more efficient, than tree-like heap-allocating
- * containers, but obiously less efficient than `std::vector`. Overall:
- * > In best case scenario 3 in 4 slots will be "populated".
- * > In bad case, rights after growth, only 3 in 8 will be "populated".
- * > In worst case, after a big `reserve` under 1% can be "populated".
- * That's why it is strongly recommended to use `for_each` instead of iterators.
- * @see Low-level iteration via `htx_for_each_in_bucket` and `htx_transform_bucket`.
- *
- * @section Memory Layout
- * Stores all the elements in buckets with @b `htx_slots_in_bucket_k` slots in each.
- * Wihtin each bucket the content order is the following:
- * 1. 64-bit header;
- * 2. 32x keys;
- * 3. 32x values, or no values at all.
- *
- * @section Heterogeneous Lookups
- * When working with very hot data-paths, it's your responsibility to select
- * the optimal data-layout. Do you prefer to store (validities, keys, values) or
- * the denser (validities, {key,value}s)? When the size of the key is equal or
- * greater than the size of the value (like std::string + std::size_t), a set
- * should be used. Otherwise, a map is preferrable.
- *
- * @section Concurrency
- * Every operation, that doesn't require a memory allocation, can be performed
- * atomically, including insertions, lookups and erasures. Same is true for
- * operations on GPUs, making it the only major associative container besides
- * the "cuCollections" by Nvidia.
- * https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#atomic-functions
- * https://github.com/NVIDIA/cuCollections
- *
- * @section Further Reading
- * Abseil and Google teams have a number of hash-table implementations.
- * It's strongly recommended to watch the CppCon 2017 talk by Matt Kulukundis:
- * “Designing a Fast, Efficient, Cache-friendly Hash Table, Step by Step”.
- * Also, we have numerous benchmarks comparing associative containers:
- * http://gitlab.unum.am/hpc-lab/associativecontainers
- *
- * @tparam key_at A hashable and equality-comparable key type.
- * @tparam val_at Optional value type. Degenerates to Hash-Set with `void`.
- *
- * @tparam hasher_at In many applications it's dangerous to use
- * the `hash_gt`, which often simply maps integers to themselves.
- * If you need the identity function, just pass `identity_gt`.
- * ! Must be copy-constructible, but not necesserily default-constructible.
- *
- * @tparam equals_at By default the our equality operator is passed.
- * It's different from `std::equals_to`, as supports differing argument
- * types, which is crucial for heterogeneous lookups.
- * ! Must be copy-constructible, but not necesserily default-constructible.
+ *  @brief Wraps @c std::hash default hasher that delays type resolution until invocation.
  */
-template <typename key_at, typename val_at = void, typename hasher_at = hash_gt<key_at>,
-          typename equals_at = equals_gt<>, typename allocator_at = alloc::libc_t>
-struct hash_table_gt {
+struct lazy_std_hash_t {
 
-    using element_resolver_t = htx_element_resolver_gt<key_at, val_at, hasher_at>;
-    using key_t = typename element_resolver_t::key_t;
-    using val_t = typename element_resolver_t::val_t;
-    using element_t = typename element_resolver_t::element_t;
-    using element_copy_t = typename element_resolver_t::element_copy_t;
-    using offset_t = typename element_resolver_t::offset_t;
-    inline static constexpr size_t has_values_k = element_resolver_t::has_values_k;
-    inline static constexpr size_t bytes_in_bucket_k = element_resolver_t::bytes_in_bucket_k;
+    template <typename key_type_>
+    std::size_t operator()(key_type_ const &key) const noexcept {
+        return std::hash<key_type_> {}(key);
+    }
+};
 
-    using hasher_t = hasher_at;
-    using equals_t = equals_at;
-    using allocator_t = allocator_at;
-    using set_t = hash_table_gt<key_t, void, hasher_t, equals_t, allocator_t>;
-    using iterator_t = htx_iterator_gt<key_t, val_t, hasher_t>;
-    using iterator_ct = htx_iterator_gt<key_t, val_t const, hasher_t>;
-    using element_rt = htx_element_ref_gt<key_t, val_t, hasher_t>;
-    using element_crt = htx_element_ref_gt<key_t const, val_t const, hasher_t>;
-    using element_atref_t = htx_element_atomic_ref_gt<key_t, val_t, hasher_t>;
-    using element_catref_t = htx_element_atomic_ref_gt<key_t const, val_t const, hasher_t>;
+/**
+ *  @brief Lock-free concurrent hash table with linear probing and Structure-of-Arrays layout.
+ *    Compatible with @c std::unordered_set interface. See file header for detailed design rationale.
+ *
+ *  @tparam key_type_ Hashable and equality-comparable key type.
+ *  @tparam value_type_ Value type, or @c void for hash sets.
+ *  @tparam hasher_type_ Hash function type. Must be copy-constructible. Defaults to a @c std::hash wrapper.
+ *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be copy-constructible.
+ *    Defaults to @c std::equal_to.
+ *  @tparam allocator_type_ Allocator for internal memory management. Defaults to @c std::allocator<std::byte>.
+ *
+ *  @see https://en.cppreference.com/w/cpp/container/unordered_set
+ *  @see https://en.cppreference.com/w/cpp/container/unordered_map
+ */
+template <typename element_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
+          typename allocator_type_ = std::allocator<std::byte>>
+class basic_hash_table {
+
+    using layout_t = bht_layout_for<element_type_, hasher_type_>;
+    using key_t = typename layout_t::key_t;
+    using value_t = typename layout_t::value_t;
+    using element_t = typename layout_t::element_t;
+    using element_copy_t = typename layout_t::element_copy_t;
+    using offset_t = typename layout_t::offset_t;
+
+    inline static constexpr std::size_t bytes_for_keys_k = layout_t::bytes_for_keys_k;
+    inline static constexpr std::size_t bytes_for_values_k = layout_t::bytes_for_values_k;
+    inline static constexpr bool hasher_is_empty_k = std::is_empty<hasher_type_>::value;
+    inline static constexpr bool equals_is_empty_k = std::is_empty<equals_type_>::value;
+    inline static constexpr bool allocator_is_empty_k = std::is_empty<allocator_type_>::value;
+
+    using hasher_t = hasher_type_;
+    using equals_t = equals_type_;
+    using allocator_t = allocator_type_;
+    using set_t = basic_hash_table<key_t, hasher_t, equals_t, allocator_t>; // ? Drops the values
+    using iterator_t = bht_iterator_gt<key_t, value_t, hasher_t>;
+    using iterator_ct = bht_iterator_gt<key_t, value_t const, hasher_t>;
+    using element_rt = bht_slot_ref<key_t, value_t, hasher_t>;
+    using element_crt = bht_slot_ref<key_t const, value_t const, hasher_t>;
+    using element_atref_t = bht_element_atomic_ref<key_t, value_t, hasher_t>;
+    using element_catref_t = bht_element_atomic_ref<key_t const, value_t const, hasher_t>;
 
     static_assert(!std::is_reference<key_t>(), "Keys can't be references!");
-    static_assert(!std::is_reference<val_t>(), "Values can't be references!");
-    /**
-     * If the element type isn't trivially constructible, but it's key is at least
-     * zero-initializable, we can reduce branching in the most essential search operation.
-     */
-    inline static constexpr bool_t keys_default_to_zeros_k = is_trivially_zero_constructible<key_t>();
-    inline static constexpr bool_t destruct_keys_k = !std::is_trivially_destructible<key_t>();
-    inline static constexpr bool_t destruct_vals_k = has_values_k && !std::is_trivially_destructible<val_t>();
+    static_assert(!std::is_reference<value_t>(), "Values can't be references!");
+
+    inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
+    inline static constexpr bool destruct_vals_k = has_values_k && !std::is_trivially_destructible<value_t>();
 
     using hash_value_t = decltype(hasher_t {}(key_t {}));
-    static_assert(std::is_unsigned<hash_value_t>(), "Hash value must be an unsigned integer, like u32_t or u64_t!");
+    static_assert(std::is_unsigned<hash_value_t>(),
+                  "Hash value must be an unsigned integer, like std::uint32_t or std::uint64_t!");
 
+  public:
     /**
-     * @brief A return type for the insert function,
-     * @c position indicates the inserted or conflicted element, if none exists points to the end.
-     * @c inserted true if the given element was inserted or updated.
-     *
-     * It's identical to the `result_type` in STL docs:
-     * https://en.cppreference.com/w/cpp/container/unordered_map
+     *  @brief A return type for the insert function, similar to @c insert_return_type in STL.
+     *  @c position indicates the inserted or conflicted element, if none exists points to the end.
+     *  @c inserted true if the given element was inserted or updated.
      */
     struct insert_result_t {
         iterator_t position;
-        bool_t inserted = false;
+        bool inserted = false;
     };
 
     struct search_result_t {
         iterator_t position;
-        bool_t exists = false;
+        bool exists = false;
     };
 
     struct search_cresult_t {
         iterator_ct position;
-        bool_t exists = false;
+        bool exists = false;
     };
 
-    /* STL-compatiability definitions, idetical to that of `std::map`:
-     * https://en.cppreference.com/w/cpp/container/unordered_map
+    /*  STL-compatibility definitions, identical to that of `std::map`:
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map
      */
     using key_type = key_t;
-    using mapped_typed = val_t;
+    using mapped_typed = value_t;
     using result_type = insert_result_t;
     using value_type = element_t;
     using size_type = offset_t;
@@ -652,181 +809,183 @@ struct hash_table_gt {
     using hasher = hasher_t;
     using key_equal = equals_t;
 
+  private:
     /**
-     * @brief A coninuous block of memory virtually split
-     * into buckets for each `htx_slots_in_bucket_k` elements.
+     *  @brief Single allocation containing three cache-aligned regions.
+     *    Layout: [keys | values | headers] enabling zero-copy compaction.
      */
-    byte_t *memory_;
-    offset_t slots_count_;
-    offset_t growth_threashold_;
-    offset_t populated_count_;
-    offset_t deleted_count_;
+    std::byte *memory_; /**< Base pointer to single allocated buffer. */
 
-    member_make_lite_m(hasher_t, hasher);
-    member_make_lite_m(equals_t, equals);
-    member_make_lite_m(allocator_t, allocator);
+    offset_t slots_count_;      /**< Total number of slots (power of two). */
+    offset_t growth_threshold_; /**< Rehash trigger at 75% load factor. */
+    offset_t populated_count_;  /**< Count of populated slots. */
+    offset_t deleted_count_;    /**< Count of deleted (tombstone) slots. */
 
-#pragma region Constructors
+    [[no_unique_address]] hasher_t hasher_;
+    [[no_unique_address]] equals_t equals_;
+    [[no_unique_address]] allocator_t allocator_;
 
-    /**
-     * @brief Default constructor, avoids any allocations, accepts
-     * a pre-constructed hasher functor and the equality operator.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/unordered_map
-     */
-    inline_m hash_table_gt(hasher_t h = {}, equals_t eq = {}, allocator_t alloc = {}) noexcept
-        : memory_(nullptr), slots_count_(0), growth_threashold_(0), populated_count_(0), deleted_count_(0) {
-
-        hasher_construct(std::move(h));
-        equals_construct(std::move(eq));
-        allocator_construct(std::move(alloc));
+    key_t *keys() const noexcept { return reinterpret_cast<key_t *>(memory_); }
+    value_t *values() const noexcept {
+        if constexpr (has_values_k)
+            return reinterpret_cast<value_t *>(memory_ + bytes_for_keys_k * slots_count_ / bht_bucket_capacity_k);
+        else return nullptr;
+    }
+    bht_bucket_head_t *headers() const noexcept {
+        if constexpr (has_values_k)
+            return reinterpret_cast<bht_bucket_head_t *>(memory_ +
+                                                         bytes_for_keys_k * slots_count_ / bht_bucket_capacity_k +
+                                                         bytes_for_values_k * slots_count_ / bht_bucket_capacity_k);
+        else reinterpret_cast<bht_bucket_head_t *>(memory_ + bytes_for_keys_k * slots_count_ / bht_bucket_capacity_k);
     }
 
-    /**
-     * @brief Most commonly used constructor interface.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/unordered_map
-     */
-    explicit hash_table_gt(offset_t planned_elements, hasher_t h = {}, equals_t eq = {}, allocator_t alloc = {})
-        : hash_table_gt(htx_slots_count_t {planned_elements}, std::move(h), std::move(eq), std::move(alloc)) {}
+  public:
+#pragma mark - Constructors
 
     /**
-     * @brief Main constructor.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/unordered_map
+     *  @brief Default constructor, avoiding memory allocations, accepting a pre-constructed hasher functor,
+     *    an equality operator, and the allocator state.
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/unordered_map
      */
-    noinline_m hash_table_gt(htx_slots_count_t slots, hasher_t h = {}, equals_t eq = {}, allocator_t alloc = {}) {
+    basic_hash_table(hasher_t h = {}, equals_t eq = {}, allocator_t alloc = {}) noexcept
+        : memory_(nullptr), slots_count_(0), growth_threshold_(0), populated_count_(0), deleted_count_(0),
+          hasher_(std::move(h)), equals_(std::move(eq)), allocator_(std::move(alloc)) {}
 
-        hasher_construct(std::move(h));
-        equals_construct(std::move(eq));
-        allocator_construct(std::move(alloc));
-
-        size_t needed_bytes = memory_usage(slots);
-        memory_ = nullptr;
-        if (needed_bytes) {
-            memory_ = allocator_().allocate(needed_bytes);
-            throw_m(memory_, "Allocation has failed!");
-            allocator_().clear(memory_, needed_bytes);
-        }
-        slots_count_ = static_cast<offset_t>(slots.raw);
-        populated_count_ = 0;
-        deleted_count_ = 0;
-        growth_threashold_ = slots_count_ * 3ul / 4ul;
-    }
-
-    noinline_m ~hash_table_gt() {
-        if (memory_) {
-            clear(tag_preallocated_t {});
-            deallocate(tag_preallocated_t {});
-        }
-
-        hasher_destruct();
-        equals_destruct();
-        allocator_destruct();
-    }
-
-    inline_host_m hash_table_gt(hash_table_gt &&other) noexcept
-        : memory_(nullptr), slots_count_(0), growth_threashold_(0), populated_count_(0), deleted_count_(0) {
-        allocator_construct(other.allocator_());
+    inline basic_hash_table(basic_hash_table &&other) noexcept
+        : memory_(nullptr), slots_count_(0), growth_threshold_(0), populated_count_(0), deleted_count_(0), hasher_(),
+          equals_(), allocator_() {
         swap(other);
     }
 
-    inline_host_m hash_table_gt(hash_table_gt const &other) noexcept
-        : memory_(nullptr), slots_count_(0), growth_threashold_(0), populated_count_(0), deleted_count_(0) {
-        allocator_construct(other.allocator_());
-        auto copy = other.copy_to_new();
-        swap(copy);
-    }
-
-    inline_host_m hash_table_gt &operator=(hash_table_gt &&other) noexcept {
+    inline basic_hash_table &operator=(basic_hash_table &&other) noexcept {
         clear();
         swap(other);
         return *this;
     }
 
-    inline_host_m hash_table_gt &operator=(hash_table_gt const &other) noexcept {
-        auto copy = other.copy_to_new();
-        swap(copy);
-        return *this;
+    inline basic_hash_table(basic_hash_table const &) noexcept = delete;
+    inline basic_hash_table &operator=(basic_hash_table const &) noexcept = delete;
+    inline basic_hash_table(offset_t, hasher_t = {}, equals_t = {}, allocator_t = {}) noexcept = delete;
+
+    /**
+     *  @brief Most commonly used @b constructor-like interface. Returns an optional hash table instance,
+     *    containing a @c std::nullopt if the memory allocation has failed.
+     */
+    static std::optional<basic_hash_table> make(offset_t planned_elements, hasher_t h = {}, equals_t eq = {},
+                                                allocator_t alloc = {}) noexcept {
+        return basic_hash_table(bht_slots_count_t {planned_elements}, std::move(h), std::move(eq), std::move(alloc));
     }
 
-    template <typename begin_iterator_at, typename end_iterator_at, typename... tags_at,
-              typename std::enable_if<is_iterator<begin_iterator_at>(), int>::type = 0>
-    inline_host_m hash_table_gt(begin_iterator_at begin, end_iterator_at end, tags_at... tags)
-        : memory_(nullptr), slots_count_(0), growth_threashold_(0), populated_count_(0), deleted_count_(0) {
-        insert(begin, end, tags...);
+    /**
+     *  @brief Most commonly used @b constructor-like interface. Returns an optional hash table instance,
+     *    containing a @c std::nullopt if the memory allocation has failed.
+     */
+    static std::optional<basic_hash_table> make(bht_slots_count_t slots, hasher_t h = {}, equals_t eq = {},
+                                                allocator_t alloc = {}) noexcept {
+
+        hasher_construct(std::move(h));
+        equals_construct(std::move(eq));
+        allocator_construct(std::move(alloc));
+
+        std::size_t needed_bytes = memory_usage(slots);
+        memory_ = nullptr;
+
+        if (needed_bytes && slots.raw > 0) {
+            memory_ = allocator_().allocate(needed_bytes);
+            assert(memory_ && "Allocation has failed!");
+            allocator_().clear(memory_, needed_bytes);
+        }
+
+        slots_count_ = static_cast<offset_t>(slots.raw);
+        populated_count_ = 0;
+        deleted_count_ = 0;
+        growth_threshold_ = slots_count_ * 3ul / 4ul;
     }
 
-#pragma region Metadata
+    ~basic_hash_table() {
+        if (memory_) {
+            clear(assume_reserved_t {});
+            deallocate(assume_reserved_t {});
+        }
+    }
 
-    inline_m bool_t empty() const noexcept { return !populated_count_; }
-    inline_m offset_t size() const noexcept { return populated_count_; }
+    template <typename begin_iterator_type_, typename end_iterator_type_,
+              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    static std::optional<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end) {
+        basic_hash_table table;
+        if (!table.reserve(static_cast<offset_t>(std::distance(begin, end)))) return std::nullopt;
+        insert_reserved(begin, end);
+        return table;
+    }
 
-    inline_m offset_t optimal_capacity() const noexcept { return growth_threashold_; }
-    inline_m offset_t capacity() const noexcept { return std::max(optimal_capacity(), size()); }
+#pragma mark - Metadata
 
-    inline_m size_t size_bytes() const noexcept { return bucket_count() * bytes_in_bucket_k; }
-    inline_m offset_t capacity_bytes() const noexcept { return size_bytes(); }
+    bool empty() const noexcept { return !populated_count_; }
+    offset_t size() const noexcept { return populated_count_; }
 
-    inline_m htx_slots_count_t slots_count() const noexcept {
-        htx_slots_count_t result;
+    offset_t optimal_capacity() const noexcept { return growth_threshold_; }
+    offset_t capacity() const noexcept { return std::max(optimal_capacity(), size()); }
+
+    std::size_t size_bytes() const noexcept { return bucket_count() * bytes_in_bucket_k; }
+    offset_t capacity_bytes() const noexcept { return size_bytes(); }
+
+    bht_slots_count_t slots_count() const noexcept {
+        bht_slots_count_t result;
         result.raw = slots_count_;
         return result;
     }
 
     /**
-     * @brief STL-compatiability function.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/bucket_count
+     *  @brief STL-compatibility function.
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/bucket_count
      */
-    offset_t bucket_count() const noexcept { return slots_count_ / htx_slots_in_bucket_k; }
+    offset_t bucket_count() const noexcept { return slots_count_ / bht_bucket_capacity_k; }
 
     /**
-     * @brief STL-compatiability function.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/max_bucket_count
+     *  @brief STL-compatibility function.
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/max_bucket_count
      */
-    offset_t max_bucket_count() const noexcept { return std::numeric_limits<offset_t>::max() / htx_slots_in_bucket_k; }
+    offset_t max_bucket_count() const noexcept { return std::numeric_limits<offset_t>::max() / bht_bucket_capacity_k; }
 
     /**
-     * @brief STL-compatiability function.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/hash_function
+     *  @brief STL-compatibility function.
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/hash_function
      */
     decltype(auto) hash_function() const noexcept { return hasher_(); }
 
     /**
-     * @brief STL-compatiability function.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/key_eq
+     *  @brief STL-compatibility function.
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/key_eq
      */
     decltype(auto) key_eq() const noexcept { return equals_(); }
 
     /**
-     * @brief STL-compatiability function.
-     * https://en.cppreference.com/w/cpp/container/unordered_map/get_allocator
+     *  @brief STL-compatibility function.
+     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/get_allocator
      */
     decltype(auto) get_allocator() const noexcept { return allocator_(); }
 
-    inline_m byte_t *data() const noexcept { return memory_; }
-    inline_m byte_t *data_in_bucket(offset_t bucket_idx) const noexcept {
-        return memory_ + bytes_in_bucket_k * bucket_idx;
-    }
-
-#pragma region Search
+#pragma mark - Search
 
     /**
-     * @brief Search optimized for `find`: check is value is present.
+     * @brief Search optimized for @c find: check is value is present.
      * If you have an intention to insert/upsert something, use another func.
-     * Unlike the `search_to_insert` or `search_to_upsert`, doesn't
+     * Unlike the @c search_to_insert or @c search_to_upsert, doesn't
      * track "deleted" slots.
      *
      * @param wanted Hashable and comparable with key object.
-     * @param call A callback receiving `element_crt` or
-     * an atomic `element_catref_t` to an initialized matching object.
+     * @param call A callback receiving @c element_crt or
+     * an atomic @c element_catref_t to an initialized matching object.
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Avoids null checks.
-     * > tag_atomic_t: Enables lock-less concurrency.
+     * > assume_reserved_t: Avoids null checks.
+     * > threadsafe_t: Enables lock-less concurrency.
      */
-    template <typename hetero_key_at, typename callback_at, typename... tags_at>
-    inline_m void search_to_find(hetero_key_at &&wanted, callback_at &&call, tags_at...) const noexcept {
+    template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
+    void search_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
 
-        using ref_t = std::conditional_t<contains_type<tag_atomic_t, tags_at...>(), element_catref_t, element_crt>;
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>())
+        using ref_t = std::conditional_t<contains_type<threadsafe_t, tags_types_...>(), element_catref_t, element_crt>;
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!populated_count_) [[unlikely]]
                 return;
 
@@ -858,9 +1017,9 @@ struct hash_table_gt {
                 else {
                     addr.unlock();
                     off = (off + 1) & (slots_count_ - 1);
-                    validate_m(off != final_offset, "Poor hash table usage!");
+                    assert(off != final_offset && "Poor hash table usage!");
 
-                    if constexpr (contains_type<tag_force_t, tags_at...>()) break;
+                    if constexpr (contains_type<first_match_t, tags_types_...>()) break;
 
                     // if (off == final_offset)
                     //     break;
@@ -870,9 +1029,9 @@ struct hash_table_gt {
                 // A "deleted" slot.
                 addr.unlock();
                 off = (off + 1) & (slots_count_ - 1);
-                validate_m(off != final_offset, "Poor hash table usage!");
+                assert(off != final_offset && "Poor hash table usage!");
 
-                if constexpr (contains_type<tag_force_t, tags_at...>()) break;
+                if constexpr (contains_type<first_match_t, tags_types_...>()) break;
 
                 // if (off == final_offset)
                 //     break;
@@ -886,24 +1045,24 @@ struct hash_table_gt {
     }
 
     /**
-     * @brief Search optimized for `find`: check is value is present.
+     * @brief Search optimized for @c find: check is value is present.
      * If you have an intention to insert/upsert something, use another func.
-     * Unlike the `search_to_insert` or `search_to_upsert`, doesn't
+     * Unlike the @c search_to_insert or @c search_to_upsert, doesn't
      * track "deleted" slots.
      *
      * @param wanted Hashable and comparable with key object.
-     * @param call A callback receiving `element_crt` or
-     * an atomic `element_catref_t` to an initialized matching object.
+     * @param call A callback receiving @c element_crt or
+     * an atomic @c element_catref_t to an initialized matching object.
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Avoids null checks.
-     * > tag_atomic_t: Enables lock-less concurrency.
+     * > assume_reserved_t: Avoids null checks.
+     * > threadsafe_t: Enables lock-less concurrency.
      */
-    template <typename hetero_key_at, typename callback_at, typename... tags_at>
-    inline_m void search_to_find(hetero_key_at &&wanted, callback_at &&call, tags_at...) noexcept {
+    template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
+    void search_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
 
-        using ref_t = std::conditional_t<contains_type<tag_atomic_t, tags_at...>(), element_atref_t, element_rt>;
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>())
+        using ref_t = std::conditional_t<contains_type<threadsafe_t, tags_types_...>(), element_atref_t, element_rt>;
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!populated_count_) [[unlikely]]
                 return;
 
@@ -935,9 +1094,9 @@ struct hash_table_gt {
                 else {
                     addr.unlock();
                     off = (off + 1) & (slots_count_ - 1);
-                    validate_m(off != final_offset, "Poor hash table usage!");
+                    assert(off != final_offset && "Poor hash table usage!");
 
-                    if constexpr (contains_type<tag_force_t, tags_at...>()) break;
+                    if constexpr (contains_type<first_match_t, tags_types_...>()) break;
 
                     // if (off == final_offset)
                     //     break;
@@ -947,9 +1106,9 @@ struct hash_table_gt {
                 // A "deleted" slot.
                 addr.unlock();
                 off = (off + 1) & (slots_count_ - 1);
-                validate_m(off != final_offset, "Poor hash table usage!");
+                assert(off != final_offset && "Poor hash table usage!");
 
-                if constexpr (contains_type<tag_force_t, tags_at...>()) break;
+                if constexpr (contains_type<first_match_t, tags_types_...>()) break;
 
                 // if (off == final_offset)
                 //     break;
@@ -962,62 +1121,60 @@ struct hash_table_gt {
         }
     }
 
-    template <typename... tags_at>
-    inline_host_m offset_t advance(offset_t &count, offset_t offset, tags_at...) const noexcept {
-        if constexpr (contains_type<tag_atomic_t, tags_at...>()) return atomic_add_fetch(count, offset);
-        else
-            return count += offset;
+    template <typename... tags_types_>
+    inline offset_t advance(offset_t &count, offset_t offset, tags_types_...) const noexcept {
+        if constexpr (contains_type<threadsafe_t, tags_types_...>()) return atomic_add_fetch(count, offset);
+        else return count += offset;
     }
 
-    template <typename... tags_at>
-    inline_host_m offset_t decrement(offset_t &count, offset_t offset, tags_at...) const noexcept {
-        if constexpr (contains_type<tag_atomic_t, tags_at...>()) return atomic_sub_fetch(count, offset);
-        else
-            return count -= offset;
+    template <typename... tags_types_>
+    inline offset_t decrement(offset_t &count, offset_t offset, tags_types_...) const noexcept {
+        if constexpr (contains_type<threadsafe_t, tags_types_...>()) return atomic_sub_fetch(count, offset);
+        else return count -= offset;
     }
 
     /**
-     * @brief Search optimized for `insert` of a uniquie key.
-     * Unlike `search_to_upsert` avoids potentially expensive
+     * @brief Search optimized for @c insert of a uniquie key.
+     * Unlike @c search_to_upsert avoids potentially expensive
      * equality comparisons, knowing that the incoming key
      * is different from all present members.
      *
      * @param wanted Hashable and comparable with key object.
-     * @param call A callback receiving  `element_rt` or
-     * an atomic `element_atref_t` to UN-initialized memory,
+     * @param call A callback receiving  @c element_rt or
+     * an atomic @c element_atref_t to UN-initialized memory,
      * where an element should be built.
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Avoids null checks.
-     * > tag_atomic_t: Enables lock-less concurrency.
+     * > assume_reserved_t: Avoids null checks.
+     * > threadsafe_t: Enables lock-less concurrency.
      */
-    template <typename hetero_key_at, typename callback_at, typename... tags_at>
-    inline_m void search_to_insert(hetero_key_at &&wanted, callback_at &&call, tags_at... tags) noexcept {
+    template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
+    void search_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_... tags) noexcept {
 
-        using ref_t = std::conditional_t<contains_type<tag_atomic_t, tags_at...>(), element_atref_t, element_rt>;
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>())
+        using ref_t = std::conditional_t<contains_type<threadsafe_t, tags_types_...>(), element_atref_t, element_rt>;
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!populated_count_) [[unlikely]]
                 return;
 
         // We pre-increment the counter, before beginning the potentially slow
         // search. It helps avoiding premature cleanup from a different thread.
-        get_type_or<tag_pull_new_size_t, black_hole_t>(tags...) = advance(populated_count_, 1, tags...);
+        get_type_or<return_new_size_t, black_hole_t>(tags...) = advance(populated_count_, 1, tags...);
 
         // Hash to determine the ideal slot.
         ref_t addr;
         offset_t off = hasher_()(wanted) & (slots_count_ - 1);
-        bool_t did_find_deleted = false;
+        bool did_find_deleted = false;
 
         // Loop until we find any "deleted" or "free" slot.
         while (true) {
             unsafe_retarget(addr, off);
             addr.lock();
 
-            if ((~addr.head_ref().populations | addr.head_ref().deletions) & addr.mask_in_bucket()) {
+            if ((~addr.header_ref().populations | addr.header_ref().deletions) & addr.mask_in_bucket()) {
                 call(addr);
 
                 // Update the cell state before unlocking.
-                did_find_deleted = boolify(addr.head_ref().deletions & addr.mask_in_bucket());
+                did_find_deleted = boolify(addr.header_ref().deletions & addr.mask_in_bucket());
                 addr.mark_populated();
                 addr.unlock();
 
@@ -1036,27 +1193,28 @@ struct hash_table_gt {
     }
 
     /**
-     * @brief Search optimized for potentially `upsert`s.
-     * It's more expensive than `search_to_find` and `search_to_insert`,
+     * @brief Search optimized for potentially @c upserts.
+     * It's more expensive than @c search_to_find and @c search_to_insert,
      * so pick this method wisely.
      *
      * @param wanted Hashable and comparable with key object.
-     * @param call_unused A callback receiving `element_rt` or
-     * an atomic `element_atref_t` to UN-initialized memory,
+     * @param call_unused A callback receiving @c element_rt or
+     * an atomic @c element_atref_t to UN-initialized memory,
      * where an element should be built.
-     * @param call_equal A callback receiving `element_rt` or
-     * an atomic `element_atref_t` to initialized matching object.
+     * @param call_equal A callback receiving @c element_rt or
+     * an atomic @c element_atref_t to initialized matching object.
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Avoids null checks.
-     * > tag_atomic_t: Enables lock-less concurrency.
+     * > assume_reserved_t: Avoids null checks.
+     * > threadsafe_t: Enables lock-less concurrency.
      */
-    template <typename hetero_key_at, typename callback_unused_at, typename callback_equal_at, typename... tags_at>
-    inline_m void search_to_upsert(hetero_key_at &&wanted, callback_unused_at &&call_unused,
-                                   callback_equal_at &&call_equal, tags_at... tags) noexcept {
+    template <typename comparable_key_type_, typename callback_unused_at, typename callback_equal_at,
+              typename... tags_types_>
+    void search_to_upsert(comparable_key_type_ &&wanted, callback_unused_at &&call_unused,
+                          callback_equal_at &&call_equal, tags_types_... tags) noexcept {
 
-        using ref_t = std::conditional_t<contains_type<tag_atomic_t, tags_at...>(), element_atref_t, element_rt>;
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>())
+        using ref_t = std::conditional_t<contains_type<threadsafe_t, tags_types_...>(), element_atref_t, element_rt>;
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!populated_count_) [[unlikely]]
                 return;
 
@@ -1066,7 +1224,7 @@ struct hash_table_gt {
         [[maybe_unused]] offset_t const final_offset = initial_offset; // (initial_offset + max_attempts) & offset_mask;
 
         offset_t off = initial_offset;
-        bool_t did_find_deleted = false;
+        bool did_find_deleted = false;
 
         /// Contains two offsets, first for current target.
         /// And one for the first observed "deleted" slot, if any exists.
@@ -1093,7 +1251,7 @@ struct hash_table_gt {
                     break;
                 }
                 else {
-                    if constexpr (contains_type<tag_force_t, tags_at...>()) {
+                    if constexpr (contains_type<first_match_t, tags_types_...>()) {
                         call_unused(tgts[0]);
                         tgts[0].mark_populated();
                         tgts[0].unlock();
@@ -1102,7 +1260,7 @@ struct hash_table_gt {
 
                     tgts[0].unlock();
                     off = (off + 1) & (slots_count_ - 1);
-                    validate_m(off != final_offset, "Poor hash table usage!");
+                    assert(off != final_offset && "Poor hash table usage!");
                     continue;
 
                     // if (off != final_offset)
@@ -1116,7 +1274,7 @@ struct hash_table_gt {
                 // Found a deleted slot:
                 // > If its first deleted slot: keep it for future, don't unlock, jump forward.
                 // > If we already saw deleted slots: unlock current, just jump forward.
-                if constexpr (contains_type<tag_force_t, tags_at...>()) {
+                if constexpr (contains_type<first_match_t, tags_types_...>()) {
                     call_unused(tgts[0]);
                     tgts[0].mark_populated();
                     tgts[0].unlock();
@@ -1124,7 +1282,7 @@ struct hash_table_gt {
                     // Change this counters afterwards - in a relaxed manner.
                     // Somebody else might be already searching for this slot,
                     // we don't want them to wait :)
-                    get_type_or<tag_pull_new_size_t, black_hole_t>(tags...) = advance(populated_count_, 1, tags...);
+                    get_type_or<return_new_size_t, black_hole_t>(tags...) = advance(populated_count_, 1, tags...);
                     decrement(deleted_count_, true, tags...);
                     break;
                 }
@@ -1135,7 +1293,7 @@ struct hash_table_gt {
                 did_find_deleted = true;
                 off = (off + 1) & (slots_count_ - 1);
 
-                validate_m(off != final_offset, "Poor hash table usage!");
+                assert(off != final_offset && "Poor hash table usage!");
                 continue;
 
                 // if (off != final_offset)
@@ -1154,32 +1312,48 @@ struct hash_table_gt {
             // Change this counters afterwards - in a relaxed manner.
             // Somebody else might be already searching for this slot,
             // we don't want them to wait :)
-            get_type_or<tag_pull_new_size_t, black_hole_t>(tags...) = advance(populated_count_, 1, tags...);
+            get_type_or<return_new_size_t, black_hole_t>(tags...) = advance(populated_count_, 1, tags...);
             decrement(deleted_count_, did_find_deleted, tags...);
             break;
         }
     }
 
+    /**
+     *  @brief Retargets an element reference to a specific slot using direct array indexing.
+     *    Simplified from bucket arithmetic to direct slot assignment, enabling SIMD-friendly access.
+     *
+     *  @tparam similar_key_at Key type (may differ in const qualification).
+     *  @tparam similar_val_at Value type (may differ in const qualification).
+     *  @param addr Element reference to retarget with new pointers and slot index.
+     *  @param slot Absolute slot index in [0, slots_count_).
+     */
     template <typename similar_key_at, typename similar_val_at>
-    inline_m void unsafe_retarget(htx_element_ref_gt<similar_key_at, similar_val_at, hasher_t> &addr,
-                                  offset_t off) const noexcept {
-
-        addr.head_bytes = const_cast<byte_t *>(memory_) + (off / htx_slots_in_bucket_k) * bytes_in_bucket_k;
-        addr.idx_in_bucket = off & (htx_slots_in_bucket_k - 1);
+    void unsafe_retarget(bht_slot_ref<similar_key_at, similar_val_at, hasher_t> &addr, offset_t slot) const noexcept {
+        addr.keys_ = const_cast<key_t *>(keys_);
+        addr.values_ = const_cast<value_t *>(values_);
+        addr.headers_ = const_cast<bht_bucket_head_t *>(headers_);
+        addr.slot_ = slot;
     }
 
-#pragma region Lookups
+#pragma mark - Lookups
 
+    /**
+     *  @brief Calculates slots remaining after the current slot position.
+     *    Simplified for slot-based addressing: just subtract current slot from total.
+     *
+     *  @param addr Element reference or iterator with current @c slot_ position.
+     *  @return Number of slots from current position to end of table.
+     */
     template <typename address_or_iterator_at>
-    inline_m offset_t slots_remaining_after(address_or_iterator_at &&addr) const noexcept {
-        return slots_count_ - (addr.head_bytes - memory_) * htx_slots_in_bucket_k / bytes_in_bucket_k -
-               addr.idx_in_bucket;
+    offset_t slots_remaining_after(address_or_iterator_at &&addr) const noexcept {
+        return slots_count_ - addr.slot_;
     }
 
-    template <typename hetero_key_at, typename... tags_at>
-    inline_m bool_t contains(hetero_key_at &&wanted, tags_at... tags) const noexcept {
-        bool_t result = false;
-        search_to_find(std::forward<hetero_key_at>(wanted), [&result](element_crt const &) { result = true; }, tags...);
+    template <typename comparable_key_type_, typename... tags_types_>
+    bool contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
+        bool result = false;
+        search_to_find(
+            std::forward<comparable_key_type_>(wanted), [&result](element_crt const &) { result = true; }, tags...);
         return result;
     }
 
@@ -1187,16 +1361,16 @@ struct hash_table_gt {
      * @brief Similar to STL, searches for element with the given key.
      * @return End iterator, iff element with such key is missing.
      */
-    template <typename hetero_key_at = key_t const &>
-    inline_m iterator_ct find(hetero_key_at &&wanted) const noexcept {
+    template <typename comparable_key_type_ = key_t const &>
+    iterator_ct find(comparable_key_type_ &&wanted) const noexcept {
         iterator_ct it;
-        it.head_bytes = const_cast<byte_t *>(memory_) + size_bytes();
-        it.idx_in_bucket = 0;
+        it.keys_ = const_cast<key_t *>(keys_);
+        it.values_ = const_cast<value_t *>(values_);
+        it.headers_ = const_cast<bht_bucket_head_t *>(headers_);
+        it.slot_ = slots_count_; // End position
         it.slots_remaining = 0;
-        search_to_find(std::forward<hetero_key_at>(wanted), [&it](element_crt const &addr) {
-            it.head_bytes = addr.head_bytes;
-            it.idx_in_bucket = addr.idx_in_bucket;
-        });
+        search_to_find(std::forward<comparable_key_type_>(wanted),
+                       [&it](element_crt const &addr) { it.slot_ = addr.slot_; });
         it.slots_remaining = slots_remaining_after(it);
         return it;
     }
@@ -1205,54 +1379,126 @@ struct hash_table_gt {
      * @brief Similar to STL, searches for element with the given key.
      * @return End iterator, iff element with such key is missing.
      */
-    template <typename hetero_key_at = key_t const &>
-    inline_m iterator_t find(hetero_key_at &&wanted) noexcept {
+    template <typename comparable_key_type_ = key_t const &>
+    iterator_t find(comparable_key_type_ &&wanted) noexcept {
         iterator_t it;
-        it.head_bytes = const_cast<byte_t *>(memory_) + size_bytes();
-        it.idx_in_bucket = 0;
+        it.keys_ = keys_;
+        it.values_ = values_;
+        it.headers_ = headers_;
+        it.slot_ = slots_count_; // End position
         it.slots_remaining = 0;
-        search_to_find(std::forward<hetero_key_at>(wanted), [&it](element_rt const &addr) {
-            it.head_bytes = addr.head_bytes;
-            it.idx_in_bucket = addr.idx_in_bucket;
-        });
+        search_to_find(std::forward<comparable_key_type_>(wanted),
+                       [&it](element_rt const &addr) { it.slot_ = addr.slot_; });
         it.slots_remaining = slots_remaining_after(it);
         return it;
     }
 
     /**
+     *  @brief Lock-free atomic lookup that invokes callback if key is found.
+     *    Requires prior @c reserve() to prevent reallocations during concurrent access.
+     *
+     *  @tparam comparable_key_type_ Type comparable with @c key_t via @c equals_t.
+     *  @tparam callback_type_ Functor type accepting @c element_catref_t.
+     *  @param[in] wanted Key to search for, hashable and comparable.
+     *  @param[in] callback Invoked with atomic reference to element if found.
+     *  @return True if key was found and callback invoked, false otherwise.
+     *
+     *  @note This method uses atomic operations on bucket headers for lock-free concurrent reads.
+     *    Do not mix with non-atomic operations on the same table instance.
+     */
+    template <typename comparable_key_type_, typename callback_type_>
+    bool find_atomic(comparable_key_type_ &&wanted, callback_type_ &&callback) const noexcept {
+        if (!populated_count_) return false;
+
+        offset_t const offset_mask = slots_count_ - 1;
+        offset_t const initial_offset = hasher_()(wanted) & offset_mask;
+
+        element_catref_t addr;
+        offset_t slot = initial_offset;
+        bool found = false;
+
+        while (true) {
+            unsafe_retarget(addr, slot);
+            addr.lock(); // Atomic lock via fetch_or
+
+            if (addr.is_populated()) {
+                if (equals_()(addr.key(), wanted)) {
+                    callback(addr);
+                    found = true;
+                    addr.unlock();
+                    break;
+                }
+                else {
+                    addr.unlock();
+                    slot = (slot + 1) & offset_mask;
+                }
+            }
+            else if (addr.is_deleted()) {
+                addr.unlock();
+                slot = (slot + 1) & offset_mask;
+            }
+            else {
+                // Free slot - key doesn't exist
+                addr.unlock();
+                break;
+            }
+        }
+
+        return found;
+    }
+
+    /**
+     *  @brief Lock-free atomic check for key existence.
+     *    Lighter-weight than @c find_atomic() when you only need presence check.
+     *
+     *  @param[in] wanted Key to search for.
+     *  @return True if key exists in table, false otherwise.
+     */
+    template <typename comparable_key_type_>
+    bool contains_atomic(comparable_key_type_ &&wanted) const noexcept {
+        return find_atomic(std::forward<comparable_key_type_>(wanted), [](element_catref_t const &) {});
+    }
+
+    /**
      * @brief Returns a reference to the mapped value of the element with key equivalent
-     * to key. If no such element exists, an exception is thrown in `DEBUG` builds.
+     * to key. If no such element exists, an exception is thrown in @c DEBUG builds.
      * https://en.cppreference.com/w/cpp/container/unordered_map/at
      */
-    template <typename hetero_key_at = key_t const &>
-    inline_m decltype(auto) at(hetero_key_at &&key) noexcept_in_release_m {
+    template <typename comparable_key_type_ = key_t const &>
+    decltype(auto) at(comparable_key_type_ &&key) noexcept {
         element_rt result;
-        result.head_bytes = nullptr;
-        search_to_find(std::forward<hetero_key_at>(key), [&result](element_rt const &addr) { result = addr; });
-        validate_m(result.head_bytes != nullptr, "The object must be already present");
-        return result.val_ref();
+        result.keys_ = keys_;
+        result.values_ = values_;
+        result.headers_ = headers_;
+        result.slot_ = slots_count_; // Mark as "not found" initially
+        search_to_find(std::forward<comparable_key_type_>(key), [&result](element_rt const &addr) { result = addr; });
+        assert(result.slot_ != slots_count_ && "The object must be already present");
+        return result.value_ref();
     }
 
     /**
      * @brief Returns a reference to the const mapped value of the element with key equivalent
-     * to key. If no such element exists, an exception is thrown in `DEBUG` builds.
+     * to key. If no such element exists, an exception is thrown in @c DEBUG builds.
      * https://en.cppreference.com/w/cpp/container/unordered_map/at
      */
-    template <typename hetero_key_at = key_t const &>
-    inline_m decltype(auto) at(hetero_key_at &&key) const noexcept_in_release_m {
+    template <typename comparable_key_type_ = key_t const &>
+    decltype(auto) at(comparable_key_type_ &&key) const noexcept {
         element_crt result;
-        result.head_bytes = nullptr;
-        search_to_find(std::forward<hetero_key_at>(key), [&result](element_crt const &addr) { result = addr; });
-        validate_m(result.head_bytes != nullptr, "The object must be already present");
-        return result.val_ref();
+        result.keys_ = const_cast<key_t *>(keys_);
+        result.values_ = const_cast<value_t *>(values_);
+        result.headers_ = const_cast<bht_bucket_head_t *>(headers_);
+        result.slot_ = slots_count_; // Mark as "not found" initially
+        search_to_find(std::forward<comparable_key_type_>(key), [&result](element_crt const &addr) { result = addr; });
+        assert(result.slot_ != slots_count_ && "The object must be already present");
+        return result.value_ref();
     }
 
     /**
-     * @brief A temporarily banned function, that is replaced by @b `at()`.
+     * @brief A temporarily banned function, that is replaced by @b @c at().
      * https://en.cppreference.com/w/cpp/container/unordered_map/operator_at
      */
-    template <typename hetero_key_at = key_t const &>
-    void operator[](hetero_key_at &&) = delete;
+    template <typename comparable_key_type_ = key_t const &>
+    void operator[](comparable_key_type_ &&) = delete;
 
     /**
      * @brief Returns the number of elements with key that compares equal to
@@ -1260,212 +1506,223 @@ struct hash_table_gt {
      * does not allow duplicates.
      * https://en.cppreference.com/w/cpp/container/unordered_map/count
      */
-    template <typename hetero_key_at = key_t const &>
-    size_t count(hetero_key_at &&key) const noexcept {
+    template <typename comparable_key_type_ = key_t const &>
+    std::size_t count(comparable_key_type_ &&key) const noexcept {
         return contains(key);
     }
 
-#pragma region Scans
+#pragma mark - Scans
 
-    inline_m iterator_t begin() noexcept {
+    iterator_t begin() noexcept {
         iterator_t it;
+        it.keys_ = keys_;
+        it.values_ = values_;
+        it.headers_ = headers_;
         if (empty()) {
-            it.head_bytes = const_cast<byte_t *>(memory_) + size_bytes();
-            it.idx_in_bucket = 0;
+            it.slot_ = slots_count_;
             it.slots_remaining = 0;
         }
         else {
-            it.head_bytes = const_cast<byte_t *>(memory_);
-            it.idx_in_bucket = 0;
+            it.slot_ = 0;
             it.slots_remaining = slots_count_;
             it.skip_non_populated();
         }
         return it;
     }
 
-    inline_m iterator_ct cbegin() const noexcept {
+    iterator_ct cbegin() const noexcept {
         iterator_ct it;
+        it.keys_ = const_cast<key_t *>(keys_);
+        it.values_ = const_cast<value_t *>(values_);
+        it.headers_ = const_cast<bht_bucket_head_t *>(headers_);
         if (empty()) {
-            it.head_bytes = const_cast<byte_t *>(memory_) + size_bytes();
-            it.idx_in_bucket = 0;
+            it.slot_ = slots_count_;
             it.slots_remaining = 0;
         }
         else {
-            it.head_bytes = const_cast<byte_t *>(memory_);
-            it.idx_in_bucket = 0;
+            it.slot_ = 0;
             it.slots_remaining = slots_count_;
             it.skip_non_populated();
         }
         return it;
     }
 
-    inline_m iterator_ct begin() const noexcept { return cbegin(); }
-    inline_m end_sentinel_t end() const noexcept { return end_sentinel_t {}; }
-    inline_m end_sentinel_t cend() const noexcept { return end_sentinel_t {}; }
+    iterator_ct begin() const noexcept { return cbegin(); }
+    end_sentinel_t end() const noexcept { return end_sentinel_t {}; }
+    end_sentinel_t cend() const noexcept { return end_sentinel_t {}; }
 
-#pragma region Set Algorithms
+#pragma mark - Set Algorithms
 
     /**
-     * @brief Similar to `std::set_intersection`, but reports only
+     * @brief Similar to @c std::set_intersection, but reports only
      * a boolean checking if there is any collision between any keys.
      * https://en.cppreference.com/w/cpp/algorithm/set_intersection
      *
      * @param small The small Hash-Table from the two.
-     * @return bool_t True if any key intersects. False otherwise.
+     * @return bool True if any key intersects. False otherwise.
      */
     template <typename val_small_at, typename hasher_small_at, typename equals_small_at, typename allocator_small_at>
-    bool_t intersection_exists(hash_table_gt<key_t, val_small_at, hasher_small_at, equals_small_at,
-                                             allocator_small_at> const &small) const noexcept {
+    bool intersection_exists(basic_hash_table<key_t, val_small_at, hasher_small_at, equals_small_at,
+                                              allocator_small_at> const &small) const noexcept {
 
         auto const &big = *this;
         if (small.empty() | big.empty()) return false;
         if (small.size() > big.size()) return small.intersection_exists(big);
 
         return small.find_if(
-            [&big](auto const &small_addr) { return big.contains(small_addr.key(), tag_preallocated_t {}); });
+            [&big](auto const &small_addr) { return big.contains(small_addr.key(), assume_reserved_t {}); });
     }
 
     /**
-     * @brief Similar to `std::set_intersection`, but reports only
+     * @brief Similar to @c std::set_intersection, but reports only
      * the number of matching keys between two containers.
      * https://en.cppreference.com/w/cpp/algorithm/set_intersection
      *
      * @param small The small Hash-Table from the two.
-     * @return size_t The number of matches.
+     * @return std::size_t The number of matches.
      */
     template <typename val_small_at, typename hasher_small_at, typename equals_small_at>
-    size_t intersection_size(
-        hash_table_gt<key_t, val_small_at, hasher_small_at, equals_small_at> const &small) const noexcept {
+    std::size_t intersection_size(
+        basic_hash_table<key_t, val_small_at, hasher_small_at, equals_small_at> const &small) const noexcept {
 
         auto const &big = *this;
         if (small.empty() | big.empty()) return 0;
         if (small.size() > big.size()) return big.intersection_size(small);
 
-        size_t cnt = 0;
-        small.for_each([&](auto const &addr) { cnt += big.contains(addr.key(), tag_preallocated_t {}); });
+        std::size_t cnt = 0;
+        small.for_each([&](auto const &addr) { cnt += big.contains(addr.key(), assume_reserved_t {}); });
         return cnt;
     }
 
     /**
-     * @brief Similar to `std::set_union`, but reports only
+     * @brief Similar to @c std::set_union, but reports only
      * the number of matching keys between two containers.
      * https://en.cppreference.com/w/cpp/algorithm/set_union
      *
      * @param small The small Hash-Table from the two.
-     * @return size_t The number of unique elements in two combined Hash-Tables.
+     * @return std::size_t The number of unique elements in two combined Hash-Tables.
      */
-    template <typename val_other_at, typename hasher_other_at, typename equals_other_at>
-    size_t merge_size(
-        hash_table_gt<key_t, val_other_at, hasher_other_at, equals_other_at> const &other) const noexcept {
+    template <typename val_other_type_, typename hasher_other_type_, typename equals_other_type_>
+    std::size_t merge_size(
+        basic_hash_table<key_t, val_other_type_, hasher_other_type_, equals_other_type_> const &other) const noexcept {
         return other.size() + size() - intersection_size(other);
     }
 
-#pragma region Insertions
+#pragma mark - Insertions
 
-    template <typename convertible_key_at, typename convertible_val_at>
-    static constexpr bool_t can_use_map_emplace() {
-        return has_values_k && std::is_constructible<key_t, convertible_key_at &&>() &&
-               std::is_constructible<val_t, convertible_val_at &&>();
+    template <typename convertible_key_type_, typename convertible_value_type_>
+    static constexpr bool can_use_map_emplace() {
+        return has_values_k && std::is_constructible<key_t, convertible_key_type_ &&>() &&
+               std::is_constructible<value_t, convertible_value_type_ &&>();
     }
 
-    template <typename convertible_key_at>
-    static constexpr bool_t can_use_set_emplace() {
-        return !has_values_k && std::is_constructible<key_t, convertible_key_at &&>();
+    template <typename convertible_key_type_>
+    static constexpr bool can_use_set_emplace() {
+        return !has_values_k && std::is_constructible<key_t, convertible_key_type_ &&>();
     }
 
     /**
      * @brief Emplacing with a hint is banned in favor of lower-level
-     * function `search_to_upsert`, with more customizable behaviour.
+     * function @c search_to_upsert, with more customizable behaviour.
      * https://en.cppreference.com/w/cpp/container/unordered_map/emplace_hint
      */
-    template <typename convertible_key_at, typename convertible_val_at, typename... tags_at,
-              typename std::enable_if<can_use_map_emplace<convertible_key_at, convertible_val_at>(), int>::type = 0>
-    iterator_t emplace_hint(iterator_ct, convertible_key_at &&k, convertible_val_at &&v, tags_at... tags) = delete;
+    template <
+        typename convertible_key_type_, typename convertible_value_type_, typename... tags_types_,
+        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
+    iterator_t emplace_hint(iterator_ct, convertible_key_type_ &&k, convertible_value_type_ &&v,
+                            tags_types_... tags) = delete;
 
     /**
      * @brief Emplacing with a hint is banned in favor of lower-level
-     * function `search_to_upsert`, with more customizable behaviour.
+     * function @c search_to_upsert, with more customizable behaviour.
      * https://en.cppreference.com/w/cpp/container/unordered_map/emplace_hint
      */
-    template <typename convertible_key_at, typename... tags_at,
-              typename std::enable_if<can_use_set_emplace<convertible_key_at>(), int>::type = 0>
-    iterator_t emplace_hint(iterator_ct, convertible_key_at &&k, tags_at... tags) = delete;
+    template <typename convertible_key_type_, typename... tags_types_,
+              typename std::enable_if<can_use_set_emplace<convertible_key_type_>(), int>::type = 0>
+    iterator_t emplace_hint(iterator_ct, convertible_key_type_ &&k, tags_types_... tags) = delete;
 
-    template <typename... tags_at>
-    static constexpr bool_t emplace_returns() {
-        return contains_type<tag_needs_result_t, tags_at...>();
+    template <typename... tags_types_>
+    static constexpr bool emplace_returns() {
+        return contains_type<return_position_t, tags_types_...>();
     }
 
-    template <typename... tags_at>
-    using emplace_return_gt = std::conditional_t<emplace_returns<tags_at...>(), insert_result_t, void>;
+    template <typename... tags_types_>
+    using emplace_return = std::conditional_t<emplace_returns<tags_types_...>(), insert_result_t, void>;
 
     /**
      * @brief Main insertion method, that both finds the optimal location and
-     * overwrites it. More performant than `insert`, as avoids temporary objects
+     * overwrites it. More performant than @c insert, as avoids temporary objects
      * construction. Compatiable with STL code.
      * https://en.cppreference.com/w/cpp/container/unordered_map/emplace
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Would avoid reserving more memory.
-     * > tag_unique_element_t: Would avoid potentially expensive equality comparisons.
-     * > tag_needs_result_t: Avoids calculating the resulting iterator offsets.
-     * > tag_atomic_t: Would allow concurrent read & write operations.
-     * > tag_pull_new_size_t: Atomically exports the updated `size()`.
+     * > assume_reserved_t: Would avoid reserving more memory.
+     * > assume_unique_t: Would avoid potentially expensive equality comparisons.
+     * > return_position_t: Avoids calculating the resulting iterator offsets.
+     * > threadsafe_t: Would allow concurrent read & write operations.
+     * > return_new_size_t: Atomically exports the updated @c size().
      *
-     * @return Returns nothing unless the `needs_result_tag_t` is provided.
-     * In latter case `insert_result_t` containing the iterator will be constructed.
+     * @return Returns nothing unless the @c needs_result_tag_t is provided.
+     * In latter case @c insert_result_t containing the iterator will be constructed.
      */
-    template <typename convertible_key_at, typename convertible_val_at, typename... tags_at,
-              typename std::enable_if<can_use_map_emplace<convertible_key_at, convertible_val_at>(), int>::type = 0>
-    inline_m emplace_return_gt<tags_at...> emplace(convertible_key_at &&key, convertible_val_at &&value,
-                                                   tags_at... tags) noexcept {
+    template <
+        typename convertible_key_type_, typename convertible_value_type_, typename... tags_types_,
+        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
+    emplace_return<tags_types_...> emplace(convertible_key_type_ &&key, convertible_value_type_ &&value,
+                                           tags_types_... tags) noexcept {
 
-        using ref_t = std::conditional_t<contains_type<tag_atomic_t, tags_at...>(), element_atref_t, element_rt>;
-        if constexpr (contains_type<tag_atomic_t, tags_at...>()) {
-            static_assert(contains_type<tag_preallocated_t, tags_at...>(),
+        using ref_t = std::conditional_t<contains_type<threadsafe_t, tags_types_...>(), element_atref_t, element_rt>;
+        if constexpr (contains_type<threadsafe_t, tags_types_...>()) {
+            static_assert(contains_type<assume_reserved_t, tags_types_...>(),
                           "Atomic operations can't cause reallocations!");
-            static_assert(!contains_type<tag_needs_result_t, tags_at...>(),
+            static_assert(!contains_type<return_position_t, tags_types_...>(),
                           "Atomic operations can't return a persistent iterator!");
         }
 
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>()) reserve_more(1);
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>()) reserve_more(1);
 
-        constexpr bool_t return_k = emplace_returns<tags_at...>();
+        constexpr bool return_k = emplace_returns<tags_types_...>();
         using result_t = std::conditional_t<return_k, insert_result_t, dummy_t>;
 
         result_t result;
         if constexpr (return_k) {
-            result.position.head_bytes = memory_;
-            result.position.idx_in_bucket = 0;
+            result.position.keys_ = keys_;
+            result.position.values_ = values_;
+            result.position.headers_ = headers_;
+            result.position.slot_ = 0;
             result.position.slots_remaining = 0;
         }
 
         auto callback_unused = [&](ref_t &addr_unused) {
             // Construct inplace:
-            new (&addr_unused.key_ref()) key_t(std::forward<convertible_key_at>(key));
-            new (&addr_unused.val_ref()) val_t(std::forward<convertible_val_at>(value));
+            new (&addr_unused.key_ref()) key_t(std::forward<convertible_key_type_>(key));
+            new (&addr_unused.value_ref()) value_t(std::forward<convertible_value_type_>(value));
 
             // Export results:
-            if constexpr (emplace_returns<tags_at...>()) {
-                result.position.head_bytes = addr_unused.head_bytes;
-                result.position.idx_in_bucket = addr_unused.idx_in_bucket;
+            if constexpr (emplace_returns<tags_types_...>()) {
+                result.position.keys_ = addr_unused.keys_;
+                result.position.values_ = addr_unused.values_;
+                result.position.headers_ = addr_unused.headers_;
+                result.position.slot_ = addr_unused.slot_;
                 result.inserted = true;
             }
         };
 
-        if constexpr (contains_type<tag_unique_element_t, tags_at...>())
-            search_to_insert(key, callback_unused, tag_preallocated_t {}, tags...);
+        if constexpr (contains_type<assume_unique_t, tags_types_...>())
+            search_to_insert(key, callback_unused, assume_reserved_t {}, tags...);
         else
             search_to_upsert(
                 key, callback_unused,
                 [&](ref_t &addr_equal) {
-                    addr_equal.val_ref() = std::forward<convertible_val_at>(value);
-                    if constexpr (emplace_returns<tags_at...>()) {
-                        result.position.head_bytes = addr_equal.head_bytes;
-                        result.position.idx_in_bucket = addr_equal.idx_in_bucket;
+                    addr_equal.value_ref() = std::forward<convertible_value_type_>(value);
+                    if constexpr (emplace_returns<tags_types_...>()) {
+                        result.position.keys_ = addr_equal.keys_;
+                        result.position.values_ = addr_equal.values_;
+                        result.position.headers_ = addr_equal.headers_;
+                        result.position.slot_ = addr_equal.slot_;
                     }
                 },
-                tag_preallocated_t {}, tags...);
+                assume_reserved_t {}, tags...);
 
         if constexpr (return_k) {
             result.position.slots_remaining = slots_remaining_after(result.position);
@@ -1475,61 +1732,66 @@ struct hash_table_gt {
 
     /**
      * @brief Main insertion method, that both finds the optimal location and
-     * overwrites it. More performant than `insert`, as avoids temporary objects
+     * overwrites it. More performant than @c insert, as avoids temporary objects
      * construction. Compatiable with STL code.
      * https://en.cppreference.com/w/cpp/container/unordered_map/emplace
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Would avoid reserving more memory.
-     * > tag_unique_element_t: Would avoid potentially expensive equality comparisons.
-     * > tag_needs_result_t: Avoids calculating the resulting iterator offsets.
-     * > tag_atomic_t: Would allow concurrent read & write operations.
-     * > tag_pull_new_size_t: Atomically exports the updated `size()`.
+     * > assume_reserved_t: Would avoid reserving more memory.
+     * > assume_unique_t: Would avoid potentially expensive equality comparisons.
+     * > return_position_t: Avoids calculating the resulting iterator offsets.
+     * > threadsafe_t: Would allow concurrent read & write operations.
+     * > return_new_size_t: Atomically exports the updated @c size().
      *
-     * @return Returns nothing unless the `needs_result_tag_t` is provided.
-     * In latter case `insert_result_t` containing the iterator will be constructed.
+     * @return Returns nothing unless the @c needs_result_tag_t is provided.
+     * In latter case @c insert_result_t containing the iterator will be constructed.
      */
-    template <typename convertible_key_at, typename... tags_at,
-              typename std::enable_if<can_use_set_emplace<convertible_key_at>(), int>::type = 0>
-    inline_m emplace_return_gt<tags_at...> emplace(convertible_key_at &&key, tags_at... tags) noexcept {
+    template <typename convertible_key_type_, typename... tags_types_,
+              typename std::enable_if<can_use_set_emplace<convertible_key_type_>(), int>::type = 0>
+    emplace_return<tags_types_...> emplace(convertible_key_type_ &&key, tags_types_... tags) noexcept {
 
-        using ref_t = std::conditional_t<contains_type<tag_atomic_t, tags_at...>(), element_atref_t, element_rt>;
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>()) reserve_more(1);
+        using ref_t = std::conditional_t<contains_type<threadsafe_t, tags_types_...>(), element_atref_t, element_rt>;
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>()) reserve_more(1);
 
-        constexpr bool_t return_k = emplace_returns<tags_at...>();
+        constexpr bool return_k = emplace_returns<tags_types_...>();
         using result_t = std::conditional_t<return_k, insert_result_t, dummy_t>;
 
         result_t result;
         if constexpr (return_k) {
-            result.position.head_bytes = memory_;
-            result.position.idx_in_bucket = 0;
+            result.position.keys_ = keys_;
+            result.position.values_ = values_;
+            result.position.headers_ = headers_;
+            result.position.slot_ = 0;
             result.position.slots_remaining = 0;
         }
 
         auto callback_unused = [&](ref_t &addr_unused) {
             // Construct inplace:
-            new (&addr_unused.key_ref()) key_t(std::forward<convertible_key_at>(key));
+            new (&addr_unused.key_ref()) key_t(std::forward<convertible_key_type_>(key));
 
             // Export results:
-            if constexpr (emplace_returns<tags_at...>()) {
-                result.position.head_bytes = addr_unused.head_bytes;
-                result.position.idx_in_bucket = addr_unused.idx_in_bucket;
+            if constexpr (emplace_returns<tags_types_...>()) {
+                result.position.keys_ = addr_unused.keys_;
+                result.position.values_ = addr_unused.values_;
+                result.position.headers_ = addr_unused.headers_;
+                result.position.slot_ = addr_unused.slot_;
                 result.inserted = true;
             }
         };
 
-        if constexpr (contains_type<tag_unique_element_t, tags_at...>())
-            search_to_insert(key, callback_unused, tag_preallocated_t {}, tags...);
+        if constexpr (contains_type<assume_unique_t, tags_types_...>())
+            search_to_insert(key, callback_unused, assume_reserved_t {}, tags...);
         else if constexpr (return_k)
             search_to_upsert(
                 key, callback_unused,
                 [&](ref_t &addr_equal) {
-                    result.position.head_bytes = addr_equal.head_bytes;
-                    result.position.idx_in_bucket = addr_equal.idx_in_bucket;
+                    result.position.keys_ = addr_equal.keys_;
+                    result.position.values_ = addr_equal.values_;
+                    result.position.headers_ = addr_equal.headers_;
+                    result.position.slot_ = addr_equal.slot_;
                 },
-                tag_preallocated_t {}, tags...);
-        else
-            search_to_upsert(key, callback_unused, null_operator_t {}, tag_preallocated_t {}, tags...);
+                assume_reserved_t {}, tags...);
+        else search_to_upsert(key, callback_unused, null_operator_t {}, assume_reserved_t {}, tags...);
 
         if constexpr (return_k) {
             result.position.slots_remaining = slots_remaining_after(result.position);
@@ -1541,29 +1803,27 @@ struct hash_table_gt {
      * @brief Main insertion and upsertion method. Compatiable with STL code.
      * https://en.cppreference.com/w/cpp/container/unordered_map/insert
      *
-     * ! Don't try to use it with `std::initializer_list`s. Emplace!
-     * With maps, this will only work on objects that have `first` and `second`
-     * members, like `std::pair` or `key_value_pair_gt`.
+     * ! Don't try to use it with @c std::initializer_lists. Emplace!
+     * With maps, this will only work on objects that have @c first and @c second
+     * members, like @c std::pair or @c mapping.
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Would avoid reserving more memory.
-     * > tag_unique_element_t: Would avoid potentially expensive equality comparisons.
-     * > tag_needs_result_t: Avoids calculating the resulting iterator offsets.
-     * > tag_atomic_t: Would allow concurrent read & write operations.
-     * > tag_pull_new_size_t: Atomically exports the updated `size()`.
+     * > assume_reserved_t: Would avoid reserving more memory.
+     * > assume_unique_t: Would avoid potentially expensive equality comparisons.
+     * > return_position_t: Avoids calculating the resulting iterator offsets.
+     * > threadsafe_t: Would allow concurrent read & write operations.
+     * > return_new_size_t: Atomically exports the updated @c size().
      *
-     * @return Returns nothing unless the `tag_needs_result_t` is provided.
-     * In latter case `insert_result_t` containing the iterator will be constructed.
+     * @return Returns nothing unless the @c return_position_t is provided.
+     * In latter case @c insert_result_t containing the iterator will be constructed.
      */
-    template <typename temporary_pack_at, typename... tags_at>
-    inline_m emplace_return_gt<tags_at...> insert(temporary_pack_at &&copy, tags_at... tags) noexcept {
+    template <typename temporary_pack_at, typename... tags_types_>
+    emplace_return<tags_types_...> insert(temporary_pack_at &&copy, tags_types_... tags) noexcept {
         if constexpr (has_values_k)
             if constexpr (std::is_rvalue_reference<decltype(copy)>())
                 return emplace(std::move(copy.first), std::move(copy.second), tags...);
-            else
-                return emplace(copy.first, copy.second, tags...);
-        else
-            return emplace(std::forward<temporary_pack_at>(copy), tags...);
+            else return emplace(copy.first, copy.second, tags...);
+        else return emplace(std::forward<temporary_pack_at>(copy), tags...);
     }
 
     /**
@@ -1573,32 +1833,151 @@ struct hash_table_gt {
      * https://en.cppreference.com/w/cpp/container/unordered_map/insert
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Would avoid reserving more memory.
-     * > tag_unique_element_t: Would avoid potentially expensive equality comparisons.
-     * > tag_atomic_t: Would allow concurrent read & write operations.
-     * > tag_pull_new_size_t: Atomically exports the updated `size()`.
+     * > assume_reserved_t: Would avoid reserving more memory.
+     * > assume_unique_t: Would avoid potentially expensive equality comparisons.
+     * > threadsafe_t: Would allow concurrent read & write operations.
+     * > return_new_size_t: Atomically exports the updated @c size().
      *
      * @return Nothing, just like STL!
      */
-    template <typename begin_iterator_at, typename end_iterator_at, typename... tags_at,
-              typename std::enable_if<is_iterator<begin_iterator_at>(), int>::type = 0>
-    inline_host_m void insert(begin_iterator_at begin, end_iterator_at end, tags_at... tags) {
+    template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
+              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    inline void insert(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) {
 
-        if constexpr (!contains_type<tag_preallocated_t, tags_at...>()) reserve_more(end - begin);
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>()) reserve_more(end - begin);
 
-        for (; begin != end; ++begin) insert(*begin, tag_preallocated_t {}, tags...);
+        for (; begin != end; ++begin) insert(*begin, assume_reserved_t {}, tags...);
     }
 
     /**
-     * @brief An interface similar to `std::unordered_map::merge`,
-     * that is currenly banned in favor of a manual `insert(begin, end)`,
-     * preceded by something line `intersection_size(...)`.
+     * @brief An interface similar to @c std::unordered_map::merge,
+     * that is currenly banned in favor of a manual @c insert(begin, end),
+     * preceded by something line @c intersection_size(...).
      * https://en.cppreference.com/w/cpp/container/unordered_map/merge
      */
-    template <typename other_at = take_second_t>
-    void merge(other_at &&) = delete;
+    template <typename other_type_ = take_second_t>
+    void merge(other_type_ &&) = delete;
 
-#pragma region Erasures
+    /**
+     *  @brief Lock-free atomic insertion without reallocation.
+     *    Requires prior @c reserve() to ensure sufficient capacity.
+     *
+     *  @tparam convertible_key_type_ Type constructible to @c key_t.
+     *  @tparam convertible_value_type_ Type constructible to @c value_t.
+     *  @param[in] key Key to insert or update, forwarded to in-place construction.
+     *  @param[in] value Value to insert or update, forwarded to in-place construction.
+     *
+     *  @note Uses atomic operations on bucket headers for lock-free concurrent writes.
+     *    Do not mix with non-atomic operations. If key exists, updates the value.
+     */
+    template <
+        typename convertible_key_type_, typename convertible_value_type_,
+        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
+    void emplace_atomic(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
+        offset_t const offset_mask = slots_count_ - 1;
+        offset_t const initial_offset = hasher_()(key) & offset_mask;
+
+        element_atref_t addr;
+        offset_t slot = initial_offset;
+        bool found_deleted = false;
+        offset_t deleted_slot = 0;
+
+        while (true) {
+            unsafe_retarget(addr, slot);
+            addr.lock();
+
+            if ((~addr.header_ref().populations | addr.header_ref().deletions) & addr.mask_in_bucket()) {
+                // Found a free or deleted slot
+                bool is_deleted = addr.header_ref().deletions & addr.mask_in_bucket();
+
+                // Construct in place
+                new (&addr.key_ref()) key_t(std::forward<convertible_key_type_>(key));
+                new (&addr.value_ref()) value_t(std::forward<convertible_value_type_>(value));
+
+                // Mark as populated
+                addr.mark_populated();
+                addr.unlock();
+
+                // Update counters atomically
+                std::atomic_ref<offset_t> atomic_pop(populated_count_);
+                atomic_pop.fetch_add(1, std::memory_order_relaxed);
+                if (is_deleted) {
+                    std::atomic_ref<offset_t> atomic_del(deleted_count_);
+                    atomic_del.fetch_sub(1, std::memory_order_relaxed);
+                }
+                break;
+            }
+            else if (addr.is_populated()) {
+                // Check if key matches (update case)
+                if (equals_()(addr.key(), key)) {
+                    // Update existing value
+                    addr.value_ref() = std::forward<convertible_value_type_>(value);
+                    addr.unlock();
+                    break;
+                }
+                else {
+                    // Continue probing
+                    addr.unlock();
+                    slot = (slot + 1) & offset_mask;
+                }
+            }
+        }
+    }
+
+    /**
+     *  @brief Insertion without reallocation, skips capacity check.
+     *    Assumes @c reserve() was called beforehand or sufficient space is guaranteed.
+     *
+     *  @param[in] key Key to insert or update.
+     *  @param[in] value Value to insert or update.
+     *  @return insert_result_t with iterator to inserted/existing element and success flag.
+     */
+    template <
+        typename convertible_key_type_, typename convertible_value_type_,
+        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
+    insert_result_t emplace_reserved(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
+        return emplace(std::forward<convertible_key_type_>(key), std::forward<convertible_value_type_>(value),
+                       assume_reserved_t {}, return_position_t {});
+    }
+
+    /**
+     *  @brief Lock-free atomic insertion for unique keys without equality check.
+     *    Most efficient insertion path: skips both reallocation and key comparison.
+     *
+     *  @param[in] key Guaranteed-unique key, equality check skipped for performance.
+     *  @param[in] value Value to insert.
+     *
+     *  @note Use only when you can guarantee the key doesn't exist. Violating this
+     *    assumption leads to duplicate keys and undefined behavior during lookup.
+     */
+    template <
+        typename convertible_key_type_, typename convertible_value_type_,
+        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
+    void emplace_unique_atomic_reserved(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
+        emplace(std::forward<convertible_key_type_>(key), std::forward<convertible_value_type_>(value), threadsafe_t {},
+                assume_reserved_t {}, assume_unique_t {});
+    }
+
+    /**
+     *  @brief Lock-free atomic value update for existing key.
+     *    If key doesn't exist, no action is taken.
+     *
+     *  @tparam comparable_key_type_ Type comparable with @c key_t.
+     *  @tparam convertible_value_type_ Type assignable to @c value_t.
+     *  @param[in] key Key to search for.
+     *  @param[in] new_value New value to assign if key is found.
+     *  @return True if key was found and value updated, false otherwise.
+     */
+    template <typename comparable_key_type_, typename convertible_value_type_>
+    bool update_atomic(comparable_key_type_ &&key, convertible_value_type_ &&new_value) noexcept {
+        static_assert(has_values_k, "update_atomic() only available for maps, not sets");
+        return find_atomic(std::forward<comparable_key_type_>(key), [&](element_catref_t &addr) {
+            // Cast away const for atomic update (safe because we're non-const method)
+            const_cast<value_t &>(addr.value()) = std::forward<convertible_value_type_>(new_value);
+        });
+    }
+
+#pragma mark - Erasures
 
     /**
      * @brief Removes element at specified location.
@@ -1608,11 +1987,11 @@ struct hash_table_gt {
      * ! If you want to overwrite the freed slot, make sure, that new objects
      * ! hash fits exactly and doesn't corrupt the state of the hash-table.
      */
-    inline_m void erase(element_rt addr) noexcept {
+    void erase(element_rt addr) noexcept {
 
         // Call destructors
         if constexpr (destruct_keys_k) addr.key_ref().~key_t();
-        if constexpr (destruct_vals_k) addr.val_ref().~val_t();
+        if constexpr (destruct_vals_k) addr.value_ref().~value_t();
 
         // Update indicators & stats
         addr.mark_deleted();
@@ -1620,11 +1999,11 @@ struct hash_table_gt {
         populated_count_--;
     }
 
-    inline_m void erase(iterator_t addr) noexcept { return erase((element_rt)addr); }
+    void erase(iterator_t addr) noexcept { return erase((element_rt)addr); }
 
     void erase(iterator_ct) = delete;
-    iterator_ct erase(iterator_ct, tag_needs_result_t) = delete;
-    iterator_t erase(iterator_t, tag_needs_result_t) = delete;
+    iterator_ct erase(iterator_ct, return_position_t) = delete;
+    iterator_t erase(iterator_t, return_position_t) = delete;
 
     /**
      * @brief Removes a value by key in the most efficient fashion.
@@ -1633,30 +2012,30 @@ struct hash_table_gt {
      * https://en.cppreference.com/w/cpp/container/unordered_map/erase
      *
      * ! Erasures in this containers won't deallocate memory.
-     * ! Memory will remain cluttered until the next `force_resize()`.
+     * ! Memory will remain cluttered until the next @c force_resize().
      * So if you remove a lot of values from filled containers,
-     * it makes sense to `rehash()` it before doing billions of lookups.
+     * it makes sense to @c rehash() it before doing billions of lookups.
      *
      * @param tags Markers for special acceleration:
-     * > tag_preallocated_t: Means container contains at least one object.
-     * > tag_atomic_t: Would allow concurrent read & write operations.
+     * > assume_reserved_t: Means container contains at least one object.
+     * > threadsafe_t: Would allow concurrent read & write operations.
      *
      * @return True if wanted key was found.
      */
-    template <typename hetero_key_at, typename... tags_at>
-    inline_m bool_t erase(hetero_key_at &&k, tags_at... tags) {
+    template <typename comparable_key_type_, typename... tags_types_>
+    bool erase(comparable_key_type_ &&k, tags_types_... tags) {
 
-        bool_t result = false;
+        bool result = false;
 
         search_to_find(
-            std::forward<hetero_key_at>(k),
+            std::forward<comparable_key_type_>(k),
             // This can't call `erase` on the returned references,
             // as it allows even atomic erasures, which must be done within
             // a block.
             [&](auto &addr) {
                 // Call destructors
                 if constexpr (destruct_keys_k) addr.key_ref().~key_t();
-                if constexpr (destruct_vals_k) addr.val_ref().~val_t();
+                if constexpr (destruct_vals_k) addr.value_ref().~value_t();
 
                 // Update indicators & stats
                 addr.mark_deleted();
@@ -1669,15 +2048,97 @@ struct hash_table_gt {
         return result;
     }
 
-#pragma region Memory Management
+    /**
+     *  @brief Lock-free atomic erasure by key.
+     *    Requires prior @c reserve() to prevent reallocations during concurrent access.
+     *
+     *  @tparam comparable_key_type_ Type comparable with @c key_t via @c equals_t.
+     *  @param[in] key Key to erase, hashable and comparable.
+     *  @return True if key was found and erased, false if key didn't exist.
+     *
+     *  @note Uses atomic operations on bucket headers. Destructors are called for non-trivial types.
+     *    The slot is marked as deleted (tombstone) rather than freed, preserving probe sequences.
+     */
+    template <typename comparable_key_type_>
+    bool erase_atomic(comparable_key_type_ &&key) noexcept {
+        if (!populated_count_) return false;
+
+        offset_t const offset_mask = slots_count_ - 1;
+        offset_t const initial_offset = hasher_()(key) & offset_mask;
+
+        element_atref_t addr;
+        offset_t slot = initial_offset;
+        bool erased = false;
+
+        while (true) {
+            unsafe_retarget(addr, slot);
+            addr.lock();
+
+            if (addr.is_populated()) {
+                if (equals_()(addr.key(), key)) {
+                    // Call destructors
+                    if constexpr (destruct_keys_k) addr.key_ref().~key_t();
+                    if constexpr (destruct_vals_k) addr.value_ref().~value_t();
+
+                    // Mark as deleted
+                    addr.mark_deleted();
+                    addr.unlock();
+
+                    // Update counters atomically
+                    std::atomic_ref<offset_t> atomic_del(deleted_count_);
+                    atomic_del.fetch_add(1, std::memory_order_relaxed);
+                    std::atomic_ref<offset_t> atomic_pop(populated_count_);
+                    atomic_pop.fetch_sub(1, std::memory_order_relaxed);
+
+                    erased = true;
+                    break;
+                }
+                else {
+                    addr.unlock();
+                    slot = (slot + 1) & offset_mask;
+                }
+            }
+            else if (addr.is_deleted()) {
+                addr.unlock();
+                slot = (slot + 1) & offset_mask;
+            }
+            else {
+                // Free slot - key doesn't exist
+                addr.unlock();
+                break;
+            }
+        }
+
+        return erased;
+    }
+
+#pragma mark - Memory Management
 
     /**
-     * @brief Memory usage calculator for Hash-Tables.
-     * We align bucket size to cache-line size, to avoid split loads.
+     *  @brief Calculates total memory usage for three cache-aligned regions.
+     *    Layout: [keys | values | headers] with padding between regions to prevent false sharing.
+     *
+     *  @param slots_cnt Total number of slots (must be power of two, multiple of 32).
+     *  @return Total bytes needed for single allocation containing all three regions.
+     *
+     *  @note Keys and values regions are padded to cache-line boundaries (64 bytes) to prevent
+     *    false sharing. Headers region is not padded (end of allocation).
      */
-    static constexpr size_t memory_usage(htx_slots_count_t slots_cnt) noexcept {
-        auto buckets = size_t(slots_cnt) / htx_slots_in_bucket_k;
-        return buckets * bytes_in_bucket_k;
+    static constexpr std::size_t memory_usage(bht_slots_count_t slots_count) noexcept {
+        std::size_t slots = slots_count.raw;
+        if (slots == 0) return 0;
+
+        // Region 1: Keys array, cache-line aligned
+        std::size_t keys_bytes = roundup_to_multiple<std::size_t, cache_line_bytes_k>(slots * sizeof(key_t));
+
+        // Region 2: Values array, cache-line aligned (skip for sets where value_t is void-like)
+        std::size_t values_bytes =
+            has_values_k ? roundup_to_multiple<std::size_t, cache_line_bytes_k>(slots * sizeof(value_t)) : 0;
+
+        // Region 3: Headers array, one 64-bit header per 32 slots (no padding needed, end of buffer)
+        std::size_t header_bytes = (slots / bht_bucket_capacity_k) * sizeof(bht_bucket_head_t);
+
+        return keys_bytes + values_bytes + header_bytes;
     }
 
     /**
@@ -1685,10 +2146,10 @@ struct hash_table_gt {
      * region of given size. Is often used for caches in DB to calculate
      * the capacity of the Hash-Table before allocating one.
      */
-    static constexpr htx_slots_count_t slots_fitting_bytes(size_t max_bytes) noexcept {
+    static constexpr bht_slots_count_t slots_fitting_bytes(std::size_t max_bytes) noexcept {
         auto buckets = max_bytes / bytes_in_bucket_k;
-        htx_slots_count_t result;
-        result.raw = buckets * htx_slots_in_bucket_k;
+        bht_slots_count_t result;
+        result.raw = buckets * bht_bucket_capacity_k;
         return result;
     }
 
@@ -1701,23 +2162,23 @@ struct hash_table_gt {
      * @return True when the underlying capacity has changed.
      * After that the older iterators will be deleted.
      */
-    inline_host_m bool_t reserve(offset_t planned_elements) {
-        if (planned_elements <= growth_threashold_) return false;
-        force_resize(htx_slots_count_t {planned_elements});
+    inline bool reserve(offset_t planned_elements) {
+        if (planned_elements <= growth_threshold_) return false;
+        force_resize(bht_slots_count_t {planned_elements});
         return true;
     }
 
     /**
      * @brief The recommended function for bulk insertions.
-     * Unlike the classical `reserve(size_t)`, this adds the
-     * number of already present objects to avoid calling `size()`
+     * Unlike the classical @c reserve(std::size_t), this adds the
+     * number of already present objects to avoid calling @c size()
      * and includes the number "free" slots, to keep search time
      * constant.
      *
      * @return True when the underlying capacity has changed.
      * After that the older iterators will be deleted.
      */
-    inline_host_m bool_t reserve_more(offset_t new_elements) {
+    inline bool reserve_more(offset_t new_elements) {
         return reserve(new_elements + populated_count_ + deleted_count_);
     }
 
@@ -1726,9 +2187,9 @@ struct hash_table_gt {
      * will export the data into a new hash-set and then swap the contents.
      * It may be used to clean the garbage after deletions.
      *
-     * ! The new capacity can't be less than `size()`!
+     * ! The new capacity can't be less than @c size()!
      */
-    void force_resize(htx_slots_count_t slots_cnt) {
+    void force_resize(bht_slots_count_t slots_cnt) {
         auto resized = move_to_new(slots_cnt);
         swap(resized);
     }
@@ -1737,10 +2198,13 @@ struct hash_table_gt {
      * @brief A cheap copy-less swap mechanism used in move-constructors.
      * https://en.cppreference.com/w/cpp/container/unordered_map/swap
      */
-    inline_host_m void swap(hash_table_gt &other) noexcept {
+    inline void swap(basic_hash_table &other) noexcept {
         std::swap(memory_, other.memory_);
+        std::swap(keys_, other.keys_);
+        std::swap(values_, other.values_);
+        std::swap(headers_, other.headers_);
         std::swap(slots_count_, other.slots_count_);
-        std::swap(growth_threashold_, other.growth_threashold_);
+        std::swap(growth_threshold_, other.growth_threshold_);
         std::swap(populated_count_, other.populated_count_);
         std::swap(deleted_count_, other.deleted_count_);
 
@@ -1751,31 +2215,30 @@ struct hash_table_gt {
 
     /**
      * @brief Erases all elements from the container.
-     * After this call, `size()` returns zero.
-     * No deallocations will happen, for that call `shrink_to_fit()`.
+     * After this call, @c size() returns zero.
+     * No deallocations will happen, for that call @c shrink_to_fit().
      * https://en.cppreference.com/w/cpp/container/unordered_map/clear
      *
-     * ! If you know that container isn't empty pass the `tag_preallocated_t` tag.
+     * ! If you know that container isn't empty pass the @c assume_reserved_t tag.
      */
     void clear() noexcept {
-        if (populated_count_ | deleted_count_) clear(tag_preallocated_t {});
-        else
-            allocator_().clear(memory_, size_bytes());
+        if (populated_count_ | deleted_count_) clear(assume_reserved_t {});
+        else allocator_().clear(memory_, size_bytes());
     }
 
     /**
      * @brief Erases all elements from the container.
-     * After this call, `size()` returns zero.
-     * No deallocations will happen, for that call `shrink_to_fit()`.
+     * After this call, @c size() returns zero.
+     * No deallocations will happen, for that call @c shrink_to_fit().
      * https://en.cppreference.com/w/cpp/container/unordered_map/clear
      */
-    noinline_m void clear(tag_preallocated_t) noexcept {
+    void clear(assume_reserved_t) noexcept {
 
         if constexpr (destruct_keys_k || destruct_vals_k) {
             auto const e = end();
             for (auto it = begin(); it != e; it.advance()) {
                 if constexpr (destruct_keys_k) it.key_ref().~key_t();
-                if constexpr (destruct_vals_k) it.val_ref().~val_t();
+                if constexpr (destruct_vals_k) it.value_ref().~value_t();
             }
         }
 
@@ -1789,154 +2252,137 @@ struct hash_table_gt {
      * STLs associative containers have no such functionality, only arrays:
      * https://en.cppreference.com/w/cpp/container/vector/shrink_to_fit
      */
-    noinline_m void shrink_to_fit() {
-        auto new_cap = htx_slots_count_t {size()};
+    void shrink_to_fit() {
+        auto new_cap = bht_slots_count_t {size()};
         if (new_cap == slots_count()) return;
         return size() ? force_resize(new_cap) : deallocate();
     }
 
     /**
      * @brief Deallocates all the memory used by container.
-     * ! Make sure to `clear()` to destruct all the non-trivial elements
+     * ! Make sure to @c clear() to destruct all the non-trivial elements
      * ! before deallocating the memory. It's left to user.
      */
-    [[attr_reinitializes_m]] noinline_m void deallocate() {
-        if (memory_) return deallocate(tag_preallocated_t {});
+    [[attr_reinitializes_m]] void deallocate() {
+        if (memory_) return deallocate(assume_reserved_t {});
     }
 
     /**
      * @brief Deallocates all the memory used by container.
-     * ! Make sure to `clear()` to destruct all the non-trivial elements
+     * ! Make sure to @c clear() to destruct all the non-trivial elements
      * ! before deallocating the memory. It's left to user.
      */
-    noinline_m void deallocate(tag_preallocated_t) {
+    void deallocate(assume_reserved_t) {
         allocator_().deallocate(memory_, size_bytes());
         unsafe_reset();
     }
 
-    inline_host_m void unsafe_reset() noexcept {
+    inline void unsafe_reset() noexcept {
         memory_ = nullptr;
+        keys_ = nullptr;
+        values_ = nullptr;
+        headers_ = nullptr;
         slots_count_ = 0;
-        growth_threashold_ = 0;
+        growth_threshold_ = 0;
         populated_count_ = 0;
         deleted_count_ = 0;
     }
 
     /**
-     * @brief Identical to `unordered_map`, sets the number of buckets
+     * @brief Identical to @c unordered_map, sets the number of buckets
      * to the desired value, causing rehashing in the process.
      * https://en.cppreference.com/w/cpp/container/unordered_map/rehash
      */
-    inline_host_m void rehash(offset_t count_buckets) {
-        htx_slots_count_t slots_cnt;
-        slots_cnt.raw = count_buckets * htx_slots_in_bucket_k;
+    inline void rehash(offset_t count_buckets) {
+        bht_slots_count_t slots_cnt;
+        slots_cnt.raw = count_buckets * bht_bucket_capacity_k;
         force_resize(slots_cnt);
     }
 
-#pragma region Copies and Moves
+#pragma mark - Copies and Moves
 
     template <typename>
     struct packed_pairs_array_t {};
 
     /**
-     * @brief A unique function, that reuses the internal `dbuffer_t`
+     * @brief A unique function, that reuses the internal buffer
      * of this Hash-Table to pack all the key-value pairs into array.
      * No order guarantees are provided.
      * Extra allocation ALMOST never appear!
+     *
+     * @note Currently disabled - requires external dbuffer_gt and darray_gt types.
+     * TODO: Implement using std::vector or similar standard container.
      */
-    noinline_m auto convert_to_array() {
+    // auto convert_to_array() {
+    //     // Commented out - requires dbuffer_gt, darray_gt types not in current codebase
+    //     return nullptr;
+    // }
 
-        if constexpr (!has_values_k && element_resolver_t::will_memcpy_keys()) {
-            byte_t *left_ptr = memory_;
-            if constexpr (sizeof(element_copy_t) > sizeof(htx_bucket_head_t)) {
-                element_crt bucket_addr;
-                byte_t tmp_element[sizeof(element_copy_t)];
-                for (offset_t bucket_idx = 0; bucket_idx != bucket_count(); ++bucket_idx) {
-                    bucket_addr.head_bytes = data_in_bucket(bucket_idx);
-                    size_t const free_distance = bucket_addr.head_bytes - left_ptr;
-                    if (free_distance >= sizeof(htx_bucket_head_t)) break;
-
-                    htx_for_each_in_bucket(bucket_addr, [&left_ptr, &tmp_element](element_crt element) {
-                        memcpy(tmp_element, &element.key(), sizeof(element_copy_t));
-                        memcpy(left_ptr, tmp_element, sizeof(element_copy_t));
-                        left_ptr += sizeof(element_copy_t);
-                    });
-                }
-            }
-            for_each([&left_ptr](element_rt element) {
-                memcpy(left_ptr, &element.key(), sizeof(element_copy_t));
-                left_ptr += sizeof(element_copy_t);
-            });
-
-            size_t elements_count = (left_ptr - memory_) / sizeof(element_copy_t);
-            validate_m(elements_count == size(), "Invalid hash table to array convertions!");
-
-            constexpr size_t align_k = std::alignment_of_v<element_copy_t>;
-            using alloc_t = typename allocator_t::template rebind<align_k>::type;
-            using buffer_t = dbuffer_gt<alloc_t>;
-            using array_t = darray_gt<element_copy_t, alloc_t>;
-            buffer_t squeezed_buffer = buffer_t::preconstructed({memory_, size_bytes()});
-            array_t squeezed_array = array_t::preconstructed(std::move(squeezed_buffer), elements_count);
-
-            unsafe_reset();
-            return squeezed_array;
-        }
-        else {
-            // TODO: Need to implement.
-            return nullptr;
-        }
-    }
-
-    template <typename callback_at = null_operator_gt<element_rt>>
-    noinline_m void for_each(callback_at &&callback) noexcept {
+    template <typename callback_type_ = null_operator_gt<element_rt>>
+    void for_each(callback_type_ &&callback) noexcept {
         element_rt addr;
+        addr.keys_ = keys_;
+        addr.values_ = values_;
+        addr.headers_ = headers_;
         offset_t const buckets = bucket_count();
         for (offset_t bucket_idx = 0; bucket_idx != buckets; ++bucket_idx) {
-            addr.head_bytes = data_in_bucket(bucket_idx);
-            htx_for_each_in_bucket(addr, callback);
+            addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            bht_for_each_in_bucket_(addr, callback);
         }
     }
 
-    template <typename callback_at = null_operator_gt<element_crt>>
-    noinline_m void for_each(callback_at &&callback) const noexcept {
+    template <typename callback_type_ = null_operator_gt<element_crt>>
+    void for_each(callback_type_ &&callback) const noexcept {
         element_crt addr;
+        addr.keys_ = const_cast<key_t *>(keys_);
+        addr.values_ = const_cast<value_t *>(values_);
+        addr.headers_ = const_cast<bht_bucket_head_t *>(headers_);
         offset_t const buckets = bucket_count();
         for (offset_t bucket_idx = 0; bucket_idx != buckets; ++bucket_idx) {
-            addr.head_bytes = data_in_bucket(bucket_idx);
-            htx_for_each_in_bucket(addr, callback);
+            addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            bht_for_each_in_bucket_(addr, callback);
         }
     }
 
-    template <typename callback_at = null_operator_gt<element_rt>>
-    noinline_m void for_slots(callback_at &&callback) noexcept {
+    template <typename callback_type_ = null_operator_gt<element_rt>>
+    void for_slots(callback_type_ &&callback) noexcept {
         element_rt addr;
+        addr.keys_ = keys_;
+        addr.values_ = values_;
+        addr.headers_ = headers_;
         offset_t const buckets = bucket_count();
         for (offset_t bucket_idx = 0; bucket_idx != buckets; ++bucket_idx) {
-            addr.head_bytes = data_in_bucket(bucket_idx);
-            htx_for_slots_in_bucket(addr, callback);
+            addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            bht_for_slots_in_bucket(addr, callback);
         }
     }
 
-    template <typename predicate_at>
-    noinline_m bool_t find_if(predicate_at &&predicate) noexcept {
+    template <typename predicate_type_>
+    bool find_if(predicate_type_ &&predicate) noexcept {
         element_rt addr;
-        bool_t found_match = false;
+        addr.keys_ = keys_;
+        addr.values_ = values_;
+        addr.headers_ = headers_;
+        bool found_match = false;
         offset_t const buckets = bucket_count();
         for (offset_t bucket_idx = 0; (bucket_idx != buckets) & !found_match; ++bucket_idx) {
-            addr.head_bytes = data_in_bucket(bucket_idx);
-            found_match = htx_find_in_bucket(addr, predicate);
+            addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            found_match = bht_find_in_bucket_(addr, predicate);
         }
         return found_match;
     }
 
-    template <typename predicate_at>
-    noinline_m bool_t find_if(predicate_at &&predicate) const noexcept {
+    template <typename predicate_type_>
+    bool find_if(predicate_type_ &&predicate) const noexcept {
         element_crt addr;
-        bool_t found_match = false;
+        addr.keys_ = const_cast<key_t *>(keys_);
+        addr.values_ = const_cast<value_t *>(values_);
+        addr.headers_ = const_cast<bht_bucket_head_t *>(headers_);
+        bool found_match = false;
         offset_t const buckets = bucket_count();
         for (offset_t bucket_idx = 0; (bucket_idx != buckets) & !found_match; ++bucket_idx) {
-            addr.head_bytes = data_in_bucket(bucket_idx);
-            found_match = htx_find_in_bucket(addr, predicate);
+            addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            found_match = bht_find_in_bucket_(addr, predicate);
         }
         return found_match;
     }
@@ -1945,75 +2391,86 @@ struct hash_table_gt {
      * @brief Creates a new memory buffer of requested capacity
      * and rehashes all the present data into the new buckets.
      * Move-constructors will be used, avoiding copies.
-     * TODO: Implement `move_to_next_size` using `realloc`.
+     * TODO: Implement @c move_to_next_size using @c realloc.
      *
-     * ! The new capacity can't be less than current `size()`!
+     * ! The new capacity can't be less than current @c size()!
      */
-    hash_table_gt move_to_new(htx_slots_count_t slots_cnt) {
+    basic_hash_table move_to_new(bht_slots_count_t slots_cnt) {
 
-        hash_table_gt tgt(slots_cnt, hash_function(), key_eq(), allocator_());
-        validate_m(tgt.capacity() >= size(), "Not enough space in the new Hash-Table!");
+        basic_hash_table tgt(slots_cnt, hash_function(), key_eq(), allocator_());
+        assert(tgt.capacity() >= size() && "Not enough space in the new Hash-Table!");
 
         for_each([&tgt](element_rt const &src_addr) {
             if constexpr (has_values_k)
-                tgt.emplace(std::move(src_addr.key_ref()), std::move(src_addr.val_ref()), tag_preallocated_t {},
-                            tag_unique_element_t {});
-            else
-                tgt.emplace(std::move(src_addr.key_ref()), tag_preallocated_t {}, tag_unique_element_t {});
+                tgt.emplace(std::move(src_addr.key_ref()), std::move(src_addr.value_ref()), assume_reserved_t {},
+                            assume_unique_t {});
+            else tgt.emplace(std::move(src_addr.key_ref()), assume_reserved_t {}, assume_unique_t {});
         });
 
-        validate_m(tgt.populated_count_ == populated_count_, "Element counts must match!");
+        assert(tgt.populated_count_ == populated_count_ && "Element counts must match!");
         deallocate();
         return tgt;
     }
 
-    hash_table_gt copy_to_new() const {
+    basic_hash_table copy_to_new() const {
 
-        hash_table_gt const &src = *this;
-        hash_table_gt tgt(slots_count(), hash_function(), key_eq(), allocator_());
+        basic_hash_table const &src = *this;
+        basic_hash_table tgt(slots_count(), hash_function(), key_eq(), allocator_());
         tgt.populated_count_ = src.populated_count_;
         tgt.deleted_count_ = src.deleted_count_;
 
-        // If everything is trvially constructible, a single `memcpy` is enough!
-        if constexpr (element_resolver_t::will_memcpy_keys() && element_resolver_t::will_memcpy_vals())
+        // If everything is trivially constructible, a single `memcpy` is enough!
+        if constexpr (layout_t::will_memcpy_keys() && layout_t::will_memcpy_vals())
             allocator_().copy(src.memory_, tgt.memory_, src.size_bytes());
         else {
             element_crt src_addr;
+            src_addr.keys_ = const_cast<key_t *>(src.keys_);
+            src_addr.values_ = const_cast<value_t *>(src.values_);
+            src_addr.headers_ = const_cast<bht_bucket_head_t *>(src.headers_);
             element_rt tgt_addr;
+            tgt_addr.keys_ = tgt.keys_;
+            tgt_addr.values_ = tgt.values_;
+            tgt_addr.headers_ = tgt.headers_;
             offset_t const buckets = src.bucket_count();
 
             for (offset_t bucket_idx = 0; bucket_idx != buckets; ++bucket_idx) {
-                src_addr.head_bytes = src.data_in_bucket(bucket_idx);
-                tgt_addr.head_bytes = tgt.data_in_bucket(bucket_idx);
-                htx_transform_bucket(src_addr, tgt_addr, identity_t {});
+                src_addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+                tgt_addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+                bht_transform_bucket(src_addr, tgt_addr, identity_fn_t {});
             }
         }
 
         return tgt;
     }
 
-    hash_table_gt copy_to_new(htx_slots_count_t slots_cnt) const {
-        hash_table_gt const &src = *this;
-        hash_table_gt tgt(slots_cnt, hash_function(), key_eq(), allocator_());
-        tgt.insert(src.begin(), src.end(), tag_preallocated_t {});
+    basic_hash_table copy_to_new(bht_slots_count_t slots_cnt) const {
+        basic_hash_table const &src = *this;
+        basic_hash_table tgt(slots_cnt, hash_function(), key_eq(), allocator_());
+        tgt.insert(src.begin(), src.end(), assume_reserved_t {});
         return tgt;
     }
 
     set_t copy_to_set() const {
 
-        hash_table_gt const &src = *this;
+        basic_hash_table const &src = *this;
         set_t tgt(src.slots_count(), hash_function(), key_eq(), allocator_());
         tgt.populated_count_ = src.populated_count_;
         tgt.deleted_count_ = src.deleted_count_;
 
         element_crt src_addr;
+        src_addr.keys_ = const_cast<key_t *>(src.keys_);
+        src_addr.values_ = const_cast<value_t *>(src.values_);
+        src_addr.headers_ = const_cast<bht_bucket_head_t *>(src.headers_);
         typename set_t::element_rt tgt_addr;
+        tgt_addr.keys_ = tgt.keys_;
+        tgt_addr.values_ = tgt.values_;
+        tgt_addr.headers_ = tgt.headers_;
         offset_t const buckets = src.bucket_count();
 
         for (offset_t bucket_idx = 0; bucket_idx != buckets; ++bucket_idx) {
-            src_addr.head_bytes = src.data_in_bucket(bucket_idx);
-            tgt_addr.head_bytes = tgt.data_in_bucket(bucket_idx);
-            htx_transform_bucket(src_addr, tgt_addr, null_operator_t {});
+            src_addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            tgt_addr.slot_ = bucket_idx * bht_bucket_capacity_k;
+            bht_transform_bucket(src_addr, tgt_addr, null_operator_t {});
         }
 
         return tgt;
@@ -2022,13 +2479,13 @@ struct hash_table_gt {
 
 #pragma mark - Aliases
 
-template <typename key_at, typename val_at, typename hasher_at = hash_gt<key_at>, typename equals_at = equals_gt<>,
-          typename allocator_at = alloc::libc_t>
-using hash_map_gt = hash_table_gt<key_at, val_at, hasher_at, equals_at, allocator_at>;
+template <typename key_type_, typename value_type_, typename hasher_type_ = std::hash<key_type_>,
+          typename equals_type_ = std::equal_to<key_type_>, typename allocator_type_ = std::allocator<std::byte>>
+using hash_map_gt = basic_hash_table<key_type_, value_type_, hasher_type_, equals_type_, allocator_type_>;
 
-template <typename key_at, typename hasher_at = hash_gt<key_at>, typename equals_at = equals_gt<>,
-          typename allocator_at = alloc::libc_t>
-using hash_set_gt = hash_table_gt<key_at, void, hasher_at, equals_at, allocator_at>;
+template <typename key_type_, typename hasher_type_ = std::hash<key_type_>,
+          typename equals_type_ = std::equal_to<key_type_>, typename allocator_type_ = std::allocator<std::byte>>
+using hash_set_gt = basic_hash_table<key_type_, void, hasher_type_, equals_type_, allocator_type_>;
 
 /**
  *
@@ -2042,69 +2499,16 @@ static_assert(sizeof(hash_set_gt<int>) >= 3 * sizeof(void *), "Hash-Table is too
 #pragma GCC diagnostic pop
 
 /**
- * @brief An overload of `std::swap` for faster sorting
+ * @brief An overload of @c std::swap for faster sorting
  * and STL containers of such Hash-Tables.
  */
-template <typename key_at, typename val_at, typename hasher_at, typename equals_at>
-inline_host_m void std::swap(unum::hash_table_gt<key_at, val_at, hasher_at, equals_at> &a,
-                             unum::hash_table_gt<key_at, val_at, hasher_at, equals_at> &b) {
+namespace std {
+
+template <typename element_type_, typename hasher_type_, typename equals_type_, typename allocator_type_>
+inline void swap(
+    ashvardanian::smashtable::basic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_> &a,
+    ashvardanian::smashtable::basic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_> &b) {
     a.swap(b);
 }
 
-#pragma mark - Serialization
-#include "primitive/sfinae/serializer.hpp"
-
-namespace unum::prim::sfinae {
-
-/**
- * @brief Hash-Tables serialized, that packs and reconstructs objects
- * without any gaps. Reads/writes one key-value pair at once.
- */
-template <typename key_at, typename val_at, typename hasher_at, typename equals_at, typename at>
-struct serializer_gt<hash_table_gt<key_at, val_at, hasher_at, equals_at>, at> {
-
-    using container_t = hash_table_gt<key_at, val_at, hasher_at, equals_at>;
-    using element_copy_t = typename container_t::element_copy_t;
-
-    inline_host_m size_t serialized_bytes(container_t const &cont) const noexcept {
-
-        size_t elements_length = 0;
-        if constexpr (!std::is_trivially_copy_constructible<element_copy_t>()) {
-            for (auto const &element : cont) elements_length += sfinae::serialized_bytes(element);
-        }
-        else
-            elements_length = sizeof(element_copy_t) * cont.size();
-
-        return sizeof(u64_t) + elements_length;
-    }
-
-    inline_host_m size_t save(container_t const &cont, span_bytes_t bytes) const {
-        auto start_point = bytes.data();
-        auto size = static_cast<u64_t>(cont.size());
-        bytes.first_ptr_ += sfinae::save(size, bytes);
-
-        for (auto const &element : cont) bytes.first_ptr_ += sfinae::save(element, bytes);
-        return bytes.data() - start_point;
-    }
-
-    inline_host_m size_t load(spanc_bytes_t bytes, container_t &cont) const {
-        auto start_point = bytes.data();
-
-        u64_t size = 0;
-        bytes.first_ptr_ += sfinae::load(bytes, size);
-        cont.reserve(size);
-
-        element_copy_t element;
-        for (u64_t i = 0; i != size; i++) {
-            bytes.first_ptr_ += sfinae::load(bytes, element);
-            if constexpr (container_t::has_values_k)
-                cont.emplace(element.first, element.second, tag_preallocated_t {}, tag_unique_element_t {});
-            else
-                cont.emplace(element, tag_preallocated_t {}, tag_unique_element_t {});
-        }
-
-        return bytes.data() - start_point;
-    }
-};
-
-} // namespace unum::prim::sfinae
+} // namespace std
