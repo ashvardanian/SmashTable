@@ -85,21 +85,21 @@ class transactional_binary_tree {
     using mapped_type = mapped_t; // ? STL style
 
     using is_associative = typename basic_tree_type_::is_associative;
+    using is_transactional = std::true_type;
     using callback_reads = std::true_type;
 
     using comparator_t = typename basic_tree_type_::comparator_t;
     using allocator_t = typename basic_tree_type_::allocator_t;
 
+  private:
     using versioning_t = versioning_for<value_t, comparator_t>;
     using versioned_t = typename versioning_t::versioned_t;
     using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
-    using dated_identifier_t = typename versioning_t::dated_identifier_t;
     using watch_t = typename versioning_t::watch_t;
     using watched_identifier_t = typename versioning_t::watched_identifier_t;
 
-  private:
     // Use tree's rebind to create versioned tree - clean 1-step type transformation!
     using versioned_set_t = typename basic_tree_type_::template rebind<versioned_t, versioned_comparator_t>;
 
@@ -175,9 +175,9 @@ class transactional_binary_tree {
             if (local_it != changes_.end() && !local_it->deleted) return {key_already_exists_k};
             if (store_ref().contains(value)) return {key_already_exists_k};
 
-            auto maybe_id = copy_safely<identifier_t>(value);
+            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
             if (!maybe_id) return status_t {out_of_memory_heap_k};
-            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
             if (!reserve_status) return reserve_status;
 
             versioned_t versioned(std::move(value));
@@ -187,7 +187,7 @@ class transactional_binary_tree {
             auto result = changes_.upsert(std::move(versioned));
             if (result.failed()) return status_t {out_of_memory_heap_k};
 
-            changed_ids_.push_back(std::move(*maybe_id), assume_reserved);
+            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return status_t {success_k};
         }
 
@@ -203,9 +203,9 @@ class transactional_binary_tree {
             if (local_it != changes_.end() && !local_it->deleted) return {success_k};
             if (store_ref().contains(value)) return {success_k};
 
-            auto maybe_id = copy_safely<identifier_t>(value);
+            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
             if (!maybe_id) return status_t {out_of_memory_heap_k};
-            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
             if (!reserve_status) return reserve_status;
 
             versioned_t versioned(std::move(value));
@@ -215,7 +215,7 @@ class transactional_binary_tree {
             auto result = changes_.upsert(std::move(versioned));
             if (result.failed()) return status_t {out_of_memory_heap_k};
 
-            changed_ids_.try_push_back(std::move(*maybe_id), assume_reserved);
+            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return status_t {success_k};
         }
 
@@ -227,9 +227,9 @@ class transactional_binary_tree {
          *  @return status_t Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t upsert(value_t &&value) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(value);
+            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
             if (!maybe_id) return status_t {out_of_memory_heap_k};
-            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
             if (!reserve_status) return reserve_status;
 
             versioned_t versioned(std::move(value));
@@ -239,7 +239,7 @@ class transactional_binary_tree {
             auto result = changes_.upsert(std::move(versioned));
             if (result.failed()) return status_t {out_of_memory_heap_k};
 
-            changed_ids_.try_push_back(std::move(*maybe_id), assume_reserved);
+            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return status_t {success_k};
         }
 
@@ -267,7 +267,7 @@ class transactional_binary_tree {
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
             auto maybe_id = copy_safely<identifier_t>(id);
             if (!maybe_id) return status_t {out_of_memory_heap_k};
-            auto reserve_status = changed_ids_.try_reserve(changed_ids_.size() + 1);
+            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
             if (!reserve_status) return reserve_status;
 
             versioned_t versioned(value_t {id});
@@ -277,26 +277,26 @@ class transactional_binary_tree {
             auto result = changes_.upsert(std::move(versioned));
             if (result.failed()) return status_t {out_of_memory_heap_k};
 
-            changed_ids_.try_push_back(std::move(*maybe_id), assume_reserved);
+            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return status_t {success_k};
         }
 
-        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.try_reserve(size); }
+        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.reserve(size); }
 
         [[nodiscard]] status_t watch(identifier_t id) noexcept {
             status_t result {success_k};
-            auto found = [&](versioned_t const &entry) noexcept {
-                result = watches_.try_push_back({std::move(id), watch_t {entry.generation, entry.deleted}});
+            auto found = [&](versioned_t const &versioned) noexcept {
+                result = watches_.push_back({std::move(id), watch_t {versioned.generation, versioned.deleted}});
             };
-            auto missing = [&]() noexcept { result = watches_.try_push_back({std::move(id), missing_watch()}); };
+            auto missing = [&]() noexcept { result = watches_.push_back({std::move(id), missing_watch()}); };
             store_ref().find_visible_entry_(id, found, missing);
             return result;
         }
 
-        [[nodiscard]] status_t watch(versioned_t const &entry) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(identifier_t {entry.element});
+        [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
+            auto maybe_id = copy_safely<identifier_t>(identifier_t {versioned.unversioned});
             if (!maybe_id) return status_t {out_of_memory_heap_k};
-            return watches_.try_push_back({std::move(*maybe_id), watch_t {entry.generation, entry.deleted}});
+            return watches_.push_back({std::move(*maybe_id), watch_t {versioned.generation, versioned.deleted}});
         }
 
         /**
@@ -308,17 +308,42 @@ class transactional_binary_tree {
          *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            if (auto iterator = changed_entries_.find(std::forward<comparable_type_>(comparable));
-                iterator != changed_entries_.end())
-                !iterator->deleted ? callback_found(*iterator) : callback_missing();
+            if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end())
+                !iterator->deleted ? callback_found(iterator->unversioned) : callback_missing();
             else
                 store_ref().find(std::forward<comparable_type_>(comparable),
                                  std::forward<callback_found_type_>(callback_found),
                                  std::forward<callback_missing_type_>(callback_missing));
+        }
+
+        /**
+         *  @brief Finds and returns a copy of an element equal to @p comparable, including transaction changes.
+         *
+         *  @param[in] comparable Object comparable to @c value_t.
+         *  @return expected<value_t> Result with copied element if found, or failure status.
+         */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+            expected<value_t> result;
+            result.status.errc = errc_t::key_not_found_k;
+
+            if (auto it = changes_.find(std::forward<comparable_type_>(comparable)); it != changes_.end()) {
+                if (!it->deleted) {
+                    auto copy_result = copy_safely(it->unversioned);
+                    if (copy_result) {
+                        result.outcome = std::move(*copy_result);
+                        result.status = status_t {success_k};
+                    }
+                    else { result.status = copy_result.status; }
+                }
+            }
+            else { return store_ref().find_copy(std::forward<comparable_type_>(comparable)); }
+
+            return result;
         }
 
         /**
@@ -346,25 +371,25 @@ class transactional_binary_tree {
          *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             auto store_lb = store_ref().entries_.lower_bound(comparable);
-            while (store_lb != store_ref().entries_.end() && changed_entries_.contains(*store_lb)) { ++store_lb; }
+            while (store_lb != store_ref().entries_.end() && changes_.contains(*store_lb)) { ++store_lb; }
 
-            auto changed_lb = changed_entries_.lower_bound(comparable);
-            while (changed_lb != changed_entries_.end() && changed_lb->deleted) { ++changed_lb; }
+            auto changed_lb = changes_.lower_bound(comparable);
+            while (changed_lb != changes_.end() && changed_lb->deleted) { ++changed_lb; }
 
-            if (store_lb == store_ref().entries_.end() && changed_lb == changed_entries_.end()) { callback_missing(); }
-            else if (store_lb == store_ref().entries_.end()) { callback_found(changed_lb->element); }
-            else if (changed_lb == changed_entries_.end()) { callback_found(store_lb->element); }
+            if (store_lb == store_ref().entries_.end() && changed_lb == changes_.end()) { callback_missing(); }
+            else if (store_lb == store_ref().entries_.end()) { callback_found(changed_lb->unversioned); }
+            else if (changed_lb == changes_.end()) { callback_found(store_lb->unversioned); }
             else {
-                if (versioned_comparator_t {}(store_lb->element, changed_lb->element)) {
-                    callback_found(store_lb->element);
+                if (versioned_comparator_t {}(store_lb->unversioned, changed_lb->unversioned)) {
+                    callback_found(store_lb->unversioned);
                 }
-                else { callback_found(changed_lb->element); }
+                else { callback_found(changed_lb->unversioned); }
             }
         }
 
@@ -376,11 +401,11 @@ class transactional_binary_tree {
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_fn_t>
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
             find(
                 std::forward<comparable_type_>(comparable),
-                [&](versioned_t const &entry) noexcept { callback(entry.element); }, []() noexcept {});
+                [&](versioned_t const &versioned) noexcept { callback(versioned.unversioned); }, []() noexcept {});
         }
 
         /**
@@ -391,46 +416,40 @@ class transactional_binary_tree {
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename callback_type_ = no_op_t>
+                  typename callback_type_ = no_op_fn_t>
         void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
-            // First, iterate over local changes
             auto less = versioned_comparator_t {};
-            auto lower_internal = changed_entries_.lower_bound(std::forward<lower_type_>(lower));
+            auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto const upper_internal_bound = identifier_t(upper);
-            for (auto it = lower_internal; it != changed_entries_.end() && less(*it, upper_internal_bound); ++it)
-                if (!it->deleted) callback(it->element);
+            for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it)
+                if (!it->deleted) callback(it->unversioned);
 
-            // Then, iterate over external store, skipping entries that were modified or deleted locally
             store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                              [&](element_t const &external_element) {
-                                  // Check if this entry exists in local changes
-                                  auto local_state = changed_entries_.find(external_element);
-                                  // Not modified locally, include it
-                                  if (local_state == changed_entries_.end())
-                                      callback(external_element); // Not modified locally
-                                  // If modified locally, we already processed it above
+                              [&](value_t const &external_value) {
+                                  auto local_state = changes_.find(external_value);
+                                  if (local_state == changes_.end()) callback(external_value);
                               });
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             auto store_ub = store_ref().entries_.upper_bound(comparable);
-            while (store_ub != store_ref().entries_.end() && changed_entries_.contains(*store_ub)) { ++store_ub; }
+            while (store_ub != store_ref().entries_.end() && changes_.contains(*store_ub)) { ++store_ub; }
 
-            auto changed_ub = changed_entries_.upper_bound(comparable);
-            while (changed_ub != changed_entries_.end() && changed_ub->deleted) { ++changed_ub; }
+            auto changed_ub = changes_.upper_bound(comparable);
+            while (changed_ub != changes_.end() && changed_ub->deleted) { ++changed_ub; }
 
-            if (store_ub == store_ref().entries_.end() && changed_ub == changed_entries_.end()) { callback_missing(); }
-            else if (store_ub == store_ref().entries_.end()) { callback_found(changed_ub->element); }
-            else if (changed_ub == changed_entries_.end()) { callback_found(store_ub->element); }
+            if (store_ub == store_ref().entries_.end() && changed_ub == changes_.end()) { callback_missing(); }
+            else if (store_ub == store_ref().entries_.end()) { callback_found(changed_ub->unversioned); }
+            else if (changed_ub == changes_.end()) { callback_found(store_ub->unversioned); }
             else {
-                if (versioned_comparator_t {}(store_ub->element, changed_ub->element)) {
-                    callback_found(store_ub->element);
+                if (versioned_comparator_t {}(store_ub->unversioned, changed_ub->unversioned)) {
+                    callback_found(store_ub->unversioned);
                 }
-                else { callback_found(changed_ub->element); }
+                else { callback_found(changed_ub->unversioned); }
             }
         }
 
@@ -443,33 +462,30 @@ class transactional_binary_tree {
          *  @param[in] callback_found Callback to receive the k-th element. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if k >= size(). Must be @c noexcept.
          */
-        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
         void select(std::size_t k, callback_found_type_ &&callback_found,
                     callback_missing_type_ &&callback_missing = {}) const noexcept
             requires supports_order_statistics<versioned_set_t>
         {
-            // Collect all visible elements (both local changes and committed entries)
             std::size_t visible_index = 0;
             bool found = false;
             versioned_comparator_t less;
 
-            // Build merged sorted view: iterate both trees in sorted order
-            auto local_it = changed_entries_.begin();
-            versioned_entry_node_t *store_node = versioned_entry_node_t::find_min(store_ref().entries_.root());
+            auto local_it = changes_.begin();
+            using node_t = typename versioned_set_t::node_t;
+            node_t *store_node = node_t::find_min(store_ref().entries_.root());
 
-            while ((local_it != changed_entries_.end() || store_node) && !found) {
-                // Determine which element comes next in sorted order
+            while ((local_it != changes_.end() || store_node) && !found) {
                 bool take_local = false;
 
-                if (local_it == changed_entries_.end()) { take_local = false; }
+                if (local_it == changes_.end()) { take_local = false; }
                 else if (!store_node) { take_local = true; }
-                else { take_local = less(local_it->element, store_node->entry.element); }
+                else { take_local = less(local_it->unversioned, store_node->fruit); }
 
                 if (take_local) {
-                    // Process local change
                     if (!local_it->deleted) {
                         if (visible_index == k) {
-                            callback_found(local_it->element);
+                            callback_found(local_it->unversioned);
                             found = true;
                         }
                         ++visible_index;
@@ -477,23 +493,18 @@ class transactional_binary_tree {
                     ++local_it;
                 }
                 else {
-                    // Process store entry
-                    identifier_t store_id {store_node->entry.element};
-                    auto local_state = changed_entries_.find(store_id);
+                    identifier_t store_id {store_node->fruit};
+                    auto local_state = changes_.find(store_id);
 
-                    // Only count if visible and not overridden/deleted locally
-                    if (store_node->entry.visible && !store_node->entry.deleted &&
-                        local_state == changed_entries_.end()) {
+                    if (store_node->fruit.visible && !store_node->fruit.deleted && local_state == changes_.end()) {
                         if (visible_index == k) {
-                            callback_found(store_node->entry.element);
+                            callback_found(store_node->fruit.unversioned);
                             found = true;
                         }
                         ++visible_index;
                     }
 
-                    // Move to next store node
-                    store_node = versioned_entry_node_t::find_successor(store_ref().entries_.root(), store_node,
-                                                                        store_ref().entries_.key_comp());
+                    store_node = node_t::find_successor(store_node);
                 }
             }
 
@@ -509,8 +520,8 @@ class transactional_binary_tree {
          *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if element not found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept
             requires supports_order_statistics<versioned_set_t>
@@ -520,9 +531,8 @@ class transactional_binary_tree {
             bool found = false;
             versioned_comparator_t less;
 
-            // Check if target exists in local changes or main store
-            auto local_target = changed_entries_.find(target_id);
-            if (local_target != changed_entries_.end() && !local_target->deleted) { found = true; }
+            auto local_target = changes_.find(target_id);
+            if (local_target != changes_.end() && !local_target->deleted) { found = true; }
             else if (store_ref().contains(target_id)) { found = true; }
 
             if (!found) {
@@ -530,34 +540,31 @@ class transactional_binary_tree {
                 return;
             }
 
-            // Count visible elements less than target
-            auto local_it = changed_entries_.begin();
-            versioned_entry_node_t *store_node = versioned_entry_node_t::find_min(store_ref().entries_.root());
+            auto local_it = changes_.begin();
+            using node_t = typename versioned_set_t::node_t;
+            node_t *store_node = node_t::find_min(store_ref().entries_.root());
 
-            while (local_it != changed_entries_.end() || store_node) {
+            while (local_it != changes_.end() || store_node) {
                 bool take_local = false;
 
-                if (local_it == changed_entries_.end()) { take_local = false; }
+                if (local_it == changes_.end()) { take_local = false; }
                 else if (!store_node) { take_local = true; }
-                else { take_local = less(local_it->element, store_node->entry.element); }
+                else { take_local = less(local_it->unversioned, store_node->fruit); }
 
                 if (take_local) {
-                    // Check if this local entry is less than target
-                    if (!local_it->deleted && less(local_it->element, target_id)) ++rank_value;
+                    if (!local_it->deleted && less(local_it->unversioned, target_id)) ++rank_value;
                     ++local_it;
                 }
                 else {
-                    identifier_t store_id {store_node->entry.element};
-                    auto local_state = changed_entries_.find(store_id);
+                    identifier_t store_id {store_node->fruit};
+                    auto local_state = changes_.find(store_id);
 
-                    // Count if visible, not locally overridden, and less than target
-                    if (store_node->entry.visible && !store_node->entry.deleted &&
-                        local_state == changed_entries_.end() && less(store_node->entry.element, target_id)) {
+                    if (store_node->fruit.visible && !store_node->fruit.deleted && local_state == changes_.end() &&
+                        less(store_node->fruit.unversioned, target_id)) {
                         ++rank_value;
                     }
 
-                    store_node = versioned_entry_node_t::find_successor(store_ref().entries_.root(), store_node,
-                                                                        store_ref().entries_.key_comp());
+                    store_node = node_t::find_successor(store_node);
                 }
             }
 
@@ -571,14 +578,15 @@ class transactional_binary_tree {
          *  transaction itself, or @c reset() to discard all changes and start fresh.
          */
         [[nodiscard]] status_t stage() noexcept {
-            // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
             auto const entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
                 store.find_latest_entry_(
                     id_and_watch.id,
-                    [&](versioned_t const &entry) noexcept { consistency_violated = entry != id_and_watch.watch; },
+                    [&](versioned_t const &versioned) noexcept {
+                        consistency_violated = versioned != id_and_watch.watch;
+                    },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
                 if (consistency_violated) return {errc_t::consistency_k};
             }
@@ -586,19 +594,20 @@ class transactional_binary_tree {
             // Merge our current nodes into the store. The visibility will be updated later in the `commit`.
             // We can mark all new entries as unique, because no other set of entries can have the same
             // generation as contents of this transaction.
-            store.entries_.merge(changed_entries_, assume_unique);
+            store.entries_.merge(changes_, assume_unique);
             stage_ = stage_t::staged_k;
             return {success_k};
         }
 
         [[nodiscard]] status_t reset() noexcept {
-            // If the transaction was "staged", we must delete all the entries.
             auto &store = store_ref();
             if (stage_ == stage_t::staged_k)
-                for (auto const &id : changed_ids_) store.entries_.erase(dated_identifier_t {id, generation_});
+                for (identifier_t const &id : changed_ids_)
+                    // ! Don't materialize a new copy of `id` here, use a reference
+                    store.entries_.erase(dated_identifier<identifier_t const &> {id, generation_});
 
             watches_.clear();
-            changed_entries_.clear();
+            changes_.clear();
             changed_ids_.clear();
             stage_ = stage_t::created_k;
             generation_ = store.new_generation_();
@@ -608,12 +617,11 @@ class transactional_binary_tree {
         [[nodiscard]] status_t rollback() noexcept {
             if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
 
-            // Extract staged entries back into the transaction
             auto &store = store_ref();
-            for (auto const &id : changed_ids_)
-                changed_entries_.merge(store.entries_.extract(dated_identifier_t {id, generation_}));
+            for (identifier_t const &id : changed_ids_)
+                // ! Don't materialize a new copy of `id` here, use a reference
+                changes_.merge(store.entries_.extract(dated_identifier<identifier_t const &> {id, generation_}));
 
-            // Preserve watches_ for future stage operations (read watches persist across rollback)
             changed_ids_.clear();
             stage_ = stage_t::created_k;
             generation_ = store.new_generation_();
@@ -652,23 +660,23 @@ class transactional_binary_tree {
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find_visible_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                              callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        versioned_entry_node_t *largest_visible = nullptr;
-        versioned_entry_node_t::range(
-            entries_.root(), comparable, comparable, entries_.key_comp(), [&](versioned_entry_node_t *node) noexcept {
-                if ((node->entry.visible) &&
-                    (!largest_visible || node->entry.generation > largest_visible->entry.generation))
-                    largest_visible = node;
-            });
+        using node_t = typename versioned_set_t::node_t;
+        node_t *largest_visible = nullptr;
+        node_t::range(entries_.root(), comparable, comparable, entries_.key_comp(), [&](node_t *node) noexcept {
+            if ((node->fruit.visible) &&
+                (!largest_visible || node->fruit.generation > largest_visible->fruit.generation))
+                largest_visible = node;
+        });
 
         static_assert(is_safe_callback_for<callback_found_type_, versioned_t const &>,
                       "callback_found must be noexcept invocable with versioned_t const &");
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
-        if (largest_visible) callback_found(largest_visible->entry);
+        if (largest_visible) callback_found(largest_visible->fruit);
         else callback_missing();
     }
 
@@ -681,39 +689,37 @@ class transactional_binary_tree {
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                             callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        versioned_entry_node_t *latest = nullptr;
-        versioned_entry_node_t::range(entries_.root(), comparable, comparable, entries_.key_comp(),
-                                      [&](versioned_entry_node_t *node) noexcept {
-                                          // Find HIGHEST generation, regardless of visibility
-                                          if (!latest || node->entry.generation > latest->entry.generation)
-                                              latest = node;
-                                      });
+        using node_t = typename versioned_set_t::node_t;
+        node_t *latest = nullptr;
+        node_t::range(entries_.root(), comparable, comparable, entries_.key_comp(), [&](node_t *node) noexcept {
+            if (!latest || node->fruit.generation > latest->fruit.generation) latest = node;
+        });
 
-        if (latest && !latest->entry.deleted) callback_found(latest->entry);
+        if (latest && !latest->fruit.deleted) callback_found(latest->fruit);
         else callback_missing();
     }
 
     void unmask_and_compact_(identifier_t const &id, generation_t generation_to_unmask) noexcept {
-
-        auto should_remove = [&](versioned_t const &entry) noexcept {
-            if (!versioned_comparator_t {}.same(entry.element, id)) return false;
-            if (entry.generation == generation_to_unmask) return false;
-            return entry.visible;
+        auto should_remove = [&](versioned_t const &versioned) noexcept {
+            if (!versioned_comparator_t {}.same(versioned.unversioned, id)) return false;
+            if (versioned.generation == generation_to_unmask) return false;
+            return versioned.visible;
         };
 
         auto removed_count = entries_.remove_if(should_remove);
         visible_count_ -= removed_count;
 
-        // Unmask the new entry
-        auto it = entries_.find(dated_identifier_t {id, generation_to_unmask});
+        // ! Don't materialize a new copy of `id` here, use a reference
+        auto it = entries_.find(dated_identifier<identifier_t const &> {id, generation_to_unmask});
         if (it != entries_.end()) {
-            it->visible = true;
-            if (it->deleted) visible_deleted_count_++;
+            auto &versioned = const_cast<versioned_t &>(*it);
+            versioned.visible = true;
+            if (versioned.deleted) visible_deleted_count_++;
         }
     }
 
@@ -768,7 +774,7 @@ class transactional_binary_tree {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
         bool found = false;
-        find(std::forward<comparable_type_>(comparable), [&](element_t const &) noexcept { found = true; });
+        find(std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; });
         return found;
     }
 
@@ -782,12 +788,12 @@ class transactional_binary_tree {
      *  @return expected<element_t> Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t, typename copy_allocator_>
-    [[nodiscard]] expected<element_t> find_copy(comparable_type_ &&comparable,
-                                                [[maybe_unused]] copy_allocator_ &&allocator) const noexcept {
-        expected<element_t> result {};
+    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable,
+                                              [[maybe_unused]] copy_allocator_ &&allocator) const noexcept {
+        expected<value_t> result {};
         result.status.errc = errc_t::unknown_k;
-        find(std::forward<comparable_type_>(comparable), [&](element_t const &e) noexcept {
-            auto copy_result = copy_safely(e);
+        find(std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept {
+            auto copy_result = copy_safely(v);
             result.outcome = std::move(*copy_result);
             result.status = copy_result.status;
         });
@@ -803,8 +809,56 @@ class transactional_binary_tree {
      *  @return expected<element_t> Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<element_t> find_copy(comparable_type_ &&comparable) const noexcept {
+    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         return find_copy(std::forward<comparable_type_>(comparable), entries_.allocator());
+    }
+
+    /**
+     *  @brief Finds and returns a copy of the first element not less than (>=) @p comparable.
+     *
+     *  @param[in] comparable Object comparable to @c value_t.
+     *  @return expected<value_t> Result with copied element if found, or failure status.
+     */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> result;
+        result.status.errc = errc_t::key_not_found_k;
+        lower_bound(
+            std::forward<comparable_type_>(comparable),
+            [&](value_t const &v) noexcept {
+                auto copy_result = copy_safely(v);
+                if (copy_result) {
+                    result.outcome = std::move(*copy_result);
+                    result.status = status_t {success_k};
+                }
+                else { result.status = copy_result.status; }
+            },
+            [&]() noexcept {});
+        return result;
+    }
+
+    /**
+     *  @brief Finds and returns a copy of the first element greater than (>) @p comparable.
+     *
+     *  @param[in] comparable Object comparable to @c value_t.
+     *  @return expected<value_t> Result with copied element if found, or failure status.
+     */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> result;
+        result.status.errc = errc_t::key_not_found_k;
+        upper_bound(
+            std::forward<comparable_type_>(comparable),
+            [&](value_t const &v) noexcept {
+                auto copy_result = copy_safely(v);
+                if (copy_result) {
+                    result.outcome = std::move(*copy_result);
+                    result.status = status_t {success_k};
+                }
+                else { result.status = copy_result.status; }
+            },
+            [&]() noexcept {});
+        return result;
     }
 
 #pragma mark - Observers
@@ -835,24 +889,24 @@ class transactional_binary_tree {
      *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
      *    This is the strict insert semantics matching @c std::set::insert().
      *
-     *  @param[in] element Element to insert (moved into the tree).
+     *  @param[in] value Element to insert (moved into the tree).
      *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
      */
-    [[nodiscard]] status_t insert(element_t &&element) noexcept {
-        if (contains(element)) return {invalid_argument_k};
-        return upsert(std::move(element));
+    [[nodiscard]] status_t insert(value_t &&value) noexcept {
+        if (contains(value)) return {invalid_argument_k};
+        return upsert(std::move(value));
     }
 
     /**
      *  @brief Atomically inserts an element only if missing. Silently skips if key exists (no error).
      *    This is the "silent no-op" insert semantics.
      *
-     *  @param[in] element Element to insert (moved into the tree).
+     *  @param[in] value Element to insert (moved into the tree).
      *  @return status_t Always succeeds (unless OOM). Returns success even if key exists.
      */
-    [[nodiscard]] status_t insert_if_missing(element_t &&element) noexcept {
-        if (contains(element)) return {success_k};
-        return upsert(std::move(element));
+    [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
+        if (contains(value)) return {success_k};
+        return upsert(std::move(value));
     }
 
     /**
@@ -862,21 +916,31 @@ class transactional_binary_tree {
      *  @param[in] element Element to upsert (moved into the tree).
      *  @return status_t Success or error code (e.g., out of memory).
      */
-    [[nodiscard]] status_t upsert(element_t &&element) noexcept {
+    [[nodiscard]] status_t upsert(value_t &&value) noexcept {
         auto node = entries_.allocator().allocate(1);
         if (!node) return {out_of_memory_heap_k};
 
         generation_t generation = new_generation_();
-        auto &entry = node->entry;
-        new (&entry.element) element_t(std::move(element));
-        entry.generation = generation;
-        entry.deleted = false;
-        entry.visible = true;
+        auto &versioned = node->fruit;
+        new (&versioned.unversioned) value_t(std::move(value));
+        versioned.generation = generation;
+        versioned.deleted = false;
+        versioned.visible = true;
         entries_.merge(extract_result_t {&entries_, node});
         ++visible_count_;
-        assert(!entry.deleted && "entry.deleted is always false here, otherwise update visible_deleted_count_");
+        assert(!versioned.deleted && "versioned.deleted is always false here, otherwise update visible_deleted_count_");
 
-        erase_range(entry.element, dated_identifier_t {entry.element, generation});
+        if constexpr (std::is_copy_constructible_v<value_t>) {
+            erase_range(
+                mapping_key_or_itself<value_t>(versioned.unversioned),
+                dated_identifier<identifier_t> {mapping_key_or_itself<value_t>(versioned.unversioned), generation});
+        }
+        else {
+            auto upper_bound_key_copy = copy_safely(mapping_key_or_itself<value_t>(versioned.unversioned));
+            if (!upper_bound_key_copy) return {errc_t::out_of_memory_heap_k};
+            erase_range(mapping_key_or_itself<value_t>(versioned.unversioned),
+                        dated_identifier_t {std::move(*upper_bound_key_copy), generation});
+        }
         return {success_k};
     }
 
@@ -887,9 +951,9 @@ class transactional_binary_tree {
      *  @param[in] element Element to update (moved into the tree).
      *  @return status_t Success, @c key_not_found_k if key doesn't exist, or OOM error.
      */
-    [[nodiscard]] status_t update(element_t &&element) noexcept {
-        if (!contains(element)) return {key_not_found_k};
-        return upsert(std::move(element));
+    [[nodiscard]] status_t update(value_t &&value) noexcept {
+        if (!contains(value)) return {key_not_found_k};
+        return upsert(std::move(value));
     }
 
     /**
@@ -912,32 +976,53 @@ class transactional_binary_tree {
         generation_t generation = new_generation_();
 
         for (; first != last; ++first) {
-            versioned_t entry;
-            entry.element = *first;
-            entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
+            versioned_t versioned;
+            versioned.unversioned = *first;
+            versioned.generation = generation;
+            versioned.deleted = false;
+            versioned.visible = true;
 
-            auto result = temp_tree.insert_if_missing(std::move(entry));
-            if (result.first == temp_tree.end() && !result.second)
-                return {out_of_memory_heap_k}; // Temp tree auto-destructs
+            auto result = temp_tree.insert_if_missing(std::move(versioned));
+            if (result.first == temp_tree.end() && !result.second) return {out_of_memory_heap_k};
         }
 
-        // Check for conflicts with existing visible entries - O(m log n) or O(m+n) with optimization
         bool conflict = false;
         for (auto const &temp_entry : temp_tree) {
-            identifier_t id {temp_entry.element};
+            identifier_t id {temp_entry.unversioned};
             find_visible_entry_(id, [&](versioned_t const &) noexcept { conflict = true; }, {});
             if (conflict) break;
         }
 
-        if (conflict) return {invalid_argument_k}; // Temp tree auto-destructs, no changes to main tree
+        if (conflict) return {invalid_argument_k};
 
-        // No conflicts - merge temp tree into main tree (assume_unique_t safe - verified no duplicates)
         entries_.merge(temp_tree, assume_unique_t {});
         visible_count_ += count;
 
         return {success_k};
+    }
+
+    /**
+     *  @brief Bulk insert from iterator range (atomic lenient semantics).
+     *    Skips keys that already exist. All new elements inserted atomically - if any allocation fails,
+     *    no changes are made.
+     *
+     *  @param[in] first Beginning of range to insert.
+     *  @param[in] last End of range to insert.
+     *  @return status_t Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
+     */
+    template <typename input_iterator_type_>
+    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+        auto txn = transaction();
+        if (!txn) return {out_of_memory_heap_k};
+
+        for (; first != last; ++first) {
+            auto status = txn->insert_if_missing(value_t(*first));
+            if (!status) return status;
+        }
+
+        auto stage_status = txn->stage();
+        if (!stage_status) return stage_status;
+        return txn->commit();
     }
 
     /**
@@ -950,39 +1035,17 @@ class transactional_binary_tree {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        std::size_t const count = std::distance(first, last);
-        if (count == 0) return {success_k};
-
-        // Build temporary tree from range
-        versioned_set_t temp_tree(entries_.key_comp(), entries_.allocator());
-        generation_t generation = new_generation_();
+        auto txn = transaction();
+        if (!txn) return {out_of_memory_heap_k};
 
         for (; first != last; ++first) {
-            versioned_t entry;
-            entry.element = *first;
-            entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
-
-            auto result = temp_tree.insert_if_missing(std::move(entry));
-            if (result.first == temp_tree.end() && !result.second) return {out_of_memory_heap_k};
+            auto status = txn->upsert(value_t(*first));
+            if (!status) return status;
         }
 
-        // Count existing entries before merge
-        std::size_t initial_size = entries_.size();
-
-        // Merge temp tree using upsert semantics (updates duplicates)
-        entries_.merge_with_upsert(temp_tree);
-
-        // Update visible count based on net new entries
-        visible_count_ += (entries_.size() - initial_size);
-
-        // Erase older revisions for all elements in the temporary tree
-        for (auto const &entry : temp_tree) {
-            erase_range(entry.element, dated_identifier_t {entry.element, generation});
-        }
-
-        return {success_k};
+        auto stage_status = txn->stage();
+        if (!stage_status) return stage_status;
+        return txn->commit();
     }
 
     /**
@@ -1003,20 +1066,19 @@ class transactional_binary_tree {
         generation_t generation = new_generation_();
 
         for (; first != last; ++first) {
-            versioned_t entry;
-            entry.element = *first;
-            entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
+            versioned_t versioned;
+            versioned.unversioned = *first;
+            versioned.generation = generation;
+            versioned.deleted = false;
+            versioned.visible = true;
 
-            auto result = temp_tree.insert_if_missing(std::move(entry));
+            auto result = temp_tree.insert_if_missing(std::move(versioned));
             if (result.first == temp_tree.end() && !result.second) return {out_of_memory_heap_k};
         }
 
-        // VALIDATION: Check that ALL keys exist as visible entries
         bool all_exist = true;
         for (auto const &temp_entry : temp_tree) {
-            identifier_t id {temp_entry.element};
+            identifier_t id {temp_entry.unversioned};
             bool found = false;
             find_visible_entry_(id, [&](versioned_t const &) noexcept { found = true; }, {});
             if (!found) {
@@ -1024,16 +1086,12 @@ class transactional_binary_tree {
                 break;
             }
         }
-        if (!all_exist) return {key_not_found_k}; // Temp tree auto-destructs
+        if (!all_exist) return {key_not_found_k};
 
-        // All keys exist - merge using upsert semantics (updates existing entries)
         entries_.merge_with_upsert(temp_tree);
 
-        // visible_count_ unchanged (updating existing entries, not adding new ones)
-
-        // Erase older revisions for all elements
-        for (auto const &entry : temp_tree) {
-            erase_range(entry.element, dated_identifier_t {entry.element, generation});
+        for (auto const &versioned : temp_tree) {
+            erase_range(versioned.unversioned, dated_identifier_t {versioned.unversioned, generation});
         }
 
         return {success_k};
@@ -1048,14 +1106,14 @@ class transactional_binary_tree {
      *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         find_visible_entry_(
             std::forward<comparable_type_>(comparable),
-            [&](versioned_t const &entry) noexcept { callback_found(entry.element); },
+            [&](versioned_t const &versioned) noexcept { callback_found(versioned.unversioned); },
             std::forward<callback_missing_type_>(callback_missing));
     }
 
@@ -1066,23 +1124,21 @@ class transactional_binary_tree {
      *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
-                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
+                      "callback_found must be noexcept invocable with value_t const &");
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-        // Skip all the invisible entries
-        versioned_entry_node_t *next_visible =
-            versioned_entry_node_t::lower_bound(entries_.root(), comparable, entries_.key_comp());
-        while (next_visible && !next_visible->entry.visible)
-            next_visible =
-                versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry, entries_.key_comp());
+        using node_t = typename versioned_set_t::node_t;
+        node_t *next_visible = node_t::lower_bound(entries_.root(), comparable, entries_.key_comp());
+        while (next_visible && !next_visible->fruit.visible)
+            next_visible = node_t::upper_bound(entries_.root(), next_visible->fruit, entries_.key_comp());
 
-        if (next_visible) callback_found(next_visible->entry.element);
+        if (next_visible) callback_found(next_visible->fruit.unversioned);
         else callback_missing();
     }
 
@@ -1093,118 +1149,82 @@ class transactional_binary_tree {
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_fn_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        static_assert(is_safe_callback_for<callback_found_type_, element_t const &>,
-                      "callback_found must be noexcept invocable with element_t const &");
+        static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
+                      "callback_found must be noexcept invocable with value_t const &");
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-        // Skip all the invisible entries
-        versioned_entry_node_t *next_visible =
-            versioned_entry_node_t::upper_bound(entries_.root(), comparable, entries_.key_comp());
-        while (next_visible && !next_visible->entry.visible)
-            next_visible =
-                versioned_entry_node_t::upper_bound(entries_.root(), next_visible->entry, entries_.key_comp());
+        using node_t = typename versioned_set_t::node_t;
+        node_t *next_visible = node_t::upper_bound(entries_.root(), comparable, entries_.key_comp());
+        while (next_visible && !next_visible->fruit.visible)
+            next_visible = node_t::upper_bound(entries_.root(), next_visible->fruit, entries_.key_comp());
 
-        if (next_visible) callback_found(next_visible->entry.element);
+        if (next_visible) callback_found(next_visible->fruit.unversioned);
         else callback_missing();
     }
 
 #pragma mark - Range Operations
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
-        versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
-                                      std::forward<upper_type_>(upper), entries_.key_comp(),
-                                      [&](versioned_entry_node_t *node) noexcept {
-                                          if (node->entry.visible) callback(node->entry.element);
-                                      });
+              typename callback_type_ = no_op_fn_t>
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept {
+        using node_t = typename versioned_set_t::node_t;
+        node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                      entries_.key_comp(), [&](node_t *node) noexcept {
+                          if (node->fruit.visible) callback(node->fruit.unversioned);
+                      });
     }
 
-    /**
-     *  @brief Iterates over key-value associations in [ @p lower, @p upper), providing mutable value access.
-     *    Only enabled for mapping types. Callback receives (const key_type&, value_type&).
-     *    Updates generation for each accessed element.
-     *
-     *  @param[in] lower Lower bound (inclusive).
-     *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Callback invoked with (const Key&, Value&) for each element. Must be @c noexcept.
-     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-        requires is_mapping<element_t>
+        requires is_mapping<value_t>
     {
         generation_t generation = new_generation_();
-        versioned_entry_node_t::range(entries_.root(), std::forward<lower_type_>(lower),
-                                      std::forward<upper_type_>(upper), entries_.key_comp(),
-                                      [&](versioned_entry_node_t *node) noexcept {
-                                          if (!node->entry.visible) return;
-                                          callback(node->entry.element.key, node->entry.element.value);
-                                          node->entry.generation = generation;
-                                      });
+        using node_t = typename versioned_set_t::node_t;
+        node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                      entries_.key_comp(), [&](node_t *node) noexcept {
+                          if (!node->fruit.visible) return;
+                          callback(node->fruit.unversioned.key, node->fruit.unversioned.mapped);
+                          node->fruit.generation = generation;
+                      });
     }
 
-    /**
-     *  @brief Erases all the entries falling in between the @p lower and the @p upper.
-     *
-     *  @param[in] lower Lower bound of the range.
-     *  @param[in] upper Upper bound of the range (exclusive).
-     *  @param[in] callback Optional callback invoked for each erased element. Must be @c noexcept.
-     *  @return status_t Always succeeds.
-     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
-        // Use split/join for O(log n + k) complexity instead of O(k log n)
-        // Split at lower bound
-        auto first_split = entries_.split(std::forward<lower_type_>(lower));
-
-        // Split the right part at upper bound to isolate the range
-        auto second_split = first_split.right.split(std::forward<upper_type_>(upper));
-
-        // middle_tree contains elements in [lower, upper) that need to be deleted
-        // Traverse it to invoke callbacks and update counters
-        versioned_entry_node_t::for_each_left_right(second_split.left.root(),
-                                                    [&](versioned_entry_node_t *node) noexcept {
-                                                        if (node->entry.visible) {
-                                                            callback(node->entry.element);
-                                                            --visible_count_;
-                                                            visible_deleted_count_ -= node->entry.deleted;
-                                                        }
-                                                    });
-
-        // Deallocate all nodes in the middle tree (second_split.left)
-        second_split.left.clear();
-
-        // Join the left and far_right trees back together
-        first_split.left.join(second_split.right);
-
-        // Move the result back to entries_
-        entries_ = std::move(first_split.left);
-
+        entries_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                             [&](versioned_t const &versioned) noexcept {
+                                 if (versioned.visible) {
+                                     callback(versioned.unversioned);
+                                     --visible_count_;
+                                     visible_deleted_count_ -= versioned.deleted;
+                                 }
+                             });
         return status_t {success_k};
     }
 
 #pragma mark - Sampling
 
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              typename callback_type_ = no_op_fn_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
 
-        auto node = versioned_entry_node_t::sample_range( //
+        using node_t = typename versioned_set_t::node_t;
+        auto node = node_t::sample_range( //
             entries_.root(), lower, upper, entries_.key_comp(), std::forward<generator_type_>(generator),
-            [](versioned_entry_node_t *node) noexcept { return node->entry.visible; });
-        if (node) callback(node->entry);
+            [](node_t *node) noexcept { return node->fruit.visible; });
+        if (node) callback(node->fruit);
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
@@ -1215,13 +1235,13 @@ class transactional_binary_tree {
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
         static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
-        auto sampler = [&](element_t const &element) noexcept {
-            if (seen < reservoir_capacity) reservoir[seen] = element;
+        auto sampler = [&](value_t const &value) noexcept {
+            if (seen < reservoir_capacity) reservoir[seen] = value;
 
             else {
                 std::uniform_int_distribution<std::size_t> distribution {0, seen};
                 auto slot_to_replace = distribution(generator);
-                if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = element;
+                if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = value;
             }
 
             ++seen;
@@ -1231,29 +1251,19 @@ class transactional_binary_tree {
 
 #pragma mark - Order Statistics
 
-    /**
-     *  @brief Finds the k-th smallest visible (committed) element using order statistics.
-     *    Only available for tree implementations that support order statistics (e.g., WB trees).
-     *    Requires O(log n) time for weight-balanced trees.
-     *
-     *  @param[in] k Zero-based index (0 = smallest element).
-     *  @param[in] callback_found Callback to receive the k-th element. Must be @c noexcept.
-     *  @param[in] callback_missing Callback triggered if k >= size(). Must be @c noexcept.
-     */
-    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
     void select(std::size_t k, callback_found_type_ &&callback_found,
                 callback_missing_type_ &&callback_missing = {}) const noexcept
         requires supports_order_statistics<versioned_set_t>
     {
-        // Count visible entries until we reach the k-th one
         std::size_t visible_index = 0;
         bool found = false;
 
-        // Iterate in sorted order, counting only visible entries
-        versioned_entry_node_t::for_each_left_right(entries_.root(), [&](versioned_entry_node_t *node) noexcept {
-            if (!node->entry.visible || node->entry.deleted) return;
+        using node_t = typename versioned_set_t::node_t;
+        node_t::for_each_left_right(entries_.root(), [&](node_t *node) noexcept {
+            if (!node->fruit.visible || node->fruit.deleted) return;
             if (visible_index == k) {
-                callback_found(node->entry.element);
+                callback_found(node->fruit.unversioned);
                 found = true;
                 return;
             }
@@ -1272,30 +1282,28 @@ class transactional_binary_tree {
      *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if element not found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept
         requires supports_order_statistics<versioned_set_t>
     {
-        // Count visible entries before the target
         std::size_t rank_value = 0;
         bool found = false;
         identifier_t target_id(comparable);
         versioned_comparator_t less;
 
-        versioned_entry_node_t::for_each_left_right(entries_.root(), [&](versioned_entry_node_t *node) noexcept {
-            if (!node->entry.visible || node->entry.deleted) return;
+        using node_t = typename versioned_set_t::node_t;
+        node_t::for_each_left_right(entries_.root(), [&](node_t *node) noexcept {
+            if (!node->fruit.visible || node->fruit.deleted) return;
 
-            // Check if this is our target
-            if (less.same(node->entry.element, target_id)) {
+            if (less.same(node->fruit.unversioned, target_id)) {
                 callback_found(rank_value);
                 found = true;
                 return;
             }
 
-            // If this node is less than target, increment rank
-            if (less(node->entry.element, target_id)) ++rank_value;
+            if (less(node->fruit.unversioned, target_id)) ++rank_value;
         });
 
         if (!found) callback_missing();
@@ -1309,17 +1317,16 @@ class transactional_binary_tree {
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      *  @return status_t Always succeeds.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                    callback_missing_type_ &&callback_missing = {}) noexcept {
-        // Find the entry
         bool found = false;
         find(
             std::forward<comparable_type_>(comparable),
-            [&](versioned_t const &entry) noexcept {
+            [&](versioned_t const &versioned) noexcept {
                 found = true;
-                callback_found(entry.element);
+                callback_found(versioned.unversioned);
             },
             []() noexcept {});
 
@@ -1328,7 +1335,6 @@ class transactional_binary_tree {
             return status_t {success_k};
         }
 
-        // Erase the entry
         erase_range(std::forward<comparable_type_>(comparable),
                     dated_identifier_t {identifier_t(comparable), generation_ + 1});
         return status_t {success_k};
@@ -1365,9 +1371,10 @@ class transactional_binary_tree {
     void print(dont_instantiate_me_type_ &cout) {
         cout << "Items: " << entries_.size() << "\n";
         cout << "Imbalance: " << entries_.total_imbalance() << "\n";
-        versioned_entry_node_t::for_each_left_right(entries_.root(), [&](versioned_entry_node_t *node) {
-            char const *marker = node->entry.visible ? "✓" : "✗";
-            cout << identifier_t {node->entry.element} << " @" << node->entry.generation << marker << " ";
+        using node_t = typename versioned_set_t::node_t;
+        node_t::for_each_left_right(entries_.root(), [&](node_t *node) {
+            char const *marker = node->fruit.visible ? "✓" : "✗";
+            cout << identifier_t {node->fruit.unversioned} << " @" << node->fruit.generation << marker << " ";
         });
         cout << "\n";
     }
@@ -1377,14 +1384,13 @@ class transactional_binary_tree {
  *  @brief STL-style transactional set using AVL tree.
  *    Stores unique elements in sorted order with ACID transaction semantics.
  *
- *  @tparam element_type_ Type of elements stored in the set.
+ *  @tparam value_type_ Type of elements stored in the set.
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename element_type_, typename comparator_type_ = std::less<element_type_>,
-          typename allocator_type_ = std::allocator<element_type_>>
-using transactional_avl_set =
-    transactional_binary_tree<basic_avl_tree<element_type_, comparator_type_, allocator_type_>>;
+template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
+          typename allocator_type_ = std::allocator<value_type_>>
+using transactional_avl_set = transactional_binary_tree<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional map using AVL tree.
@@ -1404,13 +1410,13 @@ using transactional_avl_map =
  *  @brief STL-style transactional set using weight-balanced tree with order statistics support.
  *    Stores unique elements in sorted order with ACID transaction semantics and O(log n) rank/select operations.
  *
- *  @tparam element_type_ Type of elements stored in the set.
+ *  @tparam value_type_ Type of elements stored in the set.
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename element_type_, typename comparator_type_ = std::less<element_type_>,
-          typename allocator_type_ = std::allocator<element_type_>>
-using transactional_wb_set = transactional_binary_tree<basic_wb_tree<element_type_, comparator_type_, allocator_type_>>;
+template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
+          typename allocator_type_ = std::allocator<value_type_>>
+using transactional_wb_set = transactional_binary_tree<basic_wb_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional map using weight-balanced tree with order statistics support.

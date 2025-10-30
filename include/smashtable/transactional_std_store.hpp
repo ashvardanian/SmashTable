@@ -196,7 +196,7 @@ class transactional_std_store {
          *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
          *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
          */
-        template <typename callback_inserted_type_ = no_op_t, typename callback_exists_type_ = no_op_t,
+        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_exists_type_ = no_op_fn_t,
                   typename... tags_types_>
         [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                       callback_exists_type_ &&callback_exists = {}, tags_types_...) noexcept {
@@ -251,7 +251,7 @@ class transactional_std_store {
          *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
          *  @return status_t Always succeeds (unless OOM). Success returned even if key exists.
          */
-        template <typename callback_inserted_type_ = no_op_t, typename callback_skipped_type_ = no_op_t,
+        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_skipped_type_ = no_op_fn_t,
                   typename... tags_types_>
         [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                                  callback_skipped_type_ &&callback_skipped = {},
@@ -307,7 +307,7 @@ class transactional_std_store {
          *  @param[in] callback_assigned Callback invoked if element will be assigned (key exists, value updated).
          *  @return status_t Success or error code (e.g., out of memory).
          */
-        template <typename callback_inserted_type_ = no_op_t, typename callback_assigned_type_ = no_op_t,
+        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_assigned_type_ = no_op_fn_t,
                   typename... tags_types_>
         [[nodiscard]] status_t insert_or_assign_(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                                  callback_assigned_type_ &&callback_assigned = {},
@@ -422,8 +422,8 @@ class transactional_std_store {
          *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -466,8 +466,8 @@ class transactional_std_store {
          *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -522,8 +522,8 @@ class transactional_std_store {
          *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -578,7 +578,7 @@ class transactional_std_store {
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename callback_type_ = no_op_t>
+                  typename callback_type_ = no_op_fn_t>
         void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
@@ -625,7 +625,7 @@ class transactional_std_store {
             stage_ = stage_t::staged_k;
 
             // Support return_new_size to export staged count
-            get_type_or<return_new_size_t, black_hole_t>(tags...) = changed_ids_.size();
+            get_value_by_type_or<return_new_size_t, discard_t>(tags...) = changed_ids_.size();
             return {success_k};
         }
 
@@ -703,7 +703,7 @@ class transactional_std_store {
             }
 
             stage_ = stage_t::created_k;
-            get_type_or<return_new_size_t, black_hole_t>(tags...) = store.visible_count_;
+            get_value_by_type_or<return_new_size_t, discard_t>(tags...) = store.visible_count_;
             return {success_k};
         }
     };
@@ -728,8 +728,8 @@ class transactional_std_store {
      *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find_visible_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                              callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -755,8 +755,8 @@ class transactional_std_store {
      *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                             callback_missing_type_ &&callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
@@ -771,7 +771,7 @@ class transactional_std_store {
         else callback_found(*latest);
     }
 
-    template <typename callback_type_ = no_op_t>
+    template <typename callback_type_ = no_op_fn_t>
     void erase_visible_(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
         entry_iterator_t current = begin;
         while (current != end)
@@ -919,7 +919,7 @@ class transactional_std_store {
      *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
      *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
      */
-    template <typename callback_inserted_type_ = no_op_t, typename callback_exists_type_ = no_op_t>
+    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_exists_type_ = no_op_fn_t>
     [[nodiscard]] status_t insert(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                   callback_exists_type_ &&callback_exists = {}) noexcept {
 
@@ -966,7 +966,7 @@ class transactional_std_store {
      *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
      *  @return status_t Always succeeds (unless OOM). Success returned even if key exists.
      */
-    template <typename callback_inserted_type_ = no_op_t, typename callback_skipped_type_ = no_op_t>
+    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_skipped_type_ = no_op_fn_t>
     [[nodiscard]] status_t insert_if_missing(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                              callback_skipped_type_ &&callback_skipped = {}) noexcept {
 
@@ -1013,7 +1013,7 @@ class transactional_std_store {
      *  @param[in] callback_assigned Callback invoked if element was assigned (key existed, value updated).
      *  @return status_t Success or error code (e.g., out of memory).
      */
-    template <typename callback_inserted_type_ = no_op_t, typename callback_assigned_type_ = no_op_t>
+    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_assigned_type_ = no_op_fn_t>
     [[nodiscard]] status_t insert_or_assign(element_t &&element, callback_inserted_type_ &&callback_inserted = {},
                                             callback_assigned_type_ &&callback_assigned = {}) noexcept {
 
@@ -1109,8 +1109,8 @@ class transactional_std_store {
      *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -1147,8 +1147,8 @@ class transactional_std_store {
      *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -1171,8 +1171,8 @@ class transactional_std_store {
      *  @param[in] callback_found Callback to receive an @c element_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
@@ -1195,7 +1195,7 @@ class transactional_std_store {
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_fn_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
@@ -1215,7 +1215,7 @@ class transactional_std_store {
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
@@ -1225,7 +1225,7 @@ class transactional_std_store {
 
     /**
      *  @brief Iterates over key-value associations in [ @p lower, @p upper), providing mutable value access.
-     *    Only enabled for association types. Callback receives (key_type const&, value_type&).
+     *    Only enabled for mapping types. Callback receives (key_type const&, value_type&).
      *    Updates generation for each accessed element.
      *
      *  @param[in] lower Lower bound (inclusive).
@@ -1233,9 +1233,9 @@ class transactional_std_store {
      *  @param[in] callback Callback invoked with (key_type const&, value_type&) for each element. Must be @c noexcept.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-        requires is_association<element_t>
+        requires is_mapping<element_t>
     {
         generation_t generation = new_generation_();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
@@ -1258,8 +1258,8 @@ class transactional_std_store {
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      *  @return status_t Always succeeds.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                    callback_missing_type_ &&callback_missing = {}) noexcept {
 
@@ -1293,7 +1293,7 @@ class transactional_std_store {
      *  @return status_t Always succeeds.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_type_, element_t const &>,
@@ -1341,7 +1341,8 @@ class transactional_std_store {
      *
      *  @note Inefficient for large ranges. Use reservoir sampling overload for multiple samples.
      */
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              typename callback_type_ = no_op_fn_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
 
@@ -1417,6 +1418,6 @@ template < //
     typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
     typename allocator_type_ = std::allocator<std::uint8_t>>
 using transactional_std_map =
-    transactional_std_store<association<key_type_, value_type_>, comparator_type_, allocator_type_>;
+    transactional_std_store<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>;
 
 } // namespace ashvardanian::smashtable

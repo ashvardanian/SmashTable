@@ -509,6 +509,34 @@ struct comparable_particle_of<comparator_type_, comparable_type_, true> {
     using type = typename comparator_type_::comparable_particle;
 };
 
+template <typename identifier_type_>
+struct dated_identifier {
+    using identifier_t = identifier_type_;
+
+    identifier_t id;
+    generation_t generation {0};
+};
+
+template <typename identifier_type_>
+struct watched_identifier {
+    using identifier_t = identifier_type_;
+
+    identifier_t id;
+    watch_t watch;
+};
+
+template <typename type_>
+struct is_dating_identifier : public std::false_type {};
+
+template <typename identifier_type_>
+struct is_dating_identifier<dated_identifier<identifier_type_>> : public std::true_type {};
+
+template <typename identifier_type_>
+struct is_dating_identifier<watched_identifier<identifier_type_>> : public std::true_type {};
+
+template <typename type_>
+inline constexpr bool is_dating_identifier_v = is_dating_identifier<type_>::value;
+
 /**
  *  @brief Decorates a value type with generation and visibility metadata for transactional containers.
  *
@@ -546,16 +574,6 @@ struct versioning_for {
     static_assert(std::is_nothrow_move_constructible<value_t>() && std::is_nothrow_move_assignable<value_t>(),
                   "To make all the methods `noexcept`, the moves must be safe too.");
 
-    struct dated_identifier_t {
-        identifier_t id;
-        generation_t generation {0};
-    };
-
-    struct watched_identifier_t {
-        identifier_t id;
-        watch_t watch;
-    };
-
     struct versioned_t {
         value_t unversioned;
         generation_t generation {0};
@@ -569,7 +587,6 @@ struct versioning_for {
         versioned_t &operator=(versioned_t const &) noexcept = delete;
         versioned_t(value_t &&unversioned) noexcept : unversioned(std::move(unversioned)) {}
 
-        operator value_t const &() const & noexcept { return unversioned; }
         bool operator==(watch_t const &watch) const noexcept {
             return watch.deleted == deleted && watch.generation == generation;
         }
@@ -578,21 +595,14 @@ struct versioning_for {
         }
     };
 
-    template <typename type_>
-    constexpr static bool knows_generation() {
-        using dereferenced_t = std::remove_reference_t<type_>;
-        return std::is_same<dereferenced_t, versioned_t>() || std::is_same<dereferenced_t, dated_identifier_t>();
-    }
-
     struct versioned_comparator_t {
         using is_transparent = void;
 
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
             using dereferenced_t = std::remove_reference_t<type_>;
-            if constexpr (std::is_same<dereferenced_t, versioned_t>()) return (value_t const &)object.unversioned;
-            else if constexpr (std::is_same<dereferenced_t, dated_identifier_t>())
-                return (identifier_t const &)object.id;
+            if constexpr (std::is_same_v<dereferenced_t, versioned_t>) return (value_t const &)object.unversioned;
+            else if constexpr (is_dating_identifier_v<dereferenced_t>) return (identifier_t const &)object.id;
             else return (dereferenced_t const &)object;
         }
 
@@ -613,7 +623,8 @@ struct versioning_for {
         bool less(first_type_ const &a, second_type_ const &b) const noexcept {
             using first_t = std::remove_reference_t<first_type_>;
             using second_t = std::remove_reference_t<second_type_>;
-            if constexpr (knows_generation<first_t>() && knows_generation<second_t>()) return dated_compare(a, b);
+            if constexpr (is_dating_identifier_v<first_t> && is_dating_identifier_v<second_t>)
+                return dated_compare(a, b);
             else return native_compare(a, b);
         }
 

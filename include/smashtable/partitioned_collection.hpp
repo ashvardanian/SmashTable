@@ -263,8 +263,8 @@ class partitioned_collection {
             return parts_[part_idx].watch(id);
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
             std::size_t part_idx = bucket_(identifier_t(comparable));
@@ -281,8 +281,8 @@ class partitioned_collection {
             return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-                  typename callback_missing_type_ = no_op_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
             partitioned_t::for_all_next_lookups(parts_, store_.mutexes_, std::forward<comparable_type_>(comparable),
@@ -370,8 +370,8 @@ class partitioned_collection {
         return maybe->commit();
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
         std::size_t part_idx = bucket_(identifier_t(comparable));
@@ -388,8 +388,8 @@ class partitioned_collection {
         return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
         for_all_next_lookups(parts_, mutexes_, std::forward<comparable_type_>(comparable),
@@ -398,7 +398,7 @@ class partitioned_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         lock_out_of_order_<shared_lock_t>(mutexes_);
         for (auto &part : parts_) part.range(lower, upper, callback);
@@ -406,7 +406,7 @@ class partitioned_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         lock_out_of_order_<unique_lock_t>(mutexes_);
         for (auto &part : parts_) part.range(lower, upper, callback);
@@ -414,14 +414,15 @@ class partitioned_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_t>
+              typename callback_type_ = no_op_fn_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         lock_out_of_order_<unique_lock_t>(mutexes_);
         for (auto &part : parts_) part.erase_range(lower, upper, callback);
         for (auto &mutex : mutexes_) mutex.unlock();
     }
 
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              typename callback_type_ = no_op_fn_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
         // ! Here the assumption is that every part will have a somewhat equal
