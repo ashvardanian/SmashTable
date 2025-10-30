@@ -24,7 +24,13 @@ import smashtable as st
 import concurrent.futures
 
 doc = sz.File("enwik9.txt")
+words = sz.SortedSet(dtype=str)
 
+for word in doc.split_iter():
+    words.add(word)
+
+assert len(words) > 0
+assert words[:3] == [ ... ]
 ```
 
 ## C++ Quick Start

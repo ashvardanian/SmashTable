@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "smashtable"
+version = "0.1.0"
+description = "Concurrent Thread-Safe Atomic & Consistent Collections for Parallel Python"
+readme = "README.md"
+authors = [{ name = "Ash Vardanian" }]
+license = "Apache-2.0"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Operating System :: OS Independent",
+    "Topic :: Database",
+    "Topic :: Software Development :: Libraries",
+]
+requires-python = ">=3.14"
+
+[tool.setuptools]
+packages = []
+
+[project.urls]
+Homepage = "https://github.com/ashvardanian/SmashTable"
+Repository = "https://github.com/ashvardanian/SmashTable.git"
+
+[tool.pytest.ini_options]
+minversion = "6.0"
+addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config", "-v"]
+xfail_strict = true
+filterwarnings = ["error"]
+testpaths = ["test.py"]
+
+[tool.black]
+line-length = 120
+
+[tool.ruff]
+target-version = "py314"
+line-length = 120
