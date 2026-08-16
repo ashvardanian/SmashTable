@@ -1,0 +1,257 @@
+#!/usr/bin/env bash
+#
+# SmashTable pre-commit: enforce the house style on staged changes before they land.
+#
+# Each check inspects only the ADDED lines of a staged file, so legacy code migrates on its own
+# schedule while no new violation sneaks in, and each prints the specific reason when it fires.
+# The dispatch loop at the bottom diffs every staged file exactly once and hands the added lines
+# to each check through the `file` / `added` globals - the checks themselves are grep one-liners.
+# Configuring the CMake build arms these hooks; see the `core.hooksPath` block in CMakeLists.txt.
+#
+# Bypass knowingly (you almost never should) with: git commit --no-verify
+
+set -u
+LC_ALL=C # ? Byte-wise regexes, immune to the committer's locale
+
+failed=0
+
+# Prints the reason and the first offending lines, and marks the commit rejected.
+fail() { # fail <matches> <message-line>...
+    local matches=$1
+    shift
+    local line
+    for line in "$@"; do echo "pre-commit: $line"; done
+    printf '%s\n' "$matches" | head -5
+    failed=1
+}
+
+# Compiled byte-code, caches and build output never belong in the tree. This one is a belt to
+# .gitignore's braces: a `git add -f` or a stale index entry still gets caught here.
+check_generated_artifacts() {
+    case "$file" in
+    *.pyc | *.pyo | *__pycache__* | *.egg-info* | .pytest_cache/* | wheelhouse/* | dist/*)
+        echo "pre-commit: $file is generated output and must not be committed"
+        failed=1
+        ;;
+    esac
+}
+
+# ASCII "->" arrows inside comments & docstrings - prose uses the Unicode arrow (→). Lines quoting
+# C++ trailing return types inside @code blocks are the one legitimate use, so they are exempt.
+check_ascii_arrows() {
+    local arrows
+    arrows=$(printf '%s\n' "$added" | grep -E '((//|/\*|^\+[[:space:]]*\*).* -> )' | grep -v '@code' || true)
+    [ -z "$arrows" ] || fail "$arrows" \
+        "$file uses the ASCII '->' arrow in a comment - prose arrows are the Unicode →:"
+}
+
+# `memcpy` in a C++ source - assignment or std::bit_cast says the same thing with types intact.
+check_memcpy() {
+    local copies
+    copies=$(printf '%s\n' "$added" | grep -E '\b(std::)?memcpy[[:space:]]*\(' || true)
+    [ -z "$copies" ] || fail "$copies" \
+        "$file calls memcpy - prefer assignment or std::bit_cast in C++:"
+}
+
+# A `bool` parameter that steers behaviour reads as `f(x, true)` at the call site, which tells the
+# reader nothing. Name the states in an enum, ideally a scoped one backed by `bool`.
+check_boolean_parameters() {
+    local switches
+    switches=$(printf '%s\n' "$added" |
+        grep -E '\b(bool)[[:space:]]+[a-z_][a-z_0-9]*[[:space:]]*[,)]' |
+        grep -vE '\b(is|has|was|can|should|contains|empty|equals)_?' || true)
+    [ -z "$switches" ] || fail "$switches" \
+        "$file takes a bool parameter that selects behaviour - name the states in an enum:"
+}
+
+# Comments describe what the code is, never what it was. Git holds the history.
+check_backward_references() {
+    local history
+    history=$(printf '%s\n' "$added" |
+        grep -iE '(//|^\+[[:space:]]*\*).*\b(used to be|no longer|renamed (from|to)|moved from|was formerly|as before)\b' || true)
+    [ -z "$history" ] || fail "$history" \
+        "$file has a backward-looking comment - describe the present, git holds the history:"
+}
+
+# Comment banners drawn as rules. Sections are `#pragma region`, which folds in every editor.
+check_banner_rules() {
+    local rules
+    rules=$(printf '%s\n' "$added" | grep -E '(//|^\+[[:space:]]*\*)[[:space:]]*[-=#]{4,}' || true)
+    [ -z "$rules" ] || fail "$rules" \
+        "$file draws a comment banner - sections are '#pragma region <Name>':"
+}
+
+# The same ban in the `#`-comment languages - Python, CMake, shell, YAML, TOML - where the C-family
+# spelling above cannot reach. A whole line of rule characters is a banner however it is drawn, and
+# `cmake-format` and `black` both happily preserve one, so nothing else catches it.
+check_hash_banners() {
+    local rules
+    rules=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*#[[:space:]]*[-=#*_~+]{4,}[[:space:]]*$' || true)
+    [ -z "$rules" ] || fail "$rules" \
+        "$file draws a comment banner - label the section with a plain comment or '# region <Name>':"
+}
+
+# clang-format mis-tokenises `#pragma region - Name`: it reflows around the dash.
+check_region_dashes() {
+    local dashed
+    dashed=$(printf '%s\n' "$added" | grep -E '#pragma (region|endregion)[[:space:]]+-' || true)
+    [ -z "$dashed" ] || fail "$dashed" \
+        "$file writes '#pragma region - Name' - drop the dash, clang-format reflows around it:"
+}
+
+# `#pragma mark` is the older spelling and folds in fewer editors.
+check_pragma_mark() {
+    local marks
+    marks=$(printf '%s\n' "$added" | grep -E '#pragma mark' || true)
+    [ -z "$marks" ] || fail "$marks" \
+        "$file uses '#pragma mark' - the current spelling is '#pragma region <Name>':"
+}
+
+# A bare `@param` leaves the reader guessing whether the callee writes through it.
+check_param_directions() {
+    local bare
+    bare=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*\*[[:space:]]*@param[[:space:]]+[a-z]' || true)
+    [ -z "$bare" ] || fail "$bare" \
+        "$file has an @param without a direction - write @param[in], @param[out] or @param[inout]:"
+}
+
+# `@section Title` makes Doxygen eat the first word as the anchor label.
+check_section_anchors() {
+    local bare
+    bare=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*\*[[:space:]]*@section[[:space:]]+[A-Z]' || true)
+    [ -z "$bare" ] || fail "$bare" \
+        "$file has an @section without an anchor - write '@section <anchor> <Title>':"
+}
+
+# Markdown emphasis prints literally through Doxygen. One or two tokens take @b instead.
+check_markdown_doxygen() {
+    local emphasis
+    emphasis=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*\*.*\*\*[^*]+\*\*' || true)
+    [ -z "$emphasis" ] || fail "$emphasis" \
+        "$file uses Markdown emphasis in a Doxygen block - it prints literally, use @b:"
+}
+
+# Backticks are for `//` implementation comments; docblocks mark code tokens with @c.
+check_doxygen_backticks() {
+    local ticks
+    ticks=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*\*.*`[^`]+`' || true)
+    [ -z "$ticks" ] || fail "$ticks" \
+        "$file uses backticks inside a Doxygen block - mark code tokens with @c:"
+}
+
+
+# clang-format's `BreakStringLiterals` splits an overlong literal in place, leaving two fragments on
+# one line with the continuation re-indented under them. A hand-broken literal never leaves two
+# fragments on the same line, so same-line adjacency is the mangle's exact signature. The escape
+# hatch is a trailing `//` comment pinning the split as deliberate, as when stopping `"\x9F" "e"`
+# from parsing as one escape - clang-format never re-joins a line ending in a comment.
+check_mangled_literals() {
+    local fragments
+    fragments=$(printf '%s\n' "$added" | grep -E '"([^"\\]|\\.)*"[[:space:]]+"' | grep -v '//' || true)
+    [ -z "$fragments" ] || fail "$fragments" \
+        "$file leaves two string-literal fragments on one line - hand-break the literal onto" \
+        "per-fragment lines, or pin a deliberate split with a trailing // naming why:"
+}
+
+# A design justified by another project's design ages into a lie the moment that project moves.
+check_sibling_justification() {
+    local excuses
+    excuses=$(printf '%s\n' "$added" |
+        grep -iE '(matching|mirrors?|same as|like|following) (the )?(stringzilla|numkong|usearch|forkunion|simsimd)' || true)
+    [ -z "$excuses" ] || fail "$excuses" \
+        "$file justifies a decision by another repo - state what this code does and why:"
+}
+
+# The Actions UI and required checks reference jobs and steps by name.
+check_workflow_names() {
+    local unnamed
+    unnamed=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]+- (uses|run):' || true)
+    [ -z "$unnamed" ] || fail "$unnamed" \
+        "$file adds a workflow step without a 'name:' - the Actions UI references it by name:"
+}
+
+if ! git rev-parse --verify HEAD > /dev/null 2>&1; then
+    exit 0
+fi
+
+while IFS= read -r -d '' file; do
+    check_generated_artifacts
+    added=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' || true)
+    [ -n "$added" ] || continue
+    case "$file" in
+    *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh)
+        check_ascii_arrows
+        check_memcpy
+        check_boolean_parameters
+        check_backward_references
+        check_banner_rules
+        check_region_dashes
+        check_pragma_mark
+        check_param_directions
+        check_section_anchors
+        check_markdown_doxygen
+        check_doxygen_backticks
+        check_mangled_literals
+        check_sibling_justification
+        ;;
+    .github/workflows/*)
+        check_workflow_names
+        check_hash_banners
+        ;;
+    *.py | *.cmake | *.sh | *.toml | *.yml | *.yaml | CMakeLists.txt | .githooks/*)
+        check_hash_banners
+        ;;
+    *.md)
+        check_backward_references
+        check_sibling_justification
+        ;;
+    esac
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+# Abbreviated identifiers are banned in favour of whole words: lo/hi/bot must be low/high/bottom.
+while IFS= read -r -d '' file; do
+    case "$file" in
+    *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh) ;;
+    *) continue ;;
+    esac
+    abbreviations=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' |
+        grep -nE '\b(lo|hi|bot|idx|tmp|cnt|ptr|buf|len|str|val|obj|elem|iter)\b' | grep -v '@' || true)
+    if [ -n "$abbreviations" ]; then
+        echo "pre-commit: $file uses an abbreviated identifier - spell it out:"
+        printf '%s\n' "$abbreviations" | head -3
+        failed=1
+    fi
+done < <(git diff --cached --name-only --diff-filter=ACM -z)
+
+if command -v clang-format > /dev/null 2>&1 && [ -f .clang-format ]; then
+    while IFS= read -r -d '' file; do
+        case "$file" in
+        *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh) ;;
+        *) continue ;;
+        esac
+        if ! git show ":$file" | clang-format --assume-filename="$file" --dry-run -Werror > /dev/null 2>&1; then
+            echo "pre-commit: $file is not clang-format clean - run \`clang-format -i $file\`"
+            failed=1
+        fi
+    done < <(git diff --cached --name-only --diff-filter=ACM -z)
+fi
+
+if command -v cmake-format > /dev/null 2>&1 && [ -f .cmake-format.py ]; then
+    while IFS= read -r -d '' file; do
+        case "$file" in
+        CMakeLists.txt | *.cmake) ;;
+        *) continue ;;
+        esac
+        if ! cmake-format --check "$file" > /dev/null 2>&1; then
+            echo "pre-commit: $file is not cmake-format clean - run \`cmake-format -i\` with the repo profile"
+            failed=1
+        fi
+    done < <(git diff --cached --name-only --diff-filter=ACM -z)
+fi
+
+if [ "$failed" -ne 0 ]; then
+    echo ""
+    echo "Fix the staged changes and commit again. Bypass knowingly with: git commit --no-verify"
+    exit 1
+fi
+exit 0

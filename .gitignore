@@ -1,12 +1,33 @@
 .DS_Store
+
+# CMake build trees. The `build*` glob covers the documented `build_release` and `build_debug` as well as
+# whatever one-off name a sanitizer or cross-compile run picks.
+build*/
 CMakeFiles
 cmake_install.cmake
 CMakeCache.txt
 Makefile
 _deps
-/build/
-/build_debug/
-/build_release/
 /lib/
 /bin/
+
+# Python build and distribution artifacts. `pip install -e .` drops the compiled extension in the repository
+# root, named after the interpreter that built it, so the extension suffixes are matched anywhere rather than
+# only under a build directory.
+*.so
+*.pyd
+*.dylib
+*.whl
 *.egg-info
+.eggs/
+build/
+dist/
+wheelhouse/
+
+# Interpreter and tooling caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
