@@ -1,7 +1,10 @@
 /**
  *  @brief Exception-free dynamic array with explicit error handling.
+ *  @author Ash Vardanian
+ *  @file include/smashtable/basic_vector.hpp
+ *  @date October 20, 2025
  *
- *  @section Features
+ *  @section basic_vector_features Features
  *
  *  Unlike @c std::vector, this implementation:
  *  - Never throws exceptions - returns @c status_t or @c expected<T> for fallible operations
@@ -9,7 +12,7 @@
  *  - Offers performance variants with @c assume_reserved tag for pre-checked hot paths
  *  - Guarantees atomicity for batch operations like @c resize() and @c insert()
  *
- *  @section Requirements
+ *  @section basic_vector_requirements Requirements
  *
  *  @par Element Type
  *  - Nothrow default-constructible and nothrow move constructible/assignable (required)
@@ -23,15 +26,13 @@
  *  - For @c swap(): If non-propagating, both vectors must use equal allocators,
  *    otherwise @c invalid_argument_k is returned
  *
- *  @file basic_vector.hpp
- *  @date October 25, 2025
- *  @author Ash Vardanian
  *
  *  @see https://en.wikipedia.org/wiki/Vector_(C%2B%2B)
  *  @see https://en.cppreference.com/w/cpp/container/vector
  */
 #pragma once
 #include <cassert> // `assert`
+
 #include <memory>  // `std::allocator`
 #include <utility> // `std::exchange`, `std::forward`
 
@@ -174,7 +175,7 @@ class basic_vector {
     /**
      *  @brief Reserves capacity for at least @p new_capacity elements.
      *  @param[in] new_capacity The new capacity.
-     *  @return status_t Success, or @c out_of_memory_heap_k if allocation fails.
+     *  @return Success, or @c out_of_memory_heap_k if allocation fails.
      */
     [[nodiscard]] status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return status_t {success_k};
@@ -198,9 +199,9 @@ class basic_vector {
      *  @brief Appends an element without capacity check (performance variant).
      *    Requires pre-reserved capacity. Use for hot paths after @c reserve().
      *
-     *  @param assume_reserved Tag indicating capacity was pre-reserved.
+     *  @param[in] assume_reserved Tag indicating capacity was pre-reserved.
      *  @param[in] value Element to append (moved into the vector).
-     *  @return status_t Always returns success for noexcept move construction.
+     *  @return Always returns success for noexcept move construction.
      */
     status_t push_back(assume_reserved_t, element_t &&value) noexcept {
         assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
@@ -213,7 +214,7 @@ class basic_vector {
      *    Automatically grows capacity using 2x strategy if needed.
      *
      *  @param[in] value Element to append (moved into the vector).
-     *  @return status_t Success, or @c out_of_memory_heap_k if reallocation fails.
+     *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      */
     [[nodiscard]] status_t push_back(element_t &&value) noexcept {
         // Auto-grow if needed (2x growth strategy)
@@ -239,9 +240,9 @@ class basic_vector {
      *    Requires pre-reserved capacity. Use for hot paths after @c reserve().
      *
      *  @tparam args_types_ Types of arguments to forward to element constructor.
-     *  @param assume_reserved Tag indicating capacity was pre-reserved.
+     *  @param[in] assume_reserved Tag indicating capacity was pre-reserved.
      *  @param[in] args Arguments to forward to element constructor.
-     *  @return status_t Success, or error from @c .make() method if construction can throw.
+     *  @return Success, or error from @c .make() method if construction can throw.
      */
     template <typename... args_types_>
     [[nodiscard]] status_t emplace_back(assume_reserved_t, args_types_ &&...args) noexcept {
@@ -262,8 +263,7 @@ class basic_vector {
         else {
             static_assert(std::is_nothrow_constructible_v<element_t, args_types_...> ||
                               has_make_method<element_t, args_types_...>,
-                          "Type must be either nothrow constructible or provide a static .make(...) -> "
-                          "expected<T> method for emplace_back operations");
+                          "Type must be nothrow constructible or provide a static .make(...)");
             return status_t {errc_t::unknown_k};
         }
     }
@@ -274,7 +274,7 @@ class basic_vector {
      *
      *  @tparam args_types_ Types of arguments to forward to element constructor.
      *  @param[in] args Arguments to forward to element constructor.
-     *  @return status_t Success, or @c out_of_memory_heap_k if reallocation fails.
+     *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      *
      *  @note For types with potentially throwing constructors, provide a static @c .make() method
      *    returning @c expected<element_t> to enable exception-free construction.
@@ -299,7 +299,7 @@ class basic_vector {
      *    new elements are default-constructed.
      *
      *  @param[in] new_size The new size.
-     *  @return status_t Success, or error code on failure.
+     *  @return Success, or error code on failure.
      *    On failure, the vector is unchanged (strong exception guarantee).
      */
     [[nodiscard]] status_t resize(std::size_t new_size) noexcept {
@@ -328,7 +328,7 @@ class basic_vector {
      *
      *  @param[in] new_size The new size.
      *  @param[in] value Value to copy into new elements.
-     *  @return status_t Success, or error code on failure.
+     *  @return Success, or error code on failure.
      *    On failure, the vector is unchanged (strong exception guarantee).
      */
     [[nodiscard]] status_t resize(std::size_t new_size, element_t const &value) noexcept {
@@ -372,7 +372,7 @@ class basic_vector {
     /**
      *  @brief Swaps contents with another vector.
      *  @param[in,out] other The vector to swap with.
-     *  @return status_t Success, or @c invalid_argument_k if allocators are incompatible.
+     *  @return Success, or @c invalid_argument_k if allocators are incompatible.
      *
      *  @note If @c propagate_on_container_swap is false (e.g., @c std::allocator), allocators
      *    must compare equal. Attempting to swap vectors with unequal non-propagating allocators
@@ -394,7 +394,7 @@ class basic_vector {
         return status_t {success_k};
     }
 
-#pragma mark - Element Access
+#pragma region Element Access
 
     /**
      *  @brief Accesses element at @p index without bounds checking.
@@ -478,7 +478,9 @@ class basic_vector {
      */
     element_t const *data() const noexcept { return data_; }
 
-#pragma mark - Capacity
+#pragma endregion Element Access
+
+#pragma region Capacity
 
     /**
      *  @brief Checks whether the vector is empty.
@@ -498,7 +500,9 @@ class basic_vector {
      */
     std::size_t capacity() const noexcept { return capacity_; }
 
-#pragma mark - Iterators
+#pragma endregion Capacity
+
+#pragma region Iterators
 
     /**
      *  @brief Returns an iterator to the beginning.
@@ -520,5 +524,7 @@ class basic_vector {
      */
     element_t const *end() const noexcept { return data_ + size_; }
 };
+
+#pragma endregion Iterators
 
 } // namespace ashvardanian::smashtable

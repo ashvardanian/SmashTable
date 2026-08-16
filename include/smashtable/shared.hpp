@@ -1,13 +1,18 @@
 /**
- *  @brief
- *
- *  @file   shared.hpp
+ *  @brief Vocabulary shared by every container - status codes, @c expected, key-value @c mapping, and the versioning
+ *      machinery transactions are built on.
  *  @author Ash Vardanian
+ *  @file include/smashtable/shared.hpp
+ *  @date October 13, 2022
  */
 #pragma once
-#include <cstdint>      //
-#include <system_error> // `ENOMEM`
-#include <utility>      // `std::move`
+#include <cerrno>  // `ENOMEM`, `EINVAL`, and the rest of the errno space
+#include <cstdint> // `std::int64_t`
+
+#include <bit>         // `std::countl_zero`
+#include <optional>    // `std::optional`
+#include <type_traits> // `std::is_nothrow_invocable_v`
+#include <utility>     // `std::move`
 
 namespace ashvardanian::smashtable {
 
@@ -19,7 +24,7 @@ enum errc_t {
     success_k = 0,
     unknown_k = -1,
 
-    consistency_k = 1, // Must be non-zero to indicate error!
+    consistency_k = -2, // ? Not an errno; the value 1 would collide with `EPERM`
     transaction_not_recoverable_k = ENOTRECOVERABLE,
     sequence_number_overflow_k = EOVERFLOW,
 
@@ -58,6 +63,12 @@ struct status_t {
  *  @brief Simple key-value mapping type, cleaner & lighter than @c std::pair used by @c std::map.
  *  @see https://en.cppreference.com/w/cpp/utility/pair.html
  */
+template <typename value_type_>
+struct expected;
+
+template <typename object_type_>
+[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &object) noexcept;
+
 template <typename key_type_, typename value_type_>
 struct mapping {
     using key_type = key_type_;
@@ -83,6 +94,15 @@ struct mapping {
 
     constexpr explicit operator key_type const &() const noexcept { return key; }
     constexpr explicit operator std::pair<key_type, mapped_type>() const { return {key, mapped}; }
+
+    /** @brief Deep-copies both halves, so a mapping is copyable exactly when its members are. */
+    expected<mapping> copy() const noexcept {
+        auto copied_key = copy_safely(key);
+        if (!copied_key) return expected<mapping>(mapping {}, copied_key.status);
+        auto copied_mapped = copy_safely(mapped);
+        if (!copied_mapped) return expected<mapping>(mapping {}, copied_mapped.status);
+        return expected<mapping>(mapping {std::move(*copied_key), std::move(*copied_mapped)}, status_t {success_k});
+    }
 };
 
 /**
@@ -177,7 +197,7 @@ copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
 }
 
-#pragma mark - Tag Dispatch Types
+#pragma region Tag Dispatch Types
 
 /**
  *  @brief Tag to enable thread-safe atomic operations.
@@ -396,8 +416,7 @@ template <typename object_type_>
     else {
         // Type doesn't support safe copying
         static_assert(std::is_nothrow_copy_constructible_v<object_type_> || has_copy_method<object_type_>,
-                      "Type must be either nothrow copy constructible or provide a .copy() -> "
-                      "expected<T> method for copy operations");
+                      "Type must be nothrow copy constructible or provide .copy() returning an expected");
         return expected<object_type_>(object_type_ {}, status_t {errc_t::unknown_k});
     }
 }
@@ -470,7 +489,7 @@ struct mapped_value_type_or_void<can_be_mapping_type_, true> {
 };
 
 /**
- *  @section Correctness of Comparisons
+ *  @section shared_correctness_of_comparisons Correctness of Comparisons
  *
  *  For @c std::set, @c std::map, or similar containers we only require the keys to provide
  *  @b strict-weak-ordering comparisons. It's enough to simply define a comparator that can
@@ -484,7 +503,7 @@ struct mapped_value_type_or_void<can_be_mapping_type_, true> {
  *  Assuming that @c float values can be @c NaN and thus incomparable, we shouldn't be able
  *  to construct a @c std::set<float> since the ordering is only partial, but GCC still compiles it.
  *
- *  @section Optimization Opportunities
+ *  @section shared_optimization_opportunities Optimization Opportunities
  *
  *  Oftentimes, when dealing with heavy objects as keys (e.g., strings, composite structures),
  *  we want to avoid storing many copies of the full object just to perform comparisons and lookups.
@@ -538,6 +557,15 @@ template <typename type_>
 inline constexpr bool is_dating_identifier_v = is_dating_identifier<type_>::value;
 
 /**
+ *  @brief Detects operands that carry a generation of their own, so ordering can separate versions.
+ *    A @c watched_identifier keeps its generation inside @c watch, so it is ordered by key alone.
+ */
+template <typename type_>
+concept carries_generation = requires(type_ const &value) {
+    { value.generation } -> std::convertible_to<generation_t>;
+};
+
+/**
  *  @brief Decorates a value type with generation and visibility metadata for transactional containers.
  *
  *  @par Template requirements
@@ -566,10 +594,12 @@ struct versioning_for {
     using watch_t = ashvardanian::smashtable::watch_t;
     using watch_type = watch_t; // ? STL style
 
+    using dated_identifier_t = dated_identifier<identifier_t>;
+    using watched_identifier_t = watched_identifier<identifier_t>;
+
     static_assert(!std::is_reference<value_t>(), "Only value types are supported.");
     static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
-                  "To WATCH, the ID must be either nothrow copy constructible or provide a .copy() method returning an "
-                  "expected-like type");
+                  "To WATCH, the ID must be nothrow copy constructible or provide .copy()");
     static_assert(std::is_nothrow_default_constructible<value_t>(), "We need an empty state.");
     static_assert(std::is_nothrow_move_constructible<value_t>() && std::is_nothrow_move_assignable<value_t>(),
                   "To make all the methods `noexcept`, the moves must be safe too.");
@@ -595,15 +625,17 @@ struct versioning_for {
         }
     };
 
+    using versioned_entry_t = versioned_t;
+
     struct versioned_comparator_t {
         using is_transparent = void;
 
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
             using dereferenced_t = std::remove_reference_t<type_>;
-            if constexpr (std::is_same_v<dereferenced_t, versioned_t>) return (value_t const &)object.unversioned;
+            if constexpr (std::is_same_v<dereferenced_t, versioned_t>) return comparable(object.unversioned);
             else if constexpr (is_dating_identifier_v<dereferenced_t>) return (identifier_t const &)object.id;
-            else return (dereferenced_t const &)object;
+            else return mapping_key_or_itself(object);
         }
 
         template <typename first_type_, typename second_type_>
@@ -623,8 +655,7 @@ struct versioning_for {
         bool less(first_type_ const &a, second_type_ const &b) const noexcept {
             using first_t = std::remove_reference_t<first_type_>;
             using second_t = std::remove_reference_t<second_type_>;
-            if constexpr (is_dating_identifier_v<first_t> && is_dating_identifier_v<second_t>)
-                return dated_compare(a, b);
+            if constexpr (carries_generation<first_t> && carries_generation<second_t>) return dated_compare(a, b);
             else return native_compare(a, b);
         }
 
@@ -674,7 +705,9 @@ constexpr value_type_ roundup_to_multiple(value_type_ x) noexcept {
     return ((x + multiple_ - 1) / multiple_) * multiple_;
 }
 
-#pragma mark - Tree Concepts
+#pragma endregion Tag Dispatch Types
+
+#pragma region Tree Concepts
 
 /**
  *  @brief Concept to detect if a tree type supports order statistics operations.
@@ -706,5 +739,7 @@ concept node_supports_order_statistics =
         { node_type_::select(node, k, comp) } -> std::convertible_to<node_type_ *>;
         { node_type_::rank(node, value, comp) } -> std::same_as<std::size_t>;
     };
+
+#pragma endregion Tree Concepts
 
 } // namespace ashvardanian::smashtable
