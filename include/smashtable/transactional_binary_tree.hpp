@@ -1,23 +1,24 @@
 /**
- *  @brief  Generic transactional binary tree container with ACID semantics, providing 2-phase commit transactions.
- *    Can be instantiated with any binary search tree implementation (AVL, WB, etc.) supporting the required interface.
- *    All operations use callback-based APIs and are exception-free via @c noexcept constraints.
- *
- *  @file   transactional_binary_tree.hpp
+ *  @brief Generic transactional binary tree container with ACID semantics, providing 2-phase commit transactions. Can
+ *      be instantiated with any binary search tree implementation (AVL, WB, etc.) supporting the required interface.
+ *      All operations use callback-based APIs and are exception-free via @c noexcept constraints.
  *  @author Ash Vardanian
+ *  @file include/smashtable/transactional_binary_tree.hpp
+ *  @date October 13, 2022
  */
 #pragma once
-#include <cassert>   // `assert`
+#include <cassert> // `assert`
+
 #include <algorithm> // `std::max`
 #include <memory>    // `std::allocator`
 #include <optional>  // `std::optional`
 #include <random>    // `std::uniform_int_distribution`
 #include <utility>   // `std::exchange`
 
-#include "shared.hpp"
-#include "basic_vector.hpp"
 #include "basic_avl_tree.hpp"
+#include "basic_vector.hpp"
 #include "basic_wb_tree.hpp"
+#include "shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -26,7 +27,7 @@ namespace ashvardanian::smashtable {
  *    Can be instantiated with AVL trees, weight-balanced trees, or other binary search tree implementations.
  *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
- *  @section Design Goals
+ *  @section transactional_binary_tree_design_goals Design Goals
  *
  *  All operations are atomic. When updating multiple values, you don't want to break in an intermediate state
  *  where only some updates succeeded. With two-phase commit transactions, you can stage many changes and commit
@@ -47,7 +48,7 @@ namespace ashvardanian::smashtable {
  *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
  *  @see https://jepsen.io/consistency/models/read-committed
  *
- *  @section API Overview
+ *  @section transactional_binary_tree_api_overview API Overview
  *
  *  - All lookups are heterogeneous: you can provide any type comparable to the element type. Your comparator
  *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
@@ -73,7 +74,7 @@ template <typename basic_tree_type_>
 class transactional_binary_tree {
 
   public:
-#pragma mark - Type Definitions
+#pragma region Type Definitions
 
     using value_t = typename basic_tree_type_::value_type;
     using value_type = value_t; // ? STL style
@@ -91,14 +92,17 @@ class transactional_binary_tree {
     using comparator_t = typename basic_tree_type_::comparator_t;
     using allocator_t = typename basic_tree_type_::allocator_t;
 
-  private:
     using versioning_t = versioning_for<value_t, comparator_t>;
-    using versioned_t = typename versioning_t::versioned_t;
-    using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using watch_t = typename versioning_t::watch_t;
     using watched_identifier_t = typename versioning_t::watched_identifier_t;
+    using dated_identifier_t = typename versioning_t::dated_identifier_t;
+    using versioned_t = typename versioning_t::versioned_t;
+    using versioned_entry_t = versioned_t;
+
+  private:
+    using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
 
     // Use tree's rebind to create versioned tree - clean 1-step type transformation!
     using versioned_set_t = typename basic_tree_type_::template rebind<versioned_t, versioned_comparator_t>;
@@ -147,18 +151,18 @@ class transactional_binary_tree {
 
         /**
          *  @brief Returns the generation (sequence number) of this transaction.
-         *  @return generation_t The transaction's generation identifier.
+         *  @return The transaction's generation identifier.
          */
         generation_t generation() const noexcept { return generation_; }
         /**
          *  @brief Checks if this transaction has any pending changes (upserts or erases).
-         *  @return bool True if there are pending changes, false otherwise.
+         *  @return True if there are pending changes, false otherwise.
          */
 
         bool has_changes() const noexcept { return changes_.size() != 0; }
         /**
          *  @brief Returns the number of pending changes in this transaction.
-         *  @return std::size_t The count of staged changes (including both upserts and erases).
+         *  @return The count of staged changes (including both upserts and erases).
          */
         std::size_t changes_count() const noexcept { return changes_.size(); }
 
@@ -168,7 +172,7 @@ class transactional_binary_tree {
          *    Checks both transaction changes and main store for existence.
          *
          *  @param[in] value Element to insert (moved into the transaction).
-         *  @return status_t Success, or @c key_already_exists_k if key exists, or OOM error.
+         *  @return Success, or @c key_already_exists_k if key exists, or OOM error.
          */
         [[nodiscard]] status_t insert(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
@@ -196,7 +200,7 @@ class transactional_binary_tree {
          *    Checks both transaction changes and main store for existence.
          *
          *  @param[in] value Element to insert (moved into the transaction).
-         *  @return status_t Always succeeds (unless OOM). Returns success even if key exists.
+         *  @return Always succeeds (unless OOM). Returns success even if key exists.
          */
         [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
@@ -224,7 +228,7 @@ class transactional_binary_tree {
          *    Overwrites existing element if key exists. Changes visible after @c stage() and @c commit().
          *
          *  @param[in] value Element to upsert (moved into the transaction).
-         *  @return status_t Success or error code (e.g., out of memory).
+         *  @return Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t upsert(value_t &&value) noexcept {
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
@@ -248,7 +252,7 @@ class transactional_binary_tree {
          *    Fails if key doesn't exist anywhere (local changes or main store).
          *
          *  @param[in] value Element to update (moved into the transaction).
-         *  @return status_t Success, or @c key_not_found_k if key doesn't exist.
+         *  @return Success, or @c key_not_found_k if key doesn't exist.
          */
         [[nodiscard]] status_t update(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
@@ -262,7 +266,7 @@ class transactional_binary_tree {
          *    Marks the entry as deleted in the transaction. Actual removal happens on commit.
          *
          *  @param[in] id Identifier of the element to erase.
-         *  @return status_t Success or error code (e.g., out of memory).
+         *  @return Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
             auto maybe_id = copy_safely<identifier_t>(id);
@@ -324,7 +328,7 @@ class transactional_binary_tree {
          *  @brief Finds and returns a copy of an element equal to @p comparable, including transaction changes.
          *
          *  @param[in] comparable Object comparable to @c value_t.
-         *  @return expected<value_t> Result with copied element if found, or failure status.
+         *  @return Result with copied element if found, or failure status.
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
@@ -351,7 +355,7 @@ class transactional_binary_tree {
          *    Convenience wrapper around @c find() for existence checks.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @return bool True if the element exists, false otherwise.
+         *  @return True if the element exists, false otherwise.
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
@@ -705,28 +709,41 @@ class transactional_binary_tree {
     }
 
     void unmask_and_compact_(identifier_t const &id, generation_t generation_to_unmask) noexcept {
+        std::size_t removed_deleted = 0;
         auto should_remove = [&](versioned_t const &versioned) noexcept {
             if (!versioned_comparator_t {}.same(versioned.unversioned, id)) return false;
             if (versioned.generation == generation_to_unmask) return false;
-            return versioned.visible;
+            if (!versioned.visible) return false;
+            removed_deleted += versioned.deleted;
+            return true;
         };
 
         auto removed_count = entries_.remove_if(should_remove);
         visible_count_ -= removed_count;
+        visible_deleted_count_ -= removed_deleted;
 
         // ! Don't materialize a new copy of `id` here, use a reference
         auto it = entries_.find(dated_identifier<identifier_t const &> {id, generation_to_unmask});
         if (it != entries_.end()) {
             auto &versioned = const_cast<versioned_t &>(*it);
-            versioned.visible = true;
-            if (versioned.deleted) visible_deleted_count_++;
+            if (!versioned.visible) {
+                versioned.visible = true;
+                ++visible_count_;
+                if (versioned.deleted) visible_deleted_count_++;
+            }
         }
     }
 
-#pragma mark - Constructors and Assignment
+#pragma endregion Type Definitions
+
+#pragma region Constructors and Assignment
 
   public:
     transactional_binary_tree() noexcept {}
+
+    /** @brief Seeds the underlying tree's allocator, which a stateful allocator needs. */
+    explicit transactional_binary_tree(allocator_t const &allocator) noexcept
+        : entries_(typename versioned_set_t::allocator_t(allocator)) {}
     transactional_binary_tree(transactional_binary_tree &&other) noexcept
         : entries_(std::move(other.entries_)), generation_(other.generation_), visible_count_(other.visible_count_),
           visible_deleted_count_(other.visible_deleted_count_) {}
@@ -739,17 +756,19 @@ class transactional_binary_tree {
         return *this;
     }
 
-#pragma mark - Capacity
+#pragma endregion Constructors and Assignment
+
+#pragma region Capacity
 
     /**
      *  @brief Returns the number of visible (committed) non-deleted elements in the tree.
-     *  @return std::size_t Number of elements.
+     *  @return Number of elements.
      */
     [[nodiscard]] std::size_t size() const noexcept { return visible_count_ - visible_deleted_count_; }
 
     /**
      *  @brief Checks if the tree has no visible elements.
-     *  @return bool True if empty, false otherwise.
+     *  @return True if empty, false otherwise.
      */
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
@@ -758,7 +777,7 @@ class transactional_binary_tree {
      *    For unique-key containers like this, returns either 0 or 1.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @return std::size_t Number of elements with key equal to @p comparable (0 or 1).
+     *  @return Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
@@ -769,7 +788,7 @@ class transactional_binary_tree {
      *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @return bool True if element exists, false otherwise.
+     *  @return True if element exists, false otherwise.
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
@@ -785,7 +804,7 @@ class transactional_binary_tree {
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] allocator Allocator for copying the element (reserved for future use).
-     *  @return expected<element_t> Result with copied element if found, or failure status.
+     *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t, typename copy_allocator_>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable,
@@ -806,7 +825,7 @@ class transactional_binary_tree {
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @return expected<element_t> Result with copied element if found, or failure status.
+     *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
@@ -817,7 +836,7 @@ class transactional_binary_tree {
      *  @brief Finds and returns a copy of the first element not less than (>=) @p comparable.
      *
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @return expected<value_t> Result with copied element if found, or failure status.
+     *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
@@ -841,7 +860,7 @@ class transactional_binary_tree {
      *  @brief Finds and returns a copy of the first element greater than (>) @p comparable.
      *
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @return expected<value_t> Result with copied element if found, or failure status.
+     *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
@@ -861,36 +880,44 @@ class transactional_binary_tree {
         return result;
     }
 
-#pragma mark - Observers
+#pragma endregion Capacity
+
+#pragma region Observers
 
     /**
      *  @brief Factory method to create a new transactional binary tree without throwing exceptions.
      *    Returns an empty optional on allocation failure.
      *
      *  @param[in] allocator Optional allocator instance.
-     *  @return std::optional<store_t> Container instance or empty optional on failure.
+     *  @return Container instance or empty optional on failure.
      */
-    [[nodiscard]] static std::optional<store_t> make(allocator_t &&allocator = {}) noexcept { return store_t {}; }
+    [[nodiscard]] static std::optional<store_t> make(allocator_t const &allocator = {}) noexcept {
+        return store_t {allocator};
+    }
 
-#pragma mark - Transaction Management
+#pragma endregion Observers
+
+#pragma region Transaction Management
 
     /**
      *  @brief Creates a new transaction with a fresh generation number.
      *    Transaction can be reset and reused after commit/rollback to avoid reallocations.
      *    Returns empty optional on allocation failure.
      *
-     *  @return std::optional<transaction_t> Transaction instance or empty optional on failure.
+     *  @return Transaction instance or empty optional on failure.
      */
     [[nodiscard]] std::optional<transaction_t> transaction() noexcept { return transaction_t {*this}; }
 
-#pragma mark - Modifiers
+#pragma endregion Transaction Management
+
+#pragma region Modifiers
 
     /**
      *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
      *    This is the strict insert semantics matching @c std::set::insert().
      *
      *  @param[in] value Element to insert (moved into the tree).
-     *  @return status_t Success, or @c invalid_argument_k if key exists, or OOM error.
+     *  @return Success, or @c invalid_argument_k if key exists, or OOM error.
      */
     [[nodiscard]] status_t insert(value_t &&value) noexcept {
         if (contains(value)) return {invalid_argument_k};
@@ -902,7 +929,7 @@ class transactional_binary_tree {
      *    This is the "silent no-op" insert semantics.
      *
      *  @param[in] value Element to insert (moved into the tree).
-     *  @return status_t Always succeeds (unless OOM). Returns success even if key exists.
+     *  @return Always succeeds (unless OOM). Returns success even if key exists.
      */
     [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
         if (contains(value)) return {success_k};
@@ -914,15 +941,20 @@ class transactional_binary_tree {
      *    Overwrites existing element if key exists (upsert semantics).
      *
      *  @param[in] element Element to upsert (moved into the tree).
-     *  @return status_t Success or error code (e.g., out of memory).
+     *  @return Success or error code (e.g., out of memory).
      */
     [[nodiscard]] status_t upsert(value_t &&value) noexcept {
         auto node = entries_.allocator().allocate(1);
         if (!node) return {out_of_memory_heap_k};
 
+        // The allocator hands back raw storage, so the links and the subtree bookkeeping are
+        // garbage until the node itself is constructed - not just its payload.
+        using node_t = typename versioned_set_t::node_t;
+        new (node) node_t {};
+
         generation_t generation = new_generation_();
         auto &versioned = node->fruit;
-        new (&versioned.unversioned) value_t(std::move(value));
+        versioned.unversioned = std::move(value);
         versioned.generation = generation;
         versioned.deleted = false;
         versioned.visible = true;
@@ -949,7 +981,7 @@ class transactional_binary_tree {
      *    Unlike @c upsert(), this will NOT insert new keys.
      *
      *  @param[in] element Element to update (moved into the tree).
-     *  @return status_t Success, @c key_not_found_k if key doesn't exist, or OOM error.
+     *  @return Success, @c key_not_found_k if key doesn't exist, or OOM error.
      */
     [[nodiscard]] status_t update(value_t &&value) noexcept {
         if (!contains(value)) return {key_not_found_k};
@@ -963,7 +995,7 @@ class transactional_binary_tree {
      *
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
-     *  @return status_t Success, invalid_argument_k if any key exists, or out_of_memory_heap_k.
+     *  @return Success, invalid_argument_k if any key exists, or out_of_memory_heap_k.
      *    Operation is atomic (all-or-nothing).
      */
     template <typename input_iterator_type_>
@@ -1008,7 +1040,7 @@ class transactional_binary_tree {
      *
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
-     *  @return status_t Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
+     *  @return Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -1031,7 +1063,7 @@ class transactional_binary_tree {
      *
      *  @param[in] first Beginning of range to upsert.
      *  @param[in] last End of range to upsert.
-     *  @return status_t Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
+     *  @return Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -1054,7 +1086,7 @@ class transactional_binary_tree {
      *
      *  @param[in] first Beginning of range to update.
      *  @param[in] last End of range to update.
-     *  @return status_t Success or key_not_found_k if any key missing. Operation is atomic (all-or-nothing).
+     *  @return Success or key_not_found_k if any key missing. Operation is atomic (all-or-nothing).
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -1097,7 +1129,9 @@ class transactional_binary_tree {
         return {success_k};
     }
 
-#pragma mark - Lookup
+#pragma endregion Modifiers
+
+#pragma region Lookup
 
     /**
      *  @brief Finds a member @b equal to the given @p comparable.
@@ -1172,7 +1206,9 @@ class transactional_binary_tree {
         else callback_missing();
     }
 
-#pragma mark - Range Operations
+#pragma endregion Lookup
+
+#pragma region Range Operations
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
@@ -1213,7 +1249,9 @@ class transactional_binary_tree {
         return status_t {success_k};
     }
 
-#pragma mark - Sampling
+#pragma endregion Range Operations
+
+#pragma region Sampling
 
     template <typename lower_type_, typename upper_type_, typename generator_type_,
               typename callback_type_ = no_op_fn_t>
@@ -1224,7 +1262,8 @@ class transactional_binary_tree {
         auto node = node_t::sample_range( //
             entries_.root(), lower, upper, entries_.key_comp(), std::forward<generator_type_>(generator),
             [](node_t *node) noexcept { return node->fruit.visible; });
-        if (node) callback(node->fruit);
+        // Callers see the stored value; the version metadata never leaves this class.
+        if (node) callback(node->fruit.unversioned);
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
@@ -1249,7 +1288,9 @@ class transactional_binary_tree {
         range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
     }
 
-#pragma mark - Order Statistics
+#pragma endregion Sampling
+
+#pragma region Order Statistics
 
     template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
     void select(std::size_t k, callback_found_type_ &&callback_found,
@@ -1315,18 +1356,20 @@ class transactional_binary_tree {
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return status_t Always succeeds.
+     *  @return Always succeeds.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
     status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                    callback_missing_type_ &&callback_missing = {}) noexcept {
+        // `find` already unwraps to the stored value, and `comparable` is read twice below,
+        // so it stays an lvalue rather than being forwarded away on the first use.
         bool found = false;
         find(
-            std::forward<comparable_type_>(comparable),
-            [&](versioned_t const &versioned) noexcept {
+            comparable,
+            [&](value_t const &value) noexcept {
                 found = true;
-                callback_found(versioned.unversioned);
+                callback_found(value);
             },
             []() noexcept {});
 
@@ -1335,8 +1378,7 @@ class transactional_binary_tree {
             return status_t {success_k};
         }
 
-        erase_range(std::forward<comparable_type_>(comparable),
-                    dated_identifier_t {identifier_t(comparable), generation_ + 1});
+        erase_range(comparable, dated_identifier_t {identifier_t(comparable), generation_ + 1});
         return status_t {success_k};
     }
 
@@ -1346,7 +1388,7 @@ class transactional_binary_tree {
      *    insertions won't fail with "out of memory".
      *
      *  @param[in] size Suggested capacity (ignored for tree structures).
-     *  @return status_t Always succeeds.
+     *  @return Always succeeds.
      *
      *  @note This is a no-op because tree structures don't support reserving capacity efficiently.
      */
@@ -1354,29 +1396,31 @@ class transactional_binary_tree {
 
     /**
      *  @brief Removes all elements from the tree and resets generation counter.
-     *    Cannot fail since destructors and deallocators are noexcept.
+     *    Always succeeds here, but reports a status to match the partitioned collection, which allocates.
      */
-    void clear() noexcept {
+    [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
         generation_ = 0;
         visible_count_ = 0;
         visible_deleted_count_ = 0;
+        return {success_k};
     }
 
     /**
      *  @brief Debug utility to print tree contents.
-     *  @note Requires @c #include <ostream> (not included by default to reduce header weight)
+     *    Templated on the sink so the header never pulls in a stream of its own.
      */
-    template <typename dont_instantiate_me_type_>
-    void print(dont_instantiate_me_type_ &cout) {
-        cout << "Items: " << entries_.size() << "\n";
-        cout << "Imbalance: " << entries_.total_imbalance() << "\n";
+    template <typename stream_type_>
+    void print(stream_type_ &stream) {
+        stream << "Items: " << entries_.size() << "\n";
+        stream << "Imbalance: " << entries_.total_imbalance() << "\n";
         using node_t = typename versioned_set_t::node_t;
         node_t::for_each_left_right(entries_.root(), [&](node_t *node) {
             char const *marker = node->fruit.visible ? "✓" : "✗";
-            cout << identifier_t {node->fruit.unversioned} << " @" << node->fruit.generation << marker << " ";
+            stream << identifier_t {node->fruit.unversioned} << " @" << node->fruit.generation;
+            stream << marker << " ";
         });
-        cout << "\n";
+        stream << "\n";
     }
 };
 
@@ -1431,5 +1475,7 @@ template <typename key_type_, typename value_type_, typename comparator_type_ = 
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
 using transactional_wb_map =
     transactional_binary_tree<basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+
+#pragma endregion Order Statistics
 
 } // namespace ashvardanian::smashtable
