@@ -1,16 +1,19 @@
 /**
- *  @brief
- *
- *  @file   partitioned_collection.hpp
+ *  @brief Shards a transactional collection across independently locked partitions, so writers touching different keys
+ *      rarely contend.
  *  @author Ash Vardanian
+ *  @file include/smashtable/partitioned_collection.hpp
+ *  @date October 16, 2022
  */
 #pragma once
-#include <array>        // `std::array`
-#include <optional>     // `std::optional`
+#include <array> // `std::array`
+#include <atomic>
 #include <functional>   // `std::hash`
 #include <mutex>        // `std::unique_lock`
+#include <optional>     // `std::optional`
 #include <shared_mutex> // `std::shared_mutex`, `std::shared_lock`
-#include <atomic>
+
+#include "shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -36,23 +39,23 @@ constexpr std::array<type_, count_> move_to_array(type_ (&a)[count_]) noexcept {
 template <typename type_, std::size_t count_, typename generator_type_>
 static std::optional<std::array<type_, count_>> generate_array_safely(generator_type_ &&generator) noexcept {
     constexpr std::size_t count_k = count_;
-    using element_t = type_;
-    using raw_array_t = element_t[count_];
-    char raw_parts_mem[count_k * sizeof(element_t)];
-    element_t *raw_parts = reinterpret_cast<element_t *>(raw_parts_mem);
+    using value_t = type_;
+    using raw_array_t = value_t[count_];
+    char raw_parts_mem[count_k * sizeof(value_t)];
+    value_t *raw_parts = reinterpret_cast<value_t *>(raw_parts_mem);
     for (std::size_t part_idx = 0; part_idx != count_k; ++part_idx) {
 
         if (auto new_part = generator(part_idx); new_part)
-            new (raw_parts + part_idx) element_t(std::move(new_part).value());
+            new (raw_parts + part_idx) value_t(std::move(new_part).value());
         else {
             // Destruct all the previous parts.
             for (std::size_t destructed_idx = 0; destructed_idx != part_idx; ++destructed_idx)
-                raw_parts[destructed_idx].~element_t();
+                raw_parts[destructed_idx].~value_t();
             return {};
         }
     }
 
-    return move_to_array<element_t, count_k>((raw_array_t &)raw_parts_mem);
+    return move_to_array<value_t, count_k>((raw_array_t &)raw_parts_mem);
 }
 
 /**
@@ -82,7 +85,14 @@ class partitioned_collection {
     using parts_t = std::array<part_t, parts_k>;
     using part_transactions_t = std::array<part_transaction_t, parts_k>;
 
-    using element_t = typename part_t::element_t;
+    using value_t = typename part_t::value_t;
+    using value_type = value_t; // ? STL style
+    using key_type = typename mapping_key_type_or_itself<value_t>::type;
+    using mapped_type = typename mapped_value_type_or_void<value_t>::type;
+    using is_associative = std::bool_constant<is_mapping<value_t>>;
+    using is_transactional = std::true_type;
+    using callback_reads = std::true_type;
+
     using comparator_t = typename part_t::comparator_t;
     using identifier_t = typename part_t::identifier_t;
     using generation_t = typename part_t::generation_t;
@@ -92,7 +102,6 @@ class partitioned_collection {
 
     template <typename lock_type_, typename mutexes_type_>
     static void lock_out_of_order_(mutexes_type_ &mutexes) noexcept {
-        status_t status;
         std::array<bool, parts_k> finished {false};
         std::size_t remaining_count = parts_k;
 
@@ -168,8 +177,9 @@ class partitioned_collection {
             if (!lock) continue;
 
             auto &part = parts[part_idx];
-            part.upper_bound(comparable, [&](element_t const &element) noexcept {
-                if (smallest_idx != not_found_idx && !comparator_t {}(element, smallest_id)) return;
+            part.upper_bound(comparable, [&](value_t const &element) noexcept {
+                if (smallest_idx != not_found_idx && !comparator_t {}(mapping_key_or_itself(element), smallest_id))
+                    return;
                 smallest_id = identifier_t(element);
                 smallest_idx = part_idx;
             });
@@ -245,13 +255,11 @@ class partitioned_collection {
             return status;
         }
 
-        template <typename... tags_types_>
-        [[nodiscard]] status_t stage(tags_types_... tags) noexcept {
-            return for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.stage(tags...); });
+        [[nodiscard]] status_t stage() noexcept {
+            return for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.stage(); });
         }
-        template <typename... tags_types_>
-        [[nodiscard]] status_t commit(tags_types_... tags) noexcept {
-            auto status = for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.commit(tags...); });
+        [[nodiscard]] status_t commit() noexcept {
+            auto status = for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.commit(); });
             if (status) std::fill_n(dirty_.begin(), parts_k, false);
             return status;
         }
@@ -274,6 +282,17 @@ class partitioned_collection {
                                   std::forward<callback_missing_type_>(callback_missing));
         }
 
+        /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+            expected<value_t> result;
+            result.status.errc = errc_t::key_not_found_k;
+            find(
+                std::forward<comparable_type_>(comparable),
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            return result;
+        }
+
         template <typename comparable_type_ = identifier_t>
         bool contains(comparable_type_ &&comparable) const noexcept {
             std::size_t part_idx = bucket_(identifier_t(comparable));
@@ -290,7 +309,7 @@ class partitioned_collection {
                                                 std::forward<callback_missing_type_>(callback_missing));
         }
 
-        [[nodiscard]] status_t upsert(element_t &&element) noexcept {
+        [[nodiscard]] status_t upsert(value_t &&element) noexcept {
             std::size_t part_idx = bucket_(identifier_t(element));
             dirty_[part_idx] = true;
             return parts_[part_idx].upsert(std::move(element));
@@ -325,6 +344,7 @@ class partitioned_collection {
     generation_t new_generation() noexcept { return ++generation_; }
 
   public:
+    partitioned_collection() noexcept = default;
     partitioned_collection(partitioned_collection &&other) noexcept : parts_(std::move(other.parts_)) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
@@ -352,10 +372,17 @@ class partitioned_collection {
         return transaction_t(*this, std::move(maybe).value());
     }
 
-    [[nodiscard]] status_t upsert(element_t &&element) noexcept {
+    [[nodiscard]] status_t upsert(value_t &&element) noexcept {
         std::size_t part_idx = bucket_(identifier_t(element));
         unique_lock_t _ {mutexes_[part_idx]};
         return parts_[part_idx].upsert(std::move(element));
+    }
+
+    /** @brief Removes one key, touching only the partition that owns it. */
+    [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
+        std::size_t part_idx = bucket_(id);
+        unique_lock_t _ {mutexes_[part_idx]};
+        return parts_[part_idx].erase(id);
     }
 
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
@@ -388,6 +415,24 @@ class partitioned_collection {
         return parts_[part_idx].contains(std::forward<comparable_type_>(comparable));
     }
 
+    /** @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
+        return contains(std::forward<comparable_type_>(comparable)) ? 1u : 0u;
+    }
+
+    /** @brief Inserts a batch, leaving already-present keys untouched. */
+    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+        for (; begin != end; ++begin) {
+            value_t element(*begin);
+            std::size_t part_idx = bucket_(identifier_t(element));
+            unique_lock_t _ {mutexes_[part_idx]};
+            if (auto status = parts_[part_idx].insert_if_missing(std::move(element)); !status) return status;
+        }
+        return {success_k};
+    }
+
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -395,6 +440,57 @@ class partitioned_collection {
         for_all_next_lookups(parts_, mutexes_, std::forward<comparable_type_>(comparable),
                              std::forward<callback_found_type_>(callback_found),
                              std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /** @brief The first element at or after @p comparable, which may live in any partition. */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+              typename callback_missing_type_ = no_op_fn_t>
+    void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                     callback_missing_type_ &&callback_missing = {}) const noexcept {
+        bool found_exact = false;
+        find(
+            comparable,
+            [&](value_t const &value) noexcept {
+                found_exact = true;
+                callback_found(value);
+            },
+            []() noexcept {});
+        if (found_exact) return;
+        upper_bound(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
+                    std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> result;
+        result.status.errc = errc_t::key_not_found_k;
+        find(
+            std::forward<comparable_type_>(comparable),
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+        return result;
+    }
+
+    /** @brief Copies out the first element ordered at or after @p comparable. */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> result;
+        result.status.errc = errc_t::key_not_found_k;
+        lower_bound(
+            std::forward<comparable_type_>(comparable),
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+        return result;
+    }
+
+    /** @brief Copies out the first element ordered strictly after @p comparable. */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> result;
+        result.status.errc = errc_t::key_not_found_k;
+        upper_bound(
+            std::forward<comparable_type_>(comparable),
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+        return result;
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
