@@ -1,0 +1,38 @@
+# A narrow, bug-focused check set rather than `*` minus exclusions. The headers are template-heavy, and the
+# whole-catalogue configuration spends most of its output on style checks that argue with the house rules -
+# trailing return types, `auto`, magic numbers in tests - which buries the findings that are real defects.
+#
+# Run with a compile database:
+#
+#   cmake -B build -D CMAKE_EXPORT_COMPILE_COMMANDS=ON
+#   clang-tidy -p build --header-filter='include/smashtable/.*' scripts/test_avl_tree.cpp
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-implicit-widening-of-multiplication-result,
+  -bugprone-macro-parentheses,
+  -bugprone-branch-clone,
+  -bugprone-return-const-ref-from-parameter,
+  misc-redundant-expression,
+  misc-unused-using-decls,
+  performance-*,
+  -performance-enum-size,
+  -performance-unnecessary-value-param,
+  readability-duplicate-include,
+  readability-misleading-indentation,
+  readability-redundant-preprocessor,
+
+# `bugprone-return-const-ref-from-parameter` fires on `mapping_key_or_itself`, which projects a key out of a
+# mapping and is called from every comparator. Returning by value there would copy a key per comparison.
+#
+# `performance-unnecessary-value-param` fires on the allocator sink parameters, which take by value and then
+# `std::move` into the member - the recommended shape, misread when the allocator has no move constructor.
+#
+# `performance-enum-size` wants a narrow base on every scoped enum; the house rule already spells the base out
+# where the width carries meaning, and forcing it everywhere adds noise to the declaration.
+
+WarningsAsErrors: ""
+HeaderFilterRegex: "include/smashtable/.*"
+FormatStyle: file
