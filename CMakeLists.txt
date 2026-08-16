@@ -36,48 +36,25 @@ endif ()
 option(SMASHTABLE_BUILD_TESTS "Build tests and examples" ON)
 
 if (SMASHTABLE_BUILD_TESTS)
-    include(FetchContent)
-
-    set(INSTALL_GTEST
-        OFF
-        CACHE BOOL "" FORCE
-    )
-    set(BUILD_GMOCK
-        OFF
-        CACHE BOOL "" FORCE
-    )
-    set(gtest_force_shared_crt
-        ON
-        CACHE BOOL "" FORCE
-    )
-
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.17.0
-    )
-
-    FetchContent_MakeAvailable(googletest)
-
     add_executable(smashtable_example example.cpp)
-    target_link_libraries(smashtable_example PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+    target_link_libraries(smashtable_example PRIVATE smashtable::smashtable smashtable_warnings)
 
     # Individual test executables for faster incremental builds
     add_executable(smashtable_test_std_set scripts/test_std_set.cpp)
     target_include_directories(smashtable_test_std_set PRIVATE scripts/)
-    target_link_libraries(smashtable_test_std_set PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+    target_link_libraries(smashtable_test_std_set PRIVATE smashtable::smashtable smashtable_warnings)
 
     add_executable(smashtable_test_avl_tree scripts/test_avl_tree.cpp)
     target_include_directories(smashtable_test_avl_tree PRIVATE scripts/)
-    target_link_libraries(smashtable_test_avl_tree PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+    target_link_libraries(smashtable_test_avl_tree PRIVATE smashtable::smashtable smashtable_warnings)
 
     add_executable(smashtable_test_wb_tree scripts/test_wb_tree.cpp)
     target_include_directories(smashtable_test_wb_tree PRIVATE scripts/)
-    target_link_libraries(smashtable_test_wb_tree PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+    target_link_libraries(smashtable_test_wb_tree PRIVATE smashtable::smashtable smashtable_warnings)
 
     add_executable(smashtable_test_partitioned scripts/test_partitioned.cpp)
     target_include_directories(smashtable_test_partitioned PRIVATE scripts/)
-    target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::smashtable smashtable_warnings GTest::gtest)
+    target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::smashtable smashtable_warnings)
 
     enable_testing()
     add_test(NAME test_std_set COMMAND smashtable_test_std_set)

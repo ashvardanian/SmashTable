@@ -1,0 +1,150 @@
+/**
+ *  @brief Harness for the C++ suites - assertions, a named test runner, and crash localization.
+ *  @author Ash Vardanian
+ *  @file scripts/test.hpp
+ *  @date August 15, 2026
+ *
+ *  @section test_environment_variables Environment Variables
+ *
+ *  - @c SMASHTABLE_FILTER : substring matched against a test's "suite.name" label; only matching tests
+ *    run. Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, so a
+ *    mistyped filter reads as a skip rather than as an empty suite.
+ *
+ *  @section test_failure_model Failure Model
+ *
+ *  Assertions abort rather than accumulate. Many of them guard the dereference or the index on the very
+ *  next line, so a check that recorded a failure and carried on would hand the following statement a
+ *  disengaged optional or an out-of-range subscript. The process dies at the defect, and the installed
+ *  signal handler turns that into a backtrace.
+ */
+#pragma once
+#include <cstdio>  // `std::fprintf`, `std::setvbuf`
+#include <cstdlib> // `std::abort`, `std::getenv`
+#include <csignal> // `std::signal`, `SIGSEGV`, `SIGABRT`
+#include <cstring> // `std::strstr`
+
+#include <chrono>      // `std::chrono::steady_clock`
+#include <exception>   // `std::exception`
+#include <type_traits> // `std::is_void_v`
+
+#if defined(__linux__) && defined(__GLIBC__)
+#include <execinfo.h> // `backtrace`, `backtrace_symbols_fd`
+#include <unistd.h>   // `STDERR_FILENO`
+#endif
+
+#pragma region Assertions
+
+/**
+ *  @brief Verification that stays active regardless of @c NDEBUG - a test's oracle must never compile out.
+ *
+ *  Wrapped in @c do/while(0) so the macro is one statement: it demands its terminating semicolon and
+ *  swallows a dangling @c else. Context belongs inside the condition as @c &&"text", which the
+ *  stringified expression then prints; there is no streamed message and no object to return.
+ */
+#define st_verify_(condition)                                                                         \
+    do {                                                                                              \
+        if (!(condition)) {                                                                           \
+            std::fprintf(stderr, "Verification failed: %s, %s:%d\n", #condition, __FILE__, __LINE__); \
+            std::abort();                                                                             \
+        }                                                                                             \
+    } while (0)
+
+#define st_verify_eq_(first, second) st_verify_((first) == (second))
+#define st_verify_ne_(first, second) st_verify_((first) != (second))
+
+#pragma endregion Assertions
+
+namespace ashvardanian::smashtable::scripts {
+
+#pragma region Crash Localization
+
+/**
+ *  @brief Prints a backtrace on a fatal signal, so an aborting check self-localizes rather than dying
+ *    silently under CI's output redirection.
+ */
+inline void test_fatal_signal_handler(int signal_number) noexcept {
+    std::fprintf(stderr, "\n*** Fatal signal %d - backtrace follows ***\n", signal_number);
+#if defined(__linux__) && defined(__GLIBC__)
+    void *frames[64];
+    int const frames_count = backtrace(frames, sizeof(frames) / sizeof(frames[0]));
+    // The `_fd` form writes without allocating, which is what makes it usable from a handler.
+    backtrace_symbols_fd(frames, frames_count, STDERR_FILENO);
+#endif
+    // Restore and re-raise, so the shell still sees the real signal and any core dump is produced.
+    std::signal(signal_number, SIG_DFL);
+    std::raise(signal_number);
+}
+
+/** @brief Installs the backtrace handlers and line-buffers stdout. Call once, from @c main. */
+inline void install_test_signal_handlers() noexcept {
+    // Line-buffered, so progress survives a crash under redirection. The size must be nonzero:
+    // Windows ucrt fast-fails on a zero-sized buffering mode.
+    std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
+    std::signal(SIGSEGV, test_fatal_signal_handler);
+    std::signal(SIGABRT, test_fatal_signal_handler);
+}
+
+#pragma endregion Crash Localization
+
+#pragma region Test Runner
+
+/**
+ *  @brief Runs one named test, honoring @p filter, timing it, and reporting the outcome.
+ *  @param[in] filter Substring matched against @p name, or @c nullptr to run everything.
+ *  @param[in] name The test's "suite.name" label, which is also its filter key.
+ *  @param[in] test_function Anything callable with no arguments.
+ *  @return The number of failures - 0 on success or when skipped, 1 when the test threw.
+ *
+ *  A failed assertion aborts before this returns, so the count covers only thrown exceptions; naming
+ *  them here beats a bare @c what() at the top of @c main. The started line prints before the call, so
+ *  a hard crash leaves the running test as the last thing on stdout.
+ */
+template <typename function_type_>
+inline std::size_t run_test(char const *filter, char const *name, function_type_ &&test_function) noexcept {
+    if (filter && filter[0] != '\0' && !std::strstr(name, filter)) {
+        std::printf("- %s ... skipped (SMASHTABLE_FILTER)\n", name);
+        std::fflush(stdout);
+        return 0;
+    }
+
+    std::printf("- %s ...\n", name);
+    std::fflush(stdout);
+    auto const started = std::chrono::steady_clock::now();
+    try {
+        test_function();
+    }
+    catch (std::exception const &error) {
+        std::fprintf(stderr, "- %s ... FAILED: %s\n", name, error.what());
+        std::fflush(stderr);
+        return 1;
+    }
+    double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    std::printf("- %s ... ok (%.2f s)\n", name, seconds);
+    std::fflush(stdout);
+    return 0;
+}
+
+/** @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status. */
+inline int report_test_failures(std::size_t failures) noexcept {
+    if (failures != 0) {
+        std::fprintf(stderr, "\n%zu test(s) failed.\n", failures);
+        return 1;
+    }
+    std::printf("\nAll tests passed!\n");
+    return 0;
+}
+
+#pragma endregion Test Runner
+
+#pragma region Container Helpers
+
+/** @brief Clears a container whether or not its @c clear reports a status. */
+template <typename container_type_>
+void clear_container(container_type_ &container) noexcept {
+    if constexpr (std::is_void_v<decltype(container.clear())>) container.clear();
+    else { [[maybe_unused]] auto const status = container.clear(); }
+}
+
+#pragma endregion Container Helpers
+
+} // namespace ashvardanian::smashtable::scripts

@@ -1,15 +1,15 @@
 /**
- *  @brief Test instantiations for AVL tree containers. Covers basic_avl_tree (non-transactional) and
- *      transactional_binary_tree<basic_avl_tree> (transactional). Includes AVL-specific algorithms
- *      (merge/split/join) and transaction architecture tests.
+ *  @brief Test instantiations for weight-balanced tree containers. Covers basic_wb_tree (non-transactional) and
+ *      transactional_binary_tree<basic_wb_tree> (transactional). The weight-balanced tree also carries order
+ *      statistics - @c rank and @c select.
  *  @author Ash Vardanian
- *  @file scripts/test_avl_tree.cpp
- *  @date October 25, 2025
+ *  @file scripts/test_wb_tree.cpp
+ *  @date August 16, 2026
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
-#include <smashtable/basic_avl_tree.hpp>
+#include <smashtable/basic_wb_tree.hpp>
 #include <smashtable/transactional_binary_tree.hpp>
 #include <smashtable/transactional_std_store.hpp>
 
@@ -26,107 +26,105 @@ using namespace ashvardanian::smashtable::scripts;
  *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✗
  *  Tests: Baseline non-transparent comparator path
  */
-using trivial_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+using trivial_set_t = wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✗
  *  Tests: Resource accounting, allocation failure injection
  */
-using tracking_set_t = avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using tracking_set_t = wb_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✗
  *  Tests: Identifier extraction, composite_key_compare_t::value_type lookups
  */
-using composite_set_t = avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
+using composite_set_t = wb_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✗
  *  Tests: OOM during .copy(), string_view lookups without materialization
  */
-using heavy_set_t = avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
+using heavy_set_t = wb_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✗
  *  Value: int | Tests: Baseline map operations, non-transparent path
  */
-using trivial_map_t =
-    avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+using trivial_map_t = wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✗
  *  Value: int | Tests: Map resource accounting, POCCA/POCMA on key-value pairs
  */
-using tracking_map_t = avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
+using tracking_map_t = wb_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✗
  *  Value: guarded_payload_t | Tests: Mixed trivial/non-trivial, value OOM scenarios
  */
-using composite_map_t = avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
-                                std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
+using composite_map_t = wb_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
+                               std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✗
  *  Value: guarded_payload_t | Tests: Dual-heap OOM, worst-case complexity
  */
 using heavy_map_t =
-    avl_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
+    wb_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓ (MVCC)
  *  Tests: Baseline transactional correctness, isolation levels
  */
 using transactional_trivial_set_t =
-    transactional_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+    transactional_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
  *  Tests: Transaction resource accounting, OOM during stage/commit
  */
-using transactional_tracking_set_t = transactional_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using transactional_tracking_set_t = transactional_wb_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
  *  Tests: Heterogeneous watch/find in transactions
  */
 using transactional_composite_set_t =
-    transactional_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
+    transactional_wb_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✓
  *  Tests: Watch copy OOM, transaction rollback with heap types
  */
-using transactional_heavy_set_t = transactional_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
+using transactional_heavy_set_t = transactional_wb_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
  *  Value: int | Tests: Transactional map operations, value overwrites
  */
 using transactional_trivial_map_t =
-    transactional_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+    transactional_wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
  *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA
  */
 using transactional_tracking_map_t =
-    transactional_avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
+    transactional_wb_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values
  */
-using transactional_composite_map_t =
-    transactional_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
-                          std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
+using transactional_composite_map_t = transactional_wb_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
+                                                           std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap rollback
  */
-using transactional_heavy_map_t = transactional_avl_map<heavy_key_t, guarded_payload_t, std::less<void>,
-                                                        std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
+using transactional_heavy_map_t = transactional_wb_map<heavy_key_t, guarded_payload_t, std::less<void>,
+                                                       std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 #pragma endregion Type Aliases
 
