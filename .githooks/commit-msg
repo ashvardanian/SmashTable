@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+# SmashTable commit-msg: enforce the commit-message contract.
+#
+#   1. The subject starts with an approved verb prefix - Add / Chore / Fix / Improve / Make -
+#      followed by a capitalized summary, so the history reads as a consistent changelog. A
+#      refactor is an Improve; Chore covers housekeeping that rearranges rather than changes
+#      behaviour; Make covers changes that touch only the build or the environment, never the
+#      sources. Merge commits are exempt, since Git writes their subject.
+#   2. No AI-assistant attribution: no `Co-authored-by` bot trailer, no "Generated with/by
+#      <assistant>", no assistant name, vendor URL, or robot emoji. Authorship is the human who
+#      committed.
+#
+# Bypass knowingly (you almost never should) with: git commit --no-verify
+
+set -u
+
+message_file="$1"
+
+# Comment lines (git's `#` scissors and helptext) never reach the final message - ignore them.
+payload=$(grep -v '^#' "$message_file")
+# The subject is the first non-blank line of what remains.
+subject=$(printf '%s\n' "$payload" | grep -vE '^[[:space:]]*$' | head -1)
+
+failed=0
+
+# 1. Verb prefix. Merge commits carry Git's own subject and are the only exemption.
+case "$subject" in
+Merge*) ;;
+*)
+    if ! printf '%s\n' "$subject" | grep -qE '^(Add|Chore|Fix|Improve|Make): [A-Z]'; then
+        echo "commit-msg: the subject must be '<Verb>: <Capitalized summary>' with an approved verb -"
+        echo "            Add Chore Fix Improve Make."
+        echo "            Got: ${subject:-<empty>}"
+        failed=1
+    fi
+    ;;
+esac
+
+# 2. AI-assistant attribution - matched generically across assistants and vendors, not one product.
+offenders=$(printf '%s\n' "$payload" | grep -inE \
+    'co-authored-by:.*(\[bot\]|\bbot\b|claude|chatgpt|gpt-[0-9]|openai|copilot|gemini|\bbard\b|cursor|codeium|devin)|generated (with|by).*\b(ai|llm|claude|chatgpt|gpt|copilot|gemini|cursor|anthropic|openai)\b|\b(anthropic|openai)\.com|claude\.ai|chatgpt\.com|claude-session|🤖' || true)
+if [ -n "$offenders" ]; then
+    echo "commit-msg: the message carries assistant attribution - authorship is the human who committed:"
+    printf '%s\n' "$offenders" | head -5
+    failed=1
+fi
+
+if [ "$failed" -ne 0 ]; then
+    echo ""
+    echo "Amend the message and commit again. Bypass knowingly with: git commit --no-verify"
+    exit 1
+fi
+exit 0

@@ -46,7 +46,7 @@ BraceWrapping:
   IndentBraces: false
 
 SortIncludes: false
-SortUsingDeclarations: false
+SortUsingDeclarations: true
 
 SpaceAfterCStyleCast: false
 SpaceAfterLogicalNot: false
@@ -68,3 +68,13 @@ SpacesInSquareBrackets: false
 BinPackArguments: true
 BinPackParameters: true
 PenaltyBreakBeforeFirstCallParameter: 1
+
+# Pin the pointer style rather than letting clang-format infer it per file. SmashTable writes the
+# C-idiomatic `char const *name`, unlike USearch's C++ convention `char const* name`.
+DerivePointerAlignment: false
+PointerAlignment: Right
+
+# Every file ends with exactly one newline, so a later append never lands on the last line of code.
+InsertNewlineAtEOF: true
+
+BreakAdjacentStringLiterals: false
