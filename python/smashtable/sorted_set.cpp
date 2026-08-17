@@ -754,7 +754,7 @@ static PyMethodDef SortedSet_methods[] = {
     {"difference", as_pycfunction(SortedSet_difference), METH_FASTCALL, "Members of this side only."},
     {"symmetric_difference", as_pycfunction(SortedSet_symmetric_difference), METH_FASTCALL,
      "Members of exactly one side."},
-    {"scan", as_pycfunction(SortedSet_scan), SMASHTABLE_METHOD_FLAGS, doc_scan},
+    {"scan", as_pycfunction(SortedSet_scan), ST_METHOD_FLAGS_, doc_scan},
     {"isdisjoint", as_pycfunction(SortedSet_isdisjoint), METH_FASTCALL, "Whether the two sides share no member."},
     {nullptr, nullptr, 0, nullptr},
 };

@@ -6,7 +6,7 @@
  *  @date August 16, 2026
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
+#define ST_STRICT_CALLBACK_CHECKS_ 1
 
 #include <smashtable/transactional_std_store.hpp>
 

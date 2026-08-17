@@ -45,7 +45,7 @@
 namespace ashvardanian::smashtable::py {
 
 /** @brief Every method taking arguments uses the fast convention; keywords are walked by hand. */
-#define SMASHTABLE_METHOD_FLAGS METH_FASTCALL | METH_KEYWORDS
+#define ST_METHOD_FLAGS_ METH_FASTCALL | METH_KEYWORDS
 
 #pragma region Stored Values
 

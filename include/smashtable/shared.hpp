@@ -182,16 +182,16 @@ concept is_mapping = requires {
 };
 
 /**
- *  @brief Conditional callback validation traits controlled by SMASHTABLE_STRICT_CALLBACK_CHECKS.
+ *  @brief Conditional callback validation traits controlled by ST_STRICT_CALLBACK_CHECKS_.
  *
- *  When SMASHTABLE_STRICT_CALLBACK_CHECKS is defined, these traits perform full compile-time
+ *  When ST_STRICT_CALLBACK_CHECKS_ is defined, these traits perform full compile-time
  *  validation using std::is_nothrow_invocable_v. This catches type errors early but prevents
  *  generic lambdas like [](auto const&) noexcept {} from compiling.
  *
  *  When undefined (default), traits always return true, allowing generic lambdas while still
  *  documenting the intent that callbacks should be noexcept.
  */
-#ifdef SMASHTABLE_STRICT_CALLBACK_CHECKS
+#ifdef ST_STRICT_CALLBACK_CHECKS_
 template <typename callback_type_, typename... args_types_>
 inline constexpr bool is_safe_callback_for = std::is_nothrow_invocable_v<callback_type_ &, args_types_...>;
 

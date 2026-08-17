@@ -25,9 +25,11 @@ subject=$(printf '%s\n' "$payload" | grep -vE '^[[:space:]]*$' | head -1)
 
 failed=0
 
-# 1. Verb prefix. Merge commits carry Git's own subject and are the only exemption.
+# 1. Verb prefix. Git writes the subject itself for merges, and for the `fixup!` and `squash!` marks
+# that `git commit --fixup` produces - those are transient and autosquash replaces them on rebase.
 case "$subject" in
 Merge*) ;;
+"fixup!"* | "squash!"*) ;;
 *)
     if ! printf '%s\n' "$subject" | grep -qE '^(Add|Chore|Docs|Fix|Improve|Make): [A-Z]'; then
         echo "commit-msg: the subject must be '<Verb>: <Capitalized summary>' with an approved verb -"

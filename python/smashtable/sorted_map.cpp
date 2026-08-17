@@ -648,7 +648,7 @@ static PyMethodDef SortedMap_methods[] = {
     {"update", as_pycfunction(SortedMap_update), METH_FASTCALL, doc_update},
     {"keys", SortedMap_keys, METH_NOARGS, "A lazy view over the keys, in order."},
     {"values", SortedMap_values, METH_NOARGS, "A lazy view over the values, in key order."},
-    {"scan", as_pycfunction(SortedMap_scan), SMASHTABLE_METHOD_FLAGS, doc_scan},
+    {"scan", as_pycfunction(SortedMap_scan), ST_METHOD_FLAGS_, doc_scan},
     {"items", SortedMap_items, METH_NOARGS, "A lazy view over the (key, value) pairs, in key order."},
     {nullptr, nullptr, 0, nullptr},
 };
