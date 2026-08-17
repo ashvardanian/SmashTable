@@ -164,7 +164,10 @@ class transactional_std_store {
         generation_t generation_ {0};
         stage_t stage_ {stage_t::created_k};
 
-        transaction_t(store_t &set) noexcept(false) : store_(&set), generation_(set.new_generation_()) {}
+        // The local change set must order exactly as the store does, so it borrows the store's comparator
+        // rather than default-constructing one - otherwise a stateful comparator would sort the two apart.
+        transaction_t(store_t &set) noexcept(false)
+            : store_(&set), changes_(set.entries_.key_comp()), generation_(set.new_generation_()) {}
         watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
@@ -237,7 +240,7 @@ class transactional_std_store {
             auto status = invoke_safely([&]() {
                 changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->unversioned, element))
+                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
                 else const_cast<value_t &>(iterator->unversioned) = std::move(element);
                 const_cast<generation_t &>(iterator->generation) = generation_;
@@ -295,7 +298,7 @@ class transactional_std_store {
             auto status = invoke_safely([&]() {
                 changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->unversioned, element))
+                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
                 else const_cast<value_t &>(iterator->unversioned) = std::move(element);
                 const_cast<generation_t &>(iterator->generation) = generation_;
@@ -339,7 +342,7 @@ class transactional_std_store {
             auto status = invoke_safely([&]() {
                 changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->unversioned, element))
+                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, element))
                     iterator = changes_.emplace_hint(iterator, std::move(element));
                 else const_cast<value_t &>(iterator->unversioned) = std::move(element);
                 const_cast<generation_t &>(iterator->generation) = generation_;
@@ -379,7 +382,7 @@ class transactional_std_store {
             return invoke_safely([&]() {
                 changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(id);
-                if (iterator == changes_.end() || !versioned_comparator_t {}.same(iterator->unversioned, id))
+                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, id))
                     iterator = changes_.emplace_hint(iterator, value_t {std::move(*maybe_tombstone)});
                 else const_cast<value_t &>(iterator->unversioned) = value_t {std::move(*maybe_tombstone)};
                 const_cast<generation_t &>(iterator->generation) = generation_;
@@ -532,8 +535,8 @@ class transactional_std_store {
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
                 value_t const &internal_element = internal_iterator->unversioned;
-                if (!versioned_comparator_t {}(external_element, internal_element))
-                    return callback_found(internal_element);
+                auto const &ordering = changes_.key_comp();
+                if (!ordering.less(external_element, internal_element)) return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
@@ -588,8 +591,8 @@ class transactional_std_store {
                 if (internal_iterator == changes_.end()) return callback_found(external_element);
 
                 value_t const &internal_element = internal_iterator->unversioned;
-                if (!versioned_comparator_t {}(external_element, internal_element))
-                    return callback_found(internal_element);
+                auto const &ordering = changes_.key_comp();
+                if (!ordering.less(external_element, internal_element)) return callback_found(internal_element);
 
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
@@ -880,6 +883,10 @@ class transactional_std_store {
 
   public:
     transactional_std_store() noexcept(false) {}
+
+    /** @brief Seeds the comparator, which an instance carrying state or a dispatch pointer needs. */
+    explicit transactional_std_store(comparator_t const &comparator) noexcept(false)
+        : entries_(versioned_comparator_t(comparator)) {}
     transactional_std_store(transactional_std_store const &) = delete;
     transactional_std_store(transactional_std_store &&) noexcept = default;
     transactional_std_store &operator=(transactional_std_store const &) = delete;
@@ -922,6 +929,11 @@ class transactional_std_store {
 #pragma endregion Capacity
 
 #pragma region Observers
+
+    /** @brief Builds a store around a specific comparator, for comparators that carry state. */
+    [[nodiscard]] static std::optional<store_t> make(comparator_t const &comparator) noexcept {
+        return store_t {comparator};
+    }
 
     /**
      *  @brief Factory method to create a new transactional set without throwing exceptions.

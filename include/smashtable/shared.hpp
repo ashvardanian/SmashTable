@@ -1,15 +1,32 @@
 /**
- *  @brief Vocabulary shared by every container - status codes, @c expected, key-value @c mapping, and the versioning
- *      machinery transactions are built on.
+ *  @brief Vocabulary shared by every container - status codes, @c expected, key-value @c mapping, the versioning
+ *      machinery transactions are built on, and the concepts stating what a container must offer to back one.
  *  @author Ash Vardanian
  *  @file include/smashtable/shared.hpp
  *  @date October 13, 2022
+ *
+ *  @section shared_store_tiers Store Tiers
+ *
+ *  @c transactional_binary_tree names a tree, but what it needs from its parameter is narrower than
+ *  tree-ness. The concepts near the end of this file state that requirement, so a container which
+ *  does not meet it says so at the call site rather than deep inside the adapter.
+ *
+ *  The requirements fall into two tiers, and the split is the point. Key-addressed work - staging a
+ *  change, validating a watch, committing, reading one key - needs only point lookup and a
+ *  transparent way to address an entry. Ordered work - bounds, ranges, order statistics - needs a
+ *  total order over keys, which an open-addressed table cannot supply at any price.
+ *
+ *  Stating the tiers separately is what lets one adapter serve an ordered and an unordered core,
+ *  gating the ordered surface behind the second concept rather than behind the container's name.
  */
 #pragma once
 #include <cerrno>  // `ENOMEM`, `EINVAL`, and the rest of the errno space
+#include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::int64_t`
 
+#include <atomic>      // `std::atomic_ref`
 #include <bit>         // `std::countl_zero`
+#include <concepts>    // `std::convertible_to`, `std::same_as`
 #include <optional>    // `std::optional`
 #include <type_traits> // `std::is_nothrow_invocable_v`
 #include <utility>     // `std::move`
@@ -147,14 +164,6 @@ struct end_sentinel_t {};
 /** @brief Placeholder type for template conditional where no type is needed. */
 struct placeholder_t {};
 
-/** @brief Sink type that discards assigned values. */
-struct discard_t {
-    template <typename type_>
-    discard_t &operator=(type_ &&) noexcept {
-        return *this;
-    }
-};
-
 template <typename type_>
 struct no_op_fn {
     constexpr void operator()(type_ &&) const noexcept {}
@@ -170,22 +179,7 @@ struct no_op_fn<void> {
 
 using no_op_fn_t = no_op_fn<void>;
 
-template <typename type_>
-struct identity_fn {
-    type_ &&operator()(type_ &&value) const noexcept { return std::forward<type_ &&>(value); }
-    type_ const &operator()(type_ const &value) const noexcept { return value; }
-};
-
-template <>
-struct identity_fn<void> {
-    template <typename type_>
-    decltype(auto) operator()(type_ &&value) const noexcept {
-        return std::forward<type_>(value);
-    }
-};
-
-using identity_fn_t = identity_fn<void>;
-
+/** @brief Callback that stores whatever it is handed into a caller-owned destination. */
 template <typename element_type_>
 struct copy_to_fn {
     element_type_ &target;
@@ -195,6 +189,7 @@ struct copy_to_fn {
     }
 };
 
+/** @brief Builds a @c copy_to_fn over @p element, for a read whose result the caller wants kept. */
 template <typename element_type_>
 copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
     return {element};
@@ -264,10 +259,13 @@ inline constexpr return_position_t return_position {};
 
 /**
  *  @brief Tag to atomically retrieve new size after modification.
- *    Stores updated container size in provided reference.
+ *    Carries the destination the updated container size is written to; a default-constructed
+ *    tag names no destination and the size is computed but discarded.
  */
 struct return_new_size_t {
+    std::size_t *out {nullptr};
     explicit return_new_size_t() = default;
+    explicit return_new_size_t(std::size_t &destination) noexcept : out(&destination) {}
 };
 inline constexpr return_new_size_t return_new_size {};
 
@@ -283,36 +281,26 @@ consteval bool contains_type() {
 }
 
 /**
- *  @brief Extract value of specific type from parameter pack or return default.
- *  @tparam needle_type_ Type to extract.
- *  @tparam default_type_ Type to return if needle not found.
- *  @tparam haystack_types_ Parameter pack to search.
- *  @return Reference to found value or default-constructed value.
+ *  @brief Locates a tag of a given type inside a parameter pack, addressing the caller's own object.
+ *  @tparam needle_type_ Type to search for.
+ *  @tparam haystack_types_ Parameter pack to search in.
+ *  @return Pointer to the last matching argument, or @c nullptr if the pack holds no such type.
+ *  @note Addressing the caller's object rather than yielding a copy is what lets a tag carrying an
+ *    out-parameter be written through.
  */
-template <typename needle_type_, typename default_type_, typename... haystack_types_>
-decltype(auto) get_value_by_type_or(haystack_types_ &&...args) {
-    if constexpr ((std::is_same_v<std::decay_t<haystack_types_>, needle_type_> || ...)) {
-        default_type_ result {};
-        (..., (std::is_same_v<std::decay_t<haystack_types_>, needle_type_>
-                   ? (result = std::forward<haystack_types_>(args), 0)
-                   : 0));
-        return result;
-    }
-    else { return default_type_ {}; }
+template <typename needle_type_, typename... haystack_types_>
+needle_type_ *find_tag(haystack_types_ &...args) noexcept {
+    needle_type_ *found = nullptr;
+    auto visit = [&](auto &arg) noexcept {
+        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(arg)>, needle_type_>) found = &arg;
+    };
+    (visit(args), ...);
+    return found;
 }
 
-/** @brief Watch metadata for versioned elements. */
-struct watch_t {
-    generation_t generation {0};
-    bool deleted {false};
+#pragma endregion Tag Dispatch Types
 
-    inline bool operator==(watch_t const &watch) const noexcept {
-        return watch.deleted == deleted && watch.generation == generation;
-    }
-    inline bool operator!=(watch_t const &watch) const noexcept {
-        return watch.deleted != deleted || watch.generation != generation;
-    }
-};
+#pragma region Copying and Construction
 
 /**
  *  @brief Alternative to C++ 23 @c std::expected and C++ 17 @c std::optional with error code.
@@ -424,6 +412,10 @@ template <typename object_type_>
     }
 }
 
+#pragma endregion Copying and Construction
+
+#pragma region Key Extraction
+
 /**
  *  @brief Checks if a type has a @c comparable_particle member.
  *
@@ -531,6 +523,23 @@ struct comparable_particle_of<comparator_type_, comparable_type_, true> {
     using type = typename comparator_type_::comparable_particle;
 };
 
+#pragma endregion Key Extraction
+
+#pragma region Versioning Machinery
+
+/** @brief Watch metadata for versioned elements. */
+struct watch_t {
+    generation_t generation {0};
+    bool deleted {false};
+
+    inline bool operator==(watch_t const &watch) const noexcept {
+        return watch.deleted == deleted && watch.generation == generation;
+    }
+    inline bool operator!=(watch_t const &watch) const noexcept {
+        return watch.deleted != deleted || watch.generation != generation;
+    }
+};
+
 template <typename identifier_type_>
 struct dated_identifier {
     using identifier_t = identifier_type_;
@@ -567,6 +576,29 @@ template <typename type_>
 concept carries_generation = requires(type_ const &value) {
     { value.generation } -> std::convertible_to<generation_t>;
 };
+
+/**
+ *  @brief Detects a version-decorated value: a generation stamp @b and the payload it decorates.
+ *    Stricter than @c carries_generation on purpose - @c watch_t carries a generation and no
+ *    payload, and would otherwise be peeled down a branch that does not compile.
+ */
+template <typename type_>
+concept carries_versioned_payload = carries_generation<type_> && requires(type_ const &value) { value.unversioned; };
+
+/**
+ *  @brief The identifier a version-decorated object is addressed by, with the metadata peeled off.
+ *    A chain defers to the version it holds, a version to the value it wraps, and a dated identifier
+ *    to the identifier inside it, so a plain key is reached from any of the shapes a store stores.
+ */
+template <typename type_>
+decltype(auto) versioned_particle(type_ const &object) noexcept {
+    using dereferenced_t = std::remove_reference_t<type_>;
+    if constexpr (requires { typename dereferenced_t::is_version_chain; }) return versioned_particle(object.head);
+    else if constexpr (is_dating_identifier_v<dereferenced_t>)
+        return (typename dereferenced_t::identifier_t const &)object.id;
+    else if constexpr (carries_versioned_payload<dereferenced_t>) return versioned_particle(object.unversioned);
+    else return mapping_key_or_itself(object);
+}
 
 /**
  *  @brief Decorates a value type with generation and visibility metadata for transactional containers.
@@ -650,14 +682,14 @@ struct versioning_for {
             : comparator() {}
         explicit versioned_comparator_t(comparator_t const &other) noexcept : comparator(other) {}
 
+        /**
+         *  @brief Peels a stored object down to the identifier it orders by.
+         *  @note One projection, shared with the unordered path, so an ordered and an unordered
+         *    store can never disagree about which part of an entry identifies it.
+         */
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
-            using dereferenced_t = std::remove_reference_t<type_>;
-            if constexpr (std::is_same_v<dereferenced_t, versioned_t>) return comparable(object.unversioned);
-            // A version chain orders by the key its versions share, which its head already carries.
-            else if constexpr (requires { typename dereferenced_t::is_version_chain; }) return comparable(object.head);
-            else if constexpr (is_dating_identifier_v<dereferenced_t>) return (identifier_t const &)object.id;
-            else return mapping_key_or_itself(object);
+            return versioned_particle(object);
         }
 
         template <typename first_type_, typename second_type_>
@@ -693,14 +725,69 @@ struct versioning_for {
 };
 
 /**
- *  @brief Returns an unsigned integer with only the most significant bit set.
- *    Used for creating bitmasks in bucket metadata operations.
- *  @tparam unsigned_type_ Unsigned integer type (e.g., @c std::uint32_t).
- *  @return Value with only the top bit set (e.g., 0x80000000 for 32-bit).
+ *  @brief Hashes a version-decorated object by the identifier inside it, ignoring the metadata.
+ *    An unordered store addresses an entry by hash rather than by order, so this is what
+ *    @c versioned_comparator_t is to an ordered one.
  */
-template <typename unsigned_type_>
-constexpr unsigned_type_ enabled_top_bit() noexcept {
-    return static_cast<unsigned_type_>(1) << (sizeof(unsigned_type_) * 8 - 1);
+template <typename hasher_type_>
+struct versioned_hasher {
+    using is_transparent = void;
+
+    /** @brief The hasher this wrapper was built with, consulted for every element. */
+    [[no_unique_address]] hasher_type_ hasher;
+
+    // Constrained rather than defaulted, matching the ordered comparator: a hasher carrying a seed
+    // with no meaningful empty value makes every site that tried to manufacture one a compile error.
+    versioned_hasher() noexcept
+        requires std::is_default_constructible_v<hasher_type_>
+        : hasher() {}
+    explicit versioned_hasher(hasher_type_ const &other) noexcept : hasher(other) {}
+
+    template <typename type_>
+    std::size_t operator()(type_ const &object) const noexcept {
+        return hasher(versioned_particle(object));
+    }
+};
+
+/**
+ *  @brief Compares version-decorated objects by the identifier inside them, ignoring the metadata.
+ *    Paired with @c versioned_hasher, since an open-addressed table needs both to place an entry.
+ */
+template <typename equals_type_>
+struct versioned_equals {
+    using is_transparent = void;
+
+    /** @brief The equality this wrapper was built with, consulted for every comparison. */
+    [[no_unique_address]] equals_type_ equals;
+
+    versioned_equals() noexcept
+        requires std::is_default_constructible_v<equals_type_>
+        : equals() {}
+    explicit versioned_equals(equals_type_ const &other) noexcept : equals(other) {}
+
+    template <typename first_type_, typename second_type_>
+    bool operator()(first_type_ const &first, second_type_ const &second) const noexcept {
+        return equals(versioned_particle(first), versioned_particle(second));
+    }
+};
+
+#pragma endregion Versioning Machinery
+
+#pragma region Numeric Helpers
+
+/**
+ *  @brief Relaxed atomic increment of a plain counter, returning the post-increment value.
+ *    Relaxed ordering suffices because these counters are statistics, never synchronization.
+ */
+template <typename integral_type_>
+integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
+    return std::atomic_ref<integral_type_>(counter).fetch_add(addend, std::memory_order_relaxed) + addend;
+}
+
+/** @brief Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
+template <typename integral_type_>
+integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahend) noexcept {
+    return std::atomic_ref<integral_type_>(counter).fetch_sub(subtrahend, std::memory_order_relaxed) - subtrahend;
 }
 
 /**
@@ -726,7 +813,7 @@ constexpr value_type_ roundup_to_multiple(value_type_ x) noexcept {
     return ((x + multiple_ - 1) / multiple_) * multiple_;
 }
 
-#pragma endregion Tag Dispatch Types
+#pragma endregion Numeric Helpers
 
 #pragma region Tree Concepts
 
@@ -746,21 +833,237 @@ concept supports_order_statistics =
         { tree.rank(value) } -> std::same_as<std::size_t>;
     };
 
+#pragma endregion Tree Concepts
+
+#pragma region Container Traits
+
 /**
- *  @brief Concept to detect if a node type supports order statistics operations.
- *
- *  This is the node-level version of @c supports_order_statistics for static methods.
- *
- *  @tparam node_type_ The node type to check.
+ *  @brief A container that reports whether it maps keys to values, and how reads are delivered.
+ *    Every container in this library carries these, and the test suites assert on them.
  */
-template <typename node_type_>
-concept node_supports_order_statistics =
-    requires(node_type_ *node, std::size_t k, typename node_type_::value_t const &value,
-             typename node_type_::comparator_t const &comp) {
-        { node_type_::select(node, k, comp) } -> std::convertible_to<node_type_ *>;
-        { node_type_::rank(node, value, comp) } -> std::same_as<std::size_t>;
+template <typename collection_type_>
+concept tagged_collection = requires {
+    typename collection_type_::value_type;
+    typename collection_type_::key_type;
+    typename collection_type_::is_associative;
+    { collection_type_::is_associative::value } -> std::convertible_to<bool>;
+};
+
+#pragma endregion Container Traits
+
+#pragma region Store Tiers
+
+/**
+ *  @brief The tier every associative core must satisfy to back a transactional store.
+ *    Point lookup, membership, size, and clearing - nothing here implies an ordering over keys, so
+ *    an open-addressed table can meet it as readily as a search tree.
+ *
+ *  @note Node transfer - @c extract and @c merge - is deliberately absent. Moving nodes between a
+ *    transaction's staging store and the committed one is how the tree adapter stages today, but it
+ *    is an implementation strategy rather than a requirement: a chain-based store stages by pushing
+ *    a version onto a key's chain and never moves a node at all.
+ */
+template <typename collection_type_>
+concept key_addressable_collection =
+    tagged_collection<collection_type_> && requires(collection_type_ &collection, collection_type_ const &constant,
+                                                    typename collection_type_::key_type const &key) {
+        { constant.size() } -> std::convertible_to<std::size_t>;
+        { constant.empty() } -> std::convertible_to<bool>;
+        { constant.contains(key) } -> std::convertible_to<bool>;
+        collection.clear();
     };
 
-#pragma endregion Tree Concepts
+/**
+ *  @brief The additional tier an ordered core satisfies, and an unordered one never can.
+ *    Bounds and half-open range erasure are the load-bearing pair: the transactional store expresses
+ *    "every version of this key older than mine" as a range, and the Python binding walks a cursor
+ *    by repeatedly asking for the exclusive successor of the last key it yielded.
+ *
+ *  @note A core's bounds are iterator-shaped, taking the sought key alone. The callback-shaped
+ *    @c lower_bound(key, found, missing) belongs to the transactional adapter above it, which cannot
+ *    hand out iterators because a version may be staged and invisible. Do not conflate the two.
+ */
+template <typename collection_type_>
+concept ordered_collection = key_addressable_collection<collection_type_> &&
+                             requires(collection_type_ &collection, typename collection_type_::key_type const &key) {
+                                 collection.lower_bound(key);
+                                 collection.upper_bound(key);
+                                 collection.erase_range(key, key);
+                             };
+
+#pragma endregion Store Tiers
+
+#pragma region Storage Shape
+
+/**
+ *  @brief How a container family restates itself over version-decorated elements, and how one such
+ *    entry is reached, replaced and taken back out.
+ *
+ *  An ordered core addresses an entry by a comparator and rebinds on one; an unordered core
+ *  addresses it by a hasher paired with an equality and rebinds on both. Everything a transactional
+ *  store does that is not itself ordered - staging, committing, reading one key - goes through this,
+ *  so the store never names either shape.
+ *
+ *  @tparam collection_type_ The core container family being restated.
+ *  @tparam value_type_ The undecorated element the store holds.
+ */
+template <typename collection_type_, typename value_type_, typename = void>
+struct versioned_storage_for {
+
+    using versioning_t = versioning_for<value_type_, typename collection_type_::comparator_t>;
+    using addressing_source_t = typename collection_type_::comparator_t;
+    using addressing_t = typename versioning_t::versioned_comparator_t;
+
+    template <typename element_type_>
+    using rebind = typename collection_type_::template rebind<element_type_, addressing_t>;
+
+    /** @brief Builds an empty storage over @c element_type_, seeded from a bare comparator. */
+    template <typename element_type_, typename allocator_type_>
+    static rebind<element_type_> build(addressing_source_t const &source, allocator_type_ const &allocator) noexcept {
+        using storage_t = rebind<element_type_>;
+        return storage_t(addressing_t(source), typename storage_t::allocator_type(allocator));
+    }
+
+    /** @brief Builds an empty storage over @c element_type_, leaving the addressing defaulted. */
+    template <typename element_type_, typename allocator_type_>
+    static rebind<element_type_> build(allocator_type_ const &allocator) noexcept {
+        using storage_t = rebind<element_type_>;
+        return storage_t(typename storage_t::allocator_type(allocator));
+    }
+
+    /** @brief Builds an empty storage over @c element_type_ addressed exactly as @p existing is. */
+    template <typename element_type_, typename storage_type_>
+    static rebind<element_type_> sibling(storage_type_ const &existing) noexcept {
+        using storage_t = rebind<element_type_>;
+        return storage_t(existing.key_comp(), typename storage_t::allocator_type(existing.allocator()));
+    }
+
+    /** @brief The allocator a storage of this family was built with. */
+    template <typename storage_type_>
+    static decltype(auto) allocator_of(storage_type_ const &storage) noexcept {
+        return storage.allocator();
+    }
+
+    /** @brief Files @p element under its own key, overwriting whatever shared it. */
+    template <typename storage_type_, typename element_type_>
+    static status_t upsert(storage_type_ &storage, element_type_ &&element) noexcept {
+        auto result = storage.upsert(std::move(element));
+        return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
+    }
+
+    /**
+     *  @brief Takes the entry filed under @p identifier out whole, handing its payload to @p destination.
+     *  @return Whether an entry was there to take.
+     *  @note The entry leaves the index before anything is moved out of it, since the key the index
+     *    addresses it by lives inside the payload and a moved-from key neither compares nor hashes.
+     */
+    template <typename storage_type_, typename identifier_type_, typename payload_type_>
+    static bool extract_payload(storage_type_ &storage, identifier_type_ const &identifier,
+                                payload_type_ &destination) noexcept {
+        auto extracted = storage.extract(identifier);
+        if (!extracted.node_ptr_) return false;
+        destination = std::move(extracted.node_ptr_->fruit.head);
+        return true;
+    }
+};
+
+/**
+ *  @brief The unordered shape, selected by the core naming a @c hasher the way every table does.
+ */
+template <typename collection_type_, typename value_type_>
+struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename collection_type_::hasher>> {
+
+    using versioning_t = versioning_for<value_type_, typename collection_type_::key_equal>;
+    using addressing_source_t = typename collection_type_::key_equal;
+    using addressing_t = versioned_hasher<typename collection_type_::hasher>;
+    using equality_t = versioned_equals<typename collection_type_::key_equal>;
+
+    template <typename element_type_>
+    using rebind = typename collection_type_::template rebind<element_type_, addressing_t, equality_t>;
+
+    /** @brief Builds an empty storage over @c element_type_, seeded from a bare equality. */
+    template <typename element_type_, typename allocator_type_>
+    static rebind<element_type_> build(addressing_source_t const &source, allocator_type_ const &allocator) noexcept {
+        using storage_t = rebind<element_type_>;
+        return storage_t(addressing_t {}, equality_t(source), typename storage_t::allocator_type(allocator));
+    }
+
+    /** @brief Builds an empty storage over @c element_type_, leaving the addressing defaulted. */
+    template <typename element_type_, typename allocator_type_>
+    static rebind<element_type_> build(allocator_type_ const &allocator) noexcept {
+        using storage_t = rebind<element_type_>;
+        return storage_t(addressing_t {}, equality_t {}, typename storage_t::allocator_type(allocator));
+    }
+
+    /** @brief Builds an empty storage over @c element_type_ addressed exactly as @p existing is. */
+    template <typename element_type_, typename storage_type_>
+    static rebind<element_type_> sibling(storage_type_ const &existing) noexcept {
+        using storage_t = rebind<element_type_>;
+        return storage_t(existing.hash_function(), existing.key_eq(),
+                         typename storage_t::allocator_type(existing.get_allocator()));
+    }
+
+    /** @brief The allocator a storage of this family was built with. */
+    template <typename storage_type_>
+    static decltype(auto) allocator_of(storage_type_ const &storage) noexcept {
+        return storage.get_allocator();
+    }
+
+    /** @brief Files @p element under its own key, overwriting whatever shared it. */
+    template <typename storage_type_, typename element_type_>
+    static status_t upsert(storage_type_ &storage, element_type_ &&element) noexcept {
+        return storage.upsert(std::move(element));
+    }
+
+    /**
+     *  @brief Takes the entry filed under @p identifier out whole, handing its payload to @p destination.
+     *  @return Whether an entry was there to take.
+     *  @note The slot is located first and erased through that position, so the erasure never probes
+     *    for a key the harvest has already emptied.
+     */
+    template <typename storage_type_, typename identifier_type_, typename payload_type_>
+    static bool extract_payload(storage_type_ &storage, identifier_type_ const &identifier,
+                                payload_type_ &destination) noexcept {
+        auto found = storage.find(identifier);
+        if (found == storage.end()) return false;
+        using element_t = std::remove_const_t<std::remove_reference_t<decltype(*found)>>;
+        destination = std::move(const_cast<element_t &>(*found).head);
+        storage.erase(found);
+        return true;
+    }
+};
+
+/**
+ *  @brief The owned element a core stores, as distinct from the view it hands out.
+ *    A node-based container returns a reference to the element it holds, so the two coincide; an
+ *    open-addressed table keeps keys and values in separate regions and can only view an entry as a
+ *    pair of references, which nothing above it can own, copy, or version.
+ */
+template <typename collection_type_, typename = void>
+struct owned_value_of {
+    using type = typename collection_type_::value_type;
+};
+
+template <typename collection_type_>
+struct owned_value_of<collection_type_, std::void_t<typename collection_type_::owned_value_type>> {
+    using type = typename collection_type_::owned_value_type;
+};
+
+/**
+ *  @brief The node type a linked storage hands out, or @c void where the storage has no nodes.
+ *    An ordered surface walks nodes directly; an open-addressed table has none to walk, and naming
+ *    one unconditionally would break the adapter at its own definition rather than at the call.
+ */
+template <typename collection_type_, typename = void>
+struct storage_node_of {
+    using type = void;
+};
+
+template <typename collection_type_>
+struct storage_node_of<collection_type_, std::void_t<typename collection_type_::node_t>> {
+    using type = typename collection_type_::node_t;
+};
+
+#pragma endregion Storage Shape
 
 } // namespace ashvardanian::smashtable

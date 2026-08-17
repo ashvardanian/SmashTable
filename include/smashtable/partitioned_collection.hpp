@@ -411,9 +411,9 @@ class partitioned_collection {
         return parts_[part_idx].upsert(std::move(element));
     }
 
-    /** @brief Removes one key, touching only the partition that owns it. */
     /**
      *  @brief Removes one element, reporting whether it was there.
+     *    Touches only the partition that owns the key, so the rest stay unlocked.
      *  @param[in] id The identifier to remove.
      *  @param[in] callback_found Receives the element that was removed.
      *  @param[in] callback_missing Fires when no such element existed.
