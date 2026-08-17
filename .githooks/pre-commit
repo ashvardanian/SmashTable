@@ -45,21 +45,30 @@ check_ascii_arrows() {
         "$file uses the ASCII '->' arrow in a comment - prose arrows are the Unicode →:"
 }
 
-# `memcpy` in a C++ source - assignment or std::bit_cast says the same thing with types intact.
+# An unqualified `memcpy` reaches for the C library through a name the standard only promises inside
+# `std::`. Where a raw byte copy really is the operation - a type-erased buffer, a region an allocator
+# handed over - `std::memcpy` says so with the qualification intact; anywhere else, assignment or
+# `std::bit_cast` says it better and keeps the types.
 check_memcpy() {
     local copies
-    copies=$(printf '%s\n' "$added" | grep -E '\b(std::)?memcpy[[:space:]]*\(' || true)
+    copies=$(printf '%s\n' "$added" |
+        grep -vE '^\+[[:space:]]*(\*|//)' |
+        grep -E '(^|[^:[:alnum:]_])memcpy[[:space:]]*\(' || true)
     [ -z "$copies" ] || fail "$copies" \
-        "$file calls memcpy - prefer assignment or std::bit_cast in C++:"
+        "$file calls unqualified memcpy - write std::memcpy for a genuine byte copy, or prefer" \
+        "assignment or std::bit_cast where the types should survive:"
 }
 
 # A `bool` parameter that steers behaviour reads as `f(x, true)` at the call site, which tells the
 # reader nothing. Name the states in an enum, ideally a scoped one backed by `bool`.
 check_boolean_parameters() {
     local switches
+    # A single-argument `explicit` constructor is wrapping a boolean VALUE, not selecting behaviour -
+    # a variant alternative or a strong typedef over `bool` has to accept one somewhere.
     switches=$(printf '%s\n' "$added" |
         grep -E '\b(bool)[[:space:]]+[a-z_][a-z_0-9]*[[:space:]]*[,)]' |
-        grep -vE '\b(is|has|was|can|should|contains|empty|equals)_?' || true)
+        grep -vE '\b(is|has|was|can|should|contains|empty|equals)_?' |
+        grep -vE 'explicit[[:space:]]+[a-z_][a-z_0-9]*\([[:space:]]*bool[[:space:]]+[a-z_][a-z_0-9]*\)' || true)
     [ -z "$switches" ] || fail "$switches" \
         "$file takes a bool parameter that selects behaviour - name the states in an enum:"
 }
@@ -91,12 +100,85 @@ check_hash_banners() {
         "$file draws a comment banner - label the section with a plain comment or '# region <Name>':"
 }
 
-# clang-format mis-tokenises `#pragma region - Name`: it reflows around the dash.
-check_region_dashes() {
-    local dashed
-    dashed=$(printf '%s\n' "$added" | grep -E '#pragma (region|endregion)[[:space:]]+-' || true)
-    [ -z "$dashed" ] || fail "$dashed" \
-        "$file writes '#pragma region - Name' - drop the dash, clang-format reflows around it:"
+# clang-format tokenises punctuation inside a `#pragma region` name and reflows the spacing around
+# it, so `region A & B: C` and its `endregion` drift apart and stop pairing in every editor that
+# folds them. Words, digits and underscores survive; nothing else does.
+check_region_names() {
+    local punctuated
+    punctuated=$(printf '%s\n' "$added" |
+        grep -E '#pragma (region|endregion)[[:space:]]+[^[:space:]]' |
+        grep -vE '#pragma (region|endregion)[[:space:]]+[A-Za-z0-9_]+([[:space:]]+[A-Za-z0-9_]+)*[[:space:]]*$' || true)
+    [ -z "$punctuated" ] || fail "$punctuated" \
+        "$file punctuates a '#pragma region' name - clang-format reflows around '-', '&', ':' and the" \
+        "rest, so the region and its endregion drift apart and stop pairing. Use words and spaces only:"
+}
+
+# Allocation goes through an allocator everywhere in this library, so a bare `new` or `delete` is
+# either a leak waiting for an exception or memory the owning container cannot account for.
+# Placement `new (address) T(...)` is construction into storage an allocator already handed over,
+# which is a different thing and stays legal - it is told apart by the parenthesised address.
+check_allocating_new() {
+    local allocations
+    allocations=$(printf '%s\n' "$added" |
+        grep -vE '^\+[[:space:]]*(\*|//)' |
+        sed -e 's|"[^"]*"||g' -e 's|/\*.*\*/||g' -e 's|//.*$||' |
+        grep -E '::operator[[:space:]]+(new|delete)|new[[:space:]]*\([[:space:]]*std::nothrow|new[[:space:]]+[A-Za-z_]|(^|[^_[:alnum:]])delete[[:space:]]*(\[[[:space:]]*\])?[[:space:]]+[A-Za-z_]' || true)
+    [ -z "$allocations" ] || fail "$allocations" \
+        "$file allocates with a bare new or delete - route it through the container's allocator." \
+        "Placement new into allocator-provided storage is fine; owning allocation is not:"
+}
+
+# Runtime polymorphism, in a codebase whose type sets are closed and known at compile time. A vtable
+# buys dispatch over an OPEN set; where the alternatives are fixed, `std::variant` plus `std::visit`
+# lowers to a switch with no indirect call, no per-object vtable pointer and no separate allocation.
+# `override` and `final` only ever appear alongside `virtual`, so they are the same violation.
+check_virtual_dispatch() {
+    local dispatch
+    dispatch=$(printf '%s\n' "$added" |
+        sed -e 's|/\*.*\*/||g' -e 's|"[^"]*"||g' -e 's|//.*$||' -e 's|^\+[[:space:]]*\*.*$||' -e 's|/\*.*$||' |
+        grep -E '\b(virtual|override)\b|(struct|class)[[:space:]]+[A-Za-z_][A-Za-z_0-9]*[[:space:]]+final\b|\)[[:space:]]*((const|noexcept)[[:space:]]*)*final\b' || true)
+    [ -z "$dispatch" ] || fail "$dispatch" \
+        "$file uses runtime polymorphism - the alternatives here are a closed set, so hold them in a" \
+        "std::variant and dispatch with std::visit, which costs a switch rather than a vtable:"
+}
+
+# Trailing member documentation. A column of `//!<` beside the fields drifts out of alignment on every
+# rename, and the house rule is all-or-none anyway - so the explanation belongs in the type's own
+# docblock, naming each member in prose, with the members left bare.
+check_trailing_member_docs() {
+    local trailing
+    trailing=$(printf '%s\n' "$added" | grep -E '(//!<|///<|/\*\*<)' || true)
+    [ -z "$trailing" ] || fail "$trailing" \
+        "$file documents a member with a trailing marker - fold the explanation into the type's own" \
+        "docblock and leave the members bare:"
+}
+
+# A docblock immediately followed by a closing brace or a `#pragma` documents neither - Doxygen binds
+# it to whatever comes next, which is the wrong symbol or nothing at all. Re-derived from its own
+# diff rather than the shared `added`, so two distant hunks are never mistaken for adjacent lines.
+check_orphan_docblocks() {
+    local orphans
+    orphans=$(git diff --cached -U0 -- "$file" | awk '
+        /^@@/ { previous = ""; carries_file = 0; next }
+        /^\+/ {
+            current = substr($0, 2)
+            sub(/^[[:space:]]+/, "", current)
+            # A block naming @file documents the translation unit, and `#pragma once` is exactly what
+            # it belongs above - every header in this project is written that way.
+            if (current ~ /@file/) carries_file = 1
+            if (previous ~ /\*\/$/ &&
+                (current ~ /^\}/ || current ~ /^\/\*\*/ || (current ~ /^#pragma/ && !carries_file))) print $0
+            # Cleared only once past the block and its pragma, so the `*/` line does not drop the
+            # flag one line before the `#pragma once` it exists to exempt.
+            if (current !~ /^[\/ ]?\*/ && current !~ /^#pragma/ && current !~ /^\/\*/) carries_file = 0
+            if (current != "") previous = current
+            next
+        }
+        { previous = ""; carries_file = 0 }
+    ' || true)
+    [ -z "$orphans" ] || fail "$orphans" \
+        "$file leaves a docblock with nothing to document - it sits directly above a closing brace, a" \
+        "#pragma, or a second docblock, so Doxygen binds it to the wrong symbol or drops it entirely:"
 }
 
 # `#pragma mark` is the older spelling and folds in fewer editors.
@@ -185,8 +267,12 @@ while IFS= read -r -d '' file; do
         check_boolean_parameters
         check_backward_references
         check_banner_rules
-        check_region_dashes
+        check_region_names
         check_pragma_mark
+        check_allocating_new
+        check_virtual_dispatch
+        check_trailing_member_docs
+        check_orphan_docblocks
         check_param_directions
         check_section_anchors
         check_markdown_doxygen
@@ -209,12 +295,18 @@ while IFS= read -r -d '' file; do
 done < <(git diff --cached --name-only --diff-filter=ACM -z)
 
 # Abbreviated identifiers are banned in favour of whole words: lo/hi/bot must be low/high/bottom.
+#
+# String literals and comments are blanked out first, because this checks IDENTIFIERS and their
+# contents are neither. A binding that exposes Python's own type names has to write `str` and
+# `bytes` in its messages and its prose, and those are the full names of those types rather than
+# abbreviations of anything.
 while IFS= read -r -d '' file; do
     case "$file" in
     *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh) ;;
     *) continue ;;
     esac
     abbreviations=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' |
+        sed -e 's|"[^"]*"||g' -e "s|'[^']*'||g" -e 's|//.*$||' -e 's|^\+[[:space:]]*\*.*$||' |
         grep -nE '\b(lo|hi|bot|idx|tmp|cnt|ptr|buf|len|str|val|obj|elem|iter)\b' | grep -v '@' || true)
     if [ -n "$abbreviations" ]; then
         echo "pre-commit: $file uses an abbreviated identifier - spell it out:"

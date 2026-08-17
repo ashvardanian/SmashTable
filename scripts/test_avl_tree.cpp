@@ -273,7 +273,7 @@ static void basic_ops_heterogeneous_lookups() {
 
 #pragma endregion Basic Operations Tests
 
-#pragma region Consistency & Transaction Tests: Sets
+#pragma region Consistency and Transaction Tests for Sets
 
 static void transactional_consistency_empty_transaction_commit() {
     test_empty_transaction_commit<transactional_trivial_set_t>();
@@ -417,7 +417,7 @@ static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_heavy_map_t>();
 }
 
-#pragma endregion Consistency &Transaction Tests : Sets
+#pragma endregion Consistency and Transaction Tests for Sets
 
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
