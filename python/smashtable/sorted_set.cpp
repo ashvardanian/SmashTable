@@ -32,11 +32,12 @@ static char const doc_SortedSet[] =                                             
 
 /**
  *  @brief Builds an empty set of a given layout, without re-entering the type through Python.
+ *  @param[in] state The module state, which hands out the staging ordinal.
  *  @param[in] type The heap type to allocate, borrowed.
  *  @param[in] ops The key layout the store is built around.
  *  @return A new reference, or @c nullptr with an exception set.
  */
-static PyObject *sorted_set_of(PyTypeObject *type, key_ops_t const *ops) noexcept {
+static PyObject *sorted_set_of(module_state_t *state, PyTypeObject *type, key_ops_t const *ops) noexcept {
     auto *self = object_as<sorted_set_object_t>(type->tp_alloc(type, 0));
     if (!self) return nullptr;
 
@@ -49,7 +50,7 @@ static PyObject *sorted_set_of(PyTypeObject *type, key_ops_t const *ops) noexcep
     // in place. Nothing owns it but this object, and `tp_dealloc` destroys it.
     new (&self->store) set_store_t(std::move(*made));
     self->base.ops = ops;
-    self->base.ordinal = next_container_ordinal();
+    self->base.ordinal = state->next_ordinal.fetch_add(1, std::memory_order_relaxed);
     return reinterpret_cast<PyObject *>(self);
 }
 
@@ -75,7 +76,9 @@ static PyObject *SortedSet_new(PyTypeObject *type, PyObject *args, PyObject *key
     key_ops_t const *ops = key_ops_from_python(key_specification);
     if (!ops) return nullptr;
 
-    return sorted_set_of(type, ops);
+    module_state_t *state = state_of_heap_type(type);
+    if (!state) return nullptr;
+    return sorted_set_of(state, type, ops);
 }
 
 static void SortedSet_dealloc(PyObject *self) noexcept {
@@ -368,7 +371,7 @@ enum class algebra_t : std::uint8_t { union_k, intersection_k, difference_k, sym
 static PyObject *set_like(PyObject *self) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    return sorted_set_of(state->sorted_set_type, object_as<container_object_t>(self)->ops);
+    return sorted_set_of(state, state->sorted_set_type, object_as<container_object_t>(self)->ops);
 }
 
 /** @brief The other side as a set of this build sharing this layout, or null when it is neither. */

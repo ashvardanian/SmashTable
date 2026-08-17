@@ -16,6 +16,11 @@ namespace ashvardanian::smashtable::py {
 
 module_state_t *state_of(PyObject *module) noexcept { return static_cast<module_state_t *>(PyModule_GetState(module)); }
 
+module_state_t *state_of_heap_type(PyTypeObject *type) noexcept {
+    PyObject *module = PyType_GetModuleByDef(type, smashtable_module_def());
+    return module ? state_of(module) : nullptr;
+}
+
 module_state_t *state_of_type(PyObject *self) noexcept {
     PyObject *module = PyType_GetModuleByDef(Py_TYPE(self), smashtable_module_def());
     return module ? state_of(module) : nullptr;
@@ -102,6 +107,8 @@ static int add_transaction_method(PyTypeObject *type) noexcept {
 
 static int module_exec(PyObject *module) noexcept {
     module_state_t *state = state_of(module);
+
+    state->next_ordinal.store(0, std::memory_order_relaxed);
 
     state->error = PyErr_NewException("smashtable.Error", nullptr, nullptr);
     if (!state->error) return -1;
