@@ -88,7 +88,10 @@ struct mapping {
         : key(std::forward<key_convertible_type_>(key_arg)), mapped(std::forward<mapped_convertible_type_>(value_arg)) {
     }
 
+    // Excluding `mapping` itself matters: for a non-const lvalue the unconstrained template deduces
+    // `mapping &` and outbids the copy constructor, which takes `mapping const &`.
     template <typename key_convertible_type_>
+        requires(!std::is_same_v<std::remove_cvref_t<key_convertible_type_>, mapping>)
     constexpr explicit mapping(key_convertible_type_ &&key_arg)
         : key(std::forward<key_convertible_type_>(key_arg)), mapped() {}
 
@@ -630,25 +633,43 @@ struct versioning_for {
     struct versioned_comparator_t {
         using is_transparent = void;
 
+        /**
+         *  @brief The comparator this wrapper was built with, consulted for every comparison.
+         *
+         *  Held rather than manufactured on demand: a comparator that carries state - a direction flag, a
+         *  collation table, a dispatch pointer - answers differently from a default-constructed one, so
+         *  building a fresh instance per comparison silently discards whatever the container was given.
+         */
+        [[no_unique_address]] comparator_t comparator;
+
+        // Constrained rather than defaulted, so a comparator that refuses default construction - one
+        // carrying a dispatch pointer with no meaningful empty value - makes every site that tried to
+        // manufacture one a compile error instead of a null call in a branch nobody exercises.
+        versioned_comparator_t() noexcept
+            requires std::is_default_constructible_v<comparator_t>
+            : comparator() {}
+        explicit versioned_comparator_t(comparator_t const &other) noexcept : comparator(other) {}
+
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
             using dereferenced_t = std::remove_reference_t<type_>;
             if constexpr (std::is_same_v<dereferenced_t, versioned_t>) return comparable(object.unversioned);
+            // A version chain orders by the key its versions share, which its head already carries.
+            else if constexpr (requires { typename dereferenced_t::is_version_chain; }) return comparable(object.head);
             else if constexpr (is_dating_identifier_v<dereferenced_t>) return (identifier_t const &)object.id;
             else return mapping_key_or_itself(object);
         }
 
         template <typename first_type_, typename second_type_>
         bool dated_compare(first_type_ const &a, second_type_ const &b) const noexcept {
-            comparator_t less;
-            auto a_less_b = less(comparable(a), comparable(b));
-            auto b_less_a = less(comparable(b), comparable(a));
+            auto a_less_b = comparator(comparable(a), comparable(b));
+            auto b_less_a = comparator(comparable(b), comparable(a));
             return !a_less_b && !b_less_a ? a.generation < b.generation : a_less_b;
         }
 
         template <typename first_type_, typename second_type_>
         bool native_compare(first_type_ const &a, second_type_ const &b) const noexcept {
-            return comparator_t {}(comparable(a), comparable(b));
+            return comparator(comparable(a), comparable(b));
         }
 
         template <typename first_type_, typename second_type_>

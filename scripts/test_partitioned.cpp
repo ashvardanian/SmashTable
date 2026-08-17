@@ -37,6 +37,10 @@ using transactional_composite_set_t = partitioned_collection<tree_composite_set_
 using transactional_trivial_map_t = partitioned_collection<tree_trivial_map_t>;
 using transactional_composite_map_t = partitioned_collection<tree_composite_map_t>;
 
+/** Sharded, and built around a comparator instance rather than a default-constructed one. */
+using tree_tracking_set_t = transactional_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using partitioned_tracking_set_t = partitioned_collection<tree_tracking_set_t>;
+
 /** One shared mutex over the whole collection. */
 using transactional_tracking_set_t = locked_collection<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_collection<tree_trivial_map_t>;
@@ -237,6 +241,10 @@ static void transactional_consistency_reset_clears_transaction_state() {
 
 #pragma endregion Type Aliases
 
+static void transactional_consistency_stateful_comparator_is_consulted() {
+    test_stateful_comparator_is_consulted<partitioned_tracking_set_t>();
+}
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = std::getenv("SMASHTABLE_FILTER");
@@ -290,6 +298,9 @@ int main() {
         run_test(filter, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
                          transactional_consistency_reset_clears_transaction_state);
+
+    failures += run_test(filter, "transactional_consistency.stateful_comparator_is_consulted",
+                         transactional_consistency_stateful_comparator_is_consulted);
 
     return report_test_failures(failures);
 }

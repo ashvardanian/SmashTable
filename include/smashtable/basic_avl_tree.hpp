@@ -717,21 +717,22 @@ class basic_avl_node {
 
     template <typename predicate_type_, typename node_deallocator_type_>
     static remove_if_result_t remove_if(node_t *node, predicate_type_ &&predicate,
-                                        node_deallocator_type_ &&node_deallocator) noexcept {
+                                        node_deallocator_type_ &&node_deallocator,
+                                        comparator_t const &comparator) noexcept {
         if (!node) return {nullptr, 0};
 
-        auto left_res = remove_if(node->left, predicate, node_deallocator);
+        auto left_res = remove_if(node->left, predicate, node_deallocator, comparator);
         node->left = left_res.root;
         if (node->left) node->left->parent = node;
 
-        auto right_res = remove_if(node->right, predicate, node_deallocator);
+        auto right_res = remove_if(node->right, predicate, node_deallocator, comparator);
         node->right = right_res.root;
         if (node->right) node->right->parent = node;
 
         std::size_t count = left_res.count + right_res.count;
 
         if (predicate(node->fruit)) {
-            auto extract_res = extract(node, comparator_t {});
+            auto extract_res = extract(node, comparator);
             node_deallocator(extract_res.extracted.release());
             return {extract_res.root, count};
         }
@@ -1850,10 +1851,13 @@ class basic_avl_tree {
 
     template <typename predicate_type_>
     std::size_t remove_if(predicate_type_ &&predicate) noexcept {
-        auto result = node_t::remove_if(root_, std::forward<predicate_type_>(predicate), [&](node_t *node) noexcept {
-            node->fruit.~value_t();
-            allocator_.deallocate(node, 1);
-        });
+        auto result = node_t::remove_if(
+            root_, std::forward<predicate_type_>(predicate),
+            [&](node_t *node) noexcept {
+                node->fruit.~value_t();
+                allocator_.deallocate(node, 1);
+            },
+            comparator_);
         root_ = result.root;
         if (root_) root_->parent = nullptr;
         auto removed_count = size_ - result.count;
@@ -2325,16 +2329,22 @@ class basic_avl_tree {
         extract_result_t() = default;
         extract_result_t(basic_avl_tree *tree, node_t *node) noexcept : tree_(tree), node_ptr_(node) {}
 
-        ~extract_result_t() noexcept {
-            if (node_ptr_) tree_->allocator_.deallocate(node_ptr_, 1);
+        /** @brief Destroys the entry before releasing its node, as every other free site here does. */
+        void discard_() noexcept {
+            if (!node_ptr_) return;
+            node_ptr_->fruit.~value_t();
+            tree_->allocator_.deallocate(node_ptr_, 1);
+            node_ptr_ = nullptr;
         }
+
+        ~extract_result_t() noexcept { discard_(); }
         extract_result_t(extract_result_t const &) = delete;
         extract_result_t &operator=(extract_result_t const &) = delete;
         extract_result_t(extract_result_t &&other) noexcept
             : tree_(other.tree_), node_ptr_(std::exchange(other.node_ptr_, nullptr)) {}
         extract_result_t &operator=(extract_result_t &&other) noexcept {
             if (this != &other) {
-                if (node_ptr_) tree_->allocator_.deallocate(node_ptr_, 1);
+                discard_();
                 tree_ = other.tree_;
                 node_ptr_ = std::exchange(other.node_ptr_, nullptr);
             }
