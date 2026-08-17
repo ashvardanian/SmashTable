@@ -33,13 +33,14 @@
 #include <cstdint> // `std::int64_t`
 
 #include <atomic>   // `std::atomic`
+#include <mutex>    // `std::mutex`
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
 #include <variant>  // `std::variant`
-#include <vector>   // `std::vector`
 
+#include <smashtable/basic_vector.hpp>
 #include <smashtable/partitioned_collection.hpp>
-#include <smashtable/transactional_binary_tree.hpp>
+#include <smashtable/transactional_store.hpp>
 
 namespace ashvardanian::smashtable::py {
 
@@ -180,6 +181,70 @@ struct value_variant_t {
 enum class value_mode_t : std::uint8_t { scalars_k, objects_k };
 
 #pragma endregion Stored Values
+
+#pragma region GIL Policy
+
+/**
+ *  @brief A per-object lock, distinct from the partition locks a store keeps.
+ *
+ *  A cursor and a transaction carry mutable state of their own - a walk position, a group state -
+ *  that no store lock covers, and every operation over it drops the GIL part-way. @c PyMutex exists
+ *  only from CPython 3.13, so 3.12 gets a @c std::mutex instead; neither is ever acquired with the
+ *  GIL attached, which is what keeps a thread waiting here from being the one holding the GIL its
+ *  owner must retake before it can unlock.
+ */
+struct object_lock_t {
+#if PY_VERSION_HEX >= 0x030D0000
+    PyMutex handle {0};
+    void lock() noexcept { PyMutex_Lock(&handle); }
+    void unlock() noexcept { PyMutex_Unlock(&handle); }
+#else
+    std::mutex handle;
+    void lock() noexcept { handle.lock(); }
+    void unlock() noexcept { handle.unlock(); }
+#endif
+};
+
+/**
+ *  @brief Runs a store operation with the GIL dropped, unless a value could touch a refcount.
+ *
+ *  A scalar-mode container holds nothing that refers to a Python object, so the whole operation is
+ *  safe with the GIL released - which is what keeps writers from serializing on each other. An
+ *  object-mode container may copy or destroy an owned reference anywhere inside the store, including
+ *  in an MVCC version it makes on its own, so it keeps the GIL for the duration.
+ */
+template <typename operation_type_>
+void run_over_values(value_mode_t mode, operation_type_ &&operation) noexcept {
+    if (mode == value_mode_t::objects_k) {
+        operation();
+        return;
+    }
+    Py_BEGIN_ALLOW_THREADS;
+    operation();
+    Py_END_ALLOW_THREADS;
+}
+
+/**
+ *  @brief The same policy, with @p lock held across the whole operation.
+ *
+ *  The lock is taken and dropped with the GIL detached even when the operation itself needs the GIL
+ *  back, so no thread ever blocks on it while holding the GIL.
+ */
+template <typename operation_type_>
+void run_over_values(value_mode_t mode, object_lock_t &lock, operation_type_ &&operation) noexcept {
+    Py_BEGIN_ALLOW_THREADS;
+    lock.lock();
+    if (mode == value_mode_t::objects_k) {
+        Py_BLOCK_THREADS;
+        operation();
+        Py_UNBLOCK_THREADS;
+    }
+    else { operation(); }
+    lock.unlock();
+    Py_END_ALLOW_THREADS;
+}
+
+#pragma endregion GIL Policy
 
 #pragma region Key Layouts
 
@@ -394,9 +459,14 @@ struct walk_limits_t {
  *  layout and the family are recorded - both are read back from it per step rather than cached here,
  *  so a cache can never disagree with the container it describes. @c limits are fixed at construction;
  *  @c position and @c state are the only members a step writes.
+ *
+ *  @c lock makes one step the unit of exclusion. A step drops the GIL, so two threads pulling from one
+ *  iterator would otherwise both read @c position, both step from it, and both assign it back - a data
+ *  race on a @c std::string for the two text layouts.
  */
 struct cursor_object_t {
     PyObject_HEAD PyObject *owner;
+    object_lock_t lock;
     walk_limits_t limits;
     key_variant_t position;
     cursor_state_t state;
@@ -560,13 +630,19 @@ enum class group_state_t : std::uint8_t { open_k, staged_k, finished_k };
  *  @brief A group of containers updated all-or-nothing.
  *
  *  @c containers holds the participants in the caller's order and @c views the per-container handles
- *  parallel to it, while @c parts holds the open transactions in canonical staging order. The vector
- *  lives inside the object, placement-constructed into @c PyObject_GC_New's storage.
+ *  parallel to it, while @c parts holds the open transactions in canonical staging order. It lives
+ *  inside the object, placement-constructed into @c PyObject_GC_New's storage, and reports a failed
+ *  reservation as a status rather than throwing - an exception has nowhere to go inside a C-API frame.
+ *
+ *  @c lock makes the state test, the pass over @c parts and the state transition one span. Each of
+ *  those passes drops the GIL, so without it two threads could both see an open group and both stage
+ *  it, and a write through a view could land in a participant a commit was already draining.
  */
 struct transaction_object_t {
     PyObject_HEAD PyObject *containers;
     PyObject *views;
-    std::vector<participant_t> parts;
+    object_lock_t lock;
+    basic_vector<participant_t> parts;
     group_state_t state;
 };
 

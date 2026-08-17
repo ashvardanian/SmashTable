@@ -404,6 +404,7 @@ static void cursor_dealloc(PyObject *self) noexcept {
     Py_CLEAR(walk->owner);
     walk->position.~key_variant_t();
     walk->limits.~walk_limits_t();
+    walk->lock.~object_lock_t();
     PyTypeObject *type = Py_TYPE(self);
     PyObject_GC_Del(self);
     Py_DECREF(type); // Heap types are reference-counted by their instances
@@ -424,11 +425,7 @@ static int cursor_clear(PyObject *self) noexcept {
 
 static PyObject *cursor_next(PyObject *self) noexcept {
     auto *walk = object_as<cursor_object_t>(self);
-    if (walk->state == cursor_state_t::exhausted_k || !walk->owner) return nullptr;
-    if (walk->limits.remaining == 0) {
-        walk->state = cursor_state_t::exhausted_k;
-        return nullptr;
-    }
+    if (!walk->owner) return nullptr;
 
     // The layout and the family are read back from the container rather than cached here, so neither
     // can disagree with the object this walk is actually stepping through.
@@ -442,28 +439,30 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     bool advanced = false;
 
     // The probe takes partition locks, so the GIL is dropped around it - except where a value may be
-    // an object, since moving one touches a refcount. No Python object is built until it is back.
-    bool const may_touch_a_refcount = over_a_map && header->mode == value_mode_t::objects_k;
-    if (may_touch_a_refcount) {
-        advanced =
-            cursor_step(walk, object_as<sorted_map_object_t>(walk->owner)->store, header->ops, found_key, &found_value);
-    }
-    else {
-        Py_BEGIN_ALLOW_THREADS;
+    // an object, since moving one touches a refcount. A set has no values to move, so only a map can
+    // ask for the GIL back. No Python object is built until it is back either way.
+    value_mode_t const step_mode = over_a_map ? header->mode : value_mode_t::scalars_k;
+    run_over_values(step_mode, walk->lock, [&]() noexcept {
+        if (walk->state == cursor_state_t::exhausted_k) return;
+        if (walk->limits.remaining == 0) {
+            walk->state = cursor_state_t::exhausted_k;
+            return;
+        }
         if (over_a_map)
             advanced = cursor_step(walk, object_as<sorted_map_object_t>(walk->owner)->store, header->ops, found_key,
                                    &found_value);
         else
             advanced =
                 cursor_step(walk, object_as<sorted_set_object_t>(walk->owner)->store, header->ops, found_key, nullptr);
-        Py_END_ALLOW_THREADS;
-    }
+        if (!advanced) {
+            walk->state = cursor_state_t::exhausted_k;
+            return;
+        }
+        if (walk->limits.remaining > 0) --walk->limits.remaining;
+    });
 
-    if (!advanced) {
-        walk->state = cursor_state_t::exhausted_k;
-        return nullptr; // No exception set, which CPython reads as `StopIteration`
-    }
-    if (walk->limits.remaining > 0) --walk->limits.remaining;
+    // No exception set, which CPython reads as `StopIteration`
+    if (!advanced) return nullptr;
 
     switch (walk->yields) {
     case cursor_yields_t::keys_k: return key_to_python(found_key);
@@ -513,6 +512,7 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
     Py_INCREF(state->cursor_type);
 
     // Placement-new the owned members, since `PyObject_GC_New` only hands back raw storage.
+    new (&walk->lock) object_lock_t {};
     new (&walk->position) key_variant_t {};
     new (&walk->limits) walk_limits_t {};
 

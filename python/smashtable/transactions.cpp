@@ -28,24 +28,6 @@ namespace ashvardanian::smashtable::py {
 
 #pragma region View
 
-/**
- *  @brief Runs a transaction operation with the GIL dropped, unless a value could touch a refcount.
- *
- *  The same rule the containers follow, applied one layer up: staging, committing and rolling back
- *  all move stored values between the transaction and the store, so an object-mode participant keeps
- *  the GIL for the duration.
- */
-template <typename operation_type_>
-static void run_over_values(value_mode_t mode, operation_type_ &&operation) noexcept {
-    if (mode == value_mode_t::objects_k) {
-        operation();
-        return;
-    }
-    Py_BEGIN_ALLOW_THREADS;
-    operation();
-    Py_END_ALLOW_THREADS;
-}
-
 /** @brief The strictest mode across a group, since one object participant governs the whole pass. */
 static value_mode_t group_mode(transaction_object_t const *group) noexcept {
     for (auto const &participant : group->parts)
@@ -53,14 +35,34 @@ static value_mode_t group_mode(transaction_object_t const *group) noexcept {
     return value_mode_t::scalars_k;
 }
 
-/** @brief This view's participant, or null once its group has finished. */
+/**
+ *  @brief This view's participant. Its layout and family are fixed for the group's life.
+ *
+ *  Whether the group is still open is not, so only the immutable parts - @c ops, @c mode and which
+ *  alternative is engaged - may be read from it outside @c run_over_participant.
+ */
 static participant_t *part_of(view_object_t *view) noexcept {
     auto *group = object_as<transaction_object_t>(view->owner);
-    return group->state == group_state_t::finished_k ? nullptr : &group->parts[view->index];
+    return &group->parts[view->index];
 }
 
-static int view_requires_active(view_object_t *view, module_state_t *state) noexcept {
-    if (part_of(view)) return 0;
+/**
+ *  @brief Runs one participant operation under its group's lock, refusing once the group has finished.
+ *  @return 0 when @p operation ran; -1 with a @c StateError set when the group was already finished.
+ *
+ *  The state test and the operation are one span, so a concurrent commit either happens entirely
+ *  before this or entirely after, never between the test and the write it guards.
+ */
+template <typename operation_type_>
+static int run_over_participant(view_object_t *view, module_state_t *state, operation_type_ &&operation) noexcept {
+    auto *group = object_as<transaction_object_t>(view->owner);
+    participant_t &part = group->parts[view->index];
+    bool finished = false;
+    run_over_values(part.mode, group->lock, [&]() noexcept {
+        finished = group->state == group_state_t::finished_k;
+        if (!finished) operation(part);
+    });
+    if (!finished) return 0;
     PyErr_SetString(state->state_error, "this transaction is no longer active");
     return -1;
 }
@@ -89,7 +91,7 @@ static int View_clear(PyObject *self) noexcept {
 static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
-    if (!state || view_requires_active(view, state) != 0) return nullptr;
+    if (!state) return nullptr;
     participant_t *part = part_of(view);
     if (!part->is_associative()) {
         PyErr_SetString(PyExc_TypeError, "this participant is a set, which has no values to read");
@@ -101,7 +103,9 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
 
     value_variant_t found;
     bool present = false;
-    run_over_values(part->mode, [&]() noexcept { present = part->find(needle, found); });
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept { present = part.find(needle, found); }) !=
+        0)
+        return nullptr;
 
     if (!present) {
         PyErr_SetObject(PyExc_KeyError, key);
@@ -113,7 +117,7 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
 static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
-    if (!state || view_requires_active(view, state) != 0) return -1;
+    if (!state) return -1;
     participant_t *part = part_of(view);
 
     key_variant_t stored_key;
@@ -121,7 +125,9 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
 
     status_t status;
     if (!value) { // `del view[key]`
-        run_over_values(part->mode, [&]() noexcept { status = part->erase(stored_key); });
+        if (run_over_participant(view, state, [&](participant_t &part) noexcept { status = part.erase(stored_key); }) !=
+            0)
+            return -1;
         return raise_for(state, status, key);
     }
 
@@ -136,15 +142,17 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
                 ->mode,
             stored_value))
         return -1;
-    run_over_values(part->mode,
-                    [&]() noexcept { status = part->upsert(std::move(stored_key), std::move(stored_value)); });
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept {
+            status = part.upsert(std::move(stored_key), std::move(stored_value));
+        }) != 0)
+        return -1;
     return raise_for(state, status, key);
 }
 
 static int View_contains(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
-    if (!state || view_requires_active(view, state) != 0) return -1;
+    if (!state) return -1;
     participant_t *part = part_of(view);
 
     key_variant_t needle;
@@ -153,9 +161,8 @@ static int View_contains(PyObject *self, PyObject *key) noexcept {
         return 0;
     }
     bool found = false;
-    Py_BEGIN_ALLOW_THREADS;
-    found = part->contains(needle);
-    Py_END_ALLOW_THREADS;
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept { found = part.contains(needle); }) != 0)
+        return -1;
     return found ? 1 : 0;
 }
 
@@ -224,7 +231,7 @@ static char const doc_View_add[] =                                              
 static PyObject *View_add(PyObject *self, PyObject *member) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
-    if (!state || view_requires_active(view, state) != 0) return nullptr;
+    if (!state) return nullptr;
     participant_t *part = part_of(view);
     if (part->is_associative()) {
         PyErr_SetString(PyExc_TypeError, "this participant is a map; assign a value rather than calling add()");
@@ -234,9 +241,9 @@ static PyObject *View_add(PyObject *self, PyObject *member) noexcept {
     key_variant_t stored;
     if (!key_from_python(member, part->ops, stored)) return nullptr;
     status_t status;
-    Py_BEGIN_ALLOW_THREADS;
-    status = part->add(std::move(stored));
-    Py_END_ALLOW_THREADS;
+    if (run_over_participant(view, state,
+                             [&](participant_t &part) noexcept { status = part.add(std::move(stored)); }) != 0)
+        return nullptr;
     if (raise_for(state, status, member) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -259,7 +266,7 @@ static char const doc_View_erase[] =                                            
 static PyObject *View_erase(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
-    if (!state || view_requires_active(view, state) != 0) return nullptr;
+    if (!state) return nullptr;
     if (count != 1) {
         PyErr_SetString(PyExc_TypeError, "erase() takes exactly one argument");
         return nullptr;
@@ -272,10 +279,11 @@ static PyObject *View_erase(PyObject *self, PyObject *const *args, Py_ssize_t co
     status_t status;
     // `erase` on a map destroys the stored value, so this is a value operation even though its
     // argument is only a key.
-    run_over_values(part->mode, [&]() noexcept {
-        present = part->contains(stored);
-        if (present) status = part->erase(stored);
-    });
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept {
+            present = part.contains(stored);
+            if (present) status = part.erase(stored);
+        }) != 0)
+        return nullptr;
     if (present && raise_for(state, status, args[0]) != 0) return nullptr;
     return PyBool_FromLong(present ? 1 : 0);
 }
@@ -301,7 +309,7 @@ static char const doc_View_watch[] =                                            
 static PyObject *View_watch(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
-    if (!state || view_requires_active(view, state) != 0) return nullptr;
+    if (!state) return nullptr;
     if (count != 1) {
         PyErr_SetString(PyExc_TypeError, "watch() takes exactly one argument");
         return nullptr;
@@ -311,9 +319,8 @@ static PyObject *View_watch(PyObject *self, PyObject *const *args, Py_ssize_t co
     key_variant_t stored;
     if (!key_from_python(args[0], part->ops, stored)) return nullptr;
     status_t status;
-    Py_BEGIN_ALLOW_THREADS;
-    status = part->watch(stored);
-    Py_END_ALLOW_THREADS;
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept { status = part.watch(stored); }) != 0)
+        return nullptr;
     if (raise_for(state, status, args[0]) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -402,7 +409,8 @@ PyType_Spec view_spec = {
 static void Transaction_dealloc(PyObject *self) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     PyObject_GC_UnTrack(self);
-    group->parts.~vector();
+    group->parts.~basic_vector();
+    group->lock.~object_lock_t();
     Py_CLEAR(group->views);
     Py_CLEAR(group->containers);
     PyTypeObject *type = Py_TYPE(self);
@@ -425,13 +433,44 @@ static int Transaction_clear(PyObject *self) noexcept {
     return 0;
 }
 
-/** @brief Discards every participant's staged and pending changes, leaving the stores untouched. */
-static void transaction_reset_all(transaction_object_t *group) noexcept {
-    run_over_values(group_mode(group), [&]() noexcept {
+/**
+ *  @brief Discards every participant's staged and pending changes, leaving the stores untouched.
+ *  @param[in] ending Where the group stands afterwards - open again, or finished for good.
+ */
+static void transaction_reset_all(transaction_object_t *group, group_state_t ending) noexcept {
+    run_over_values(group_mode(group), group->lock, [&]() noexcept {
         for (auto &participant : group->parts) [[maybe_unused]]
             auto status = participant.reset();
+        group->state = ending;
     });
-    group->state = group_state_t::open_k;
+}
+
+/**
+ *  @brief Stages every participant, and only from an open group.
+ *  @param[out] status The outcome of the pass, left untouched when the group was not open.
+ *  @return Where the group stood on entry; only @c open_k means the pass ran.
+ *
+ *  The test and the transition are one span, so of two threads racing here exactly one finds the
+ *  group open and the other is told it is already staged rather than staging it twice.
+ */
+static group_state_t transaction_stage_if_open(transaction_object_t *group, status_t &status) noexcept {
+    group_state_t entering = group_state_t::finished_k;
+    run_over_values(group_mode(group), group->lock, [&]() noexcept {
+        entering = group->state;
+        if (entering != group_state_t::open_k) return;
+        // Participants are already in canonical order, so two groups sharing containers acquire their
+        // partition locks in the same sequence and cannot deadlock.
+        for (auto &participant : group->parts) {
+            status = participant.stage();
+            if (!status) break;
+        }
+        // A partial stage is never observable: unwind everything before returning.
+        if (!status)
+            for (auto &participant : group->parts) [[maybe_unused]]
+                auto discarded = participant.reset();
+        group->state = status ? group_state_t::staged_k : group_state_t::open_k;
+    });
+    return entering;
 }
 
 static char const doc_begin[] =                                                          //
@@ -448,6 +487,9 @@ static PyObject *Transaction_begin(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
+    // Read without the lock, deliberately: taking it would drop the GIL between opening the group and
+    // the first watch, and this test guards nothing - every operation the views offer re-tests the
+    // state under the lock before it touches a participant.
     if (group->state == group_state_t::finished_k) {
         PyErr_SetString(state->state_error, "this transaction has already finished");
         return nullptr;
@@ -469,36 +511,19 @@ static char const doc_stage[] =                                                 
     "\n"                                                                                 //
     "Raises:\n"                                                                          //
     "  ConflictError: If a watched key changed since the group opened.\n"                //
-    "  StateError: If the group has already finished.\n";                                //
+    "  StateError: If the group is not open - already staged, or finished.\n";           //
 
 static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (group->state == group_state_t::finished_k) {
-        PyErr_SetString(state->state_error, "this transaction has already finished");
-        return nullptr;
-    }
 
     status_t status;
-    run_over_values(group_mode(group), [&]() noexcept {
-        // Participants are already in canonical order, so two groups sharing containers acquire their
-        // partition locks in the same sequence and cannot deadlock.
-        for (auto &participant : group->parts) {
-            status = participant.stage();
-            if (!status) break;
-        }
-        // A partial stage is never observable: unwind everything before returning.
-        if (!status)
-            for (auto &participant : group->parts) [[maybe_unused]]
-                auto discarded = participant.reset();
-    });
-
-    if (!status) {
-        group->state = group_state_t::open_k;
-        return raise_for(state, status) == 0 ? Py_NewRef(Py_None) : nullptr;
+    if (transaction_stage_if_open(group, status) != group_state_t::open_k) {
+        PyErr_SetString(state->state_error, "stage() requires an open transaction");
+        return nullptr;
     }
-    group->state = group_state_t::staged_k;
+    if (!status) return raise_for(state, status) == 0 ? Py_NewRef(Py_None) : nullptr;
     Py_RETURN_NONE;
 }
 
@@ -518,20 +543,23 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (group->state != group_state_t::staged_k) {
-        PyErr_SetString(state->state_error, "commit() requires a staged transaction");
-        return nullptr;
-    }
 
     status_t status;
-    run_over_values(group_mode(group), [&]() noexcept {
+    bool unstaged = false;
+    run_over_values(group_mode(group), group->lock, [&]() noexcept {
+        unstaged = group->state != group_state_t::staged_k;
+        if (unstaged) return;
         for (auto &participant : group->parts) {
             status = participant.commit();
             if (!status) break;
         }
+        group->state = group_state_t::finished_k;
     });
 
-    group->state = group_state_t::finished_k;
+    if (unstaged) {
+        PyErr_SetString(state->state_error, "commit() requires a staged transaction");
+        return nullptr;
+    }
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -551,19 +579,23 @@ static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (group->state != group_state_t::staged_k) {
-        PyErr_SetString(state->state_error, "rollback() requires a staged transaction");
-        return nullptr;
-    }
 
     status_t status;
-    run_over_values(group_mode(group), [&]() noexcept {
+    bool unstaged = false;
+    run_over_values(group_mode(group), group->lock, [&]() noexcept {
+        unstaged = group->state != group_state_t::staged_k;
+        if (unstaged) return;
         for (auto &participant : group->parts) {
             status = participant.rollback();
             if (!status) break;
         }
+        group->state = group_state_t::open_k;
     });
-    group->state = group_state_t::open_k;
+
+    if (unstaged) {
+        PyErr_SetString(state->state_error, "rollback() requires a staged transaction");
+        return nullptr;
+    }
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -577,7 +609,7 @@ static char const doc_reset[] =                                                 
     "This is what a retry loop calls after catching ConflictError.\n";                //
 
 static PyObject *Transaction_reset(PyObject *self, PyObject *) noexcept {
-    transaction_reset_all(object_as<transaction_object_t>(self));
+    transaction_reset_all(object_as<transaction_object_t>(self), group_state_t::open_k);
     Py_RETURN_NONE;
 }
 
@@ -585,25 +617,27 @@ static PyObject *Transaction_enter(PyObject *self, PyObject *) noexcept { return
 
 static PyObject *Transaction_exit(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
     auto *group = object_as<transaction_object_t>(self);
+    module_state_t *state = state_of_type(self);
+    if (!state) return nullptr;
     bool const body_raised = count >= 1 && args[0] != Py_None;
 
     if (body_raised) {
         // The caller's exception is the story; discard the changes and let it propagate.
-        transaction_reset_all(group);
-        group->state = group_state_t::finished_k;
+        transaction_reset_all(group, group_state_t::finished_k);
         Py_RETURN_FALSE;
     }
 
-    PyObject *staged = Transaction_stage(self, nullptr);
-    if (!staged) {
-        transaction_reset_all(group);
-        group->state = group_state_t::finished_k;
+    // A block that staged by hand is already past this phase, so only an open group is staged here.
+    status_t status;
+    group_state_t const entering = transaction_stage_if_open(group, status);
+    if (entering == group_state_t::finished_k) {
+        PyErr_SetString(state->state_error, "this transaction has already finished");
         return nullptr;
     }
-    Py_DECREF(staged);
-    if (group->state != group_state_t::staged_k) {
-        group->state = group_state_t::finished_k;
-        return nullptr; // `stage()` already raised
+    if (!status) {
+        transaction_reset_all(group, group_state_t::finished_k);
+        [[maybe_unused]] int const raised = raise_for(state, status);
+        return nullptr;
     }
     PyObject *committed = Transaction_commit(self, nullptr);
     if (!committed) return nullptr;
@@ -679,8 +713,11 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     }
 
     // Canonical order for staging, argument order for the views handed back.
-    std::vector<Py_ssize_t> order(static_cast<std::size_t>(count));
-    for (Py_ssize_t index = 0; index != count; ++index) order[static_cast<std::size_t>(index)] = index;
+    auto made_order = basic_vector<Py_ssize_t>::make(static_cast<std::size_t>(count));
+    if (!made_order) return PyErr_NoMemory();
+    basic_vector<Py_ssize_t> order = std::move(made_order.outcome);
+    for (Py_ssize_t index = 0; index != count; ++index) [[maybe_unused]]
+        auto appended = order.push_back(assume_reserved, Py_ssize_t {index});
     std::sort(order.begin(), order.end(), [&](Py_ssize_t left, Py_ssize_t right) noexcept {
         auto const *first = object_as<container_object_t>(PyTuple_GET_ITEM(containers, left));
         auto const *second = object_as<container_object_t>(PyTuple_GET_ITEM(containers, right));
@@ -691,10 +728,17 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     if (!group) return nullptr;
     Py_INCREF(state->transaction_type);
     // Constructed before anything can fail, so an early `Py_DECREF` always meets a live vector.
-    new (&group->parts) std::vector<participant_t> {};
+    new (&group->parts) basic_vector<participant_t> {};
+    new (&group->lock) object_lock_t {};
     group->containers = Py_NewRef(containers);
     group->views = nullptr;
     group->state = group_state_t::open_k;
+
+    // The only allocation `parts` ever attempts, so every append below lands in reserved storage.
+    if (!group->parts.reserve(static_cast<std::size_t>(count))) {
+        Py_DECREF(group);
+        return PyErr_NoMemory();
+    }
 
     for (Py_ssize_t position = 0; position != count; ++position) {
         PyObject *container = PyTuple_GET_ITEM(containers, order[static_cast<std::size_t>(position)]);
@@ -702,11 +746,13 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
         bool opened = false;
         if (Py_IS_TYPE(container, state->sorted_map_type)) {
             if (auto transaction = object_as<sorted_map_object_t>(container)->store.transaction())
-                group->parts.push_back(participant_t {std::move(*transaction), header->ops, header->mode}),
+                group->parts.push_back(assume_reserved,
+                                       participant_t {std::move(*transaction), header->ops, header->mode}),
                     opened = true;
         }
         else if (auto transaction = object_as<sorted_set_object_t>(container)->store.transaction())
-            group->parts.push_back(participant_t {std::move(*transaction), header->ops, header->mode}), opened = true;
+            group->parts.push_back(assume_reserved, participant_t {std::move(*transaction), header->ops, header->mode}),
+                opened = true;
         if (!opened) {
             Py_DECREF(group);
             return PyErr_NoMemory();

@@ -94,25 +94,6 @@ static int SortedMap_traverse(PyObject *self, visitproc visit, void *arg) noexce
 
 #pragma region Reading
 
-/**
- *  @brief Runs a store operation with the GIL dropped, unless a value could touch a refcount.
- *
- *  A scalar-mode container holds nothing that refers to a Python object, so the whole operation is
- *  safe with the GIL released - which is what keeps writers from serializing on each other. An
- *  object-mode container may copy or destroy an owned reference anywhere inside the store, including
- *  in an MVCC version it makes on its own, so it keeps the GIL for the duration.
- */
-template <typename operation_type_>
-static void run_over_values(value_mode_t mode, operation_type_ &&operation) noexcept {
-    if (mode == value_mode_t::objects_k) {
-        operation();
-        return;
-    }
-    Py_BEGIN_ALLOW_THREADS;
-    operation();
-    Py_END_ALLOW_THREADS;
-}
-
 static Py_ssize_t SortedMap_length(PyObject *self) noexcept {
     auto *map = object_as<sorted_map_object_t>(self);
     std::size_t size = 0;

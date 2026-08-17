@@ -34,6 +34,7 @@ def _drive(worker, count: int, failures: list[str], timeout: float = 60.0) -> No
 # region With the GIL
 
 
+@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_concurrent_writers_to_disjoint_keys(container, failures):
@@ -155,6 +156,74 @@ def test_a_group_is_never_half_visible(container_class, key_type, failures):
     assert not failures, "\n".join(failures)
 
 
+@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int"), pytest.param("str", id="str")])
+def test_one_iterator_shared_by_many_threads(container, keygen, failures):
+    """Threads pulling from one iterator between them see every key exactly once.
+
+    A step releases the GIL, so without a lock over the cursor two threads read one position, both
+    step from it and both assign it back - a duplicate for an integer layout, and a torn string for
+    a text one.
+    """
+    keys = keygen(500)
+    for key in keys:
+        container[key] = 1
+    walk = iter(container)
+    seen = []
+    sink = threading.Lock()
+
+    def worker(index: int) -> None:
+        mine = []
+        try:
+            for key in walk:
+                mine.append(key)
+        except Exception as error:  # noqa: BLE001
+            failures.append(f"worker {index}: {error!r}")
+        with sink:
+            seen.extend(mine)
+
+    _drive(worker, 8, failures)
+    assert len(seen) == len(keys), "a key was yielded twice or lost"
+    assert set(seen) == set(keys)
+
+
+@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_one_transaction_staged_by_many_threads(container, keygen, failures):
+    """Exactly one thread stages a shared group; the rest are told it is no longer open.
+
+    The staging pass releases the GIL, so without a lock over the group every thread would pass the
+    state test and stage the same participants again.
+    """
+    keys = keygen(8)
+    group = st.atomic(container)
+    (view,) = group.begin()
+    for key in keys:
+        view[key] = 1
+    staged = []
+    refused = []
+    sink = threading.Lock()
+
+    def worker(index: int) -> None:
+        try:
+            group.stage()
+            outcome = staged
+        except st.StateError:
+            outcome = refused
+        except Exception as error:  # noqa: BLE001
+            failures.append(f"worker {index}: {error!r}")
+            return
+        with sink:
+            outcome.append(index)
+
+    _drive(worker, 8, failures)
+    assert len(staged) == 1, f"{len(staged)} threads staged the same group"
+    assert len(refused) == 7
+    group.commit()
+    assert all(container[key] == 1 for key in keys)
+
+
+@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
 @pytest.mark.slow
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
@@ -193,6 +262,7 @@ def test_a_transactional_counter_converges(container, failures):
 # region Free-threaded
 
 
+@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_parallel_disjoint_writers(container, failures):
