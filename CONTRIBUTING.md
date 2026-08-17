@@ -66,7 +66,8 @@ Still, you need a virtual environment, and it's recommended to use `uv` to creat
 ```bash
 uv venv --python 3.14t                  # a free-threading build is the interesting one to test against
 source .venv/bin/activate               # to activate the virtual environment
-uv pip install setuptools wheel pytest  # to pull the build and test tools
+uv pip install setuptools wheel         # to pull the build tools
+uv pip install --group test             # to pull the test tools
 uv pip install -e . --force-reinstall   # to build locally from source
 pytest test/
 ```
@@ -75,7 +76,6 @@ The extension requires 3.12 or later, where a module can declare per-interpreter
 On a free-threading interpreter, run the suite under contention, since exercising such a build single-threaded proves nothing about it:
 
 ```bash
-uv pip install pytest-run-parallel
 pytest test/ --parallel-threads=4 --iterations=2
 python -c "import sys, smashtable; assert not sys._is_gil_enabled()"
 ```

@@ -408,5 +408,5 @@ One binary per container family runs the same suites — the `std::set` store, b
 For the Python side:
 
 ```bash
-pip install -e . && pytest test.py
+pip install -e . --group test && pytest test/
 ```

@@ -31,6 +31,10 @@ packages = []
 Homepage = "https://github.com/ashvardanian/SmashTable"
 Repository = "https://github.com/ashvardanian/SmashTable.git"
 
+# A group rather than an extra, so pytest stays out of the published wheel's metadata.
+[dependency-groups]
+test = ["pytest>=8", "pytest-repeat", "pytest-run-parallel"]
+
 [tool.pytest.ini_options]
 minversion = "6.0"
 addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config", "-v"]

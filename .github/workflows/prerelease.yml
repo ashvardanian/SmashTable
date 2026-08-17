@@ -204,7 +204,7 @@ jobs:
       - name: Install Test Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pytest pytest-repeat pytest-run-parallel
+          pip install --group test
       - name: Build and Install
         run: python -m pip install -v .
 
@@ -243,7 +243,7 @@ jobs:
           # One entry per interpreter variant: a `cp314-*` glob stops before the `t`, so a flat
           # list silently ships zero free-threaded wheels while looking complete.
           CIBW_BUILD: cp${{ matrix.python-version }}-*
-          CIBW_TEST_REQUIRES: pytest pytest-run-parallel
+          CIBW_TEST_GROUPS: test
           CIBW_TEST_COMMAND: pytest {project}/test/ -x -q
       - name: Assert the Expected Interpreter Was Built
         shell: bash
