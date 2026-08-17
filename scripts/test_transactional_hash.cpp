@@ -289,6 +289,12 @@ static void transactional_consistency_watch_detects_staged_invisible_writes() {
     test_watch_detects_staged_invisible_writes<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_watch_detects_staged_writes_of_older_generation() {
+    test_watch_detects_staged_writes_of_older_generation<transactional_trivial_map_t>();
+    test_watch_detects_staged_writes_of_older_generation<transactional_composite_map_t>();
+    test_watch_detects_staged_writes_of_older_generation<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_abandoned_transaction_leaves_no_trace() {
     test_abandoned_transaction_leaves_no_trace<transactional_trivial_map_t>();
     test_abandoned_transaction_leaves_no_trace<transactional_composite_map_t>();
@@ -372,6 +378,8 @@ int main() {
                          transactional_consistency_watch_detects_external_direct_modification);
     failures += run_test(filter, "transactional_consistency.watch_detects_staged_invisible_writes",
                          transactional_consistency_watch_detects_staged_invisible_writes);
+    failures += run_test(filter, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
+                         transactional_consistency_watch_detects_staged_writes_of_older_generation);
     failures += run_test(filter, "transactional_consistency.abandoned_transaction_leaves_no_trace",
                          transactional_consistency_abandoned_transaction_leaves_no_trace);
     failures += run_test(filter, "transactional_consistency.moved_transaction_unwinds_once",

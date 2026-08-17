@@ -280,6 +280,13 @@ static void transactional_consistency_watch_detects_staged_invisible_writes() {
     test_watch_detects_staged_invisible_writes<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_watch_detects_staged_writes_of_older_generation() {
+    test_watch_detects_staged_writes_of_older_generation<transactional_trivial_map_t>();
+    test_watch_detects_staged_writes_of_older_generation<transactional_tracking_map_t>();
+    test_watch_detects_staged_writes_of_older_generation<transactional_composite_map_t>();
+    test_watch_detects_staged_writes_of_older_generation<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_trivial_map_t>();
     test_disjoint_keys_both_succeed<transactional_tracking_map_t>();
@@ -368,6 +375,8 @@ int main() {
                          transactional_consistency_watch_detects_external_direct_modification);
     failures += run_test(filter, "transactional_consistency.watch_detects_staged_invisible_writes",
                          transactional_consistency_watch_detects_staged_invisible_writes);
+    failures += run_test(filter, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
+                         transactional_consistency_watch_detects_staged_writes_of_older_generation);
     failures += run_test(filter, "transactional_consistency.group_commits_participants_together",
                          transactional_consistency_group_commits_participants_together);
     failures += run_test(filter, "transactional_consistency.group_unwinds_every_participant_on_conflict",

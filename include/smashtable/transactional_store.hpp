@@ -876,6 +876,22 @@ class transactional_store {
         return latest;
     }
 
+    /**
+     *  @brief The version a staging transaction must reconcile with: any staged one, else the newest.
+     *
+     *  A generation is handed out when a transaction opens, so one that opens early and stages late
+     *  carries a number below a version another transaction has already published. Ranking by
+     *  generation would look straight past that staged write, and the two transactions would commit
+     *  from the same base - which is the one thing a watch exists to prevent. Publication decides
+     *  here, matching @c unmask_and_compact_, where commit order already outranks generation order.
+     */
+    static versioned_t const *staging_version_(versioned_chain_t const &chain) noexcept {
+        if (chain.head.publication == publication_t::staged_k) return &chain.head;
+        for (version_node_t const *node = chain.others; node; node = node->next)
+            if (node->entry.publication == publication_t::staged_k) return &node->entry;
+        return latest_version_(chain);
+    }
+
     /** @brief Hands back every spare the staging pass reserved and did not use. */
     void release_spare_versions_() noexcept {
         version_allocator_t allocator(storage_shape_t::allocator_of(entries_));
@@ -1040,9 +1056,10 @@ class transactional_store {
     }
 
     /**
-     *  @brief Internal API: Finds the latest entry regardless of visibility for watch validation.
-     *    Checks ALL entries including staged (invisible) ones.
-     *    Critical for detecting write-write conflicts with concurrent transactions.
+     *  @brief The version a watch is validated against, staged ones included.
+     *
+     *  A staged write is invisible to readers but binding on the next committer, so this deliberately
+     *  looks past visibility - see @c staging_version_ for which of several versions answers.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
@@ -1054,7 +1071,7 @@ class transactional_store {
                             callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         auto found = entries_.find(std::forward<comparable_type_>(comparable));
-        versioned_t const *latest = found != entries_.end() ? latest_version_(*found) : nullptr;
+        versioned_t const *latest = found != entries_.end() ? staging_version_(*found) : nullptr;
         if (latest && latest->presence == presence_t::present_k) callback_found(*latest);
         else callback_missing();
     }

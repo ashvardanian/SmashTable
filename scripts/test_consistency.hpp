@@ -827,6 +827,58 @@ void test_watch_detects_staged_invisible_writes() {
 }
 
 /**
+ *  @brief A staged write must be honoured even when its generation sits below a published one.
+ *
+ *  Its sibling above stages from the newer transaction, so the staged write is also the highest
+ *  generation and any ranking finds it. The dangerous order is the reverse: a generation is handed
+ *  out when a transaction opens, so one that opens early and stages late carries a number below a
+ *  version another transaction has already published. Ranking versions by generation looks straight
+ *  past that staged write, and two transactions commit from the same base - which is exactly what a
+ *  contended retry loop produces, and what a counter ends up one short of.
+ */
+template <typename container_type_>
+void test_watch_detects_staged_writes_of_older_generation() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 100))));
+
+    // `early` opens first, so every version it stages carries the lower generation.
+    auto early = container.transaction();
+    auto later = container.transaction();
+
+    // `later` publishes first, lifting the visible version's generation above `early`'s.
+    st_verify_(succeeded(later->watch(trivial_id_to_key<member_t>(1))));
+    st_verify_(succeeded(later->upsert(trivial_id_to_member<member_t>(1, 101))));
+    st_verify_(succeeded(later->stage()));
+    st_verify_(succeeded(later->commit()));
+
+    // `early` watches what is now visible and stages beneath it.
+    st_verify_(succeeded(early->watch(trivial_id_to_key<member_t>(1))));
+    st_verify_(succeeded(early->upsert(trivial_id_to_member<member_t>(1, 102))));
+    st_verify_(succeeded(early->stage()));
+
+    // A transaction opening after all of that sees the same visible version `early` watched, so
+    // nothing in its own view says the key is spoken for. The staged write is what must refuse it.
+    auto newcomer = container.transaction();
+    st_verify_(succeeded(newcomer->watch(trivial_id_to_key<member_t>(1))));
+    st_verify_(succeeded(newcomer->upsert(trivial_id_to_member<member_t>(1, 202))));
+    auto const status = newcomer->stage();
+    st_verify_((failed(status)) && "a staged write below the published generation must still conflict");
+    st_verify_eq_(status, status_t::consistency_k);
+
+    st_verify_(succeeded(early->commit()));
+    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
+    st_verify_(maybe_final.has_value());
+    st_verify_((maybe_final->mapped) == (102) && "the accepted writer's value must be the one that lands");
+}
+
+/**
  *  @brief Builds a container around a given comparator, whichever factory shape its family offers.
  *    Partitioned collections pair the comparator with a hasher, trees with an allocator, and some
  *    take it alone. Only the arity differs, so the choice is made here rather than in every test.

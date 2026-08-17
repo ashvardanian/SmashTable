@@ -843,9 +843,14 @@ class transactional_std_store {
     }
 
     /**
-     *  @brief Internal API: Finds the latest entry regardless of visibility for watch validation.
-     *    Checks ALL entries including staged (invisible) ones.
-     *    Critical for detecting write-write conflicts with concurrent transactions.
+     *  @brief The version a watch is validated against, staged ones included.
+     *
+     *  A staged write is invisible to readers but binding on the next committer, so this deliberately
+     *  looks past visibility. A staged revision outranks every published one regardless of
+     *  generation: generations are handed out when a transaction opens, so one that opens early and
+     *  stages late carries a number below a revision another transaction has already published.
+     *  Ranking by generation would look straight past that staged write and let both transactions
+     *  commit from the same base. Publication decides here, as it already does at commit.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
@@ -857,10 +862,14 @@ class transactional_std_store {
                             callback_missing_type_ &&callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
-        // Locate the most recent revision regardless of visibility.
         entry_iterator_t latest = range.second;
-        for (auto it = range.first; it != range.second; ++it)
+        for (auto it = range.first; it != range.second; ++it) {
+            if (it->publication == publication_t::staged_k) {
+                latest = it;
+                break;
+            }
             if (latest == range.second || it->generation > latest->generation) latest = it;
+        }
 
         // Invoke whichever callback matches the outcome.
         if (latest == range.second || latest->presence == presence_t::erased_k) callback_missing();
@@ -881,26 +890,28 @@ class transactional_std_store {
     }
 
     void unmask_and_compact_(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
+        // The entry being unmasked is the one that survives, wherever it sits in the set's order.
+        // Keeping whichever came last instead would erase it again the moment a revision with a
+        // higher generation is already published, which happens whenever a transaction opens early
+        // and commits late. Every other published revision gives way; other transactions' staged
+        // ones are untouched, since they are not this commit's to decide.
         entry_iterator_t current = begin;
-        entry_iterator_t last_visible_entry = end;
-        for (; current != end; ++current) {
-            auto keep_this = current->generation == generation_to_unmask;
-            if (keep_this) {
-                visible_count_ += current->publication == publication_t::staged_k;
-                visible_deleted_count_ +=
-                    current->publication == publication_t::staged_k && current->presence == presence_t::erased_k;
-                const_cast<publication_t &>(current->publication) = publication_t::published_k;
+        while (current != end) {
+            entry_iterator_t next = current;
+            ++next;
+            if (current->generation == generation_to_unmask) {
+                if (current->publication == publication_t::staged_k) {
+                    ++visible_count_;
+                    visible_deleted_count_ += current->presence == presence_t::erased_k;
+                    const_cast<publication_t &>(current->publication) = publication_t::published_k;
+                }
             }
-
-            if (current->publication == publication_t::staged_k) continue;
-
-            // Older revisions must die
-            if (last_visible_entry != end) {
+            else if (current->publication == publication_t::published_k) {
                 --visible_count_;
-                visible_deleted_count_ -= last_visible_entry->presence == presence_t::erased_k;
-                entries_.erase(last_visible_entry);
+                visible_deleted_count_ -= current->presence == presence_t::erased_k;
+                entries_.erase(current);
             }
-            last_visible_entry = current;
+            current = next;
         }
     }
 
