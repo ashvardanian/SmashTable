@@ -125,10 +125,10 @@ struct key_variant_t {
      */
     [[nodiscard]] expected<key_variant_t> copy() const noexcept {
         try {
-            return expected<key_variant_t> {key_variant_t {*this}, status_t {success_k}};
+            return expected<key_variant_t> {key_variant_t {*this}, success_k};
         }
         catch (...) {
-            return expected<key_variant_t> {key_variant_t {}, status_t {errc_t::out_of_memory_heap_k}};
+            return expected<key_variant_t> {key_variant_t {}, status_t::out_of_memory_heap_k};
         }
     }
 };
@@ -163,10 +163,10 @@ struct value_variant_t {
     /** @brief Deep copy that reports allocation failure instead of throwing. */
     [[nodiscard]] expected<value_variant_t> copy() const noexcept {
         try {
-            return expected<value_variant_t> {value_variant_t {*this}, status_t {success_k}};
+            return expected<value_variant_t> {value_variant_t {*this}, success_k};
         }
         catch (...) {
-            return expected<value_variant_t> {value_variant_t {}, status_t {errc_t::out_of_memory_heap_k}};
+            return expected<value_variant_t> {value_variant_t {}, status_t::out_of_memory_heap_k};
         }
     }
 };

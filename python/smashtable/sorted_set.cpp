@@ -215,7 +215,7 @@ static PyObject *SortedSet_add(PyObject *self, PyObject *member) noexcept {
     key_variant_t stored;
     if (!key_from_python(member, set->base.ops, stored)) return nullptr;
 
-    status_t status;
+    status_t status = success_k;
     Py_BEGIN_ALLOW_THREADS;
     status = set->store.upsert(std::move(stored));
     Py_END_ALLOW_THREADS;
@@ -232,7 +232,7 @@ static int set_erase(PyObject *self, PyObject *member, bool *was_present) noexce
     key_variant_t stored;
     if (!key_from_python(member, set->base.ops, stored)) return -1;
 
-    status_t status;
+    status_t status = success_k;
     bool present = false;
     Py_BEGIN_ALLOW_THREADS;
     present = set->store.contains(stored);
@@ -298,7 +298,7 @@ static PyObject *SortedSet_pop(PyObject *self, PyObject *) noexcept {
 
     key_variant_t smallest;
     bool present = false;
-    status_t status;
+    status_t status = success_k;
     Py_BEGIN_ALLOW_THREADS;
     key_variant_t floor;
     set->base.ops->least(floor);
@@ -325,7 +325,7 @@ static PyObject *SortedSet_clear(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    status_t status;
+    status_t status = success_k;
     Py_BEGIN_ALLOW_THREADS;
     status = set->store.clear();
     Py_END_ALLOW_THREADS;
@@ -422,7 +422,7 @@ static bool set_algebra_natively(sorted_set_object_t *mine, sorted_set_object_t 
     auto absorb = [&](key_variant_t const &member, membership_t membership, side_t side) noexcept {
         if (failed || !keeps_member(operation, membership, side)) return;
         auto copied = member.copy();
-        if (!copied || !result->store.upsert(std::move(*copied))) failed = true;
+        if (!copied || !succeeded(result->store.upsert(std::move(*copied)))) failed = true;
     };
 
     for_each_in_order(mine->store, ops, [&](key_variant_t const &member) noexcept {

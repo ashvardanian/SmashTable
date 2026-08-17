@@ -175,7 +175,7 @@ static int SortedMap_assign_subscript(PyObject *self, PyObject *key, PyObject *v
         // One erase under one lock: the status reports `key_not_found_k` for a key that was never
         // there, so absence needs no separate probe and two threads racing on the same key cannot
         // both believe they removed it.
-        status_t status;
+        status_t status = success_k;
         run_over_values(map->base.mode, [&]() noexcept { status = map->store.erase(stored_key); });
         return raise_for(state, status, key);
     }
@@ -183,7 +183,7 @@ static int SortedMap_assign_subscript(PyObject *self, PyObject *key, PyObject *v
     value_variant_t stored_value;
     if (!value_from_python(value, map->base.mode, stored_value)) return -1;
 
-    status_t status;
+    status_t status = success_k;
     run_over_values(map->base.mode, [&]() noexcept {
         status = map->store.upsert(entry_t {std::move(stored_key), std::move(stored_value)});
     });
@@ -200,7 +200,7 @@ static PyObject *SortedMap_clear(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    status_t status;
+    status_t status = success_k;
     run_over_values(map->base.mode, [&]() noexcept { status = map->store.clear(); });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -234,7 +234,7 @@ static PyObject *SortedMap_pop(PyObject *self, PyObject *const *args, Py_ssize_t
 
     value_variant_t found;
     bool present = false;
-    status_t status;
+    status_t status = success_k;
     run_over_values(map->base.mode, [&]() noexcept {
         map->store.find(
             needle, [&](entry_t const &entry) noexcept { found = entry.mapped, present = true; }, []() noexcept {});
@@ -270,7 +270,7 @@ static PyObject *SortedMap_popitem(PyObject *self, PyObject *) noexcept {
     key_variant_t smallest_key;
     value_variant_t smallest_value;
     bool present = false;
-    status_t status;
+    status_t status = success_k;
     run_over_values(map->base.mode, [&]() noexcept {
         key_variant_t floor;
         map->base.ops->least(floor);
@@ -327,7 +327,7 @@ static PyObject *SortedMap_setdefault(PyObject *self, PyObject *const *args, Py_
 
     value_variant_t existing;
     bool present = false;
-    status_t status;
+    status_t status = success_k;
     run_over_values(map->base.mode, [&]() noexcept {
         // One strict insert that says which branch it took. A key arriving concurrently keeps its own
         // value, and `callback_existing` hands back that winner rather than what we tried to store.

@@ -210,7 +210,7 @@ class concurrent_hash_table {
     template <typename convertible_key_type_, typename convertible_value_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
         static_assert(has_values_k, "A two-argument emplace is only available for maps");
-        if (size() + deleted_count() >= slots_count()) return status_t {out_of_memory_heap_k};
+        if (size() + deleted_count() >= slots_count()) return out_of_memory_heap_k;
         probe_to_upsert_(
             key,
             [&](slot_ref_t &unused_slot) noexcept {
@@ -220,7 +220,7 @@ class concurrent_hash_table {
             [&](slot_ref_t &equal_slot) noexcept {
                 equal_slot.value_ref() = std::forward<convertible_value_type_>(value);
             });
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -230,14 +230,14 @@ class concurrent_hash_table {
     template <typename convertible_key_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
         static_assert(!has_values_k, "A one-argument emplace is only available for sets");
-        if (size() + deleted_count() >= slots_count()) return status_t {out_of_memory_heap_k};
+        if (size() + deleted_count() >= slots_count()) return out_of_memory_heap_k;
         probe_to_upsert_(
             key,
             [&](slot_ref_t &unused_slot) noexcept {
                 new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
             },
             no_op_fn_t {});
-        return status_t {success_k};
+        return success_k;
     }
 
     /**

@@ -143,9 +143,9 @@ class basic_vector {
         basic_vector vec(std::move(allocator));
         if (initial_capacity > 0) {
             auto status = vec.reserve(initial_capacity);
-            if (!status) return expected<basic_vector>(basic_vector(vec.allocator_), status);
+            if (failed(status)) return expected<basic_vector>(basic_vector(vec.allocator_), status);
         }
-        return expected<basic_vector>(std::move(vec), status_t {success_k});
+        return expected<basic_vector>(std::move(vec), success_k);
     }
 
     /**
@@ -156,7 +156,7 @@ class basic_vector {
         basic_vector result(allocator_);
         if (capacity_ > 0) {
             auto status = result.reserve(capacity_);
-            if (!status) return expected<basic_vector>(basic_vector(allocator_), status);
+            if (failed(status)) return expected<basic_vector>(basic_vector(allocator_), status);
         }
         // Copy all elements using copy_safely
         for (std::size_t i = 0; i < size_; ++i) {
@@ -165,11 +165,11 @@ class basic_vector {
                 // Clean up partially constructed elements
                 for (std::size_t j = 0; j < result.size_; ++j) result.data_[j].~element_t();
                 result.size_ = 0;
-                return expected<basic_vector>(basic_vector(allocator_), copy_result.status);
+                return expected<basic_vector>(basic_vector(allocator_), copy_result.status());
             }
-            new (&result.data_[result.size_++]) element_t(std::move(copy_result.outcome));
+            new (&result.data_[result.size_++]) element_t(std::move(*copy_result));
         }
-        return expected<basic_vector>(std::move(result), status_t {success_k});
+        return expected<basic_vector>(std::move(result), success_k);
     }
 
     /**
@@ -180,11 +180,11 @@ class basic_vector {
      *  @return Success, or @c out_of_memory_heap_k if allocation fails.
      */
     [[nodiscard]] status_t reserve(std::size_t new_capacity) noexcept {
-        if (new_capacity <= capacity_) return status_t {success_k};
+        if (new_capacity <= capacity_) return success_k;
 
         std::size_t const grown_capacity = larger_of<std::size_t>(new_capacity, capacity_ == 0 ? 4 : capacity_ * 2);
         auto new_data = allocator_.allocate(grown_capacity);
-        if (!new_data) return status_t {out_of_memory_heap_k};
+        if (!new_data) return out_of_memory_heap_k;
 
         // Move existing elements to new storage
         for (std::size_t i = 0; i < size_; ++i) new (&new_data[i]) element_t(std::move(data_[i]));
@@ -195,7 +195,7 @@ class basic_vector {
         if (data_) allocator_.deallocate(data_, capacity_);
         data_ = new_data;
         capacity_ = grown_capacity;
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -209,7 +209,7 @@ class basic_vector {
     status_t push_back(assume_reserved_t, element_t &&value) noexcept {
         assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
         new (&data_[size_++]) element_t(std::move(value));
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -222,7 +222,7 @@ class basic_vector {
     [[nodiscard]] status_t push_back(element_t &&value) noexcept {
         if (size_ >= capacity_) {
             auto status = reserve(size_ + 1);
-            if (!status) return status;
+            if (failed(status)) return status;
         }
         return push_back(assume_reserved, std::move(value));
     }
@@ -252,20 +252,20 @@ class basic_vector {
         // Fast path: noexcept constructor - construct directly in place
         if constexpr (std::is_nothrow_constructible_v<element_t, args_types_...>) {
             new (&data_[size_++]) element_t(std::forward<args_types_>(args)...);
-            return status_t {success_k};
+            return success_k;
         }
         // Slow path: potentially throwing constructor - use .make() method
         else if constexpr (has_make_method<element_t, args_types_...>) {
             auto result = element_t::make(std::forward<args_types_>(args)...);
-            if (!result) return result.status;
-            new (&data_[size_++]) element_t(std::move(result.outcome));
-            return status_t {success_k};
+            if (failed(result)) return result.status();
+            new (&data_[size_++]) element_t(std::move(*result));
+            return success_k;
         }
         else {
             static_assert(std::is_nothrow_constructible_v<element_t, args_types_...> ||
                               has_make_method<element_t, args_types_...>,
                           "Type must be nothrow constructible or provide a static .make(...)");
-            return status_t {errc_t::unknown_k};
+            return status_t::unknown_k;
         }
     }
 
@@ -284,7 +284,7 @@ class basic_vector {
     [[nodiscard]] status_t emplace_back(args_types_ &&...args) noexcept {
         if (size_ >= capacity_) {
             auto status = reserve(size_ + 1);
-            if (!status) return status;
+            if (failed(status)) return status;
         }
 
         // Forward to assume_reserved variant - status propagates through
@@ -306,19 +306,19 @@ class basic_vector {
         if (new_size < size_) {
             for (std::size_t i = new_size; i < size_; ++i) data_[i].~element_t();
             size_ = new_size;
-            return status_t {success_k};
+            return success_k;
         }
         // Grow: ensure capacity and default-construct new elements
         else if (new_size > size_) {
             if (new_size > capacity_) {
                 auto status = reserve(new_size);
-                if (!status) return status;
+                if (failed(status)) return status;
             }
             // Default-construct new elements
             for (std::size_t i = size_; i < new_size; ++i) new (&data_[i]) element_t();
             size_ = new_size;
         }
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -335,13 +335,13 @@ class basic_vector {
         if (new_size < size_) {
             for (std::size_t i = new_size; i < size_; ++i) data_[i].~element_t();
             size_ = new_size;
-            return status_t {success_k};
+            return success_k;
         }
         // Grow: ensure capacity
         else if (new_size > size_) {
             if (new_size > capacity_) {
                 auto status = reserve(new_size);
-                if (!status) return status;
+                if (failed(status)) return status;
             }
             // Copy-construct new elements (with rollback on failure)
             std::size_t old_size = size_;
@@ -350,13 +350,13 @@ class basic_vector {
                 // Rollback: destroy partially constructed elements
                 if (!copy_result) {
                     for (std::size_t j = old_size; j < i; ++j) data_[j].~element_t();
-                    return copy_result.status;
+                    return copy_result.status();
                 }
-                new (&data_[i]) element_t(std::move(copy_result.outcome));
+                new (&data_[i]) element_t(std::move(*copy_result));
             }
             size_ = new_size;
         }
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -380,7 +380,7 @@ class basic_vector {
     [[nodiscard]] status_t swap(basic_vector &other) noexcept {
         // For non-propagating allocators, they must be equal (C++ standard requirement)
         if constexpr (!std::allocator_traits<allocator_t>::propagate_on_container_swap::value)
-            if (!(allocator_ == other.allocator_)) return status_t {invalid_argument_k};
+            if (!(allocator_ == other.allocator_)) return invalid_argument_k;
 
         std::swap(data_, other.data_);
         std::swap(size_, other.size_);
@@ -390,7 +390,7 @@ class basic_vector {
         if constexpr (std::allocator_traits<allocator_t>::propagate_on_container_swap::value)
             std::swap(allocator_, other.allocator_);
 
-        return status_t {success_k};
+        return success_k;
     }
 
 #pragma region Element Access

@@ -10,6 +10,7 @@
 #include <memory>      // `std::allocator` as default
 #include <optional>    // `std::optional` for internal batch operations
 #include <set>         // `std::set` for inner versioned entries
+#include <stdexcept>   // `std::length_error`, which MSVC does not reach through `<set>`
 #include <type_traits> // `std::is_nothrow_invocable_v`
 #include <vector>      // `std::vector` for watches
 
@@ -21,21 +22,21 @@ template <typename callable_type_>
 status_t invoke_safely(callable_type_ &&callable) noexcept {
     if constexpr (noexcept(callable())) {
         callable();
-        return {success_k};
+        return success_k;
     }
     else {
         try {
             callable();
-            return {success_k};
+            return success_k;
         }
         catch (std::bad_alloc const &) {
-            return {errc_t::out_of_memory_heap_k};
+            return status_t::out_of_memory_heap_k;
         }
         catch (std::length_error const &) {
-            return {errc_t::out_of_memory_heap_k};
+            return status_t::out_of_memory_heap_k;
         }
         catch (...) {
-            return {errc_t::unknown_k};
+            return status_t::unknown_k;
         }
     }
 }
@@ -260,12 +261,12 @@ class transactional_std_store {
 
             // Check local changes first
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(element));
-            if (!maybe_id) return maybe_id.status;
+            if (!maybe_id) return maybe_id.status();
             auto const &id = *maybe_id;
             auto local_it = changes_.find(id);
             if (local_it != changes_.end() && local_it->presence == presence_t::present_k) {
                 callback_exists(local_it->unversioned);
-                return {invalid_argument_k};
+                return invalid_argument_k;
             }
 
             // Check main store if not in local changes or was deleted locally
@@ -278,7 +279,7 @@ class transactional_std_store {
                 },
                 []() noexcept {});
 
-            if (exists_in_store) return {invalid_argument_k};
+            if (exists_in_store) return invalid_argument_k;
 
             // Key doesn't exist anywhere, proceed with insertion
             auto status = invoke_safely([&]() {
@@ -293,7 +294,7 @@ class transactional_std_store {
                 changed_ids_.push_back(std::move(*maybe_id));
             });
 
-            if (status) callback_inserted();
+            if (succeeded(status)) callback_inserted();
             return status;
         }
 
@@ -318,12 +319,12 @@ class transactional_std_store {
 
             // Check local changes first
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(element));
-            if (!maybe_id) return maybe_id.status;
+            if (!maybe_id) return maybe_id.status();
             auto const &id = *maybe_id;
             auto local_it = changes_.find(id);
             if (local_it != changes_.end() && local_it->presence == presence_t::present_k) {
                 callback_skipped(local_it->unversioned);
-                return {success_k}; // Success, just didn't insert
+                return success_k; // Success, just didn't insert
             }
 
             // Check main store if not in local changes or was deleted locally
@@ -336,7 +337,7 @@ class transactional_std_store {
                 },
                 []() noexcept {});
 
-            if (exists_in_store) return {success_k}; // Success, just didn't insert
+            if (exists_in_store) return success_k; // Success, just didn't insert
 
             // Key doesn't exist anywhere, proceed with insertion
             auto status = invoke_safely([&]() {
@@ -351,7 +352,7 @@ class transactional_std_store {
                 changed_ids_.push_back(std::move(*maybe_id));
             });
 
-            if (status) callback_inserted();
+            if (succeeded(status)) callback_inserted();
             return status;
         }
 
@@ -375,7 +376,7 @@ class transactional_std_store {
 
             // Check if key exists in local changes or store
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(element));
-            if (!maybe_id) return maybe_id.status;
+            if (!maybe_id) return maybe_id.status();
             auto const &id = *maybe_id;
             auto local_it = changes_.find(id);
             bool key_exists = (local_it != changes_.end() && local_it->presence == presence_t::present_k);
@@ -395,7 +396,7 @@ class transactional_std_store {
                 changed_ids_.push_back(std::move(*maybe_id));
             });
 
-            if (!status) return status;
+            if (failed(status)) return status;
 
             if (key_exists) callback_assigned();
             else callback_inserted();
@@ -420,9 +421,9 @@ class transactional_std_store {
             // The tombstone and the change list each keep their own identifier, and a heavy key
             // only copies through `.copy()`.
             auto maybe_id = copy_safely<identifier_t>(id);
-            if (!maybe_id) return maybe_id.status;
+            if (!maybe_id) return maybe_id.status();
             auto maybe_tombstone = copy_safely<identifier_t>(id);
-            if (!maybe_tombstone) return maybe_tombstone.status;
+            if (!maybe_tombstone) return maybe_tombstone.status();
             return invoke_safely([&]() {
                 changed_ids_.reserve(changed_ids_.size() + 1);
                 auto iterator = changes_.lower_bound(id);
@@ -454,7 +455,7 @@ class transactional_std_store {
          *  @return Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
-            status_t status;
+            status_t status = success_k;
             // A watch outlives the entry it refers to, so the identifier must be owned, not referenced.
             auto remember = [&](identifier_t &&owned, watch_t watch) noexcept {
                 status = invoke_safely([&]() { watches_.push_back({std::move(owned), watch}); });
@@ -463,12 +464,12 @@ class transactional_std_store {
                 id,
                 [&](versioned_entry_t const &entry) noexcept {
                     auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(entry.unversioned));
-                    if (!maybe_id) status = maybe_id.status;
+                    if (!maybe_id) status = maybe_id.status();
                     else remember(std::move(*maybe_id), watch_t {entry.generation, entry.presence});
                 },
                 [&]() noexcept {
                     auto maybe_id = copy_safely<identifier_t>(id);
-                    if (!maybe_id) status = maybe_id.status;
+                    if (!maybe_id) status = maybe_id.status();
                     else remember(std::move(*maybe_id), missing_watch());
                 });
             return status;
@@ -483,7 +484,7 @@ class transactional_std_store {
          */
         [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(entry.unversioned));
-            if (!maybe_id) return maybe_id.status;
+            if (!maybe_id) return maybe_id.status();
             return invoke_safely(
                 [&] { watches_.push_back({std::move(*maybe_id), watch_t {entry.generation, entry.presence}}); });
         }
@@ -524,8 +525,7 @@ class transactional_std_store {
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-            expected<value_t> result;
-            result.status.errc = errc_t::key_not_found_k;
+            expected<value_t> result {status_t::key_not_found_k};
             find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -694,7 +694,7 @@ class transactional_std_store {
 
         /**
          *  @brief Validates watches and stages all changes to the main store, making them visible but uncommitted.
-         *    Fails with @c errc_t::consistency_k if any watched elements changed.
+         *    Fails with @c status_t::consistency_k if any watched elements changed.
          *
          *  @return Success, or consistency error if watches failed validation.
          */
@@ -710,14 +710,14 @@ class transactional_std_store {
                         consistency_violated = entry != id_and_watch.watch;
                     },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
-                if (consistency_violated) return {errc_t::consistency_k};
+                if (consistency_violated) return status_t::consistency_k;
             }
 
             // Merge our current nodes into the store.
             // The visibility will be updated later in the `commit`.
             store.entries_.merge(changes_);
             staging_ = staging_t::staged_k;
-            return {success_k};
+            return success_k;
         }
 
         /**
@@ -738,7 +738,7 @@ class transactional_std_store {
             changed_ids_.clear();
             staging_ = staging_t::pending_k;
             generation_ = store.new_generation_();
-            return {success_k};
+            return success_k;
         }
 
         /**
@@ -749,7 +749,7 @@ class transactional_std_store {
          *  @return Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         [[nodiscard]] status_t rollback() noexcept {
-            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
             // Transaction was staged, we must extract all the entries back
             auto &store = store_ref();
@@ -773,7 +773,7 @@ class transactional_std_store {
             // Preserve watches_ for future stage operations (read watches persist across rollback)
             staging_ = staging_t::pending_k;
             generation_ = resumed;
-            return {success_k};
+            return success_k;
         }
 
         /**
@@ -783,7 +783,7 @@ class transactional_std_store {
          *  @return Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         [[nodiscard]] status_t commit() noexcept {
-            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
             // Once we make an entry visible,
             // if there are more than one with the same key,
@@ -795,7 +795,7 @@ class transactional_std_store {
             }
 
             staging_ = staging_t::pending_k;
-            return {success_k};
+            return success_k;
         }
     };
 
@@ -933,7 +933,7 @@ class transactional_std_store {
                 erase_visible_(range_start, range_end);
             }
         }
-        return {success_k};
+        return success_k;
     }
 
 #pragma endregion Type Definitions
@@ -1003,7 +1003,7 @@ class transactional_std_store {
     [[nodiscard]] static std::optional<store_t> make() noexcept {
         std::optional<store_t> opt_store;
         auto status = invoke_safely([&]() { opt_store.emplace(); });
-        if (!status) return std::nullopt;
+        if (failed(status)) return std::nullopt;
         return opt_store;
     }
 
@@ -1022,7 +1022,7 @@ class transactional_std_store {
         std::optional<transaction_t> opt_txn;
         // The constructor is private, so `emplace` cannot reach it; build here, where we are a friend.
         auto status = invoke_safely([&]() { opt_txn = transaction_t {*this}; });
-        if (!status) return std::nullopt;
+        if (failed(status)) return std::nullopt;
         return opt_txn;
     }
 
@@ -1057,7 +1057,7 @@ class transactional_std_store {
         // If we found a visible, non-deleted entry, key exists - fail
         if (range.first != range.second && range.first->presence == presence_t::present_k) {
             callback_exists(range.first->unversioned);
-            return {invalid_argument_k};
+            return invalid_argument_k;
         }
 
         // Key doesn't exist, proceed with insertion
@@ -1073,7 +1073,7 @@ class transactional_std_store {
             erase_visible_(range_start, range_end);
         });
 
-        if (status) callback_inserted();
+        if (succeeded(status)) callback_inserted();
         return status;
     }
 
@@ -1104,7 +1104,7 @@ class transactional_std_store {
         // If we found a visible, non-deleted entry, key exists - skip silently
         if (range.first != range.second && range.first->presence == presence_t::present_k) {
             callback_skipped(range.first->unversioned);
-            return {success_k}; // Success, just didn't insert
+            return success_k; // Success, just didn't insert
         }
 
         // Key doesn't exist, proceed with insertion
@@ -1120,7 +1120,7 @@ class transactional_std_store {
             erase_visible_(range_start, range_end);
         });
 
-        if (status) callback_inserted();
+        if (succeeded(status)) callback_inserted();
         return status;
     }
 
@@ -1158,7 +1158,7 @@ class transactional_std_store {
             erase_visible_(range_start, range_end);
         });
 
-        if (!status) return status;
+        if (failed(status)) return status;
 
         if (key_exists) callback_assigned();
         else callback_inserted();
@@ -1204,7 +1204,7 @@ class transactional_std_store {
                 const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
             }
         });
-        if (!batch_construction_status) return batch_construction_status;
+        if (failed(batch_construction_status)) return batch_construction_status;
 
         return insert_or_assign_(batch.value());
     }
@@ -1229,11 +1229,11 @@ class transactional_std_store {
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
-        if (!maybe_txn) return {errc_t::out_of_memory_heap_k};
+        if (!maybe_txn) return status_t::out_of_memory_heap_k;
         auto &transaction = *maybe_txn;
         for (; begin != end; ++begin)
-            if (auto status = transaction.insert_if_missing(value_t(*begin)); !status) return status;
-        if (auto status = transaction.stage(); !status) return status;
+            if (auto status = transaction.insert_if_missing(value_t(*begin)); failed(status)) return status;
+        if (auto status = transaction.stage(); failed(status)) return status;
         return transaction.commit();
     }
 
@@ -1271,8 +1271,7 @@ class transactional_std_store {
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -1350,8 +1349,7 @@ class transactional_std_store {
     /** @brief Copies out the first visible element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -1361,8 +1359,7 @@ class transactional_std_store {
     /** @brief Copies out the first visible element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -1459,7 +1456,7 @@ class transactional_std_store {
         // Check if there are no visible entries at all
         if (range.first == range.second || range.first->presence == presence_t::erased_k) {
             callback_missing();
-            return status_t {success_k};
+            return success_k;
         }
 
         // Invoke callback before erasing
@@ -1469,7 +1466,7 @@ class transactional_std_store {
         --visible_count_;
         visible_deleted_count_ -= range.first->presence == presence_t::erased_k;
         entries_.erase(range.first);
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -1490,7 +1487,7 @@ class transactional_std_store {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         erase_visible_(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -1503,7 +1500,7 @@ class transactional_std_store {
         generation_ = 0;
         visible_count_ = 0;
         visible_deleted_count_ = 0;
-        return {success_k};
+        return success_k;
     }
 
     /**

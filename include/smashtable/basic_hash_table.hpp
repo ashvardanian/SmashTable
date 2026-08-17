@@ -329,9 +329,8 @@ class basic_hash_table {
     [[nodiscard]] static expected<basic_hash_table> make(hash_slots_count_t slots, hasher_t hasher = {},
                                                          equals_t equals = {}, allocator_t allocator = {}) noexcept {
         basic_hash_table table(slots, std::move(hasher), std::move(equals), std::move(allocator));
-        if (slots.raw && !table.storage_.is_allocated())
-            return expected<basic_hash_table>(status_t {out_of_memory_heap_k});
-        return expected<basic_hash_table>(std::move(table), status_t {success_k});
+        if (slots.raw && !table.storage_.is_allocated()) return expected<basic_hash_table>(out_of_memory_heap_k);
+        return expected<basic_hash_table>(std::move(table), success_k);
     }
 
     /**
@@ -932,7 +931,7 @@ class basic_hash_table {
      */
     template <typename convertible_element_type_>
     [[nodiscard]] status_t upsert(convertible_element_type_ &&element) noexcept {
-        if (reserve_more(1) == reserve_result_t::failed_k) return status_t {out_of_memory_heap_k};
+        if (reserve_more(1) == reserve_result_t::failed_k) return out_of_memory_heap_k;
 
         if constexpr (has_values_k)
             search_to_upsert(
@@ -949,7 +948,7 @@ class basic_hash_table {
                 [&](slot_ref_t &unused_slot) noexcept { new (&unused_slot.key_ref()) key_t(std::move(element)); },
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.key_ref() = std::move(element); },
                 assume_reserved_t {});
-        return status_t {success_k};
+        return success_k;
     }
 
     /**

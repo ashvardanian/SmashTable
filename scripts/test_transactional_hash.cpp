@@ -67,15 +67,15 @@ static void test_point_insert_strategies() {
     auto first = container.transaction();
     st_verify_(first.has_value());
 
-    st_verify_(first->insert(trivial_id_to_member<member_t>(1)));
-    st_verify_(!first->insert(trivial_id_to_member<member_t>(1)));
-    st_verify_(first->insert_if_missing(trivial_id_to_member<member_t>(1)));
-    st_verify_(first->upsert(trivial_id_to_member<member_t>(1)));
-    st_verify_(first->update(trivial_id_to_member<member_t>(1)));
-    st_verify_(!first->update(trivial_id_to_member<member_t>(2)));
+    st_verify_(succeeded(first->insert(trivial_id_to_member<member_t>(1))));
+    st_verify_(failed(first->insert(trivial_id_to_member<member_t>(1))));
+    st_verify_(succeeded(first->insert_if_missing(trivial_id_to_member<member_t>(1))));
+    st_verify_(succeeded(first->upsert(trivial_id_to_member<member_t>(1))));
+    st_verify_(succeeded(first->update(trivial_id_to_member<member_t>(1))));
+    st_verify_(failed(first->update(trivial_id_to_member<member_t>(2))));
 
-    st_verify_(first->stage());
-    st_verify_(first->commit());
+    st_verify_(succeeded(first->stage()));
+    st_verify_(succeeded(first->commit()));
     st_verify_eq_(container.size(), 1);
     st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
     st_verify_(!container.contains(trivial_id_to_key<member_t>(2)));
@@ -89,16 +89,18 @@ static void test_point_erase_visibility() {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    for (std::size_t index = 0; index < 8; ++index) st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
+    for (std::size_t index = 0; index < 8; ++index)
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
     st_verify_eq_(container.size(), 8);
 
     auto erasing = container.transaction();
     st_verify_(erasing.has_value());
-    for (std::size_t index = 0; index < 4; ++index) st_verify_(erasing->erase(trivial_id_to_key<member_t>(index)));
-    st_verify_(erasing->stage());
+    for (std::size_t index = 0; index < 4; ++index)
+        st_verify_(succeeded(erasing->erase(trivial_id_to_key<member_t>(index))));
+    st_verify_(succeeded(erasing->stage()));
     for (std::size_t index = 0; index < 4; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
 
-    st_verify_(erasing->commit());
+    st_verify_(succeeded(erasing->commit()));
     for (std::size_t index = 0; index < 4; ++index) st_verify_(!container.contains(trivial_id_to_key<member_t>(index)));
     for (std::size_t index = 4; index < 8; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
 }
@@ -111,13 +113,14 @@ static void test_point_rollback_restores_store() {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    st_verify_(container.upsert(trivial_id_to_member<member_t>(1)));
+    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1))));
 
     auto writing = container.transaction();
     st_verify_(writing.has_value());
-    for (std::size_t index = 1; index <= 5; ++index) st_verify_(writing->upsert(trivial_id_to_member<member_t>(index)));
-    st_verify_(writing->stage());
-    st_verify_(writing->rollback());
+    for (std::size_t index = 1; index <= 5; ++index)
+        st_verify_(succeeded(writing->upsert(trivial_id_to_member<member_t>(index))));
+    st_verify_(succeeded(writing->stage()));
+    st_verify_(succeeded(writing->rollback()));
 
     st_verify_eq_(container.size(), 1);
     st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
@@ -125,8 +128,8 @@ static void test_point_rollback_restores_store() {
         st_verify_(!container.contains(trivial_id_to_key<member_t>(index)));
 
     // The rolled-back versions are still the transaction's, so a second staging lands them all
-    st_verify_(writing->stage());
-    st_verify_(writing->commit());
+    st_verify_(succeeded(writing->stage()));
+    st_verify_(succeeded(writing->commit()));
     st_verify_eq_(container.size(), 5);
 }
 
@@ -141,9 +144,9 @@ static void test_point_staging_survives_growth(std::size_t size = 500) {
     auto writing = container.transaction();
     st_verify_(writing.has_value());
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(writing->upsert(trivial_id_to_member<member_t>(index)));
-    st_verify_(writing->stage());
-    st_verify_(writing->commit());
+        st_verify_(succeeded(writing->upsert(trivial_id_to_member<member_t>(index))));
+    st_verify_(succeeded(writing->stage()));
+    st_verify_(succeeded(writing->commit()));
 
     st_verify_eq_(container.size(), size);
     for (std::size_t index = 0; index < size; ++index)

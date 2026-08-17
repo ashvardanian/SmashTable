@@ -298,23 +298,23 @@ class transactional_store {
         [[nodiscard]] status_t insert(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
             if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k)
-                return {key_already_exists_k};
-            if (store_ref().contains(value)) return {key_already_exists_k};
+                return key_already_exists_k;
+            if (store_ref().contains(value)) return key_already_exists_k;
 
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return status_t {out_of_memory_heap_k};
+            if (!maybe_id) return out_of_memory_heap_k;
             auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (!reserve_status) return reserve_status;
+            if (failed(reserve_status)) return reserve_status;
 
             versioned_t versioned(std::move(value));
             versioned.generation = generation_;
             versioned.presence = presence_t::present_k;
             versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (!result) return status_t {out_of_memory_heap_k};
+            if (failed(result)) return out_of_memory_heap_k;
 
             changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return status_t {success_k};
+            return success_k;
         }
 
         /**
@@ -326,23 +326,23 @@ class transactional_store {
          */
         [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
-            if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k) return {success_k};
-            if (store_ref().contains(value)) return {success_k};
+            if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k) return success_k;
+            if (store_ref().contains(value)) return success_k;
 
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return status_t {out_of_memory_heap_k};
+            if (!maybe_id) return out_of_memory_heap_k;
             auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (!reserve_status) return reserve_status;
+            if (failed(reserve_status)) return reserve_status;
 
             versioned_t versioned(std::move(value));
             versioned.generation = generation_;
             versioned.presence = presence_t::present_k;
             versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (!result) return status_t {out_of_memory_heap_k};
+            if (failed(result)) return out_of_memory_heap_k;
 
             changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return status_t {success_k};
+            return success_k;
         }
 
         /**
@@ -354,19 +354,19 @@ class transactional_store {
          */
         [[nodiscard]] status_t upsert(value_t &&value) noexcept {
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return status_t {out_of_memory_heap_k};
+            if (!maybe_id) return out_of_memory_heap_k;
             auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (!reserve_status) return reserve_status;
+            if (failed(reserve_status)) return reserve_status;
 
             versioned_t versioned(std::move(value));
             versioned.generation = generation_;
             versioned.presence = presence_t::present_k;
             versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (!result) return status_t {out_of_memory_heap_k};
+            if (failed(result)) return out_of_memory_heap_k;
 
             changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return status_t {success_k};
+            return success_k;
         }
 
         /**
@@ -380,7 +380,7 @@ class transactional_store {
             auto local_it = changes_.find(value);
             if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k)
                 return upsert(std::move(value));
-            if (!store_ref().contains(value)) return {key_not_found_k};
+            if (!store_ref().contains(value)) return key_not_found_k;
             return upsert(std::move(value));
         }
 
@@ -393,30 +393,30 @@ class transactional_store {
          */
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
             auto maybe_id = copy_safely<identifier_t>(id);
-            if (!maybe_id) return status_t {out_of_memory_heap_k};
+            if (!maybe_id) return out_of_memory_heap_k;
             auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (!reserve_status) return reserve_status;
+            if (failed(reserve_status)) return reserve_status;
 
             // The tombstone owns its own identifier, and the list of changed identifiers owns another,
             // so a move-only key needs two safe copies rather than one copy and one implicit one.
             auto maybe_payload = copy_safely<identifier_t>(id);
-            if (!maybe_payload) return status_t {out_of_memory_heap_k};
+            if (!maybe_payload) return out_of_memory_heap_k;
 
             versioned_t versioned(value_t {std::move(*maybe_payload)});
             versioned.generation = generation_;
             versioned.presence = presence_t::erased_k;
             versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (!result) return status_t {out_of_memory_heap_k};
+            if (failed(result)) return out_of_memory_heap_k;
 
             changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return status_t {success_k};
+            return success_k;
         }
 
         [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.reserve(size); }
 
         [[nodiscard]] status_t watch(identifier_t id) noexcept {
-            status_t result {success_k};
+            status_t result = success_k;
             auto found = [&](versioned_t const &versioned) noexcept {
                 // A committed tombstone is reported as found, since the public `find` has to see it
                 // to hide it. Validation resolves that same key to "missing", so a watch on it must
@@ -433,7 +433,7 @@ class transactional_store {
 
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
             auto maybe_id = copy_safely<identifier_t>(identifier_t {versioned.unversioned});
-            if (!maybe_id) return status_t {out_of_memory_heap_k};
+            if (!maybe_id) return out_of_memory_heap_k;
             return watches_.push_back({std::move(*maybe_id), watch_t {versioned.generation, versioned.presence}});
         }
 
@@ -467,20 +467,12 @@ class transactional_store {
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-            expected<value_t> result;
-            result.status.errc = errc_t::key_not_found_k;
+            expected<value_t> result {status_t::key_not_found_k};
 
             // Only the fall-through branch forwards: a lookup that misses `changes_` is the last use, and
             // forwarding at both sites would hand the second one an already moved-from object.
             if (auto it = changes_.find(comparable); it != changes_.end()) {
-                if ((*it).presence == presence_t::present_k) {
-                    auto copy_result = copy_safely((*it).unversioned);
-                    if (copy_result) {
-                        result.outcome = std::move(*copy_result);
-                        result.status = status_t {success_k};
-                    }
-                    else { result.status = copy_result.status; }
-                }
+                if ((*it).presence == presence_t::present_k) { result = copy_safely((*it).unversioned); }
             }
             else { return store_ref().find_copy(std::forward<comparable_type_>(comparable)); }
 
@@ -734,7 +726,7 @@ class transactional_store {
         [[nodiscard]] status_t stage() noexcept {
             auto &store = store_ref();
             auto const prepaid = storage_shape_t::prepare(store.entries_, changed_ids_.size());
-            if (!prepaid) return prepaid;
+            if (failed(prepaid)) return prepaid;
             auto const entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
@@ -744,7 +736,7 @@ class transactional_store {
                         consistency_violated = versioned != id_and_watch.watch;
                     },
                     [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
-                if (consistency_violated) return {errc_t::consistency_k};
+                if (consistency_violated) return status_t::consistency_k;
             }
 
             // Every change needs somewhere to land before any of them moves, or a transaction could
@@ -761,21 +753,21 @@ class transactional_store {
                 auto reserved_id = copy_safely<identifier_t>(id);
                 if (!reserved_id) {
                     unstage_(reserved);
-                    return status_t {out_of_memory_heap_k};
+                    return out_of_memory_heap_k;
                 }
                 versioned_t reservation(value_t {std::move(*reserved_id)});
                 reservation.generation = generation_;
                 reservation.presence = presence_t::present_k;
                 reservation.publication = publication_t::staged_k;
                 auto result = storage_shape_t::upsert(store.entries_, versioned_chain_t {std::move(reservation)});
-                if (!result) {
+                if (failed(result)) {
                     unstage_(reserved);
-                    return status_t {out_of_memory_heap_k};
+                    return out_of_memory_heap_k;
                 }
             }
             if (!store.reserve_spare_versions_(spare_versions_needed)) {
                 unstage_(changed_ids_.size());
-                return status_t {out_of_memory_heap_k};
+                return out_of_memory_heap_k;
             }
 
             // The visibility is updated later, in `commit`. A reserved slot already carries this
@@ -787,7 +779,7 @@ class transactional_store {
 
             changes_.clear();
             staging_ = staging_t::staged_k;
-            return {success_k};
+            return success_k;
         }
 
         [[nodiscard]] status_t reset() noexcept {
@@ -799,14 +791,14 @@ class transactional_store {
             changed_ids_.clear();
             staging_ = staging_t::pending_k;
             generation_ = store.new_generation_();
-            return {success_k};
+            return success_k;
         }
 
         [[nodiscard]] status_t rollback() noexcept {
-            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
             auto &store = store_ref();
-            status_t result {success_k};
+            status_t result = success_k;
 
             // The recovered versions carry the generation they were staged under, and this
             // transaction is about to take a new one, so each is re-stamped on the way back. The
@@ -820,7 +812,7 @@ class transactional_store {
                 recovered.generation = resumed;
                 recovered.publication = publication_t::staged_k;
                 auto reinstated = storage_shape_t::upsert(changes_, std::move(recovered));
-                if (!reinstated) result = status_t {out_of_memory_heap_k};
+                if (failed(reinstated)) result = out_of_memory_heap_k;
             }
 
             staging_ = staging_t::pending_k;
@@ -829,7 +821,7 @@ class transactional_store {
         }
 
         [[nodiscard]] status_t commit() noexcept {
-            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
             // Once we make an entry visible, if there are more than one with the same key,
             // the older generation must die.
@@ -839,7 +831,7 @@ class transactional_store {
             changes_.clear();
             changed_ids_.clear();
             staging_ = staging_t::pending_k;
-            return {success_k};
+            return success_k;
         }
     };
 
@@ -1194,13 +1186,8 @@ class transactional_store {
     template <typename comparable_type_ = identifier_t, typename copy_allocator_>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable,
                                               [[maybe_unused]] copy_allocator_ &&allocator) const noexcept {
-        expected<value_t> result {};
-        result.status.errc = errc_t::unknown_k;
-        find(std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept {
-            auto copy_result = copy_safely(v);
-            result.outcome = std::move(*copy_result);
-            result.status = copy_result.status;
-        });
+        expected<value_t> result {status_t::unknown_k};
+        find(std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept { result = copy_safely(v); });
         return result;
     }
 
@@ -1227,18 +1214,9 @@ class transactional_store {
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
         requires ordered_collection<versioned_chains_t>
     {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
-            std::forward<comparable_type_>(comparable),
-            [&](value_t const &v) noexcept {
-                auto copy_result = copy_safely(v);
-                if (copy_result) {
-                    result.outcome = std::move(*copy_result);
-                    result.status = status_t {success_k};
-                }
-                else { result.status = copy_result.status; }
-            },
+            std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept { result = copy_safely(v); },
             [&]() noexcept {});
         return result;
     }
@@ -1253,18 +1231,9 @@ class transactional_store {
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
         requires ordered_collection<versioned_chains_t>
     {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
-            std::forward<comparable_type_>(comparable),
-            [&](value_t const &v) noexcept {
-                auto copy_result = copy_safely(v);
-                if (copy_result) {
-                    result.outcome = std::move(*copy_result);
-                    result.status = status_t {success_k};
-                }
-                else { result.status = copy_result.status; }
-            },
+            std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept { result = copy_safely(v); },
             [&]() noexcept {});
         return result;
     }
@@ -1320,7 +1289,7 @@ class transactional_store {
      *  @return Success, or @c invalid_argument_k if key exists, or OOM error.
      */
     [[nodiscard]] status_t insert(value_t &&value) noexcept {
-        if (contains(value)) return {invalid_argument_k};
+        if (contains(value)) return invalid_argument_k;
         return upsert(std::move(value));
     }
 
@@ -1333,7 +1302,7 @@ class transactional_store {
      *  @sa The three-argument overload reports which of the two happened, which the status cannot.
      */
     [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
-        if (contains(value)) return {success_k};
+        if (contains(value)) return success_k;
         return upsert(std::move(value));
     }
 
@@ -1359,16 +1328,16 @@ class transactional_store {
                 callback_existing(present);
             },
             []() noexcept {});
-        if (exists) return {success_k};
+        if (exists) return success_k;
 
         // The identifier has to be taken before the move, or the lookup below searches by a
         // moved-from key - which compares wrongly rather than failing loudly.
         auto maybe_id = copy_safely(mapping_key_or_itself<value_t>(value));
-        if (!maybe_id) return maybe_id.status;
+        if (!maybe_id) return maybe_id.status();
 
         auto status = upsert(std::move(value));
-        if (!status) return status;
-        find(maybe_id.outcome, [&](value_t const &stored) noexcept { callback_inserted(stored); }, []() noexcept {});
+        if (failed(status)) return status;
+        find(*maybe_id, [&](value_t const &stored) noexcept { callback_inserted(stored); }, []() noexcept {});
         return status;
     }
 
@@ -1397,13 +1366,13 @@ class transactional_store {
             chain.release_others();
             chain.head = std::move(versioned);
             ++visible_count_;
-            return {success_k};
+            return success_k;
         }
 
         auto result = storage_shape_t::upsert(entries_, versioned_chain_t {std::move(versioned)});
-        if (!result) return {out_of_memory_heap_k};
+        if (failed(result)) return out_of_memory_heap_k;
         ++visible_count_;
-        return {success_k};
+        return success_k;
     }
 
     /**
@@ -1414,7 +1383,7 @@ class transactional_store {
      *  @return Success, @c key_not_found_k if key doesn't exist, or OOM error.
      */
     [[nodiscard]] status_t update(value_t &&value) noexcept {
-        if (!contains(value)) return {key_not_found_k};
+        if (!contains(value)) return key_not_found_k;
         return upsert(std::move(value));
     }
 
@@ -1430,22 +1399,22 @@ class transactional_store {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        if (first == last) return {success_k};
+        if (first == last) return success_k;
 
         // Staging is what makes this all-or-nothing: bailing out before `stage()` leaves the store
         // untouched, and duplicates inside the range collapse onto a single staged version.
         auto opened = transaction();
-        if (!opened) return {out_of_memory_heap_k};
+        if (!opened) return out_of_memory_heap_k;
 
         for (; first != last; ++first) {
             value_t candidate(*first);
-            if (contains(mapping_key_or_itself<value_t>(candidate))) return {invalid_argument_k};
+            if (contains(mapping_key_or_itself<value_t>(candidate))) return invalid_argument_k;
             auto status = opened->insert_if_missing(std::move(candidate));
-            if (!status) return status;
+            if (failed(status)) return status;
         }
 
         auto stage_status = opened->stage();
-        if (!stage_status) return stage_status;
+        if (failed(stage_status)) return stage_status;
         return opened->commit();
     }
 
@@ -1461,15 +1430,15 @@ class transactional_store {
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         auto opened = transaction();
-        if (!opened) return {out_of_memory_heap_k};
+        if (!opened) return out_of_memory_heap_k;
 
         for (; first != last; ++first) {
             auto status = opened->insert_if_missing(value_t(*first));
-            if (!status) return status;
+            if (failed(status)) return status;
         }
 
         auto stage_status = opened->stage();
-        if (!stage_status) return stage_status;
+        if (failed(stage_status)) return stage_status;
         return opened->commit();
     }
 
@@ -1484,15 +1453,15 @@ class transactional_store {
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         auto opened = transaction();
-        if (!opened) return {out_of_memory_heap_k};
+        if (!opened) return out_of_memory_heap_k;
 
         for (; first != last; ++first) {
             auto status = opened->upsert(value_t(*first));
-            if (!status) return status;
+            if (failed(status)) return status;
         }
 
         auto stage_status = opened->stage();
-        if (!stage_status) return stage_status;
+        if (failed(stage_status)) return stage_status;
         return opened->commit();
     }
 
@@ -1506,20 +1475,20 @@ class transactional_store {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        if (first == last) return {success_k};
+        if (first == last) return success_k;
 
         auto opened = transaction();
-        if (!opened) return {out_of_memory_heap_k};
+        if (!opened) return out_of_memory_heap_k;
 
         for (; first != last; ++first) {
             value_t candidate(*first);
-            if (!contains(mapping_key_or_itself<value_t>(candidate))) return {key_not_found_k};
+            if (!contains(mapping_key_or_itself<value_t>(candidate))) return key_not_found_k;
             auto status = opened->upsert(std::move(candidate));
-            if (!status) return status;
+            if (failed(status)) return status;
         }
 
         auto stage_status = opened->stage();
-        if (!stage_status) return stage_status;
+        if (failed(stage_status)) return stage_status;
         return opened->commit();
     }
 
@@ -1659,7 +1628,7 @@ class transactional_store {
                                      visible_deleted_count_ -= visible->presence == presence_t::erased_k;
                                  }
                              });
-        return status_t {success_k};
+        return success_k;
     }
 
 #pragma endregion Range Operations
@@ -1793,7 +1762,7 @@ class transactional_store {
 
         if (!found) {
             callback_missing();
-            return status_t {errc_t::key_not_found_k};
+            return status_t::key_not_found_k;
         }
 
         // One entry holds every version of the key, so dropping it drops them all.
@@ -1804,7 +1773,7 @@ class transactional_store {
                 visible_deleted_count_ -= visible->presence == presence_t::erased_k;
             }
         entries_.erase(comparable);
-        return status_t {success_k};
+        return success_k;
     }
 
     /**
@@ -1817,7 +1786,7 @@ class transactional_store {
      *
      *  @note This is a no-op because tree structures don't support reserving capacity efficiently.
      */
-    [[nodiscard]] status_t reserve(std::size_t) noexcept { return {success_k}; }
+    [[nodiscard]] status_t reserve(std::size_t) noexcept { return success_k; }
 
     /**
      *  @brief Removes all elements from the tree and resets generation counter.
@@ -1828,7 +1797,7 @@ class transactional_store {
         generation_ = 0;
         visible_count_ = 0;
         visible_deleted_count_ = 0;
-        return {success_k};
+        return success_k;
     }
 
     /**

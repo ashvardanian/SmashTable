@@ -1166,7 +1166,7 @@ class basic_avl_tree {
         /** @brief Iterator to the element following the erased one, or @c end(). */
         iterator next;
         /** @brief Status of the erase operation. */
-        status_t status;
+        status_t status = success_k;
     };
 
     /**
@@ -1397,9 +1397,9 @@ class basic_avl_tree {
      */
     static status_t copy_entry_into_(node_t *source, node_t *dest) noexcept {
         auto entry_copy = copy_safely(source->fruit);
-        if (!entry_copy) return entry_copy.status;
-        new (&dest->fruit) value_t(std::move(entry_copy.outcome));
-        return status_t {success_k};
+        if (!entry_copy) return entry_copy.status();
+        new (&dest->fruit) value_t(std::move(*entry_copy));
+        return success_k;
     }
 
     /**
@@ -1417,7 +1417,7 @@ class basic_avl_tree {
 
         // Copy entry into new node
         auto status = copy_entry_into_(source, new_node);
-        if (!status) {
+        if (failed(status)) {
             allocator.deallocate(new_node, 1);
             return nullptr;
         }
@@ -1483,13 +1483,13 @@ class basic_avl_tree {
         basic_avl_tree result {allocator_};
         result.comparator_ = comparator_;
 
-        if (!root_) return expected<basic_avl_tree>(std::move(result), status_t {success_k});
+        if (!root_) return expected<basic_avl_tree>(std::move(result), success_k);
 
         result.root_ = copy_subtree_(root_, result.allocator_);
-        if (!result.root_) return expected<basic_avl_tree>(basic_avl_tree(allocator_), status_t {out_of_memory_heap_k});
+        if (!result.root_) return expected<basic_avl_tree>(basic_avl_tree(allocator_), out_of_memory_heap_k);
 
         result.size_ = size_;
-        return expected<basic_avl_tree>(std::move(result), status_t {success_k});
+        return expected<basic_avl_tree>(std::move(result), success_k);
     }
 
 #pragma endregion Constructors and Assignment
@@ -1648,7 +1648,7 @@ class basic_avl_tree {
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         auto it = find(std::forward<comparable_type_>(comparable));
-        if (it == end()) return status_t {key_not_found_k};
+        if (it == end()) return key_not_found_k;
         return copy_safely(*it);
     }
 
@@ -1661,7 +1661,7 @@ class basic_avl_tree {
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto it = lower_bound(std::forward<comparable_type_>(comparable));
-        if (it == end()) return status_t {key_not_found_k};
+        if (it == end()) return key_not_found_k;
         else return copy_safely(*it);
     }
 
@@ -1674,7 +1674,7 @@ class basic_avl_tree {
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto it = upper_bound(std::forward<comparable_type_>(comparable));
-        if (it == end()) return status_t {key_not_found_k};
+        if (it == end()) return key_not_found_k;
         else return copy_safely(*it);
     }
 
@@ -1947,7 +1947,7 @@ class basic_avl_tree {
     template <typename comparable_type_>
     std::pair<iterator, status_t> insert(comparable_type_ &&comparable) noexcept {
         node_t *new_node = allocator_.allocate(1);
-        if (!new_node) return {end(), status_t {errc_t::out_of_memory_heap_k}};
+        if (!new_node) return {end(), status_t::out_of_memory_heap_k};
 
         new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
 
@@ -1960,16 +1960,16 @@ class basic_avl_tree {
         if (result.failed()) {
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
-            return {end(), status_t {errc_t::out_of_memory_heap_k}};
+            return {end(), status_t::out_of_memory_heap_k};
         }
 
         if (!result.inserted) { // Key already existed
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
-            return {iterator(this, result.match), status_t {errc_t::key_already_exists_k}};
+            return {iterator(this, result.match), status_t::key_already_exists_k};
         }
 
-        return {iterator(this, result.match), status_t {success_k}};
+        return {iterator(this, result.match), success_k};
     }
 
     /**
@@ -2066,7 +2066,7 @@ class basic_avl_tree {
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
-        if (count == 0) return {success_k};
+        if (count == 0) return success_k;
 
         // Build temporary tree, then merge atomically
         basic_avl_tree temp_tree(allocator_);
@@ -2076,12 +2076,12 @@ class basic_avl_tree {
             temp_tree.root_ =
                 node_t::build_from_sorted(first, count, [&]() noexcept { return temp_tree.allocator_.allocate(1); });
 
-            if (!temp_tree.root_) return {errc_t::out_of_memory_heap_k};
+            if (!temp_tree.root_) return status_t::out_of_memory_heap_k;
 
             // Verify complete allocation
             std::size_t actual_count = 0;
             node_t::for_each_left_right(temp_tree.root_, [&](node_t *) noexcept { ++actual_count; });
-            if (actual_count != static_cast<std::size_t>(count)) return {errc_t::out_of_memory_heap_k};
+            if (actual_count != static_cast<std::size_t>(count)) return status_t::out_of_memory_heap_k;
 
             temp_tree.size_ = count;
         }
@@ -2089,17 +2089,17 @@ class basic_avl_tree {
         else {
             for (; first != last; ++first) {
                 auto result = temp_tree.insert_if_missing(value_t(*first));
-                if (result.first == temp_tree.end() && !result.second) return {errc_t::out_of_memory_heap_k};
+                if (result.first == temp_tree.end() && !result.second) return status_t::out_of_memory_heap_k;
             }
         }
 
         // TRANSACTIONAL VALIDATION: Check if ANY key already exists - O(m+n)
         if (has_any_key(temp_tree))
-            return {errc_t::key_already_exists_k}; // Temp tree auto-destructs, this tree unchanged
+            return status_t::key_already_exists_k; // Temp tree auto-destructs, this tree unchanged
 
         // All keys are new - safe to merge with assume_unique optimization
         merge(temp_tree, assume_unique_t {});
-        return {success_k};
+        return success_k;
     }
 
     /**
@@ -2142,7 +2142,7 @@ class basic_avl_tree {
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
-        if (count == 0) return {success_k};
+        if (count == 0) return success_k;
 
         // Build temporary tree from range
         basic_avl_tree temp_tree(allocator_);
@@ -2152,12 +2152,12 @@ class basic_avl_tree {
             temp_tree.root_ =
                 node_t::build_from_sorted(first, count, [&]() noexcept { return temp_tree.allocator_.allocate(1); });
 
-            if (!temp_tree.root_) return {errc_t::out_of_memory_heap_k};
+            if (!temp_tree.root_) return status_t::out_of_memory_heap_k;
 
             // Verify complete allocation (detect partial tree from mid-construction failure)
             std::size_t actual_count = 0;
             node_t::for_each_left_right(temp_tree.root_, [&](node_t *) noexcept { ++actual_count; });
-            if (actual_count != static_cast<std::size_t>(count)) return {errc_t::out_of_memory_heap_k};
+            if (actual_count != static_cast<std::size_t>(count)) return status_t::out_of_memory_heap_k;
 
             temp_tree.size_ = count;
         }
@@ -2165,7 +2165,7 @@ class basic_avl_tree {
         else {
             for (; first != last; ++first) {
                 auto result = temp_tree.insert_if_missing(value_t(*first));
-                if (result.first == temp_tree.end() && !result.second) return {errc_t::out_of_memory_heap_k};
+                if (result.first == temp_tree.end() && !result.second) return status_t::out_of_memory_heap_k;
             }
         }
 
@@ -2179,7 +2179,7 @@ class basic_avl_tree {
             merge_with_upsert(temp_tree);
         }
 
-        return {success_k};
+        return success_k;
     }
 
     /**
@@ -2215,7 +2215,7 @@ class basic_avl_tree {
     status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
-        if (count == 0) return {success_k};
+        if (count == 0) return success_k;
 
         // Build temporary tree from range
         basic_avl_tree temp_tree(allocator_);
@@ -2225,12 +2225,12 @@ class basic_avl_tree {
             temp_tree.root_ =
                 node_t::build_from_sorted(first, count, [&]() noexcept { return temp_tree.allocator_.allocate(1); });
 
-            if (!temp_tree.root_) return {errc_t::out_of_memory_heap_k};
+            if (!temp_tree.root_) return status_t::out_of_memory_heap_k;
 
             // Verify complete allocation (detect partial tree from mid-construction failure)
             std::size_t actual_count = 0;
             node_t::for_each_left_right(temp_tree.root_, [&](node_t *) noexcept { ++actual_count; });
-            if (actual_count != static_cast<std::size_t>(count)) return {errc_t::out_of_memory_heap_k};
+            if (actual_count != static_cast<std::size_t>(count)) return status_t::out_of_memory_heap_k;
 
             temp_tree.size_ = count;
         }
@@ -2238,16 +2238,16 @@ class basic_avl_tree {
         else {
             for (; first != last; ++first) {
                 auto result = temp_tree.insert_if_missing(value_t(*first));
-                if (result.first == temp_tree.end() && !result.second) return {errc_t::out_of_memory_heap_k};
+                if (result.first == temp_tree.end() && !result.second) return status_t::out_of_memory_heap_k;
             }
         }
 
         // TRANSACTIONAL VALIDATION: Check if ALL keys exist - O(m+n)
-        if (!has_all_keys(temp_tree)) return {errc_t::key_not_found_k}; // Temp tree auto-destructs, this tree unchanged
+        if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
 
         // All keys exist - safe to upsert (will only update, never insert)
         merge_with_upsert(temp_tree);
-        return {success_k};
+        return success_k;
     }
 
     /**
@@ -2297,7 +2297,7 @@ class basic_avl_tree {
     [[nodiscard]] status_t swap(basic_avl_tree &other) noexcept {
         // For non-propagating allocators, they must be equal (C++ standard requirement)
         if constexpr (!std::allocator_traits<allocator_t>::propagate_on_container_swap::value)
-            if (!(allocator_ == other.allocator_)) return status_t {invalid_argument_k};
+            if (!(allocator_ == other.allocator_)) return invalid_argument_k;
 
         std::swap(root_, other.root_);
         std::swap(size_, other.size_);
@@ -2307,7 +2307,7 @@ class basic_avl_tree {
         if constexpr (std::allocator_traits<allocator_t>::propagate_on_container_swap::value)
             std::swap(allocator_, other.allocator_);
 
-        return status_t {success_k};
+        return success_k;
     }
 
     struct extract_result_t {
@@ -2397,7 +2397,7 @@ class basic_avl_tree {
         if (pos == end()) return {end(), {success_k}};
         auto next = std::next(pos);
         bool erased = erase(*pos);
-        return {next, erased ? status_t {success_k} : status_t {errc_t::unknown_k}};
+        return {next, erased ? success_k : status_t::unknown_k};
     }
 
     /**
@@ -2425,7 +2425,7 @@ class basic_avl_tree {
     erase_result_t erase(iterator first, iterator last) noexcept {
         while (first != last) {
             auto result = erase(first);
-            if (result.status.failed()) return {result.next, result.status};
+            if (failed(result.status)) return {result.next, result.status};
             first = result.next;
         }
         return {last, {success_k}};

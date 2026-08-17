@@ -231,7 +231,7 @@ static void cuda_host_inserts_device_reads() {
     number_users(users, count, 1);
     for (std::size_t index = 0; index != count; ++index) {
         [[maybe_unused]] status_t const status = table->emplace(users[index], session_of(users[index]));
-        st_verify_(status && "Host insert into a pinned table failed");
+        st_verify_(succeeded(status) && "Host insert into a pinned table failed");
     }
 
     find_kernel<<<blocks_for(count), threads_per_block_k>>>(table.data, users.data, count, found.data);

@@ -111,11 +111,11 @@ struct heavy_key_t {
         char buffer[32];
         int length = std::snprintf(buffer, sizeof(buffer), "%016lx", integer_to_encode);
         if (length <= 0 || length >= static_cast<int>(sizeof(buffer)))
-            return expected<heavy_key_t>(heavy_key_t {}, status_t {errc_t::unknown_k});
+            return expected<heavy_key_t>(heavy_key_t {}, status_t::unknown_k);
 
         for (int i = 0; i < length; ++i) {
             auto status = result.text.push_back(char(buffer[i]));
-            if (!status) return expected<heavy_key_t>(heavy_key_t {}, status);
+            if (failed(status)) return expected<heavy_key_t>(heavy_key_t {}, status);
         }
         return result;
     }
@@ -129,7 +129,7 @@ struct heavy_key_t {
         heavy_key_t result;
         for (std::size_t i = 0; i < std_string.size(); ++i) {
             auto status = result.text.push_back(char(std_string[i]));
-            if (!status) return expected<heavy_key_t>(heavy_key_t {}, status);
+            if (failed(status)) return expected<heavy_key_t>(heavy_key_t {}, status);
         }
         return result;
     }
@@ -142,7 +142,7 @@ struct heavy_key_t {
         heavy_key_t result;
         for (std::size_t i = 0; i < text.size(); ++i) {
             auto status = result.text.push_back(char(text.data()[i]));
-            if (!status) return expected<heavy_key_t>(heavy_key_t {}, status);
+            if (failed(status)) return expected<heavy_key_t>(heavy_key_t {}, status);
         }
         return result;
     }
@@ -485,7 +485,7 @@ void test_single_element_operations() {
     container_t container;
 
     auto new_member = trivial_id_to_member<member_t>(42);
-    st_verify_(container.upsert(std::move(new_member)));
+    st_verify_(succeeded(container.upsert(std::move(new_member))));
     st_verify_eq_(container.size(), 1);
     st_verify_(container.contains(trivial_id_to_key<member_t>(42)));
     container.erase_range(trivial_id_to_key<member_t>(42), trivial_id_to_key<member_t>(43));
@@ -505,7 +505,7 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
     // Test 1: Ascending insertion
     for (std::size_t index = 0; index < size; ++index) {
         auto new_member = trivial_id_to_member<member_t>(index);
-        st_verify_(container.upsert(std::move(new_member)));
+        st_verify_(succeeded(container.upsert(std::move(new_member))));
         st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
         st_verify_eq_(container.size(), index + 1);
     }
@@ -516,7 +516,7 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
     // Test 2: Descending insertion (tests AVL rebalancing)
     for (std::size_t index = size; index > 0; --index) {
         auto new_member = trivial_id_to_member<member_t>(index);
-        st_verify_(container.upsert(std::move(new_member)));
+        st_verify_(succeeded(container.upsert(std::move(new_member))));
         st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
     }
     st_verify_eq_(container.size(), size);
@@ -528,7 +528,7 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
     for (std::size_t index = 0; index < size; ++index) {
         trivial_id_t random_id = static_cast<trivial_id_t>(std::rand());
         auto new_member = trivial_id_to_member<member_t>(random_id);
-        st_verify_(container.upsert(std::move(new_member)));
+        st_verify_(succeeded(container.upsert(std::move(new_member))));
         st_verify_(container.contains(trivial_id_to_key<member_t>(random_id)));
     }
 }
@@ -547,8 +547,8 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
     members.reserve(size);
     for (std::size_t index = 0; index < size; ++index) members.push_back(trivial_id_to_member<member_t>(index));
 
-    st_verify_(
-        container.insert_if_missing(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
+    st_verify_(succeeded(
+        container.insert_if_missing(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end()))));
     st_verify_eq_(container.size(), size);
     for (std::size_t index = 0; index < size; ++index)
         st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
@@ -558,7 +558,8 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
     // Lets do the same with update-or-insert semantics, on entries the first pass has not emptied
     members.clear();
     for (std::size_t index = 0; index < size; ++index) members.push_back(trivial_id_to_member<member_t>(index));
-    st_verify_(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
+    st_verify_(
+        succeeded(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end()))));
     st_verify_eq_(container.size(), size);
     for (std::size_t index = 0; index < size; ++index)
         st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
@@ -588,7 +589,7 @@ void test_bulk_upsert_with_duplicates() {
     // First, insert some initial values
     for (std::size_t index = 0; index < 10; ++index) {
         auto new_member = trivial_id_to_member<member_t>(index);
-        st_verify_(container.upsert(std::move(new_member)));
+        st_verify_(succeeded(container.upsert(std::move(new_member))));
     }
     st_verify_eq_(container.size(), 10);
 
@@ -603,7 +604,8 @@ void test_bulk_upsert_with_duplicates() {
         members.push_back(std::move(new_member));
     }
 
-    st_verify_(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
+    st_verify_(
+        succeeded(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end()))));
 
     // Size should be 15 (0-14), not 20
     st_verify_eq_(container.size(), 15);
@@ -637,7 +639,7 @@ void test_range_query_head_state(std::size_t size = 100) {
 
     container_t container;
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
 
     // Query in windows and verify we get elements within the range
     for (std::size_t index = 0; index < size; index += 10) {
@@ -683,7 +685,7 @@ void test_erase_range_head_state(std::size_t size = 100) {
     container_t container;
 
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
 
     for (std::size_t index = 0; index < size; index += 10) {
         auto start_key = trivial_id_to_key<member_t>(index);
@@ -717,7 +719,7 @@ void test_heterogeneous_composite_find() {
             new_member.key.some_metadata = i * 100;
             new_member.key.some_float = static_cast<double>(i) / 3.0;
         }
-        st_verify_(container.upsert(std::move(new_member)));
+        st_verify_(succeeded(container.upsert(std::move(new_member))));
     }
 
     // Test heterogeneous lookups
@@ -772,7 +774,7 @@ void test_heterogeneous_heavy_string_view_find() {
     // Insert heavy keys from strings
     for (auto const &text : test_strings) {
         auto new_member = make_new_member(text);
-        st_verify_(container.upsert(std::move(new_member)));
+        st_verify_(succeeded(container.upsert(std::move(new_member))));
     }
 
     // Test heterogeneous lookup

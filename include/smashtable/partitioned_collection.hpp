@@ -167,7 +167,7 @@ class partitioned_collection {
      */
     template <typename lock_type_, typename parts_type_, typename mutexes_type_, typename callable_type_>
     static status_t for_all(parts_type_ &parts, mutexes_type_ &mutexes, callable_type_ &&callable) noexcept {
-        status_t status;
+        status_t status = success_k;
         // Ascending order, one partition at a time, blocking. Taking whichever partitions happen to be
         // free and retrying the rest reads as politer, but it shares no order with `lock_every_part_`,
         // and two all-partition operations without a common order are two operations that can wait on
@@ -175,7 +175,7 @@ class partitioned_collection {
         for (std::size_t part_index = 0; part_index != parts_k; ++part_index) {
             lock_type_ lock {mutexes[part_index]};
             status = callable(parts[part_index]);
-            if (!status) return status;
+            if (failed(status)) return status;
         }
         return status;
     }
@@ -263,12 +263,12 @@ class partitioned_collection {
 
         template <typename callable_type_>
         status_t for_dirty_parts_(callable_type_ &&callable) noexcept {
-            status_t status;
+            status_t status = success_k;
             for (std::size_t part_index = dirty_.first_set(); part_index != parts_k;
                  part_index = dirty_.next_set(part_index)) {
                 unique_lock_t lock {store_.mutexes_[part_index]};
                 status = callable(parts_[part_index]);
-                if (!status) return status;
+                if (failed(status)) return status;
             }
             return status;
         }
@@ -282,13 +282,13 @@ class partitioned_collection {
         [[nodiscard]] status_t reset() noexcept {
             // `std::mem_fn(&part_transaction_t::reset)` is cute... but we don't like heavy includes.
             auto status = for_parts_([](part_transaction_t &part) noexcept { return part.reset(); });
-            if (status) dirty_.clear();
+            if (succeeded(status)) dirty_.clear();
             return status;
         }
         [[nodiscard]] status_t rollback() noexcept {
             // `std::mem_fn(&part_transaction_t::rollback)` is cute... but we don't like heavy includes.
             auto status = for_dirty_parts_([](part_transaction_t &part) noexcept { return part.rollback(); });
-            if (status) dirty_.clear();
+            if (succeeded(status)) dirty_.clear();
             return status;
         }
 
@@ -302,15 +302,15 @@ class partitioned_collection {
          */
         [[nodiscard]] status_t stage() noexcept {
             dirty_partitions_t staged;
-            status_t status;
+            status_t status = success_k;
             for (std::size_t part_index = dirty_.first_set(); part_index != parts_k;
                  part_index = dirty_.next_set(part_index)) {
                 unique_lock_t lock {store_.mutexes_[part_index]};
                 status = parts_[part_index].stage();
-                if (!status) break;
+                if (failed(status)) break;
                 staged.mark(part_index);
             }
-            if (status) return status;
+            if (succeeded(status)) return status;
 
             for (std::size_t part_index = staged.first_set(); part_index != parts_k;
                  part_index = staged.next_set(part_index)) {
@@ -321,7 +321,7 @@ class partitioned_collection {
         }
         [[nodiscard]] status_t commit() noexcept {
             auto status = for_dirty_parts_([&](part_transaction_t &part) noexcept { return part.commit(); });
-            if (status) dirty_.clear();
+            if (succeeded(status)) dirty_.clear();
             return status;
         }
 
@@ -346,8 +346,7 @@ class partitioned_collection {
         /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-            expected<value_t> result;
-            result.status.errc = errc_t::key_not_found_k;
+            expected<value_t> result {status_t::key_not_found_k};
             find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -492,10 +491,10 @@ class partitioned_collection {
         // This might be implemented more efficiently, but using
         // a transaction beneath looks like the most straightforward approach.
         auto maybe = transaction();
-        if (!maybe) return {consistency_k};
+        if (!maybe) return consistency_k;
         for (; begin != end; ++begin)
-            if (auto status = maybe->upsert(*begin); !status) return status;
-        if (auto status = maybe->stage(); !status) return status;
+            if (auto status = maybe->upsert(*begin); failed(status)) return status;
+        if (auto status = maybe->stage(); failed(status)) return status;
         return maybe->commit();
     }
 
@@ -553,9 +552,9 @@ class partitioned_collection {
             value_t element(*begin);
             std::size_t part_index = bucket_(identifier_t(element));
             unique_lock_t _ {mutexes_[part_index]};
-            if (auto status = parts_[part_index].insert_if_missing(std::move(element)); !status) return status;
+            if (auto status = parts_[part_index].insert_if_missing(std::move(element)); failed(status)) return status;
         }
-        return {success_k};
+        return success_k;
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
@@ -588,8 +587,7 @@ class partitioned_collection {
     /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -599,8 +597,7 @@ class partitioned_collection {
     /** @brief Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -610,8 +607,7 @@ class partitioned_collection {
     /** @brief Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -671,12 +667,12 @@ class partitioned_collection {
         // Rebuilt around the comparator this collection holds, not a default-constructed one: a
         // `clear()` must empty a container, never silently change how it orders what comes next.
         auto maybe = new_parts(comparator_);
-        if (!maybe) return {unknown_k};
+        if (!maybe) return unknown_k;
 
         lock_every_part_<unique_lock_t>(mutexes_);
         parts_ = std::move(maybe).value();
         for (auto &mutex : mutexes_) mutex.unlock();
-        return {success_k};
+        return success_k;
     }
 
     [[nodiscard]] status_t reserve(std::size_t size) noexcept {

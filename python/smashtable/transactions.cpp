@@ -123,7 +123,7 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
     key_variant_t stored_key;
     if (!key_from_python(key, part->ops, stored_key)) return -1;
 
-    status_t status;
+    status_t status = success_k;
     if (!value) { // `del view[key]`
         if (run_over_participant(view, state, [&](participant_t &part) noexcept { status = part.erase(stored_key); }) !=
             0)
@@ -240,7 +240,7 @@ static PyObject *View_add(PyObject *self, PyObject *member) noexcept {
 
     key_variant_t stored;
     if (!key_from_python(member, part->ops, stored)) return nullptr;
-    status_t status;
+    status_t status = success_k;
     if (run_over_participant(view, state,
                              [&](participant_t &part) noexcept { status = part.add(std::move(stored)); }) != 0)
         return nullptr;
@@ -276,7 +276,7 @@ static PyObject *View_erase(PyObject *self, PyObject *const *args, Py_ssize_t co
     key_variant_t stored;
     if (!key_from_python(args[0], part->ops, stored)) return nullptr;
     bool present = false;
-    status_t status;
+    status_t status = success_k;
     // `erase` on a map destroys the stored value, so this is a value operation even though its
     // argument is only a key.
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
@@ -318,7 +318,7 @@ static PyObject *View_watch(PyObject *self, PyObject *const *args, Py_ssize_t co
 
     key_variant_t stored;
     if (!key_from_python(args[0], part->ops, stored)) return nullptr;
-    status_t status;
+    status_t status = success_k;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept { status = part.watch(stored); }) != 0)
         return nullptr;
     if (raise_for(state, status, args[0]) != 0) return nullptr;
@@ -462,13 +462,13 @@ static group_state_t transaction_stage_if_open(transaction_object_t *group, stat
         // partition locks in the same sequence and cannot deadlock.
         for (auto &participant : group->parts) {
             status = participant.stage();
-            if (!status) break;
+            if (failed(status)) break;
         }
         // A partial stage is never observable: unwind everything before returning.
-        if (!status)
+        if (failed(status))
             for (auto &participant : group->parts) [[maybe_unused]]
                 auto discarded = participant.reset();
-        group->state = status ? group_state_t::staged_k : group_state_t::open_k;
+        group->state = succeeded(status) ? group_state_t::staged_k : group_state_t::open_k;
     });
     return entering;
 }
@@ -518,12 +518,12 @@ static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    status_t status;
+    status_t status = success_k;
     if (transaction_stage_if_open(group, status) != group_state_t::open_k) {
         PyErr_SetString(state->state_error, "stage() requires an open transaction");
         return nullptr;
     }
-    if (!status) return raise_for(state, status) == 0 ? Py_NewRef(Py_None) : nullptr;
+    if (failed(status)) return raise_for(state, status) == 0 ? Py_NewRef(Py_None) : nullptr;
     Py_RETURN_NONE;
 }
 
@@ -544,14 +544,14 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    status_t status;
+    status_t status = success_k;
     bool unstaged = false;
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
         unstaged = group->state != group_state_t::staged_k;
         if (unstaged) return;
         for (auto &participant : group->parts) {
             status = participant.commit();
-            if (!status) break;
+            if (failed(status)) break;
         }
         group->state = group_state_t::finished_k;
     });
@@ -580,14 +580,14 @@ static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    status_t status;
+    status_t status = success_k;
     bool unstaged = false;
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
         unstaged = group->state != group_state_t::staged_k;
         if (unstaged) return;
         for (auto &participant : group->parts) {
             status = participant.rollback();
-            if (!status) break;
+            if (failed(status)) break;
         }
         group->state = group_state_t::open_k;
     });
@@ -628,13 +628,13 @@ static PyObject *Transaction_exit(PyObject *self, PyObject *const *args, Py_ssiz
     }
 
     // A block that staged by hand is already past this phase, so only an open group is staged here.
-    status_t status;
+    status_t status = success_k;
     group_state_t const entering = transaction_stage_if_open(group, status);
     if (entering == group_state_t::finished_k) {
         PyErr_SetString(state->state_error, "this transaction has already finished");
         return nullptr;
     }
-    if (!status) {
+    if (failed(status)) {
         transaction_reset_all(group, group_state_t::finished_k);
         [[maybe_unused]] int const raised = raise_for(state, status);
         return nullptr;
@@ -715,7 +715,7 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     // Canonical order for staging, argument order for the views handed back.
     auto made_order = basic_vector<Py_ssize_t>::make(static_cast<std::size_t>(count));
     if (!made_order) return PyErr_NoMemory();
-    basic_vector<Py_ssize_t> order = std::move(made_order.outcome);
+    basic_vector<Py_ssize_t> order = std::move(*made_order);
     for (Py_ssize_t index = 0; index != count; ++index) [[maybe_unused]]
         auto appended = order.push_back(assume_reserved, Py_ssize_t {index});
     std::sort(order.begin(), order.end(), [&](Py_ssize_t left, Py_ssize_t right) noexcept {
@@ -735,7 +735,7 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     group->state = group_state_t::open_k;
 
     // The only allocation `parts` ever attempts, so every append below lands in reserved storage.
-    if (!group->parts.reserve(static_cast<std::size_t>(count))) {
+    if (failed(group->parts.reserve(static_cast<std::size_t>(count)))) {
         Py_DECREF(group);
         return PyErr_NoMemory();
     }

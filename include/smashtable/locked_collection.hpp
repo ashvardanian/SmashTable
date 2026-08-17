@@ -102,8 +102,7 @@ class locked_collection {
         /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-            expected<value_t> result;
-            result.status.errc = errc_t::key_not_found_k;
+            expected<value_t> result {status_t::key_not_found_k};
             find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -217,8 +216,7 @@ class locked_collection {
     /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -228,8 +226,7 @@ class locked_collection {
     /** @brief Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
@@ -239,8 +236,7 @@ class locked_collection {
     /** @brief Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
-        expected<value_t> result;
-        result.status.errc = errc_t::key_not_found_k;
+        expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});

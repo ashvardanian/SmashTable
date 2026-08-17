@@ -326,30 +326,25 @@ PyObject *value_to_python(value_variant_t const &value) noexcept {
 #pragma region Errors
 
 int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
-    if (status) return 0;
-    switch (status.errc) {
-    case errc_t::consistency_k:
+    if (succeeded(status)) return 0;
+    switch (status) {
+    case status_t::consistency_k:
         PyErr_SetString(state->conflict_error, "a watched key changed since this transaction began");
         break;
-    case errc_t::out_of_memory_heap_k:
-    case errc_t::out_of_memory_arena_k:
-    case errc_t::out_of_memory_disk_k: PyErr_NoMemory(); break;
-    case errc_t::key_not_found_k:
+    case status_t::out_of_memory_heap_k: PyErr_NoMemory(); break;
+    case status_t::key_not_found_k:
         if (key) PyErr_SetObject(PyExc_KeyError, key);
         else PyErr_SetString(PyExc_KeyError, "key not found");
         break;
-    case errc_t::key_already_exists_k:
+    case status_t::key_already_exists_k:
         if (key) PyErr_SetObject(state->duplicate_key_error, key);
         else PyErr_SetString(state->duplicate_key_error, "key already exists");
         break;
-    case errc_t::invalid_argument_k: PyErr_SetString(PyExc_ValueError, "invalid argument"); break;
-    case errc_t::operation_not_permitted_k:
+    case status_t::invalid_argument_k: PyErr_SetString(PyExc_ValueError, "invalid argument"); break;
+    case status_t::operation_not_permitted_k:
         PyErr_SetString(state->state_error, "operation not permitted in this transaction state");
         break;
-    case errc_t::sequence_number_overflow_k:
-        PyErr_SetString(PyExc_OverflowError, "generation counter overflowed");
-        break;
-    default: PyErr_Format(state->error, "operation failed with errc %d", static_cast<int>(status.errc)); break;
+    default: PyErr_Format(state->error, "operation failed with status %d", static_cast<int>(status)); break;
     }
     return -1;
 }

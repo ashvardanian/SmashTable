@@ -63,52 +63,61 @@ using generation_t = std::int64_t;
  */
 inline constexpr generation_t absent_generation_k = 0;
 
-/** @brief Error codes for the library. Zero is success, non-zero is failure. */
-enum errc_t {
+/**
+ *  @brief Whether an operation succeeded, and why it did not. The library's only result code.
+ *
+ *  Values follow @c errno where one fits, so a failure can be handed to @c strerror or mapped onto a
+ *  platform error without a translation table. @c success_k is zero, which is why the type is scoped
+ *  and truth-testing goes through @c succeeded: an implicit conversion would read every success as
+ *  false. Prefer checking an @c expected, which already answers this question.
+ */
+enum class status_t : int {
     success_k = 0,
     unknown_k = -1,
 
     consistency_k = -2, // ? Not an errno; the value 1 would collide with `EPERM`
-    transaction_not_recoverable_k = ENOTRECOVERABLE,
-    sequence_number_overflow_k = EOVERFLOW,
 
     out_of_memory_heap_k = ENOMEM,
-    out_of_memory_arena_k = ENOBUFS,
-    out_of_memory_disk_k = ENOSPC,
 
     invalid_argument_k = EINVAL,
-    operation_in_progress_k = EINPROGRESS,
     operation_not_permitted_k = EPERM,
-    operation_not_supported_k = EOPNOTSUPP,
-    operation_would_block_k = EWOULDBLOCK,
-    operation_canceled_k = ECANCELED,
+    operation_would_block_k = EWOULDBLOCK, // For a bounded retry that gives up
 
     key_already_exists_k = EEXIST, // For `insert_if_missing` conflicts
     key_not_found_k = ENOENT,      // For `update` operations on missing keys
-
-    connection_broken_k = EPIPE,
-    connection_aborted_k = ECONNABORTED,
-    connection_already_in_progress_k = EALREADY,
-    connection_refused_k = ECONNREFUSED,
-    connection_reset_k = ECONNRESET,
-
 };
+
+// Unqualified `success_k` reads better than the scope at the hundred sites that name it.
+using enum status_t;
+
+/** @brief Whether @p status reports success, which no implicit conversion can be trusted to say. */
+constexpr bool succeeded(status_t status) noexcept { return status == status_t::success_k; }
+
+/** @brief Whether @p status reports a failure, and so carries a reason. */
+constexpr bool failed(status_t status) noexcept { return status != status_t::success_k; }
 
 /**
- *  @brief Wraps error-codes into bool-convertible conditions.
- *  @see @c errc_t.
+ *  @brief The same question of a richer result - one that reports its own success, like the node
+ *    handles the trees hand back - so generic code can ask it without knowing which it holds.
  */
-struct status_t {
-    errc_t errc = errc_t::success_k;
-    constexpr operator bool() const noexcept { return errc == errc_t::success_k; }
-};
+template <typename result_type_>
+    requires requires(result_type_ const &result) { result.failed(); }
+constexpr bool succeeded(result_type_ const &result) noexcept {
+    return !result.failed();
+}
+
+template <typename result_type_>
+    requires requires(result_type_ const &result) { result.failed(); }
+constexpr bool failed(result_type_ const &result) noexcept {
+    return result.failed();
+}
 
 /**
  *  @brief Simple key-value mapping type, cleaner & lighter than @c std::pair used by @c std::map.
  *  @see https://en.cppreference.com/w/cpp/utility/pair.html
  */
 template <typename value_type_>
-struct expected;
+class expected;
 
 template <typename object_type_>
 [[nodiscard]] expected<object_type_> copy_safely(object_type_ const &object) noexcept;
@@ -145,10 +154,10 @@ struct mapping {
     /** @brief Deep-copies both halves, so a mapping is copyable exactly when its members are. */
     expected<mapping> copy() const noexcept {
         auto copied_key = copy_safely(key);
-        if (!copied_key) return expected<mapping>(mapping {}, copied_key.status);
+        if (!copied_key) return copied_key.status();
         auto copied_mapped = copy_safely(mapped);
-        if (!copied_mapped) return expected<mapping>(mapping {}, copied_mapped.status);
-        return expected<mapping>(mapping {std::move(*copied_key), std::move(*copied_mapped)}, status_t {success_k});
+        if (!copied_mapped) return copied_mapped.status();
+        return expected<mapping>(mapping {std::move(*copied_key), std::move(*copied_mapped)}, success_k);
     }
 };
 
@@ -389,70 +398,92 @@ consteval bool contains_type() {
 #pragma region Copying and Construction
 
 /**
- *  @brief Alternative to C++ 23 @c std::expected and C++ 17 @c std::optional with error code.
- *    Wraps a @c noexcept default-constructible @c value_type_, without all the complexity of
- *    implementing a @c union -based uninitialized storage state.
+ *  @brief A value that may not be there, and the reason when it is not - the library's only result.
+ *
+ *  Storage is a @c union, so the value exists only on success and @p value_type_ needs no default
+ *  constructor. That is what lets one type cover both what @c std::optional carried and what a
+ *  status carried, including the move-only transaction types that have no empty state to sit in.
+ *  A default-constructed @c expected reports @b failure, since there is nothing in it.
+ *
+ *  Decomposes as @c auto @c [value, status], for value types that can be default-constructed to
+ *  hand something back on the failure path; see @c get.
  */
 template <typename value_type_>
-struct expected {
+class expected {
+  public:
     using value_t = value_type_;
     using value_type = value_t; // ? STL style
 
-    static_assert(std::is_nothrow_default_constructible_v<value_t>,
-                  "expected<T> requires T to be nothrow default-constructible");
+    static_assert(std::is_nothrow_move_constructible_v<value_t>,
+                  "expected<T> moves its value into place, so T must move without throwing");
 
-    // Named `outcome` to avoid ambiguity with generic terms like `value` or `entry` during debugging.
-    value_t outcome;
-    status_t status;
+  private:
+    union {
+        value_t outcome_; // ? Alive only while `status_` says so
+    };
+    status_t status_ = unknown_k;
 
-    expected() = default;
-    expected(value_t &&e, status_t s = status_t {}) noexcept : outcome(std::move(e)), status(s) {}
-    expected(value_t const &e, status_t s = status_t {}) noexcept : outcome(e), status(s) {}
-    expected(status_t s) noexcept : outcome(), status(s) {}
+  public:
+    constexpr expected() noexcept {}
+    constexpr expected(status_t status) noexcept : status_(status) {}
+    constexpr expected(value_t &&value, status_t status = status_t {}) noexcept
+        : outcome_(std::move(value)), status_(status) {}
+    constexpr expected(value_t const &value, status_t status = status_t {}) noexcept
+        requires(std::is_copy_constructible_v<value_t>)
+        : outcome_(value), status_(status) {}
 
-    expected(std::optional<value_t> const &opt) noexcept
-        : outcome(opt.value_or(value_t {})), status(opt.has_value() ? status_t {success_k} : status_t {unknown_k}) {}
+    expected(expected &&other) noexcept : status_(other.status_) {
+        if (succeeded(status_)) new (&outcome_) value_t(std::move(other.outcome_));
+    }
+    expected &operator=(expected &&other) noexcept {
+        if (this == &other) return *this;
+        if (succeeded(status_)) outcome_.~value_t();
+        status_ = other.status_;
+        if (succeeded(status_)) new (&outcome_) value_t(std::move(other.outcome_));
+        return *this;
+    }
+    ~expected() noexcept {
+        if (succeeded(status_)) outcome_.~value_t();
+    }
 
-    expected(std::optional<value_t> &&opt) noexcept
-        : outcome(opt.has_value() ? std::move(*opt) : value_t {}),
-          status(opt.has_value() ? status_t {success_k} : status_t {unknown_k}) {}
+    expected(expected const &) = delete;
+    expected &operator=(expected const &) = delete;
+
+    /** @brief Whether the value is there, which is the only safe precondition for reading it. */
+    constexpr explicit operator bool() const noexcept { return succeeded(status_); }
+    constexpr bool has_value() const noexcept { return succeeded(status_); }
+
+    /** @brief Why there is no value, or success when there is one. */
+    constexpr status_t status() const noexcept { return status_; }
+
+    /** @warning Reading the value of a failed @c expected is undefined - check it first. */
+    constexpr value_t &operator*() & noexcept { return outcome_; }
+    constexpr value_t const &operator*() const & noexcept { return outcome_; }
+    constexpr value_t &&operator*() && noexcept { return std::move(outcome_); }
+    constexpr value_t *operator->() noexcept { return &outcome_; }
+    constexpr value_t const *operator->() const noexcept { return &outcome_; }
 
     /**
-     *  @brief Checks if the expected contains a successful value.
-     *  @return @c true if status is success, @c false otherwise.
+     *  @brief The tuple protocol behind @c auto @c [value, status], returning the value @b by value.
+     *
+     *  A reference would bind into storage that was never constructed when the status is a failure,
+     *  which reads as garbage and trips no sanitizer, so the failure path default-constructs instead.
+     *  Offered only where that is possible: a transaction cannot be decomposed, and has nothing worth
+     *  binding when it fails anyway, so callers check it and dereference.
      */
-    explicit operator bool() const noexcept { return status; }
-    bool has_value() const noexcept { return status; }
+    template <std::size_t index_>
+        requires(std::is_nothrow_default_constructible_v<value_t>)
+    constexpr auto get() && noexcept {
+        if constexpr (index_ == 0) return succeeded(status_) ? value_t {std::move(outcome_)} : value_t {};
+        else return status_;
+    }
 
-    /**
-     *  @brief Accesses the contained value (like @c std::optional).
-     *  @return Reference to the outcome.
-     */
-    value_t &operator*() & noexcept { return outcome; }
-
-    /**
-     *  @brief Accesses the contained value (like @c std::optional, const version).
-     *  @return Const reference to the outcome.
-     */
-    value_t const &operator*() const & noexcept { return outcome; }
-
-    /**
-     *  @brief Accesses the contained value (like @c std::optional, rvalue version).
-     *  @return Rvalue reference to the outcome.
-     */
-    value_t &&operator*() && noexcept { return std::move(outcome); }
-
-    /**
-     *  @brief Member access operator (like @c std::optional).
-     *  @return Pointer to the outcome.
-     */
-    value_t *operator->() noexcept { return &outcome; }
-
-    /**
-     *  @brief Member access operator (like @c std::optional, const version).
-     *  @return Const pointer to the outcome.
-     */
-    value_t const *operator->() const noexcept { return &outcome; }
+    template <std::size_t index_>
+        requires(std::is_nothrow_default_constructible_v<value_t> && std::is_copy_constructible_v<value_t>)
+    constexpr auto get() const & noexcept {
+        if constexpr (index_ == 0) return succeeded(status_) ? value_t {outcome_} : value_t {};
+        else return status_;
+    }
 };
 
 /**
@@ -474,27 +505,18 @@ concept has_make_method = requires(args_types_ &&...args) {
 };
 
 /**
- *  @brief Helper to copy an object, using nothrow copy if available, otherwise @c .copy() method.
- *  @return @c expected<object_type_> containing the copy and status.
- *    On success, status is @c success_k. On failure, returns default-constructed object with error status.
+ *  @brief Copies @p object through its @c noexcept copy constructor, or its @c copy method.
+ *  @return The copy on success, or the reason it could not be made.
  */
 template <typename object_type_>
-[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &obj) noexcept {
-    static_assert(std::is_nothrow_default_constructible_v<object_type_>,
-                  "Type must be nothrow default-constructible to use with expected<T>");
-
-    // Fast path: nothrow copy
+[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &object) noexcept {
     if constexpr (std::is_nothrow_copy_constructible_v<object_type_>)
-        return expected<object_type_>(object_type_ {obj}, status_t {success_k});
-
-    // Fallback: use .copy() method
-    else if constexpr (has_copy_method<object_type_>) return obj.copy();
-
+        return expected<object_type_>(object_type_ {object}, success_k);
+    else if constexpr (has_copy_method<object_type_>) return object.copy();
     else {
-        // Type doesn't support safe copying
         static_assert(std::is_nothrow_copy_constructible_v<object_type_> || has_copy_method<object_type_>,
                       "Type must be nothrow copy constructible or provide .copy() returning an expected");
-        return expected<object_type_>(object_type_ {}, status_t {errc_t::unknown_k});
+        return status_t::unknown_k;
     }
 }
 
@@ -1204,14 +1226,14 @@ struct versioned_storage_for {
     /** @brief A node-based core has nothing to prepay; the placeholder pass reserves it. */
     template <typename storage_type_>
     static status_t prepare(storage_type_ &, std::size_t) noexcept {
-        return status_t {success_k};
+        return success_k;
     }
 
     /** @brief Files @p element under its own key, overwriting whatever shared it. */
     template <typename storage_type_, typename element_type_>
     static status_t upsert(storage_type_ &storage, element_type_ &&element) noexcept {
         auto result = storage.upsert(std::move(element));
-        return result.failed() ? status_t {out_of_memory_heap_k} : status_t {success_k};
+        return result.failed() ? out_of_memory_heap_k : success_k;
     }
 
     /**
@@ -1278,7 +1300,7 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
         using slot_count_t = typename storage_type_::size_type;
         using reserve_result_t = typename storage_type_::reserve_result_t;
         auto const grown = storage.reserve_more(static_cast<slot_count_t>(count));
-        return grown == reserve_result_t::failed_k ? status_t {out_of_memory_heap_k} : status_t {success_k};
+        return grown == reserve_result_t::failed_k ? out_of_memory_heap_k : success_k;
     }
 
     /** @brief Files @p element under its own key, overwriting whatever shared it. */
@@ -1385,7 +1407,7 @@ class transaction_group {
      */
     template <typename visitor_type_, std::size_t... indices_>
     status_t visit_at_(std::size_t position, visitor_type_ &&visitor, std::index_sequence<indices_...>) noexcept {
-        status_t result {success_k};
+        status_t result = success_k;
         ((indices_ == position ? (void)(result = visitor(std::get<indices_>(transactions_))) : (void)0), ...);
         return result;
     }
@@ -1434,17 +1456,17 @@ class transaction_group {
      *  resetting it, so the caller's pending writes survive and the group can be retried.
      */
     [[nodiscard]] status_t stage() noexcept {
-        if (staging_ == staging_t::staged_k) return {operation_not_permitted_k};
+        if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
 
         std::size_t staged_count = 0;
-        status_t result {success_k};
+        status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
             result = visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.stage(); });
-            if (!result) break;
+            if (failed(result)) break;
             ++staged_count;
         }
 
-        if (!result) {
+        if (failed(result)) {
             while (staged_count != 0) {
                 --staged_count;
                 [[maybe_unused]] status_t const unwound =
@@ -1454,17 +1476,17 @@ class transaction_group {
         }
 
         staging_ = staging_t::staged_k;
-        return {success_k};
+        return success_k;
     }
 
     /** @brief Publishes every participant. Cannot fail once @c stage has succeeded. */
     [[nodiscard]] status_t commit() noexcept {
-        if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
-        status_t result {success_k};
+        if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+        status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
             status_t const one =
                 visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
-            if (!one) result = one;
+            if (failed(one)) result = one;
         }
         staging_ = staging_t::pending_k;
         return result;
@@ -1472,12 +1494,12 @@ class transaction_group {
 
     /** @brief Pulls every staged write back into its transaction, leaving the group retryable. */
     [[nodiscard]] status_t rollback() noexcept {
-        if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
-        status_t result {success_k};
+        if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+        status_t result = success_k;
         for (std::size_t position = participants_k; position-- != 0;) {
             status_t const one =
                 visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
-            if (!one) result = one;
+            if (failed(one)) result = one;
         }
         staging_ = staging_t::pending_k;
         return result;
@@ -1485,11 +1507,11 @@ class transaction_group {
 
     /** @brief Discards every participant's staged and pending changes. */
     [[nodiscard]] status_t reset() noexcept {
-        status_t result {success_k};
+        status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
             status_t const one =
                 visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.reset(); });
-            if (!one) result = one;
+            if (failed(one)) result = one;
         }
         staging_ = staging_t::pending_k;
         return result;
@@ -1506,3 +1528,26 @@ template <typename... store_types_>
 #pragma endregion Transaction Group
 
 } // namespace ashvardanian::smashtable
+
+#pragma region Structured Bindings
+
+// What `auto [value, status] = ...` looks up. The members live in a `union`, so the compiler cannot
+// decompose the class itself and the tuple protocol is the only route.
+namespace std {
+
+template <typename value_type_>
+struct tuple_size<::ashvardanian::smashtable::expected<value_type_>> : integral_constant<size_t, 2> {};
+
+template <typename value_type_>
+struct tuple_element<0, ::ashvardanian::smashtable::expected<value_type_>> {
+    using type = value_type_;
+};
+
+template <typename value_type_>
+struct tuple_element<1, ::ashvardanian::smashtable::expected<value_type_>> {
+    using type = ::ashvardanian::smashtable::status_t;
+};
+
+} // namespace std
+
+#pragma endregion Structured Bindings

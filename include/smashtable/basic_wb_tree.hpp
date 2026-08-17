@@ -1373,7 +1373,7 @@ class basic_wb_tree {
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = find(std::forward<comparable_type_>(comparable));
-        if (iterator == end()) return status_t {key_not_found_k};
+        if (iterator == end()) return key_not_found_k;
         return copy_safely(*iterator);
     }
 
@@ -1381,7 +1381,7 @@ class basic_wb_tree {
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = lower_bound(std::forward<comparable_type_>(comparable));
-        if (iterator == end()) return status_t {key_not_found_k};
+        if (iterator == end()) return key_not_found_k;
         return copy_safely(*iterator);
     }
 
@@ -1389,7 +1389,7 @@ class basic_wb_tree {
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = upper_bound(std::forward<comparable_type_>(comparable));
-        if (iterator == end()) return status_t {key_not_found_k};
+        if (iterator == end()) return key_not_found_k;
         return copy_safely(*iterator);
     }
 
@@ -1407,17 +1407,17 @@ class basic_wb_tree {
         for (; first != last; ++first) {
             value_t element(*first);
             if (find(element) != end()) continue;
-            if (upsert(std::move(element)).node == nullptr) return {errc_t::out_of_memory_heap_k};
+            if (upsert(std::move(element)).node == nullptr) return status_t::out_of_memory_heap_k;
         }
-        return {success_k};
+        return success_k;
     }
 
     /** @brief Upserts a range, overwriting any key already present. */
     template <typename input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first)
-            if (upsert(value_t(*first)).node == nullptr) return {errc_t::out_of_memory_heap_k};
-        return {success_k};
+            if (upsert(value_t(*first)).node == nullptr) return status_t::out_of_memory_heap_k;
+        return success_k;
     }
 
     /**
@@ -1428,7 +1428,7 @@ class basic_wb_tree {
         /** @brief Iterator to the element following the erased one, or @c end(). */
         iterator next;
         /** @brief Status of the erase operation. */
-        status_t status;
+        status_t status = success_k;
     };
 
     /**
@@ -1661,7 +1661,7 @@ class basic_wb_tree {
         auto next = pos;
         ++next;
         bool erased = erase(*pos);
-        return {next, erased ? status_t {success_k} : status_t {errc_t::unknown_k}};
+        return {next, erased ? success_k : status_t::unknown_k};
     }
 
     /**

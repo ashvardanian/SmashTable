@@ -43,7 +43,7 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
 
     container_t container;
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, identifier))));
 
     std::atomic<bool> stop {false};
     std::atomic<std::size_t> steps_walked {0};
@@ -152,19 +152,19 @@ void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
 
     // Spread writes across partitions, so a refusal partway through has predecessors to undo.
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+        st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier))));
 
-    st_verify_(transaction->stage());
-    st_verify_(transaction->rollback());
+    st_verify_(succeeded(transaction->stage()));
+    st_verify_(succeeded(transaction->rollback()));
 
     // Whatever the outcome, nothing may be visible and nothing may be left reserved: a later
     // transaction writing the same keys must find every one of them free to take.
     auto follower = container.transaction();
     st_verify_((follower) && "a transaction must open after the unwind");
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span)));
-    st_verify_(follower->stage());
-    st_verify_(follower->commit());
+        st_verify_(succeeded(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span))));
+    st_verify_(succeeded(follower->stage()));
+    st_verify_(succeeded(follower->commit()));
 
     for (std::size_t identifier = 0; identifier < key_span; ++identifier) {
         auto found = container.find_copy(trivial_id_to_key<member_t>(identifier));
