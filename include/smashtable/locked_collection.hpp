@@ -17,8 +17,11 @@ namespace ashvardanian::smashtable {
 /**
  *  @brief Wraps and protects any "Consistent Set" under a shared mutex.
  *
- *  The collection itself becomes @b thread-safe, but the transaction don't!
- *  Detects dead-locks and reports @c operation_would_block_k.
+ *  The collection becomes @b thread-safe; a single transaction does @b not - it belongs to the thread
+ *  that opened it, and its staged changes live outside the mutex entirely. Only the points where a
+ *  transaction reaches the store - @c watch, @c stage, @c commit, @c rollback, @c find - take the lock.
+ *
+ *  One mutex spans the whole commit loop, which is what keeps the isolation level its parts promise.
  */
 template <typename collection_type_, typename shared_mutex_type_ = std::shared_mutex>
 class locked_collection {

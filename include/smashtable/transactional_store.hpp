@@ -794,7 +794,14 @@ class transactional_binary_tree {
     friend class transaction_t;
     using chain_node_t = typename storage_node_of<versioned_chains_t>::type;
 
-    generation_t new_generation_() noexcept { return ++generation_; }
+    /**
+     *  @brief Hands out the next version stamp, which must be unique across concurrent openers.
+     *
+     *  Relaxed suffices because one location has a total modification order, which is all uniqueness
+     *  needs; a stamp is compared by value - @c > when walking a chain, @c == when validating a watch -
+     *  and never used to order memory. Publishing what a generation tags is the partition lock's job.
+     */
+    generation_t new_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
 
     /** @brief A writable reference to a stored element, which every core hands out as immutable. */
     template <typename element_type_>

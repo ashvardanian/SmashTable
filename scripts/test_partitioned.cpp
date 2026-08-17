@@ -11,11 +11,12 @@
 #include <smashtable/basic_avl_tree.hpp>
 #include <smashtable/locked_collection.hpp>
 #include <smashtable/partitioned_collection.hpp>
-#include <smashtable/transactional_binary_tree.hpp>
+#include <smashtable/transactional_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
 #include "test_consistency.hpp"
+#include "test_sharded_concurrency.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -44,6 +45,22 @@ using partitioned_tracking_set_t = partitioned_collection<tree_tracking_set_t>;
 /** One shared mutex over the whole collection. */
 using transactional_tracking_set_t = locked_collection<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_collection<tree_trivial_map_t>;
+
+/** @brief Walkers crossing a sharded map while an eraser churns it, with heap-owning keys. */
+static void sharded_concurrency_walks_never_race_erasures() {
+    test_sharded_walks_never_race_erasures<transactional_composite_map_t>();
+}
+
+/** @brief Concurrent transaction opens must never share a generation. */
+static void sharded_concurrency_distinct_generations() {
+    test_concurrent_transactions_get_distinct_generations<tree_trivial_map_t>();
+    test_concurrent_transactions_get_distinct_generations<tree_trivial_set_t>();
+}
+
+/** @brief A refused stage must leave no partition holding an unpublishable reservation. */
+static void sharded_concurrency_stage_unwinds_on_partial_failure() {
+    test_sharded_stage_unwinds_on_partial_failure<transactional_trivial_map_t>();
+}
 
 /** @brief Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {
@@ -251,6 +268,11 @@ int main() {
     std::size_t failures = 0;
 
     failures += run_test(filter, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
+    failures += run_test(filter, "sharded_concurrency.walks_never_race_erasures",
+                         sharded_concurrency_walks_never_race_erasures);
+    failures += run_test(filter, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);
+    failures += run_test(filter, "sharded_concurrency.stage_unwinds_on_partial_failure",
+                         sharded_concurrency_stage_unwinds_on_partial_failure);
     failures += run_test(filter, "basic_ops.single_element_operations", basic_ops_single_element_operations);
     failures += run_test(filter, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
     failures += run_test(filter, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);

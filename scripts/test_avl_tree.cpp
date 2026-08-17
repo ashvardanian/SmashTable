@@ -10,7 +10,7 @@
 #define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <smashtable/basic_avl_tree.hpp>
-#include <smashtable/transactional_binary_tree.hpp>
+#include <smashtable/transactional_store.hpp>
 #include <smashtable/transactional_std_store.hpp>
 
 #include "test.hpp"

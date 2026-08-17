@@ -757,11 +757,18 @@ class transactional_std_store {
 
     friend class transaction_t;
 
-    generation_t new_generation_() noexcept { return ++generation_; }
+    /**
+     *  @brief Hands out the next version stamp, which must be unique across concurrent openers.
+     *
+     *  Relaxed suffices because one location has a total modification order, which is all uniqueness
+     *  needs; a stamp is compared by value - @c > when walking a chain, @c == when validating a watch -
+     *  and never used to order memory. Publishing what a generation tags is the partition lock's job.
+     */
+    generation_t new_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
 
     /**
      *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_entry_t const &.
-     *    Used by internal methods that need access to generation/deleted/visible fields.
+     *    Used by internal methods that need access to generation, presence and publication fields.
      *    Only considers VISIBLE entries (committed/staged).
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.

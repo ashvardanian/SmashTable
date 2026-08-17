@@ -289,6 +289,11 @@ Headers group as:
     └─ partitioned_collection<Collection, Hash, Mutex, PartsCount>
 ```
 
+Both wrappers serialize whole __transactions__, so the unit of exclusion is a two-phase commit rather than a single operation.
+`locked_collection` holds one lock across the whole commit, so whatever its inner store promises survives intact.
+`partitioned_collection` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied — above a single partition only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives.
+Every partition walk acquires in ascending index order, which is what keeps two of them from waiting on each other.
+
 `status_t` reports `out_of_memory_heap_k == ENOMEM`, `invalid_argument_k == EINVAL`, `key_not_found_k == ENOENT` and others, and is `[[nodiscard]]` on every mutating API.
 
 ### Making `std::set` Transactional
@@ -328,7 +333,7 @@ Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amor
 
 ### Transactional Trees
 
-> `smashtable/transactional_binary_tree.hpp`
+> `smashtable/transactional_store.hpp`
 
 `transactional_binary_tree<Tree>` adds two-phase commit, watches and CAS on top of either tree.
 `transactional_avl_set`, `transactional_avl_map`, `transactional_wb_set` and `transactional_wb_map` are the aliases you'll name directly.

@@ -10,7 +10,7 @@
  */
 #include <smashtable/locked_collection.hpp>
 #include <smashtable/partitioned_collection.hpp>
-#include <smashtable/transactional_binary_tree.hpp>
+#include <smashtable/transactional_store.hpp>
 #include <smashtable/transactional_std_store.hpp>
 
 #define macro_concat_(prefix, suffix) prefix##suffix
