@@ -6,6 +6,8 @@
  *  @date January 12, 2023
  */
 #pragma once
+#include <vector> // `std::vector`
+
 #include "test_basic.hpp"
 
 namespace ashvardanian::smashtable::scripts {
@@ -820,6 +822,66 @@ void test_watch_detects_staged_invisible_writes() {
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
     st_verify_((maybe_final->mapped) == (100) && "the original value must survive the other rollback");
+}
+
+/**
+ *  @brief Builds a container around a given comparator, whichever factory shape its family offers.
+ *    Partitioned collections pair the comparator with a hasher, trees with an allocator, and some
+ *    take it alone. Only the arity differs, so the choice is made here rather than in every test.
+ */
+template <typename container_type_, typename comparator_type_>
+auto make_around_comparator(comparator_type_ const &comparator) noexcept {
+    if constexpr (requires { container_type_::make(comparator, typename container_type_::hash_t {}); })
+        return container_type_::make(comparator, typename container_type_::hash_t {});
+    else if constexpr (requires { container_type_::make(comparator, typename container_type_::allocator_t {}); })
+        return container_type_::make(comparator, typename container_type_::allocator_t {});
+    else return container_type_::make(comparator);
+}
+
+/**
+ *  @brief A comparator carrying state must be consulted, never rebuilt.
+ *
+ *  Handed a descending comparator, the container has to walk high to low. Every transactional
+ *  container routes its comparisons through one wrapper, and a wrapper that default-constructs a
+ *  fresh comparator per call silently discards the instance it was given - so the walk comes back
+ *  ascending and the container quietly orders by something nobody asked for.
+ */
+template <typename container_type_>
+void test_stateful_comparator_is_consulted() {
+    using member_t = typename container_type_::value_t;
+    using comparator_t = typename container_type_::comparator_t;
+
+    constexpr std::size_t keys_count_k = 3;
+    // Above every key, so the first strict successor under a descending order is the largest key.
+    constexpr std::size_t above_every_key_k = 1000;
+
+    auto built = make_around_comparator<container_type_>(comparator_t {ordering_t::descending_k});
+    st_verify_(built.has_value() && "a container must be constructible around a comparator instance");
+    auto &container = *built;
+
+    for (std::size_t identifier = 1; identifier <= keys_count_k; ++identifier)
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
+    st_verify_eq_(container.size(), keys_count_k);
+
+    std::vector<std::size_t> walked;
+    auto cursor = trivial_id_to_key<member_t>(above_every_key_k);
+    for (std::size_t step = 0; step != keys_count_k; ++step) {
+        bool advanced = false;
+        container.upper_bound(
+            cursor,
+            [&](member_t const &element) noexcept {
+                auto const &key = mapping_key_or_itself<member_t>(element);
+                walked.push_back(static_cast<std::size_t>(key.unique_id));
+                cursor = key;
+                advanced = true;
+            },
+            []() noexcept {});
+        st_verify_(advanced && "every stored key must be reachable by walking successors");
+    }
+
+    // An ignored comparator orders ascending, so the walk would read 1, 2, 3 instead.
+    std::vector<std::size_t> const descending {3, 2, 1};
+    st_verify_((walked == descending) && "the comparator the container was given must decide the order");
 }
 
 } // namespace ashvardanian::smashtable::scripts

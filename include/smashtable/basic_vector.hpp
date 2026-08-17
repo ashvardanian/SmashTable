@@ -10,7 +10,7 @@
  *  - Never throws exceptions - returns @c status_t or @c expected<T> for fallible operations
  *  - For both @c noexcept-constructible elements and ones with fallible @c .make() methods
  *  - Offers performance variants with @c assume_reserved tag for pre-checked hot paths
- *  - Guarantees atomicity for batch operations like @c resize() and @c insert()
+ *  - Guarantees atomicity for batch operations like @c resize()
  *
  *  @section basic_vector_requirements Requirements
  *
@@ -33,8 +33,9 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <memory>  // `std::allocator`
-#include <utility> // `std::exchange`, `std::forward`
+#include <algorithm> // `std::max`
+#include <memory>    // `std::allocator`
+#include <utility>   // `std::exchange`, `std::forward`
 
 #include "shared.hpp"
 
@@ -167,20 +168,23 @@ class basic_vector {
                 result.size_ = 0;
                 return expected<basic_vector>(basic_vector(allocator_), copy_result.status);
             }
-            new (&result.data_[result.size_++]) element_t(std::move(copy_result.entry));
+            new (&result.data_[result.size_++]) element_t(std::move(copy_result.outcome));
         }
         return expected<basic_vector>(std::move(result), status_t {success_k});
     }
 
     /**
      *  @brief Reserves capacity for at least @p new_capacity elements.
+     *    Grows by at least a doubling, so a caller asking for one more slot at a time
+     *    still amortizes to constant reallocation cost.
      *  @param[in] new_capacity The new capacity.
      *  @return Success, or @c out_of_memory_heap_k if allocation fails.
      */
     [[nodiscard]] status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return status_t {success_k};
 
-        auto new_data = allocator_.allocate(new_capacity);
+        std::size_t const grown_capacity = std::max<std::size_t>(new_capacity, capacity_ == 0 ? 4 : capacity_ * 2);
+        auto new_data = allocator_.allocate(grown_capacity);
         if (!new_data) return status_t {out_of_memory_heap_k};
 
         // Move existing elements to new storage
@@ -191,7 +195,7 @@ class basic_vector {
 
         if (data_) allocator_.deallocate(data_, capacity_);
         data_ = new_data;
-        capacity_ = new_capacity;
+        capacity_ = grown_capacity;
         return status_t {success_k};
     }
 
@@ -217,10 +221,8 @@ class basic_vector {
      *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      */
     [[nodiscard]] status_t push_back(element_t &&value) noexcept {
-        // Auto-grow if needed (2x growth strategy)
         if (size_ >= capacity_) {
-            std::size_t new_capacity = capacity_ == 0 ? 4 : capacity_ * 2;
-            auto status = reserve(new_capacity);
+            auto status = reserve(size_ + 1);
             if (!status) return status;
         }
         return push_back(assume_reserved, std::move(value));
@@ -257,7 +259,7 @@ class basic_vector {
         else if constexpr (has_make_method<element_t, args_types_...>) {
             auto result = element_t::make(std::forward<args_types_>(args)...);
             if (!result) return result.status;
-            new (&data_[size_++]) element_t(std::move(result.entry));
+            new (&data_[size_++]) element_t(std::move(result.outcome));
             return status_t {success_k};
         }
         else {
@@ -281,10 +283,8 @@ class basic_vector {
      */
     template <typename... args_types_>
     [[nodiscard]] status_t emplace_back(args_types_ &&...args) noexcept {
-        // Auto-grow if needed (2x growth strategy)
         if (size_ >= capacity_) {
-            std::size_t new_capacity = capacity_ == 0 ? 4 : capacity_ * 2;
-            auto status = reserve(new_capacity);
+            auto status = reserve(size_ + 1);
             if (!status) return status;
         }
 
@@ -353,7 +353,7 @@ class basic_vector {
                     for (std::size_t j = old_size; j < i; ++j) data_[j].~element_t();
                     return copy_result.status;
                 }
-                new (&data_[i]) element_t(std::move(copy_result.entry));
+                new (&data_[i]) element_t(std::move(copy_result.outcome));
             }
             size_ = new_size;
         }

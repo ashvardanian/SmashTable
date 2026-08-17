@@ -417,6 +417,10 @@ static void transactional_consistency_reset_clears_transaction_state() {
 
 #pragma endregion Consistency &Transaction Tests : Sets
 
+static void transactional_consistency_stateful_comparator_is_consulted() {
+    test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
+}
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = std::getenv("SMASHTABLE_FILTER");
@@ -470,6 +474,9 @@ int main() {
         run_test(filter, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
                          transactional_consistency_reset_clears_transaction_state);
+
+    failures += run_test(filter, "transactional_consistency.stateful_comparator_is_consulted",
+                         transactional_consistency_stateful_comparator_is_consulted);
 
     return report_test_failures(failures);
 }

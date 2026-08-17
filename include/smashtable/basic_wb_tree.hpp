@@ -659,17 +659,18 @@ class basic_wb_node {
     /** @brief Drops every node satisfying @p predicate, returning the new root and surviving count. */
     template <typename predicate_type_, typename node_deallocator_type_>
     static remove_if_result_t remove_if(node_t *node, predicate_type_ &&predicate,
-                                        node_deallocator_type_ &&node_deallocator) noexcept {
+                                        node_deallocator_type_ &&node_deallocator,
+                                        comparator_t const &comparator) noexcept {
         if (!node) return {nullptr, 0};
 
-        auto left_result = remove_if(node->left, predicate, node_deallocator);
+        auto left_result = remove_if(node->left, predicate, node_deallocator, comparator);
         node->left = left_result.root;
-        auto right_result = remove_if(node->right, predicate, node_deallocator);
+        auto right_result = remove_if(node->right, predicate, node_deallocator, comparator);
         node->right = right_result.root;
 
         std::size_t const surviving = left_result.count + right_result.count;
         if (predicate(node->fruit)) {
-            auto extracted = extract(node, comparator_t {});
+            auto extracted = extract(node, comparator);
             node_deallocator(extracted.extracted.release());
             return {extracted.root, surviving};
         }
@@ -1110,10 +1111,13 @@ class basic_wb_tree {
     /** @brief Drops every element satisfying @p predicate and reports how many went. */
     template <typename predicate_type_>
     std::size_t remove_if(predicate_type_ &&predicate) noexcept {
-        auto result = node_t::remove_if(root_, std::forward<predicate_type_>(predicate), [&](node_t *node) noexcept {
-            node->fruit.~value_t();
-            allocator_.deallocate(node, 1);
-        });
+        auto result = node_t::remove_if(
+            root_, std::forward<predicate_type_>(predicate),
+            [&](node_t *node) noexcept {
+                node->fruit.~value_t();
+                allocator_.deallocate(node, 1);
+            },
+            comparator_);
         root_ = result.root;
         auto const removed = size_ - result.count;
         size_ = result.count;

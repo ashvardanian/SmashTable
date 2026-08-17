@@ -6,6 +6,13 @@
  *  @date January 12, 2023
  */
 #pragma once
+#include <cstring> // `std::memcmp`
+
+#include <algorithm>   // `std::min`
+#include <compare>     // `std::strong_ordering`
+#include <string_view> // `std::string_view`
+#include <vector>      // `std::vector`
+
 #include <smashtable/basic_vector.hpp>
 
 #include "test.hpp"
@@ -142,39 +149,30 @@ struct heavy_key_t {
 
     std::string_view view() const noexcept { return {text.data(), text.size()}; }
 
-    auto operator<=>(heavy_key_t const &other) const noexcept {
-        auto cmp = memcmp(text.data(), other.text.data(), std::min(text.size(), other.text.size()));
-        if (cmp != 0) return cmp <=> 0;
-        return text.size() <=> other.text.size();
+    /**
+     *  @brief Orders two byte ranges, tolerating an empty one.
+     *
+     *  A zero-length @c std::memcmp still requires both pointers to be valid, and an empty
+     *  container's @c data() is null - so the shared length is checked before the compare, never
+     *  folded into it.
+     */
+    static std::strong_ordering compare_bytes(std::string_view first, std::string_view second) noexcept {
+        std::size_t const shared = std::min(first.size(), second.size());
+        int const ordered = shared == 0 ? 0 : std::memcmp(first.data(), second.data(), shared);
+        if (ordered != 0) return ordered <=> 0;
+        return first.size() <=> second.size();
     }
 
-    bool operator==(heavy_key_t const &other) const noexcept {
-        return text.size() == other.text.size() && memcmp(text.data(), other.text.data(), text.size()) == 0;
+    std::strong_ordering operator<=>(heavy_key_t const &other) const noexcept {
+        return compare_bytes(view(), other.view());
     }
+    bool operator==(heavy_key_t const &other) const noexcept { return compare_bytes(view(), other.view()) == 0; }
 
-    bool operator<(heavy_key_t const &other) const noexcept {
-        int cmp = memcmp(text.data(), other.text.data(), std::min(text.size(), other.text.size()));
-        if (cmp != 0) return cmp < 0;
-        return text.size() < other.text.size();
-    }
-
-    bool operator<(std::string_view const &other) const noexcept {
-        int cmp = memcmp(text.data(), other.data(), std::min(text.size(), other.size()));
-        if (cmp != 0) return cmp < 0;
-        return text.size() < other.size();
-    }
-
-    bool operator==(std::string_view const &other) const noexcept {
-        return text.size() == other.size() && memcmp(text.data(), other.data(), text.size()) == 0;
-    }
+    // The rewritten candidates C++20 synthesizes from these cover `string_view` on the left too,
+    // so a transparent comparator probing both orders needs no free-standing reversal.
+    std::strong_ordering operator<=>(std::string_view other) const noexcept { return compare_bytes(view(), other); }
+    bool operator==(std::string_view other) const noexcept { return compare_bytes(view(), other) == 0; }
 };
-
-/** @brief Transparent comparators probe both orders, and a member @c operator< only covers one. */
-inline bool operator<(std::string_view const &lhs, heavy_key_t const &rhs) noexcept {
-    int cmp = memcmp(lhs.data(), rhs.text.data(), std::min(lhs.size(), rhs.text.size()));
-    if (cmp != 0) return cmp < 0;
-    return lhs.size() < rhs.text.size();
-}
 
 /** @brief Hashes for the fixture keys, so the partitioned collection can shard them. */
 } // namespace ashvardanian::smashtable::scripts
@@ -376,6 +374,9 @@ class guarded_payload_t {
 
 #pragma region Stateful Comparator
 
+/** @brief Which way a @c stateful_comparator orders, named so a call site never reads as a bare flag. */
+enum class ordering_t : bool { ascending_k, descending_k };
+
 /**
  *  @brief Stateful comparator with runtime configuration.
  *    Tests that comparators with member state work correctly.
@@ -386,13 +387,14 @@ struct stateful_comparator {
     using is_transparent = void;
 
     baseline_comparator_t baseline_comparator {};
-    bool reverse_order {false};
+    ordering_t ordering {ordering_t::ascending_k};
 
     stateful_comparator() noexcept = default;
+    explicit stateful_comparator(ordering_t requested) noexcept : ordering(requested) {}
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        return reverse_order ? baseline_comparator(rhs, lhs) : baseline_comparator(lhs, rhs);
+        return ordering == ordering_t::descending_k ? baseline_comparator(rhs, lhs) : baseline_comparator(lhs, rhs);
     }
 };
 
