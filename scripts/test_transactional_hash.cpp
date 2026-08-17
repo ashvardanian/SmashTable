@@ -335,7 +335,7 @@ static void transactional_consistency_reset_clears_transaction_state() {
 
 int main() {
     install_test_signal_handlers();
-    char const *const filter = std::getenv("SMASHTABLE_FILTER");
+    char const *const filter = test_filter();
     std::size_t failures = 0;
 
     failures += run_test(filter, "point_access.insert_strategies", point_access_insert_strategies);

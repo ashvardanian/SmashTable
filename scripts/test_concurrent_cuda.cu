@@ -328,7 +328,7 @@ int main() {
     }
     print_line(stdout, "Running on {} (sm_{}{})", properties.name, properties.major, properties.minor);
 
-    char const *const filter = std::getenv("SMASHTABLE_FILTER");
+    char const *const filter = test_filter();
     std::size_t failures = 0;
 
     failures += run_test(filter, "cuda.device_inserts_host_reads", cuda_device_inserts_host_reads);

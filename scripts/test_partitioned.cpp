@@ -283,7 +283,7 @@ static void transactional_consistency_stateful_comparator_is_consulted() {
 
 int main() {
     install_test_signal_handlers();
-    char const *const filter = std::getenv("SMASHTABLE_FILTER");
+    char const *const filter = test_filter();
     std::size_t failures = 0;
 
     failures += run_test(filter, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);

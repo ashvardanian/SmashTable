@@ -167,7 +167,7 @@ static void unordered_concurrency_update_and_erase() {
 
 int main() {
     install_test_signal_handlers();
-    char const *const filter = std::getenv("SMASHTABLE_FILTER");
+    char const *const filter = test_filter();
     std::size_t failures = 0;
 
     failures += run_test(filter, "unordered_ops.empty_container_operations", unordered_ops_empty_container_operations);

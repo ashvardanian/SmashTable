@@ -124,6 +124,24 @@ inline void print_line(std::FILE *stream, std::format_string<args_types_...> pat
 #pragma region Test Runner
 
 /**
+ *  @brief Reads @c SMASHTABLE_FILTER, or @c nullptr when it is unset.
+ *
+ *  MSVC deprecates @c std::getenv in favor of the allocating @c _dupenv_s, which buys a suite nothing:
+ *  the value is read once from @c main, before any thread exists, and the environment block outlives
+ *  the run. One place to say so beats the same suppression in every suite.
+ */
+[[nodiscard]] inline char const *test_filter() noexcept {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    return std::getenv("SMASHTABLE_FILTER");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+}
+
+/**
  *  @brief Runs one named test, honoring @p filter, timing it, and reporting the outcome.
  *  @param[in] filter Substring matched against @p name, or @c nullptr to run everything.
  *  @param[in] name The test's "suite.name" label, which is also its filter key.
