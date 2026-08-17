@@ -388,8 +388,8 @@ class partitioned_collection {
 
     // Held rather than default-constructed per call: a hasher or comparator carrying state answers
     // differently from a fresh one, so rebuilding either would discard what the collection was given.
-    [[no_unique_address]] hash_t hasher_ {};
-    [[no_unique_address]] comparator_t comparator_ {};
+    ST_NO_UNIQUE_ADDRESS_ hash_t hasher_ {};
+    ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
 
     friend class transaction_t;
 

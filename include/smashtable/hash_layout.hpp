@@ -559,7 +559,7 @@ struct hash_storage {
     offset_t deleted_count {};
 
     /** @brief Supplies and reclaims the single byte buffer behind the three regions. */
-    [[no_unique_address]] allocator_t allocator {};
+    ST_NO_UNIQUE_ADDRESS_ allocator_t allocator {};
 
     hash_storage() noexcept = default;
     explicit hash_storage(allocator_t allocator_state) noexcept : allocator(std::move(allocator_state)) {}

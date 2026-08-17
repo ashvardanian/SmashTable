@@ -65,7 +65,7 @@ class basic_vector {
     element_t *data_ {nullptr};
     std::size_t size_ {0};
     std::size_t capacity_ {0};
-    [[no_unique_address]] allocator_t allocator_ {};
+    ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
 
   public:
     /**

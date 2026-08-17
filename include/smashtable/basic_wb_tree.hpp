@@ -846,8 +846,8 @@ class basic_wb_tree {
   private:
     node_t *root_ = nullptr;
     size_t size_ = 0;
-    [[no_unique_address]] comparator_t comparator_;
-    [[no_unique_address]] node_allocator_t allocator_;
+    ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_;
+    ST_NO_UNIQUE_ADDRESS_ node_allocator_t allocator_;
 
   public:
     /**

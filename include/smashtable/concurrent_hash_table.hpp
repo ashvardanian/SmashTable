@@ -114,9 +114,9 @@ class concurrent_hash_table {
     storage_t storage_;
 
     /** @brief Hashes a key down to its initial probe offset. */
-    [[no_unique_address]] hasher_t hasher_ {};
+    ST_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
     /** @brief Decides whether a probed key matches the wanted one. */
-    [[no_unique_address]] equals_t equals_ {};
+    ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
   public:
     concurrent_hash_table(hasher_t hasher = {}, equals_t equals = {}) noexcept

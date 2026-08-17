@@ -140,7 +140,7 @@ class transactional_store {
         /** @brief Further versions of the same key, usually null. */
         version_node_t *others {nullptr};
         /** @brief Where @c others came from, so the chain can hand them back when it dies. */
-        [[no_unique_address]] version_allocator_t allocator {};
+        ST_NO_UNIQUE_ADDRESS_ version_allocator_t allocator {};
 
         versioned_chain_t() = default;
         explicit versioned_chain_t(versioned_t &&only) noexcept : head(std::move(only)) {}

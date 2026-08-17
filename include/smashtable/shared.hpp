@@ -48,6 +48,18 @@
 #include <cuda/std/bit> // `cuda::std::popcount`, `cuda::std::countr_zero`
 #endif
 
+/**
+ *  @brief Lets an empty member occupy no space, in the spelling the compiler at hand honours.
+ *
+ *  MSVC ignores the standard attribute for ABI reasons and offers its own, while Clang rejects an
+ *  unknown scoped attribute under @c -Werror - so neither spelling can simply be written twice.
+ */
+#if defined(_MSC_VER)
+#define ST_NO_UNIQUE_ADDRESS_ [[msvc::no_unique_address]]
+#else
+#define ST_NO_UNIQUE_ADDRESS_ [[no_unique_address]]
+#endif
+
 namespace ashvardanian::smashtable {
 
 /** @brief Generation type for versioned elements. */
@@ -820,7 +832,7 @@ struct versioning_for {
          *  collation table, a dispatch pointer - answers differently from a default-constructed one, so
          *  building a fresh instance per comparison silently discards whatever the container was given.
          */
-        [[no_unique_address]] comparator_t comparator;
+        ST_NO_UNIQUE_ADDRESS_ comparator_t comparator;
 
         // Constrained rather than defaulted, so a comparator that refuses default construction - one
         // carrying a dispatch pointer with no meaningful empty value - makes every site that tried to
@@ -882,7 +894,7 @@ struct versioned_hasher {
     using is_transparent = void;
 
     /** @brief The hasher this wrapper was built with, consulted for every element. */
-    [[no_unique_address]] hasher_type_ hasher;
+    ST_NO_UNIQUE_ADDRESS_ hasher_type_ hasher;
 
     // Constrained rather than defaulted, matching the ordered comparator: a hasher carrying a seed
     // with no meaningful empty value makes every site that tried to manufacture one a compile error.
@@ -906,7 +918,7 @@ struct versioned_equals {
     using is_transparent = void;
 
     /** @brief The equality this wrapper was built with, consulted for every comparison. */
-    [[no_unique_address]] equals_type_ equals;
+    ST_NO_UNIQUE_ADDRESS_ equals_type_ equals;
 
     versioned_equals() noexcept
         requires std::is_default_constructible_v<equals_type_>

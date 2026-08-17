@@ -179,7 +179,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON
       - name: Build
         run: cmake --build build --config Release --parallel
       - name: Test
