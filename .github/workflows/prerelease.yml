@@ -1,0 +1,222 @@
+name: Pre-Release
+
+on:
+  push:
+    branches: ["main-dev"]
+  pull_request:
+    branches: ["main-dev"]
+
+env:
+  GH_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
+  PYTHONUTF8: 1
+  PYTHONFAULTHANDLER: 1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+
+  versioning:
+    name: Update Version
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Run TinySemVer
+        uses: ashvardanian/tinysemver@v3
+        with:
+          verbose: "true"
+          version-file: "VERSION"
+          update-version-in: |
+            pyproject.toml:^version = "(\d+\.\d+\.\d+)"
+            setup.py:version="(\d+\.\d+\.\d+)"
+            CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
+            python/smashtable/module.cpp:"__version__", "(\d+\.\d+\.\d+)"
+          dry-run: "true"
+
+  # Gates everything below. A header that compiles only after a sibling was included is a latent
+  # break for any consumer who includes it alone, and for us on whichever wheel architecture
+  # happens to order its includes differently. Two standard libraries, since libstdc++ and libc++
+  # disagree about what each header transitively pulls in.
+  test_headers:
+    name: Headers Compile Standalone (${{ matrix.compiler }})
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { compiler: g++-14, package: g++-14 }
+          - { compiler: clang++-18, package: clang-18 }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Compiler
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.package }}
+      - name: Compile Each Header Alone
+        run: |
+          failed=""
+          for header in include/smashtable/*.hpp; do
+            relative="${header#include/}"
+            printf '#include <%s>\nint main() { return 0; }\n' "$relative" \
+              | ${{ matrix.compiler }} -std=c++20 -fsyntax-only -Wall -Wextra -Iinclude -x c++ - 2> /dev/null \
+              && echo "ok   $relative" \
+              || { echo "::error file=$header::$relative does not compile standalone"; failed="$failed $relative"; }
+          done
+          for relative in $failed; do
+            echo "::group::$relative"
+            printf '#include <%s>\nint main() { return 0; }\n' "$relative" \
+              | ${{ matrix.compiler }} -std=c++20 -fsyntax-only -Iinclude -x c++ - || true
+            echo "::endgroup::"
+          done
+          test -z "$failed"
+
+  test_ubuntu:
+    name: ${{ matrix.name }}
+    needs: test_headers
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: "Ubuntu (GCC 14)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Release, flags: "" }
+          - { name: "Ubuntu (Clang 18)", cc: clang-18, cxx: clang++-18, package: clang-18, type: Release, flags: "" }
+          - { name: "Ubuntu (Sanitizers)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Debug,
+              flags: "-fsanitize=address,undefined -fno-omit-frame-pointer" }
+          # The hash table's lock-free slot protocol is the only concurrent code in the tree, and
+          # a data race in it is invisible to the address and behaviour sanitizers.
+          - { name: "Ubuntu (Thread Sanitizer)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Debug,
+              flags: "-fsanitize=thread -fno-omit-frame-pointer" }
+    env:
+      CC: ${{ matrix.cc }}
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake ${{ matrix.package }}
+
+      # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
+      # runner gets a compiler killed by the OOM killer, which reports nothing itself.
+      - name: Choose Build Parallelism
+        run: |
+          available_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+          jobs=$((available_kb / (2 * 1024 * 1024)))
+          cores=$(nproc)
+          [ "$jobs" -lt 1 ] && jobs=1
+          [ "$jobs" -gt "$cores" ] && jobs=$cores
+          echo "available $((available_kb / 1024)) MiB, cores $cores, using -j$jobs"
+          echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DSMASHTABLE_WERROR=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+      - name: Build
+        run: cmake --build build --parallel ${{ env.BUILD_JOBS }}
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 900
+      - name: Run the Example
+        run: ./build/smashtable_example
+
+  test_macos:
+    name: macOS (AppleClang)
+    needs: test_headers
+    runs-on: macos-15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 900
+
+  test_windows:
+    name: Windows (MSVC)
+    needs: test_headers
+    runs-on: windows-2025
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+      - name: Build
+        run: cmake --build build --config Release --parallel
+      - name: Test
+        run: ctest --test-dir build -C Release --output-on-failure --timeout 900
+
+  test_python:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    needs: test_headers
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15, windows-2025]
+        python-version: ["3.12", "3.13", "3.14", "3.14t"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Set Up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install Test Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-repeat pytest-run-parallel
+      - name: Build and Install
+        run: python -m pip install -v .
+
+      # A free-threaded build that re-enables the GIL on import ships the label without the
+      # property, so fail loudly rather than regress quietly to a serialized interpreter.
+      - name: Assert the GIL Stays Disabled
+        if: ${{ endsWith(matrix.python-version, 't') }}
+        run: python -c "import sys, smashtable; assert not sys._is_gil_enabled(), 'importing smashtable re-enabled the GIL'"
+
+      # Exercising a free-threaded build single-threaded proves nothing about it.
+      - name: Test
+        shell: bash
+        run: |
+          if [[ "${{ matrix.python-version }}" == *t ]]; then
+            pytest test/ -x -q --parallel-threads=4 --iterations=2
+          else
+            pytest test/ -x -q
+          fi
+
+  # A smoke subset only. The full matrix runs on release, where an unbuildable wheel is fatal.
+  build_wheels:
+    name: Wheels ${{ matrix.os }} cp${{ matrix.python-version }}
+    needs: test_python
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        python-version: ["312", "314t"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Build Wheels
+        uses: pypa/cibuildwheel@v4.2.0
+        env:
+          # One entry per interpreter variant: a `cp314-*` glob stops before the `t`, so a flat
+          # list silently ships zero free-threaded wheels while looking complete.
+          CIBW_BUILD: cp${{ matrix.python-version }}-*
+          CIBW_TEST_REQUIRES: pytest pytest-run-parallel
+          CIBW_TEST_COMMAND: pytest {project}/test/ -x -q
+      - name: Assert the Expected Interpreter Was Built
+        shell: bash
+        run: |
+          # The ABI tag is the discriminator: matching the Python tag alone lets a free-threaded
+          # wheel masquerade as the GIL one.
+          count=$(ls wheelhouse/*.whl | grep -c -- "-cp${{ matrix.python-version }}-") || true
+          ls -la wheelhouse/
+          echo "wheels carrying ABI tag cp${{ matrix.python-version }}: ${count}"
+          test "$count" -gt 0
