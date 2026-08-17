@@ -12,7 +12,7 @@
 #   -D SMASHTABLE_INSTALL=<ON|OFF>                      (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_WERROR=<ON|OFF>                       (default: OFF)
 #   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: ON as the main project, else OFF)
-#   -D SMASHTABLE_CUDA_ARCHITECTURES=<list>             (default: native; use "90;100" for Hopper and Blackwell)
+#   -D CMAKE_CUDA_ARCHITECTURES=<list>                  (default: native; name a list when building GPU-less)
 #
 # Targets:
 #
@@ -120,10 +120,6 @@ endif ()
 # Tests and examples
 option(SMASHTABLE_BUILD_TESTS "Build tests and examples" ${SMASHTABLE_IS_MAIN_PROJECT})
 option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" ${SMASHTABLE_IS_MAIN_PROJECT})
-set(SMASHTABLE_CUDA_ARCHITECTURES
-    "native"
-    CACHE STRING "Device architectures to compile for; use 90;100 to cover Hopper and Blackwell"
-)
 
 if (SMASHTABLE_BUILD_TESTS)
     add_executable(smashtable_example example.cpp)
@@ -161,14 +157,19 @@ if (SMASHTABLE_BUILD_TESTS)
     check_language(CUDA)
 
     if (SMASHTABLE_BUILD_CUDA AND CMAKE_CUDA_COMPILER)
+        # Decide the architectures before `enable_language(CUDA)`, which otherwise fills them in from
+        # the compiler's own default of `sm_52` - too old to assemble the scoped atomics the slot
+        # protocol is built on, so it fails in `ptxas` rather than at runtime. `native` suits anyone
+        # holding a device; a builder without one, CI included, names its own list.
+        if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
+            set(CMAKE_CUDA_ARCHITECTURES native)
+        endif ()
+
         enable_language(CUDA)
         set(CMAKE_CUDA_STANDARD 20)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
         add_executable(smashtable_test_concurrent_cuda scripts/test_concurrent_cuda.cu)
-        set_target_properties(
-            smashtable_test_concurrent_cuda PROPERTIES CUDA_ARCHITECTURES "${SMASHTABLE_CUDA_ARCHITECTURES}"
-        )
         target_include_directories(smashtable_test_concurrent_cuda PRIVATE scripts/)
         target_link_libraries(smashtable_test_concurrent_cuda PRIVATE smashtable::smashtable)
 
@@ -177,7 +178,7 @@ if (SMASHTABLE_BUILD_TESTS)
         target_compile_options(
             smashtable_test_concurrent_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
         )
-        message(STATUS "smashtable: CUDA test enabled for architectures ${SMASHTABLE_CUDA_ARCHITECTURES}")
+        message(STATUS "smashtable: CUDA test enabled for ${CMAKE_CUDA_ARCHITECTURES}")
     endif ()
 
     enable_testing()

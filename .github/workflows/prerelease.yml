@@ -123,6 +123,40 @@ jobs:
       - name: Run the Example
         run: ./build/smashtable_example
 
+  # A hosted runner has no GPU, so this job proves the device code compiles and that the test's own
+  # skip path works - it reports no device and exits zero rather than failing. The architectures are
+  # named here rather than defaulted, since detecting them needs the very device the runner lacks.
+  test_cuda:
+    name: Ubuntu (CUDA)
+    needs: test_headers
+    runs-on: ubuntu-24.04
+    env:
+      CC: gcc-14
+      CXX: g++-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.35
+        with:
+          cuda: "12.9.1"
+          method: "network"
+      - name: Install Toolchain
+        run: sudo apt-get update && sudo apt-get install -y cmake g++-14
+      - name: Log Toolchain
+        run: |
+          nvcc --version
+          nvidia-smi || echo "no GPU on this runner, which is what the skip path is for"
+
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON -DCMAKE_CUDA_ARCHITECTURES="90;100"
+      # Two jobs, not one per core: nvcc runs a host and a device pass over the same template-heavy
+      # headers, and the pair is bounded by memory rather than by cores.
+      - name: Build
+        run: cmake --build build --parallel 2
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 900
+
   test_macos:
     name: macOS (AppleClang)
     needs: test_headers
