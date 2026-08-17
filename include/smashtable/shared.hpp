@@ -991,6 +991,16 @@ inline constexpr auto memory_order_release_k = std::memory_order_release;
 #endif
 
 /**
+ *  @brief The alignment @c atomic_ref demands of a counter updated through it.
+ *
+ *  A 64-bit integer is only 4-byte aligned by default on a 32-bit target, while @c atomic_ref needs
+ *  8, so a counter that is perfectly well-behaved on x86-64 becomes undefined when built for i386.
+ *  Every counter the helpers below touch carries this.
+ */
+template <typename integral_type_>
+inline constexpr std::size_t atomic_alignment = atomic_ref<integral_type_>::required_alignment;
+
+/**
  *  @brief Relaxed atomic increment of a plain counter, returning the post-increment value.
  *    Relaxed suffices for a counter read by value - a statistic, or a version stamp compared for
  *    identity and recency - because one location has a total modification order. It publishes
@@ -1087,8 +1097,9 @@ constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound)
 
     while (true) {
         std::size_t draw = static_cast<std::size_t>(generator() - generator_t::min());
-        for (std::size_t filled = generator_bits_k; filled < wanted_bits; filled += generator_bits_k)
-            draw = (draw << generator_bits_k) | static_cast<std::size_t>(generator() - generator_t::min());
+        if constexpr (generator_bits_k < size_bits_k)
+            for (std::size_t filled = generator_bits_k; filled < wanted_bits; filled += generator_bits_k)
+                draw = (draw << generator_bits_k) | static_cast<std::size_t>(generator() - generator_t::min());
         draw &= mask;
         if (draw < bound) return draw;
     }

@@ -109,7 +109,8 @@ struct heavy_key_t {
     static expected<heavy_key_t> make(trivial_id_t integer_to_encode) noexcept {
         heavy_key_t result;
         char buffer[32];
-        int length = std::snprintf(buffer, sizeof(buffer), "%016lx", integer_to_encode);
+        int length =
+            std::snprintf(buffer, sizeof(buffer), "%016llx", static_cast<unsigned long long>(integer_to_encode));
         if (length <= 0 || length >= static_cast<int>(sizeof(buffer)))
             return expected<heavy_key_t>(heavy_key_t {}, status_t::unknown_k);
 

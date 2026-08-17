@@ -554,9 +554,9 @@ struct hash_storage {
     /** @brief Rehash trigger at the 75% load factor. */
     offset_t growth_threshold {};
     /** @brief Count of populated slots. */
-    offset_t populated_count {};
+    alignas(atomic_alignment<offset_t>) offset_t populated_count {};
     /** @brief Count of deleted slots still holding tombstones. */
-    offset_t deleted_count {};
+    alignas(atomic_alignment<offset_t>) offset_t deleted_count {};
 
     /** @brief Supplies and reclaims the single byte buffer behind the three regions. */
     ST_NO_UNIQUE_ADDRESS_ allocator_t allocator {};

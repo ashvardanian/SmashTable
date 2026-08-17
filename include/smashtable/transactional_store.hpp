@@ -838,7 +838,7 @@ class transactional_store {
     /** @brief Version nodes reserved by a staging pass and not yet filed into a chain. */
     version_node_t *spare_versions_ {nullptr};
     versioned_chains_t entries_;
-    generation_t generation_ {0};
+    alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
     std::size_t visible_count_ {0};
     std::size_t visible_deleted_count_ {0};
 

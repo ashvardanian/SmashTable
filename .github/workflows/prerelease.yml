@@ -157,6 +157,25 @@ jobs:
       - name: Test
         run: ctest --test-dir build --output-on-failure --timeout 900
 
+  test_32bit:
+    name: Linux 32-bit (i386)
+    needs: test_headers
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      # `-m32` targets the i386 ABI, which the runner executes natively - no container and no
+      # emulator. What it buys: a pointer and a `std::size_t` half the assumed width, and a 64-bit
+      # integer aligned to 4 rather than 8, which is what `atomic_ref` needs and cannot get here.
+      - name: Install Toolchain
+        run: sudo apt-get update && sudo apt-get install -y g++-multilib
+      - name: Configure
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON -DSMASHTABLE_BUILD_CUDA=OFF -DCMAKE_CXX_FLAGS=-m32
+      - name: Build
+        run: cmake --build build --parallel
+      - name: Test
+        run: ctest --test-dir build --output-on-failure --timeout 900
+
   test_macos:
     name: macOS (AppleClang)
     needs: test_headers
