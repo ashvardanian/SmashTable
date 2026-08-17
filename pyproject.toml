@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "smashtable"
 version = "0.1.0"
-description = "Concurrent Thread-Safe Atomic & Consistent Collections for Parallel Python"
+description = "Safer associative containers with DBMS-like transactions in Python"
 readme = "README.md"
 authors = [{ name = "Ash Vardanian" }]
 license = "Apache-2.0"
@@ -14,13 +14,15 @@ classifiers = [
     "Intended Audience :: Developers",
     "Programming Language :: C++",
     "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: Implementation :: CPython",
     "Operating System :: OS Independent",
     "Topic :: Database",
     "Topic :: Software Development :: Libraries",
 ]
-requires-python = ">=3.14"
+requires-python = ">=3.12"
 
 [tool.setuptools]
 packages = []
@@ -34,11 +36,13 @@ minversion = "6.0"
 addopts = ["-ra", "--showlocals", "--strict-markers", "--strict-config", "-v"]
 xfail_strict = true
 filterwarnings = ["error"]
-testpaths = ["test.py"]
+testpaths = ["test"]
+python_files = ["*.py"]
+markers = ["slow: the long threading soaks; deselect with -m 'not slow'"]
 
 [tool.black]
 line-length = 120
 
 [tool.ruff]
-target-version = "py314"
+target-version = "py312"
 line-length = 120
