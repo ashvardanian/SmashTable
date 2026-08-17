@@ -103,26 +103,26 @@ enum class hash_slot_state_t : std::uint32_t {
 };
 
 /** @brief Reads the state of the slot selected by @p mask out of both header lanes. */
-inline hash_slot_state_t hash_slot_state_of(hash_bucket_head_t const &head, hash_bucket_mask_t mask) noexcept {
+constexpr hash_slot_state_t hash_slot_state_of(hash_bucket_head_t const &head, hash_bucket_mask_t mask) noexcept {
     std::uint32_t const populated = (head.u32s.populations & mask) != 0;
     std::uint32_t const deleted = (head.u32s.deletions & mask) != 0;
     return static_cast<hash_slot_state_t>(populated * 2u + deleted);
 }
 
 /** @brief Drives the slot selected by @p mask into the @c free_k state. */
-inline void hash_mark_free(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
+constexpr void hash_mark_free(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
     head.u32s.populations &= ~mask;
     head.u32s.deletions &= ~mask;
 }
 
 /** @brief Drives the slot selected by @p mask into the @c populated_k state. */
-inline void hash_mark_populated(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
+constexpr void hash_mark_populated(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
     head.u32s.populations |= mask;
     head.u32s.deletions &= ~mask;
 }
 
 /** @brief Drives the slot selected by @p mask into the @c deleted_k state. */
-inline void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
+constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
     head.u32s.populations &= ~mask;
     head.u32s.deletions |= mask;
 }
@@ -309,38 +309,38 @@ struct hash_slot_ref {
     hash_bucket_head_t *headers_ {};
     offset_t slot_ {};
 
-    hash_bucket_head_t &header_ref() const noexcept { return headers_[slot_ / hash_bucket_capacity_k]; }
+    constexpr hash_bucket_head_t &header_ref() const noexcept { return headers_[slot_ / hash_bucket_capacity_k]; }
 
-    hash_bucket_mask_t mask_in_bucket() const noexcept {
+    constexpr hash_bucket_mask_t mask_in_bucket() const noexcept {
         return hash_bucket_mask_t {1} << (slot_ % hash_bucket_capacity_k);
     }
 
-    key_t &key_ref() const noexcept { return keys_[slot_]; }
-    key_t const &key() const noexcept { return keys_[slot_]; }
-    value_storage_t &value_ref() const noexcept { return values_[slot_]; }
-    value_storage_t const &value() const noexcept { return values_[slot_]; }
+    constexpr key_t &key_ref() const noexcept { return keys_[slot_]; }
+    constexpr key_t const &key() const noexcept { return keys_[slot_]; }
+    constexpr value_storage_t &value_ref() const noexcept { return values_[slot_]; }
+    constexpr value_storage_t const &value() const noexcept { return values_[slot_]; }
 
-    bool is_free() const noexcept {
+    constexpr bool is_free() const noexcept {
         return hash_slot_state_of(header_ref(), mask_in_bucket()) == hash_slot_state_t::free_k;
     }
-    bool is_deleted() const noexcept {
+    constexpr bool is_deleted() const noexcept {
         return hash_slot_state_of(header_ref(), mask_in_bucket()) == hash_slot_state_t::deleted_k;
     }
-    bool is_populated() const noexcept {
+    constexpr bool is_populated() const noexcept {
         return hash_slot_state_of(header_ref(), mask_in_bucket()) == hash_slot_state_t::populated_k;
     }
-    bool is_locked() const noexcept {
+    constexpr bool is_locked() const noexcept {
         return hash_slot_state_of(header_ref(), mask_in_bucket()) == hash_slot_state_t::locked_k;
     }
 
-    void mark_free() const noexcept { hash_mark_free(header_ref(), mask_in_bucket()); }
-    void mark_populated() const noexcept { hash_mark_populated(header_ref(), mask_in_bucket()); }
-    void mark_deleted() const noexcept { hash_mark_deleted(header_ref(), mask_in_bucket()); }
+    constexpr void mark_free() const noexcept { hash_mark_free(header_ref(), mask_in_bucket()); }
+    constexpr void mark_populated() const noexcept { hash_mark_populated(header_ref(), mask_in_bucket()); }
+    constexpr void mark_deleted() const noexcept { hash_mark_deleted(header_ref(), mask_in_bucket()); }
 
     constexpr void lock() const noexcept {}
     constexpr void unlock() const noexcept {}
 
-    dereference_t operator*() const noexcept {
+    constexpr dereference_t operator*() const noexcept {
         if constexpr (has_values_k) return element_t {key(), value_ref()};
         else return key();
     }
@@ -377,7 +377,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
     hash_bucket_head_t mutable future_header_ {};
 
     /** @brief Both lanes of this slot's bit, the exact footprint the lock owns. */
-    hash_bucket_head_t header_mask_() const noexcept {
+    constexpr hash_bucket_head_t header_mask_() const noexcept {
         hash_bucket_head_t mask {};
         mask.u32s.populations = base_t::mask_in_bucket();
         mask.u32s.deletions = base_t::mask_in_bucket();
@@ -386,63 +386,70 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
 
   public:
     /** @brief The staged header, not the shared one, so reads under the lock stay private. */
-    hash_bucket_head_t &header_ref() const noexcept { return future_header_; }
+    constexpr hash_bucket_head_t &header_ref() const noexcept { return future_header_; }
 
     /** @brief Whether the staged state is @c free_k. */
-    bool is_free() const noexcept {
+    constexpr bool is_free() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::free_k;
     }
     /** @brief Whether the staged state is @c deleted_k. */
-    bool is_deleted() const noexcept {
+    constexpr bool is_deleted() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::deleted_k;
     }
     /** @brief Whether the staged state is @c populated_k. */
-    bool is_populated() const noexcept {
+    constexpr bool is_populated() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::populated_k;
     }
     /** @brief Whether the staged state is @c locked_k. */
-    bool is_locked() const noexcept {
+    constexpr bool is_locked() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::locked_k;
     }
 
     /** @brief Stages @c free_k, which @c unlock() then publishes. */
-    void mark_free() const noexcept { hash_mark_free(header_ref(), base_t::mask_in_bucket()); }
+    constexpr void mark_free() const noexcept { hash_mark_free(header_ref(), base_t::mask_in_bucket()); }
     /** @brief Stages @c populated_k, which @c unlock() then publishes. */
-    void mark_populated() const noexcept { hash_mark_populated(header_ref(), base_t::mask_in_bucket()); }
+    constexpr void mark_populated() const noexcept { hash_mark_populated(header_ref(), base_t::mask_in_bucket()); }
     /** @brief Stages @c deleted_k, which @c unlock() then publishes. */
-    void mark_deleted() const noexcept { hash_mark_deleted(header_ref(), base_t::mask_in_bucket()); }
+    constexpr void mark_deleted() const noexcept { hash_mark_deleted(header_ref(), base_t::mask_in_bucket()); }
 
-    /** @brief Spins on @c fetch_or until this thread is the one that observed a non-locked slot. */
-    void lock() const noexcept {
+    /**
+     *  @brief Spins on @c fetch_or until this thread is the one that observed a non-locked slot.
+     *  @warning On a device this spin only makes progress under independent thread scheduling, since
+     *    32 slots share one header and a warp probing one bucket serializes through here.
+     *  @note The reference is a temporary rather than a named variable because a @c constexpr function
+     *    may not define a variable of non-literal type before C++23. It costs nothing - the reference
+     *    only carries the address it was handed.
+     */
+    constexpr void lock() const noexcept {
         hash_bucket_head_t const header_mask = header_mask_();
-        std::atomic_ref<std::uint64_t> atomic_header(base_t::header_ref().u64);
         while (true) {
-            future_header_.u64 = atomic_header.fetch_or(header_mask.u64, std::memory_order_acquire) & header_mask.u64;
+            future_header_.u64 =
+                atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_or(header_mask.u64, memory_order_acquire_k) &
+                header_mask.u64;
             if (future_header_.u64 != header_mask.u64) break;
         }
     }
 
     /** @brief Drives the two owned bits from @c locked_k to whatever was staged, with one @c fetch_xor. */
-    void unlock() const noexcept {
+    constexpr void unlock() const noexcept {
         // The bits we care about are now set to 11 (locked).
         // After this procedure they must be set to either 00, 01, or 10, depending on the "future header".
         hash_bucket_head_t const header_mask = header_mask_();
-        assert(std::popcount(header_mask.u64) == 2 && "only 2 bits must be set in the mask.");
+        assert(popcount(header_mask.u64) == 2 && "only 2 bits must be set in the mask.");
 
         // Let's compute the "differences" between the old locked state and the new desired state:
         // - for "freed" slots 00: 11 ^ 00 = 11
         // - for "deleted" slots 01: 11 ^ 01 = 10
         // - for "populated" slots 10: 11 ^ 10 = 01
         std::uint64_t const header_differences = header_mask.u64 ^ future_header_.u64;
-        assert(std::popcount(header_differences) >= 1 && std::popcount(header_differences) <= 2 &&
+        assert(popcount(header_differences) >= 1 && popcount(header_differences) <= 2 &&
                "only 1 or 2 bits can form the difference.");
 
         // Now if we only XOR the differences:
         // - going from "locked" state to "freed" state: 11 ^ 11 = 00
         // - going from "locked" state to "deleted" state: 11 ^ 10 = 01
         // - going from "locked" state to "populated" state: 11 ^ 01 = 10
-        std::atomic_ref<std::uint64_t> atomic_header(base_t::header_ref().u64);
-        atomic_header.fetch_xor(header_differences, std::memory_order_release);
+        atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_xor(header_differences, memory_order_release_k);
     }
 };
 
@@ -453,7 +460,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
 /**
  *  @brief Iterates over all populated slots in a bucket using optimized bit-scanning.
  *    More efficient than sequential iteration as it skips empty/deleted slots by analyzing
- *    the population bitmap with @c std::countr_zero.
+ *    the population bitmap with @c countr_zero.
  *
  *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified
  *    during iteration to point to each populated slot sequentially.
@@ -468,7 +475,7 @@ void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, c
     hash_bucket_head_t const &head = slot.header_ref();
     hash_bucket_mask_t populations_left = head.u32s.populations & ~head.u32s.deletions;
     while (populations_left) {
-        offset_t const index_in_bucket = static_cast<offset_t>(std::countr_zero(populations_left));
+        offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
         slot.slot_ = bucket_start + index_in_bucket;
         callback(slot);
         populations_left &= populations_left - 1;
@@ -494,7 +501,7 @@ bool find_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, predi
     hash_bucket_head_t const &head = slot.header_ref();
     hash_bucket_mask_t populations_left = head.u32s.populations & ~head.u32s.deletions;
     while (populations_left) {
-        offset_t const index_in_bucket = static_cast<offset_t>(std::countr_zero(populations_left));
+        offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
         slot.slot_ = bucket_start + index_in_bucket;
         if (predicate(slot)) return true;
         populations_left &= populations_left - 1;
@@ -624,7 +631,7 @@ struct hash_storage {
 
     /** @brief Points @p slot at the three regions and at @p slot_index within them. */
     template <typename slot_ref_type_>
-    void retarget_slot(slot_ref_type_ &slot, offset_t slot_index) const noexcept {
+    constexpr void retarget_slot(slot_ref_type_ &slot, offset_t slot_index) const noexcept {
         slot.keys_ = keys;
         slot.values_ = values;
         slot.headers_ = headers;

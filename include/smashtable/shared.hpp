@@ -18,6 +18,15 @@
  *
  *  Stating the tiers separately is what lets one adapter serve an ordered and an unordered core,
  *  gating the ordered surface behind the second concept rather than behind the container's name.
+ *
+ *  @section shared_device_code Reaching Device Code
+ *
+ *  Nothing here is annotated @c __host__ @c __device__. A function reachable from a kernel is marked
+ *  @c constexpr instead, which @c nvcc @c --expt-relaxed-constexpr makes callable from device code,
+ *  so one unannotated definition serves both sides and the headers stay compilable by a host compiler
+ *  that has never heard of CUDA. Marking a body @c constexpr that no argument could ever constant-
+ *  evaluate - anything touching an atomic or a placement @c new - is only ill-formed for a
+ *  non-template function, and every such body here belongs to a template.
  */
 #pragma once
 #include <cerrno>  // `ENOMEM`, `EINVAL`, and the rest of the errno space
@@ -32,6 +41,11 @@
 #include <tuple>       // `std::tuple`
 #include <type_traits> // `std::is_nothrow_invocable_v`
 #include <utility>     // `std::move`, `std::index_sequence`
+
+#if defined(__CUDACC__)
+#include <cuda/atomic>  // `cuda::atomic_ref`
+#include <cuda/std/bit> // `cuda::std::popcount`, `cuda::std::countr_zero`
+#endif
 
 namespace ashvardanian::smashtable {
 
@@ -765,7 +779,62 @@ struct versioned_equals {
 
 #pragma endregion Versioning Machinery
 
-#pragma region Numeric Helpers
+#pragma region Device Portability
+
+/**
+ *  @brief The bit intrinsics every container here counts slots with.
+ *
+ *  @warning These are aliases rather than direct calls to @c std because libstdc++'s @c <bit> is not
+ *    usable from device code. Its functions are @c constexpr, so @c --expt-relaxed-constexpr lets a
+ *    kernel call them and they compile without a diagnostic, but @c nvcc folds most of them against a
+ *    zeroed argument: with CUDA 12.8 and GCC 14, @c std::popcount over 64 bits, @c std::countr_zero
+ *    over either width and @c std::countl_zero over 64 bits each return the answer for an input of
+ *    zero. Silently wrong results, not a compile error, which is what makes the alias worth having.
+ */
+#if defined(__CUDACC__)
+
+using ::cuda::std::countl_zero;
+using ::cuda::std::countr_zero;
+using ::cuda::std::popcount;
+
+#else
+
+using std::countl_zero;
+using std::countr_zero;
+using std::popcount;
+
+#endif
+
+/**
+ *  @brief The atomic vocabulary every lock-free path in this library is written against.
+ *
+ *  Under a device compiler this resolves to @c cuda::atomic_ref at device scope, which is the widest
+ *  scope a kernel spanning several blocks needs and the only one under which a header touched from
+ *  two blocks is ordered at all. Everywhere else it is @c std::atomic_ref, and the two agree on the
+ *  operations used here - @c fetch_or, @c fetch_xor, @c fetch_add, @c fetch_sub and @c load.
+ *
+ *  The memory orders travel as named constants because the CUDA enumeration is a distinct type from
+ *  @c std::memory_order, so the call sites cannot spell either one directly.
+ */
+#if defined(__CUDACC__)
+
+template <typename scalar_type_>
+using atomic_ref = ::cuda::atomic_ref<scalar_type_, ::cuda::thread_scope_device>;
+
+inline constexpr auto memory_order_relaxed_k = ::cuda::std::memory_order_relaxed;
+inline constexpr auto memory_order_acquire_k = ::cuda::std::memory_order_acquire;
+inline constexpr auto memory_order_release_k = ::cuda::std::memory_order_release;
+
+#else
+
+template <typename scalar_type_>
+using atomic_ref = std::atomic_ref<scalar_type_>;
+
+inline constexpr auto memory_order_relaxed_k = std::memory_order_relaxed;
+inline constexpr auto memory_order_acquire_k = std::memory_order_acquire;
+inline constexpr auto memory_order_release_k = std::memory_order_release;
+
+#endif
 
 /**
  *  @brief Relaxed atomic increment of a plain counter, returning the post-increment value.
@@ -774,8 +843,8 @@ struct versioned_equals {
  *    nothing: a caller needing the data a counter describes to be visible must order that itself.
  */
 template <typename integral_type_>
-integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
-    return std::atomic_ref<integral_type_>(counter).fetch_add(addend, std::memory_order_relaxed) + addend;
+constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
+    return atomic_ref<integral_type_>(counter).fetch_add(addend, memory_order_relaxed_k) + addend;
 }
 
 /**
@@ -783,15 +852,19 @@ integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) 
  *    Needed wherever a plain read would race an @c atomic_add_fetch on the same field.
  */
 template <typename integral_type_>
-integral_type_ atomic_load(integral_type_ const &counter) noexcept {
-    return std::atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(std::memory_order_relaxed);
+constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
+    return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(memory_order_relaxed_k);
 }
 
 /** @brief Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
 template <typename integral_type_>
-integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahend) noexcept {
-    return std::atomic_ref<integral_type_>(counter).fetch_sub(subtrahend, std::memory_order_relaxed) - subtrahend;
+constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahend) noexcept {
+    return atomic_ref<integral_type_>(counter).fetch_sub(subtrahend, memory_order_relaxed_k) - subtrahend;
 }
+
+#pragma endregion Device Portability
+
+#pragma region Numeric Helpers
 
 /**
  *  @brief Rounds up an integer to the next power of two.
@@ -801,7 +874,7 @@ integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahe
  */
 constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
     if (x <= 1) return x;
-    return std::size_t {1} << (64 - std::countl_zero(x - 1));
+    return std::size_t {1} << (64 - countl_zero(x - 1));
 }
 
 /**

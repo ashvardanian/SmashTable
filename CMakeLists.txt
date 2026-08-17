@@ -11,6 +11,8 @@
 #   -D SMASHTABLE_BUILD_TESTS=<ON|OFF>                  (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_INSTALL=<ON|OFF>                      (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_WERROR=<ON|OFF>                       (default: OFF)
+#   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: ON as the main project, else OFF)
+#   -D SMASHTABLE_CUDA_ARCHITECTURES=<list>             (default: native; use "90;100" for Hopper and Blackwell)
 #
 # Targets:
 #
@@ -26,6 +28,9 @@
 #     `scripts/test_unordered.hpp` instead, including the threaded ones.
 #   * smashtable_test_transactional_hash - the transactional store over the open-addressed table,
 #     running only the point-access suites an unordered core can answer.
+#   * smashtable_test_concurrent_cuda - the pinned lock-free table driven from kernels and from the
+#     host over one managed allocation. Built only where `nvcc` is visible, and skipping at runtime
+#     when no device is, so a GPU-less machine still configures and tests green.
 #
 # The Python extension is not built here: `setup.py` compiles the translation units under
 # `python/smashtable/` directly, as a wheel build has no use for the test and install machinery below.
@@ -114,6 +119,11 @@ endif ()
 
 # Tests and examples
 option(SMASHTABLE_BUILD_TESTS "Build tests and examples" ${SMASHTABLE_IS_MAIN_PROJECT})
+option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" ${SMASHTABLE_IS_MAIN_PROJECT})
+set(SMASHTABLE_CUDA_ARCHITECTURES
+    "native"
+    CACHE STRING "Device architectures to compile for; use 90;100 to cover Hopper and Blackwell"
+)
 
 if (SMASHTABLE_BUILD_TESTS)
     add_executable(smashtable_example example.cpp)
@@ -144,6 +154,32 @@ if (SMASHTABLE_BUILD_TESTS)
     target_include_directories(smashtable_test_transactional_hash PRIVATE scripts/)
     target_link_libraries(smashtable_test_transactional_hash PRIVATE smashtable::smashtable smashtable_warnings)
 
+    # The CUDA leg is opt-out rather than opt-in, but only materializes where a device compiler exists.
+    # `check_language` finding one says nothing about a device being present, so the binary itself
+    # skips when `cudaGetDeviceCount` comes back empty - that is what keeps a GPU-less runner green.
+    include(CheckLanguage)
+    check_language(CUDA)
+
+    if (SMASHTABLE_BUILD_CUDA AND CMAKE_CUDA_COMPILER)
+        enable_language(CUDA)
+        set(CMAKE_CUDA_STANDARD 20)
+        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+
+        add_executable(smashtable_test_concurrent_cuda scripts/test_concurrent_cuda.cu)
+        set_target_properties(
+            smashtable_test_concurrent_cuda PROPERTIES CUDA_ARCHITECTURES "${SMASHTABLE_CUDA_ARCHITECTURES}"
+        )
+        target_include_directories(smashtable_test_concurrent_cuda PRIVATE scripts/)
+        target_link_libraries(smashtable_test_concurrent_cuda PRIVATE smashtable::smashtable)
+
+        # `--expt-relaxed-constexpr` is what makes the library's `constexpr` surface device-callable;
+        # without it every probe, lock and unlock is a host function a kernel may not call.
+        target_compile_options(
+            smashtable_test_concurrent_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+        )
+        message(STATUS "smashtable: CUDA test enabled for architectures ${SMASHTABLE_CUDA_ARCHITECTURES}")
+    endif ()
+
     enable_testing()
     add_test(NAME test_std_set COMMAND smashtable_test_std_set)
     add_test(NAME test_avl_tree COMMAND smashtable_test_avl_tree)
@@ -151,6 +187,9 @@ if (SMASHTABLE_BUILD_TESTS)
     add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
     add_test(NAME test_hash_table COMMAND smashtable_test_hash_table)
     add_test(NAME test_transactional_hash COMMAND smashtable_test_transactional_hash)
+    if (TARGET smashtable_test_concurrent_cuda)
+        add_test(NAME test_concurrent_cuda COMMAND smashtable_test_concurrent_cuda)
+    endif ()
 endif ()
 
 option(SMASHTABLE_INSTALL "Install headers and CMake package files" ${SMASHTABLE_IS_MAIN_PROJECT})

@@ -27,9 +27,18 @@
  *  @section concurrent_hash_table_gpu Portability to GPUs
  *
  *  The slot protocol underneath is one @c fetch_or to take a slot and one @c fetch_xor to release it,
- *  over a 64-bit bucket header shared by 32 slots - one warp. Those map directly onto CUDA's
- *  @c atomicOr and @c atomicXor, and the fixed capacity is the same constraint device code wants
- *  anyway, so this type is the one that ports.
+ *  over a 64-bit bucket header shared by 32 slots - one warp. Those reach a device through the
+ *  @c atomic_ref alias in @c shared.hpp, and the fixed capacity is the same constraint device code
+ *  wants anyway, so this type is the one that ports.
+ *
+ *  A kernel calls this table unchanged when built with @c nvcc @c --expt-relaxed-constexpr, which is
+ *  what makes the @c constexpr surface here device-callable. What the caller must supply is a hasher,
+ *  an equality and an allocator that are themselves device-usable: the defaults reach @c std::hash
+ *  and @c std::allocator, neither of which exists on a device. The table object and its storage have
+ *  to sit in memory the device can address, which in practice means @c cudaMallocManaged.
+ *
+ *  Independent thread scheduling is required, so @c sm_70 and newer. A warp probing one bucket
+ *  serializes through @c lock, and without it the spin livelocks the warp.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -147,18 +156,18 @@ class concurrent_hash_table {
      *  @brief Live elements. Read atomically but relaxed, so it may lag a concurrent writer - the
      *    count is a statistic here, and other threads are moving it while this returns.
      */
-    offset_t size() const noexcept { return atomic_load(storage_.populated_count); }
-    bool empty() const noexcept { return size() == 0; }
+    constexpr offset_t size() const noexcept { return atomic_load(storage_.populated_count); }
+    constexpr bool empty() const noexcept { return size() == 0; }
 
     /** @brief Slots this table will never exceed, since it cannot grow. */
-    offset_t capacity() const noexcept { return std::max(storage_.growth_threshold, size()); }
-    offset_t slots_count() const noexcept { return storage_.slots_count; }
+    constexpr offset_t capacity() const noexcept { return std::max(storage_.growth_threshold, size()); }
+    constexpr offset_t slots_count() const noexcept { return storage_.slots_count; }
 
     /**
      *  @brief Tombstones left by @c erase, which only ever grow while the table is pinned.
      *    Compaction needs a rehash, so this is the signal to hand the storage to a growable table.
      */
-    offset_t deleted_count() const noexcept { return atomic_load(storage_.deleted_count); }
+    constexpr offset_t deleted_count() const noexcept { return atomic_load(storage_.deleted_count); }
 
     hasher hash_function() const noexcept { return hasher_; }
     key_equal key_eq() const noexcept { return equals_; }
@@ -173,13 +182,13 @@ class concurrent_hash_table {
      *  @return Whether the key was present, and therefore whether @p callback ran.
      */
     template <typename comparable_key_type_, typename callback_type_>
-    bool find(comparable_key_type_ &&wanted, callback_type_ &&callback) const noexcept {
+    constexpr bool find(comparable_key_type_ &&wanted, callback_type_ &&callback) const noexcept {
         return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted),
                                                 std::forward<callback_type_>(callback));
     }
 
     template <typename comparable_key_type_>
-    bool contains(comparable_key_type_ &&wanted) const noexcept {
+    constexpr bool contains(comparable_key_type_ &&wanted) const noexcept {
         return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted), no_op_fn_t {});
     }
 
@@ -201,7 +210,7 @@ class concurrent_hash_table {
      *  @note A pinned table can genuinely fill up, so this reports rather than asserts.
      */
     template <typename convertible_key_type_, typename convertible_value_type_>
-    [[nodiscard]] status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
+    [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
         static_assert(has_values_k, "A two-argument emplace is only available for maps");
         if (size() + deleted_count() >= slots_count()) return status_t {out_of_memory_heap_k};
         probe_to_upsert_(
@@ -221,7 +230,7 @@ class concurrent_hash_table {
      *  @return @c success_k, or @c out_of_memory_heap_k when every slot is taken.
      */
     template <typename convertible_key_type_>
-    [[nodiscard]] status_t emplace(convertible_key_type_ &&key) noexcept {
+    [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
         static_assert(!has_values_k, "A one-argument emplace is only available for sets");
         if (size() + deleted_count() >= slots_count()) return status_t {out_of_memory_heap_k};
         probe_to_upsert_(
@@ -238,7 +247,7 @@ class concurrent_hash_table {
      *  @return Whether the key was there.
      */
     template <typename comparable_key_type_, typename convertible_value_type_>
-    bool update(comparable_key_type_ &&key, convertible_value_type_ &&new_value) noexcept {
+    constexpr bool update(comparable_key_type_ &&key, convertible_value_type_ &&new_value) noexcept {
         static_assert(has_values_k, "update() is only available for maps, not sets");
         return probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key),
                                           [&](slot_ref_t const &slot) noexcept {
@@ -251,7 +260,7 @@ class concurrent_hash_table {
      *  @return Whether the key was there.
      */
     template <typename comparable_key_type_>
-    bool erase(comparable_key_type_ &&key) noexcept {
+    constexpr bool erase(comparable_key_type_ &&key) noexcept {
         return probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key),
                                           [&](slot_ref_t const &slot) noexcept {
                                               if constexpr (destruct_keys_k) slot.key_ref().~key_t();
@@ -273,7 +282,7 @@ class concurrent_hash_table {
      *  @return Whether a match was found. A free slot ends the sequence, a tombstone continues it.
      */
     template <typename slot_ref_type_, typename comparable_key_type_, typename callback_type_>
-    bool probe_to_find_(comparable_key_type_ &&wanted, callback_type_ &&callback) const noexcept {
+    constexpr bool probe_to_find_(comparable_key_type_ &&wanted, callback_type_ &&callback) const noexcept {
 
         if (!storage_.slots_count) [[unlikely]]
             return false;
@@ -320,8 +329,8 @@ class concurrent_hash_table {
      *    claim the slot this one intends to reuse.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_>
-    void probe_to_upsert_(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
-                          callback_equal_type_ &&call_equal) noexcept {
+    constexpr void probe_to_upsert_(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
+                                    callback_equal_type_ &&call_equal) noexcept {
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t const initial_offset = hasher_(wanted) & offset_mask;

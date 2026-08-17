@@ -136,7 +136,7 @@ class partitioned_collection {
                     std::size_t const bit = part_index % bits_per_word_k;
                     left &= bit == 0 ? ~std::uint64_t {0} : ~std::uint64_t {0} << bit;
                 }
-                if (left) return word_index * bits_per_word_k + static_cast<std::size_t>(std::countr_zero(left));
+                if (left) return word_index * bits_per_word_k + static_cast<std::size_t>(countr_zero(left));
             }
             return parts_k;
         }
