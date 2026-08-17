@@ -916,10 +916,13 @@ class transactional_std_store {
      *  so we need a place to return all the objects, if the operation fails.
      *  With R-Value, the batch would be lost.
      *
-     *  @param[inout] sources Collection of entries to import.
-     *  @return Can fail, if out of memory.
+     *  The import itself cannot fail: every node was already allocated into @p sources, and splicing
+     *  it across only relinks pointers. Whatever can run out of memory has done so by now, which is
+     *  what makes the all-or-nothing claim above hold.
+     *
+     *  @param[inout] sources Collection of entries to import, left empty.
      */
-    [[nodiscard]] status_t insert_or_assign_(entry_set_t &sources) noexcept {
+    void insert_or_assign_(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
             bool should_compact = source->publication == publication_t::published_k;
             visible_count_ += source->publication == publication_t::published_k;
@@ -932,7 +935,6 @@ class transactional_std_store {
                 erase_visible_(range_start, range_end);
             }
         }
-        return success_k;
     }
 
 #pragma endregion Type Definitions
@@ -1193,19 +1195,20 @@ class transactional_std_store {
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         generation_t generation = new_generation_();
-        expected<entry_set_t> batch;
-        auto batch_construction_status = invoke_safely([&]() {
-            batch = entry_set_t {};
+
+        // Staging and importing share one guarded scope, so the batch never has to outlive it and
+        // never has to be handed to `expected`, whose values must move without throwing - something
+        // only libstdc++ and libc++ promise for `std::set`.
+        return invoke_safely([&]() {
+            entry_set_t batch;
             for (; begin != end; ++begin) {
-                auto iterator = batch->emplace(*begin).first;
+                auto iterator = batch.emplace(*begin).first;
                 const_cast<generation_t &>(iterator->generation) = generation;
                 const_cast<publication_t &>(iterator->publication) = publication_t::published_k;
                 const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
             }
+            insert_or_assign_(batch);
         });
-        if (failed(batch_construction_status)) return batch_construction_status;
-
-        return insert_or_assign_(*batch);
     }
 
     /**
