@@ -8,6 +8,7 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 
 #include <smashtable/basic_hash_table.hpp>
+#include <smashtable/concurrent_hash_table.hpp>
 
 #include "test.hpp"
 #include "test_unordered.hpp"
@@ -138,16 +139,6 @@ static void unordered_ops_load_factor_consistency() {
     test_unordered_load_factor_consistency<string_map_t>(1000);
 }
 
-/** @brief Tests that the return_new_size_t tag reports the post-insertion size */
-static void unordered_ops_return_new_size_tag() {
-    test_unordered_return_new_size_tag<trivial_set_t>();
-    test_unordered_return_new_size_tag<strong_set_t>();
-    test_unordered_return_new_size_tag<trivial_map_t>();
-    test_unordered_return_new_size_tag<guarded_map_t>();
-    test_unordered_return_new_size_tag<string_set_t>();
-    test_unordered_return_new_size_tag<string_map_t>();
-}
-
 /** @brief Tests lookup by string_view, which only the string-keyed configurations support */
 static void unordered_ops_heterogeneous_lookups() {
     test_unordered_heterogeneous_string_view_lookup<string_set_t>();
@@ -158,14 +149,14 @@ static void unordered_ops_heterogeneous_lookups() {
 
 #pragma region Concurrency Tests
 
-/** @brief Tests concurrent emplace_atomic, then concurrent find_atomic and contains_atomic */
+/** @brief Tests concurrent emplace on a pinned table, then concurrent find and contains */
 static void unordered_concurrency_emplace_and_find() {
     test_unordered_concurrent_emplace_and_find<trivial_map_t>();
     test_unordered_concurrent_emplace_and_find<guarded_map_t>();
     test_unordered_concurrent_emplace_and_find<string_map_t>(500);
 }
 
-/** @brief Tests concurrent update_atomic over existing keys, then concurrent erase_atomic */
+/** @brief Tests concurrent update over existing keys, then concurrent erase */
 static void unordered_concurrency_update_and_erase() {
     test_unordered_concurrent_update_and_erase<trivial_map_t>();
     test_unordered_concurrent_update_and_erase<guarded_map_t>();
@@ -187,7 +178,6 @@ int main() {
     failures += run_test(filter, "unordered_ops.moves_and_swaps", unordered_ops_moves_and_swaps);
     failures += run_test(filter, "unordered_ops.capacity_management", unordered_ops_capacity_management);
     failures += run_test(filter, "unordered_ops.load_factor_consistency", unordered_ops_load_factor_consistency);
-    failures += run_test(filter, "unordered_ops.return_new_size_tag", unordered_ops_return_new_size_tag);
     failures += run_test(filter, "unordered_ops.heterogeneous_lookups", unordered_ops_heterogeneous_lookups);
 
     failures += run_test(filter, "unordered_concurrency.emplace_and_find", unordered_concurrency_emplace_and_find);

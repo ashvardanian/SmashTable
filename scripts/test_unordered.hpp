@@ -38,6 +38,9 @@
 #include <unordered_map> // `std::unordered_map`
 #include <vector>        // `std::vector`
 
+#include <smashtable/basic_hash_table.hpp>
+#include <smashtable/concurrent_hash_table.hpp>
+
 #include "test_basic.hpp"
 
 namespace ashvardanian::smashtable::scripts {
@@ -418,10 +421,15 @@ void test_unordered_capacity_management(std::size_t size = 800) {
 
     using container_t = container_type_;
 
+    using reserve_result_t = typename container_t::reserve_result_t;
+
     container_t container;
-    st_verify_((container.reserve(size)) && "the first reserve on an empty table must allocate");
-    st_verify_(!(container.reserve(size)) && "a second reserve for the same count must be a no-op");
-    st_verify_(!(container.reserve(size / 2)) && "shrinking through reserve must be a no-op");
+    st_verify_((container.reserve(size) == reserve_result_t::relayouted_k) &&
+               "the first reserve on an empty table must allocate");
+    st_verify_((container.reserve(size) == reserve_result_t::unchanged_k) &&
+               "a second reserve for the same count must be a no-op");
+    st_verify_((container.reserve(size / 2) == reserve_result_t::unchanged_k) &&
+               "shrinking through reserve must be a no-op");
     auto const reserved_buckets = container.bucket_count();
     st_verify_((reserved_buckets) > (0u));
 
@@ -494,40 +502,6 @@ void test_unordered_load_factor_consistency(std::size_t size = 3000) {
     st_verify_eq_(container.slots_count().raw, slots_before_erasures);
 }
 
-/**
- *  @brief Tests that @c return_new_size_t reports the post-insertion size into its destination.
- *    An overwrite is covered too: the size does not move, but the destination is still written,
- *    which is what lets a caller read the count without a separate @c size() call either way.
- */
-template <typename container_type_>
-void test_unordered_return_new_size_tag(std::size_t size = 300) {
-
-    using container_t = container_type_;
-
-    container_t container;
-    for (std::size_t identifier = 0; identifier < size; ++identifier) {
-        std::size_t reported = std::numeric_limits<std::size_t>::max();
-        unordered_emplace(container, identifier, return_new_size_t {reported});
-        st_verify_eq_(reported, container.size());
-        st_verify_eq_(reported, identifier + 1);
-    }
-
-    // An overwrite leaves the size alone, and still reports it.
-    std::size_t const settled = container.size();
-    for (std::size_t identifier = 0; identifier < size; ++identifier) {
-        std::size_t reported = std::numeric_limits<std::size_t>::max();
-        unordered_emplace(container, identifier, return_new_size_t {reported});
-        st_verify_((reported != std::numeric_limits<std::size_t>::max()) &&
-                   "an overwrite must still write the destination");
-        st_verify_eq_(reported, settled);
-        st_verify_eq_(container.size(), settled);
-    }
-
-    // A tag without a destination is accepted and simply discards the count.
-    unordered_emplace(container, size, return_new_size_t {});
-    st_verify_eq_(container.size(), size + 1);
-}
-
 #pragma endregion Basic Unordered Operations
 
 #pragma region Heterogeneous Lookup
@@ -581,9 +555,22 @@ void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
 /** @brief The thread count the concurrent suites use, fixed so a failure reproduces. */
 inline constexpr std::size_t unordered_threads_count_k = 4;
 
+/** @brief The pinned table matching a growable one, since neither type names the other. */
+template <typename container_type_>
+struct unordered_pinned_of;
+
+template <typename element_type_, typename hasher_type_, typename equals_type_, typename allocator_type_>
+struct unordered_pinned_of<basic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>> {
+    using type = concurrent_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>;
+};
+
+/** @brief The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */
+template <typename container_type_>
+using unordered_pinned_t = typename unordered_pinned_of<container_type_>::type;
+
 /**
- *  @brief Tests concurrent @c emplace_atomic followed by concurrent @c find_atomic and
- *    @c contains_atomic, with each thread owning a disjoint range of keys.
+ *  @brief Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen
+ *    table, with each thread owning a disjoint range of keys.
  */
 template <typename container_type_>
 void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
@@ -595,9 +582,10 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 
     std::size_t const total = unordered_threads_count_k * per_thread;
     auto allocated = container_t::make(total * 2);
-    st_verify_((allocated) && "the atomic path needs a table reserved up front");
-    container_t container = *std::move(allocated);
-    auto const buckets_before = container.bucket_count();
+    st_verify_((allocated) && "the growable table must build");
+    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    st_verify_((container.capacity() >= total) && "the pinned table must hold what the writers will store");
+    auto const slots_before = container.slots_count();
 
     std::vector<std::thread> threads;
     threads.reserve(unordered_threads_count_k);
@@ -605,14 +593,14 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
         threads.emplace_back([&container, thread_index, per_thread]() noexcept {
             for (std::size_t offset = 0; offset < per_thread; ++offset) {
                 std::size_t const identifier = thread_index * per_thread + offset;
-                container.emplace_atomic(unordered_key_from<key_t>(identifier),
-                                         unordered_value_from<mapped_t>(identifier));
+                [[maybe_unused]] status_t const stored = container.emplace(unordered_key_from<key_t>(identifier),
+                                                                           unordered_value_from<mapped_t>(identifier));
             }
         });
     for (auto &thread : threads) thread.join();
 
     st_verify_eq_(container.size(), total);
-    st_verify_eq_(container.bucket_count(), buckets_before);
+    st_verify_eq_(container.slots_count(), slots_before);
 
     // The readers run over the same disjoint ranges, so a miss is a lost element, not a race.
     std::atomic<std::size_t> found_by_contains {0};
@@ -625,8 +613,8 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
             for (std::size_t offset = 0; offset < per_thread; ++offset) {
                 std::size_t const identifier = thread_index * per_thread + offset;
                 auto const key = unordered_key_from<key_t>(identifier);
-                if (container.contains_atomic(key)) ++contains_hits;
-                bool const reached = container.find_atomic(key, [&](auto const &address) noexcept {
+                if (container.contains(key)) ++contains_hits;
+                bool const reached = container.find(key, [&](auto const &address) noexcept {
                     if (!(address.value() == unordered_value_from<mapped_t>(identifier))) ++mismatches;
                 });
                 callback_hits += reached;
@@ -649,8 +637,11 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 }
 
 /**
- *  @brief Tests concurrent @c update_atomic over pre-populated keys and concurrent @c erase_atomic
- *    afterwards, each thread again confined to its own range.
+ *  @brief Tests concurrent @c update over pre-populated keys and concurrent @c erase afterwards,
+ *    each thread again confined to its own range.
+ *
+ *  The table is filled while it is still growable, pinned for the concurrent phases, and handed back
+ *  to a growable table to verify - the whole lifecycle @c release and @c adopt exist to express.
  */
 template <typename container_type_>
 void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
@@ -662,11 +653,14 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 
     std::size_t const total = unordered_threads_count_k * per_thread;
     auto allocated = container_t::make(total * 2);
-    st_verify_((allocated) && "the atomic path needs a table reserved up front");
-    container_t container = *std::move(allocated);
+    st_verify_((allocated) && "the growable table must build");
+    container_t growable = *std::move(allocated);
     for (std::size_t identifier = 0; identifier < total; ++identifier)
-        unordered_emplace(container, identifier, assume_reserved_t {});
-    st_verify_eq_(container.size(), total);
+        unordered_emplace(growable, identifier, assume_reserved_t {});
+    st_verify_eq_(growable.size(), total);
+
+    auto container = unordered_pinned_t<container_t>::adopt(std::move(growable).release());
+    st_verify_((container.capacity() >= total) && "the pinned table must hold every key it was filled with");
 
     // Every key already exists, so every update must land.
     std::atomic<std::size_t> updates_landed {0};
@@ -677,8 +671,8 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
             std::size_t landed = 0;
             for (std::size_t offset = 0; offset < per_thread; ++offset) {
                 std::size_t const identifier = thread_index * per_thread + offset;
-                landed += container.update_atomic(unordered_key_from<key_t>(identifier),
-                                                  unordered_value_from<mapped_t>(identifier + total));
+                landed += container.update(unordered_key_from<key_t>(identifier),
+                                           unordered_value_from<mapped_t>(identifier + total));
             }
             updates_landed += landed;
         });
@@ -686,8 +680,13 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 
     st_verify_eq_(updates_landed.load(), total);
     st_verify_eq_(container.size(), total);
-    for (std::size_t identifier = 0; identifier < total; ++identifier)
-        unordered_verify_present(container, identifier, identifier + total);
+    for (std::size_t identifier = 0; identifier < total; ++identifier) {
+        bool const reached = container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
+            st_verify_((slot.value() == unordered_value_from<mapped_t>(identifier + total)) &&
+                       "every update must be visible once the writers have joined");
+        });
+        st_verify_((reached) && "an updated key must still be present");
+    }
 
     // Half of each thread's range is retired, and a missing key must never report an erasure.
     std::atomic<std::size_t> erasures_landed {0};
@@ -698,8 +697,8 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
             std::size_t landed = 0, phantoms = 0;
             for (std::size_t offset = 0; offset < per_thread; offset += 2) {
                 std::size_t const identifier = thread_index * per_thread + offset;
-                landed += container.erase_atomic(unordered_key_from<key_t>(identifier));
-                phantoms += container.erase_atomic(unordered_key_from<key_t>(identifier + total));
+                landed += container.erase(unordered_key_from<key_t>(identifier));
+                phantoms += container.erase(unordered_key_from<key_t>(identifier + total));
             }
             erasures_landed += landed;
             phantom_erasures += phantoms;
@@ -709,11 +708,16 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
     st_verify_eq_(erasures_landed.load(), total / 2);
     st_verify_eq_(phantom_erasures.load(), 0u);
     st_verify_eq_(container.size(), total - total / 2);
+    st_verify_eq_(container.deleted_count(), total / 2);
 
+    // Handing the allocation back gives the iterable surface back, so the survivors are checked the
+    // same way every other suite checks them.
+    container_t compacted = container_t::adopt(std::move(container).release());
+    st_verify_eq_(compacted.size(), total - total / 2);
     for (std::size_t identifier = 0; identifier < total; ++identifier) {
         bool const survived = (identifier % per_thread) % 2 == 1;
-        if (survived) unordered_verify_present(container, identifier, identifier + total);
-        else unordered_verify_absent(container, identifier);
+        if (survived) unordered_verify_present(compacted, identifier, identifier + total);
+        else unordered_verify_absent(compacted, identifier);
     }
 }
 

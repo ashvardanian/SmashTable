@@ -275,10 +275,15 @@ Terminology first, since both words are overloaded:
 Headers group as:
 
 ```bash
-  basic_*               → Core structures, no transactions
+  basic_*               → Core structures. Own memory, no transactions, one thread.
     ├─ basic_vector<T, Alloc>
     ├─ basic_avl_tree<T, Comparator, Alloc>
-    └─ basic_wb_tree<T, Comparator, Alloc>        # also `rank` and `select`
+    ├─ basic_wb_tree<T, Comparator, Alloc>        # also `rank` and `select`
+    └─ basic_hash_table<T, Hash, Equals, Alloc>   # grows, iterates, rehashes
+
+  concurrent_*          → Pinned cores. Fixed capacity, lock-free, callback reads.
+    └─ concurrent_hash_table<T, Hash, Equals, Alloc>
+       ↑ ::adopt(std::move(growable).release())   ↓ ::adopt(std::move(pinned).release())
 
   transactional_*       → 2-phase commit, watch and CAS
     ├─ transactional_binary_tree<Tree>            # generic over both trees
@@ -293,6 +298,7 @@ Both wrappers serialize whole __transactions__, so the unit of exclusion is a tw
 `locked_collection` holds one lock across the whole commit, so whatever its inner store promises survives intact.
 `partitioned_collection` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied — above a single partition only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives.
 Every partition walk acquires in ascending index order, which is what keeps two of them from waiting on each other.
+`concurrent_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_collection`.
 
 `status_t` reports `out_of_memory_heap_k == ENOMEM`, `invalid_argument_k == EINVAL`, `key_not_found_k == ENOENT` and others, and is `[[nodiscard]]` on every mutating API.
 
@@ -349,12 +355,31 @@ Keys and values live in separate regions, so a lookup that only compares keys ne
 Thirty-two slots share one 64-bit header holding two parallel bitmasks, encoding free, deleted, populated and locked in two bits each.
 Sixty-four bits is the widest atomic every target supports, which is what lets a whole bucket header move in one instruction.
 
-Non-allocating operations have lock-free variants — `emplace_atomic()`, `find_atomic()`, `erase_atomic()`, `update_atomic()` — reached either directly or through the `threadsafe_t` tag.
-They take a slot by setting both its bits with a `fetch_or` and release it with a `fetch_xor` of the difference to the desired state, so neither path needs a compare-and-swap loop.
-These require a prior `reserve()`, because a reallocation cannot happen underneath a concurrent reader, and they must not be mixed with the non-atomic operations on the same table.
+Growing repoints the key, value and header regions that every live slot reference has cached, so a table that can grow can never be read concurrently.
+That used to be a sentence here that nothing enforced.
+It is now two types, neither of which includes the other's header.
+`basic_hash_table` grows, iterates and rehashes; `concurrent_hash_table` is pinned and lock-free.
+What passes between them is the allocation itself — a `hash_storage` — so the hand-off is a move of a value rather than one table reaching into the other:
+
+```cpp
+_ = growable.reserve(1u << 20);                                          // pin the capacity first
+auto pinned = concurrent_hash_map<key_t, value_t>::adopt(std::move(growable).release());
+
+pinned.find(key, [](auto const &slot) noexcept { use(slot.value()); });
+if (!pinned.emplace(key, value)) report_full();                          // a pinned table can fill up
+
+auto compacted = hash_map<key_t, value_t>::adopt(std::move(pinned).release());   // iterators return
+```
+
+Every operation on the pinned table is lock-free: it takes a slot by setting both its bits with a `fetch_or` and releases it with a `fetch_xor` of the difference to the desired state, so neither path needs a compare-and-swap loop.
+Reads take a callback rather than returning a reference or an iterator, since both would dangle the moment another thread erased the slot.
+Tombstones only accumulate while pinned, because compaction needs a rehash — `deleted_count()` is what says it is time to hand the storage back.
+
+Readers take the slot lock like writers do.
+A reader that merely loaded the header would be unsound, and measurably so: the two bits per slot cannot distinguish "untouched" from "locked, rewritten and unlocked", because a completed write cycle restores exactly the bits the reader first saw.
+Adding a per-bucket version counter would fix it and would cost half the slots per bucket, which is not worth breaking the one-warp-per-bucket geometry for.
 
 Order-dependent operations are absent by construction: there is no `range`, `erase_range`, `lower_bound` or `select`.
-The transactional wrappers do not yet accept this container — that needs the version-chain storage described in the roadmap, since the current transactional layer keys its entries on `(identifier, generation)` and enumerates a key's versions with an ordered range scan.
 
 The small-string specialization mentioned in the header is a design note, not shipped behaviour.
 

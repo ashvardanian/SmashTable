@@ -198,17 +198,6 @@ copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
 #pragma region Tag Dispatch Types
 
 /**
- *  @brief Tag to enable thread-safe atomic operations.
- *    Similar to @c std::execution::par for parallel algorithms.
- *    Typically, requires @c assume_reserved (pre-allocated capacity).
- *  @see https://en.cppreference.com/w/cpp/algorithm/execution_policy_tag_t
- */
-struct threadsafe_t {
-    explicit threadsafe_t() = default;
-};
-inline constexpr threadsafe_t threadsafe {};
-
-/**
  *  @brief Tag to assume capacity is pre-allocated, skip null checks.
  *    Similar to @c std::adopt_lock for assuming preconditions are met.
  *  @see https://en.cppreference.com/w/cpp/thread/lock_tag_t
@@ -239,37 +228,6 @@ struct assume_sorted_t {
 inline constexpr assume_sorted_t assume_sorted {};
 
 /**
- *  @brief Tag to terminate search on first slot match without probing.
- *    Optimization for when exact probe sequence doesn't matter.
- */
-struct first_match_t {
-    explicit first_match_t() = default;
-};
-inline constexpr first_match_t first_match {};
-
-/**
- *  @brief Tag to request iterator position in return value.
- *    Similar to @c std::allocator_arg for controlling return behavior.
- *  @see https://en.cppreference.com/w/cpp/memory/allocator_arg_t
- */
-struct return_position_t {
-    explicit return_position_t() = default;
-};
-inline constexpr return_position_t return_position {};
-
-/**
- *  @brief Tag to atomically retrieve new size after modification.
- *    Carries the destination the updated container size is written to; a default-constructed
- *    tag names no destination and the size is computed but discarded.
- */
-struct return_new_size_t {
-    std::size_t *out {nullptr};
-    explicit return_new_size_t() = default;
-    explicit return_new_size_t(std::size_t &destination) noexcept : out(&destination) {}
-};
-inline constexpr return_new_size_t return_new_size {};
-
-/**
  *  @brief Compile-time check if a type appears in parameter pack.
  *  @tparam needle_type_ Type to search for.
  *  @tparam haystack_types_ Parameter pack to search in.
@@ -278,24 +236,6 @@ inline constexpr return_new_size_t return_new_size {};
 template <typename needle_type_, typename... haystack_types_>
 consteval bool contains_type() {
     return (std::is_same_v<needle_type_, haystack_types_> || ...);
-}
-
-/**
- *  @brief Locates a tag of a given type inside a parameter pack, addressing the caller's own object.
- *  @tparam needle_type_ Type to search for.
- *  @tparam haystack_types_ Parameter pack to search in.
- *  @return Pointer to the last matching argument, or @c nullptr if the pack holds no such type.
- *  @note Addressing the caller's object rather than yielding a copy is what lets a tag carrying an
- *    out-parameter be written through.
- */
-template <typename needle_type_, typename... haystack_types_>
-needle_type_ *find_tag(haystack_types_ &...args) noexcept {
-    needle_type_ *found = nullptr;
-    auto visit = [&](auto &arg) noexcept {
-        if constexpr (std::is_same_v<std::remove_cvref_t<decltype(arg)>, needle_type_>) found = &arg;
-    };
-    (visit(args), ...);
-    return found;
 }
 
 #pragma endregion Tag Dispatch Types
@@ -777,11 +717,22 @@ struct versioned_equals {
 
 /**
  *  @brief Relaxed atomic increment of a plain counter, returning the post-increment value.
- *    Relaxed ordering suffices because these counters are statistics, never synchronization.
+ *    Relaxed suffices for a counter read by value - a statistic, or a version stamp compared for
+ *    identity and recency - because one location has a total modification order. It publishes
+ *    nothing: a caller needing the data a counter describes to be visible must order that itself.
  */
 template <typename integral_type_>
 integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
     return std::atomic_ref<integral_type_>(counter).fetch_add(addend, std::memory_order_relaxed) + addend;
+}
+
+/**
+ *  @brief Relaxed atomic read of a counter other threads may be incrementing.
+ *    Needed wherever a plain read would race an @c atomic_add_fetch on the same field.
+ */
+template <typename integral_type_>
+integral_type_ atomic_load(integral_type_ const &counter) noexcept {
+    return std::atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(std::memory_order_relaxed);
 }
 
 /** @brief Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
