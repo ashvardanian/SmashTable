@@ -18,12 +18,15 @@
 #     `cxx_std_20`. Spelled the same through `add_subdirectory` and `find_package(smashtable)`.
 #   * smashtable_warnings - INTERFACE flags for our own tests and example, never for consumers.
 #   * smashtable_example - compile-time tour instantiating the shared API over every container family.
-#   * smashtable_test_std_set, _avl_tree, _wb_tree, _partitioned - one binary per container family
-#     running the same suites, so a behavioural difference between families surfaces as a failure.
-#     Registered with CTest under the shorter `test_*` names, and each honors `SMASHTABLE_FILTER`.
+#   * smashtable_test_std_set, _avl_tree, _wb_tree, _partitioned - one binary per ordered container
+#     family running the same suites, so a behavioural difference between families surfaces as a
+#     failure. Registered with CTest under the shorter `test_*` names, and each honors
+#     `SMASHTABLE_FILTER`.
+#   * smashtable_test_hash_table - the unordered family, running the hash-specific suites of
+#     `scripts/test_unordered.hpp` instead, including the threaded ones.
 #
-# The Python extension is not built here: `setup.py` compiles `python/smashtable.cpp` directly, as a
-# wheel build has no use for the test and install machinery below.
+# The Python extension is not built here: `setup.py` compiles the translation units under
+# `python/smashtable/` directly, as a wheel build has no use for the test and install machinery below.
 cmake_minimum_required(VERSION 3.21)
 project(
     smashtable
@@ -131,11 +134,16 @@ if (SMASHTABLE_BUILD_TESTS)
     target_include_directories(smashtable_test_partitioned PRIVATE scripts/)
     target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::smashtable smashtable_warnings)
 
+    add_executable(smashtable_test_hash_table scripts/test_hash_table.cpp)
+    target_include_directories(smashtable_test_hash_table PRIVATE scripts/)
+    target_link_libraries(smashtable_test_hash_table PRIVATE smashtable::smashtable smashtable_warnings)
+
     enable_testing()
     add_test(NAME test_std_set COMMAND smashtable_test_std_set)
     add_test(NAME test_avl_tree COMMAND smashtable_test_avl_tree)
     add_test(NAME test_wb_tree COMMAND smashtable_test_wb_tree)
     add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
+    add_test(NAME test_hash_table COMMAND smashtable_test_hash_table)
 endif ()
 
 option(SMASHTABLE_INSTALL "Install headers and CMake package files" ${SMASHTABLE_IS_MAIN_PROJECT})

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 # SmashTable commit-msg: enforce the commit-message contract.
 #
-#   1. The subject starts with an approved verb prefix - Add / Chore / Fix / Improve / Make -
-#      followed by a capitalized summary, so the history reads as a consistent changelog. A
-#      refactor is an Improve; Chore covers housekeeping that rearranges rather than changes
+#   1. The subject starts with an approved verb prefix - Add / Chore / Docs / Fix / Improve /
+#      Make - followed by a capitalized summary, so the history reads as a consistent changelog.
+#      A refactor is an Improve; Chore covers housekeeping that rearranges rather than changes
 #      behaviour; Make covers changes that touch only the build or the environment, never the
-#      sources. Merge commits are exempt, since Git writes their subject.
+#      sources; Docs covers documentation that drifted on its own, where a doc change that
+#      accompanies the code making it true belongs in that commit instead. Merge commits are
+#      exempt, since Git writes their subject.
 #   2. No AI-assistant attribution: no `Co-authored-by` bot trailer, no "Generated with/by
 #      <assistant>", no assistant name, vendor URL, or robot emoji. Authorship is the human who
 #      committed.
@@ -27,9 +29,9 @@ failed=0
 case "$subject" in
 Merge*) ;;
 *)
-    if ! printf '%s\n' "$subject" | grep -qE '^(Add|Chore|Fix|Improve|Make): [A-Z]'; then
+    if ! printf '%s\n' "$subject" | grep -qE '^(Add|Chore|Docs|Fix|Improve|Make): [A-Z]'; then
         echo "commit-msg: the subject must be '<Verb>: <Capitalized summary>' with an approved verb -"
-        echo "            Add Chore Fix Improve Make."
+        echo "            Add Chore Docs Fix Improve Make."
         echo "            Got: ${subject:-<empty>}"
         failed=1
     fi

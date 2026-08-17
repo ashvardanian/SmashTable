@@ -15,14 +15,16 @@ LC_ALL=C # ? Byte-wise regexes, immune to the committer's locale
 
 failed=0
 
-# Prints the reason and the first offending lines, and marks the commit rejected.
+# Prints the reason and the first offending lines, and marks the commit rejected. `failed` counts
+# rather than latches: `selftest` asserts that a bad fixture trips EXACTLY ONE rule, which is what
+# turns every negative case into a false-positive test for all the other rules.
 fail() { # fail <matches> <message-line>...
     local matches=$1
     shift
     local line
     for line in "$@"; do echo "pre-commit: $line"; done
     printf '%s\n' "$matches" | head -5
-    failed=1
+    failed=$((failed + 1))
 }
 
 # Compiled byte-code, caches and build output never belong in the tree. This one is a belt to
@@ -31,7 +33,7 @@ check_generated_artifacts() {
     case "$file" in
     *.pyc | *.pyo | *__pycache__* | *.egg-info* | .pytest_cache/* | wheelhouse/* | dist/*)
         echo "pre-commit: $file is generated output and must not be committed"
-        failed=1
+        failed=$((failed + 1))
         ;;
     esac
 }
@@ -40,7 +42,7 @@ check_generated_artifacts() {
 # C++ trailing return types inside @code blocks are the one legitimate use, so they are exempt.
 check_ascii_arrows() {
     local arrows
-    arrows=$(printf '%s\n' "$added" | grep -E '((//|/\*|^\+[[:space:]]*\*).* -> )' | grep -v '@code' || true)
+    arrows=$(printf '%s\n' "$added" | grep -E '((//|/\*|#|^\+[[:space:]]*\*).* -> )' | grep -v '@code' || true)
     [ -z "$arrows" ] || fail "$arrows" \
         "$file uses the ASCII '->' arrow in a comment - prose arrows are the Unicode →:"
 }
@@ -238,8 +240,14 @@ check_mangled_literals() {
 # A design justified by another project's design ages into a lie the moment that project moves.
 check_sibling_justification() {
     local excuses
+    # Naming a sibling as a dependency, an oracle, or a data source is fine and often necessary, so
+    # the sentences that read that way are excused first. What is banned is citing one as the reason
+    # this code is shaped the way it is - a line that ages into a lie the moment that project moves.
     excuses=$(printf '%s\n' "$added" |
-        grep -iE '(matching|mirrors?|same as|like|following) (the )?(stringzilla|numkong|usearch|forkunion|simsimd)' || true)
+        grep -E '(//|/\*|^\+[[:space:]]*\*)' |
+        grep -iE 'stringzilla|numkong|usearch|forkunion|simsimd|smallfield|stringtape' |
+        grep -viE '\b(ships?|provides?|supplies|computes?|generates?|depends? on|vendored|submodule|requires?|installs?|see|@see)\b' |
+        grep -iE '\b(match(es|ing)?|mirrors?|mimics?|borrow(s|ed)?|follow(s|ing)?|same|like|takes|convention|idiom|shape|split|the way|sibling)\b' || true)
     [ -z "$excuses" ] || fail "$excuses" \
         "$file justifies a decision by another repo - state what this code does and why:"
 }
@@ -284,10 +292,14 @@ while IFS= read -r -d '' file; do
         check_workflow_names
         check_hash_banners
         ;;
+    # The selftest exists to carry violations - every rule it exercises needs a fixture that must be
+    # rejected, and a rule that rejects the file testing it is a rule nobody can maintain.
+    .githooks/selftest) ;;
     *.py | *.cmake | *.sh | *.toml | *.yml | *.yaml | CMakeLists.txt | .githooks/*)
         check_hash_banners
         ;;
     *.md)
+        check_ascii_arrows
         check_backward_references
         check_sibling_justification
         ;;
@@ -311,7 +323,7 @@ while IFS= read -r -d '' file; do
     if [ -n "$abbreviations" ]; then
         echo "pre-commit: $file uses an abbreviated identifier - spell it out:"
         printf '%s\n' "$abbreviations" | head -3
-        failed=1
+        failed=$((failed + 1))
     fi
 done < <(git diff --cached --name-only --diff-filter=ACM -z)
 
@@ -323,7 +335,7 @@ if command -v clang-format > /dev/null 2>&1 && [ -f .clang-format ]; then
         esac
         if ! git show ":$file" | clang-format --assume-filename="$file" --dry-run -Werror > /dev/null 2>&1; then
             echo "pre-commit: $file is not clang-format clean - run \`clang-format -i $file\`"
-            failed=1
+            failed=$((failed + 1))
         fi
     done < <(git diff --cached --name-only --diff-filter=ACM -z)
 fi
@@ -336,13 +348,14 @@ if command -v cmake-format > /dev/null 2>&1 && [ -f .cmake-format.py ]; then
         esac
         if ! cmake-format --check "$file" > /dev/null 2>&1; then
             echo "pre-commit: $file is not cmake-format clean - run \`cmake-format -i\` with the repo profile"
-            failed=1
+            failed=$((failed + 1))
         fi
     done < <(git diff --cached --name-only --diff-filter=ACM -z)
 fi
 
 if [ "$failed" -ne 0 ]; then
     echo ""
+    echo "pre-commit: $failed check(s) failed"
     echo "Fix the staged changes and commit again. Bypass knowingly with: git commit --no-verify"
     exit 1
 fi

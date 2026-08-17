@@ -1,0 +1,362 @@
+#!/usr/bin/env bash
+#
+# Feeds known-good and known-bad fixtures through the real `pre-commit` and `commit-msg` and asserts
+# the verdict. Run it after touching any check:
+#
+#     .githooks/selftest
+#
+# Every check here polices text with a regex, and the recurring failure is not a missed violation
+# but a false positive on prose. The house style puts a rationale comment above each rule, and every
+# rationale names the construct its rule bans - so a rule that reads its own documentation rejects
+# the file that documents it. Each rule therefore gets both a fixture that must be rejected and one
+# that must be accepted, and the accepted fixture is usually a comment describing the rule.
+#
+# A rejection counts only when EXACTLY ONE check fired and it was the expected one. That is what
+# turns the negative cases into false-positive tests for every other rule: a fixture tripping two
+# means some rule is matching text it has no business reading. `pre-commit` prints the tally.
+
+set -u
+export LC_ALL=C
+
+hooks_dir=$(cd "$(dirname "$0")" && pwd)
+scratch_root=${SMASHTABLE_SELFTEST_DIR:-${TMPDIR:-/tmp}/smashtable-selftest}
+rm -rf "$scratch_root"
+mkdir -p "$scratch_root"
+trap 'rm -rf "$scratch_root"' EXIT
+
+passed=0
+failed=0
+fixture_ordinal=0
+
+# Each fixture is a throwaway repository outside this tree, with one empty commit so that
+# `git diff --cached` has a HEAD to compare against.
+new_fixture() { # new_fixture <relative-path> <<< content
+    fixture_ordinal=$((fixture_ordinal + 1))
+    fixture_dir="$scratch_root/fixture-$fixture_ordinal"
+    mkdir -p "$fixture_dir"
+    git -C "$fixture_dir" init --quiet
+    git -C "$fixture_dir" config user.email selftest@example.invalid
+    git -C "$fixture_dir" config user.name Selftest
+    git -C "$fixture_dir" commit --quiet --allow-empty -m "Chore: Seed the fixture"
+    fixture_path="$fixture_dir/$1"
+    mkdir -p "$(dirname "$fixture_path")"
+    cat > "$fixture_path"
+    git -C "$fixture_dir" add -- "$1"
+}
+
+# Runs the real hook against the fixture, capturing output and the count of rules that fired.
+run_precommit() {
+    precommit_output=$(cd "$fixture_dir" && "$hooks_dir/pre-commit" 2>&1)
+    precommit_status=$?
+    precommit_count=$(printf '%s\n' "$precommit_output" | sed -n 's/^pre-commit: \([0-9]\+\) check(s) failed$/\1/p')
+    [ -n "$precommit_count" ] || precommit_count=0
+}
+
+report_pass() {
+    passed=$((passed + 1))
+}
+
+report_fail() { # report_fail <label> <detail>
+    failed=$((failed + 1))
+    echo "FAIL  $1"
+    echo "      $2"
+    printf '%s\n' "$precommit_output" | sed 's/^/      | /' | head -6
+}
+
+# The bad fixture must be rejected, by this rule and by no other.
+assert_rejects() { # assert_rejects <label> <phrase-identifying-the-rule> <relative-path> <<< content
+    local label=$1 phrase=$2 path=$3
+    new_fixture "$path"
+    run_precommit
+    if [ "$precommit_status" -eq 0 ]; then
+        report_fail "$label" "expected a rejection, the hook accepted it"
+    elif ! printf '%s\n' "$precommit_output" | grep -qF "$phrase"; then
+        report_fail "$label" "rejected, but not by the expected rule (wanted: $phrase)"
+    elif [ "$precommit_count" -ne 1 ]; then
+        report_fail "$label" "$precommit_count rules fired, expected exactly 1 - another rule is over-matching"
+    else
+        report_pass
+    fi
+}
+
+# The good fixture must pass every rule. Usually this is prose describing the rule next to it.
+assert_accepts() { # assert_accepts <label> <relative-path> <<< content
+    local label=$1 path=$2
+    new_fixture "$path"
+    run_precommit
+    if [ "$precommit_status" -ne 0 ]; then
+        report_fail "$label" "expected acceptance, $precommit_count rule(s) rejected it"
+    else
+        report_pass
+    fi
+}
+
+run_commit_msg() { # run_commit_msg <<< message
+    local message_file="$scratch_root/message-$fixture_ordinal"
+    fixture_ordinal=$((fixture_ordinal + 1))
+    cat > "$message_file"
+    precommit_output=$("$hooks_dir/commit-msg" "$message_file" 2>&1)
+    precommit_status=$?
+}
+
+assert_message_rejects() { # assert_message_rejects <label> <phrase> <<< message
+    local label=$1 phrase=$2
+    run_commit_msg
+    if [ "$precommit_status" -eq 0 ]; then
+        report_fail "$label" "expected a rejection, commit-msg accepted it"
+    elif ! printf '%s\n' "$precommit_output" | grep -qF "$phrase"; then
+        report_fail "$label" "rejected, but not for the expected reason (wanted: $phrase)"
+    else
+        report_pass
+    fi
+}
+
+assert_message_accepts() { # assert_message_accepts <label> <<< message
+    local label=$1
+    run_commit_msg
+    if [ "$precommit_status" -ne 0 ]; then
+        report_fail "$label" "expected acceptance, commit-msg rejected it"
+    else
+        report_pass
+    fi
+}
+
+# region Pre-commit fixtures
+
+assert_rejects "ascii arrows" "ASCII '->' arrow" src/probe.hpp <<'FIXTURE'
+/** @brief Maps a key -> a value. */
+int probe();
+FIXTURE
+
+assert_accepts "ascii arrows, prose about the rule" src/probe.hpp <<'FIXTURE'
+// Prose arrows are the Unicode → rather than the ASCII spelling.
+int probe();
+FIXTURE
+
+assert_rejects "unqualified memcpy" "unqualified memcpy" src/probe.hpp <<'FIXTURE'
+void probe(char *to, char const *from) { memcpy(to, from, 8); }
+FIXTURE
+
+assert_accepts "qualified memcpy, and the rule's own rationale" src/probe.hpp <<'FIXTURE'
+// An unqualified memcpy reaches for the C library through a name the standard only promises
+// inside `std::`, so a genuine byte copy is written std::memcpy.
+void probe(char *to, char const *from) { std::memcpy(to, from, 8); }
+FIXTURE
+
+assert_rejects "allocating new" "bare new or delete" src/probe.hpp <<'FIXTURE'
+void probe() { auto *node = new node_t; }
+FIXTURE
+
+assert_accepts "placement new, and prose naming the new value" src/probe.hpp <<'FIXTURE'
+/** @brief Adds to a counter, returning the new value. */
+void probe(void *storage) { new (storage) node_t {}; }
+FIXTURE
+
+assert_rejects "bool parameter" "bool parameter that selects behaviour" src/probe.hpp <<'FIXTURE'
+void probe(int key, bool reverse);
+FIXTURE
+
+assert_accepts "bool predicate, which is the answer not a switch" src/probe.hpp <<'FIXTURE'
+// A bool is fine when it IS the answer to a yes/no question, never when it is a switch.
+bool is_empty() const;
+FIXTURE
+
+assert_rejects "backward-looking comment" "backward-looking comment" src/probe.hpp <<'FIXTURE'
+// This member used to be a pointer.
+int probe;
+FIXTURE
+
+assert_accepts "moved-from, a term of art rather than history" src/probe.hpp <<'FIXTURE'
+// Forwarding at both sites would hand the second one an already moved-from object.
+int probe;
+FIXTURE
+
+assert_rejects "comment banner" "draws a comment banner" src/probe.hpp <<'FIXTURE'
+// ==========================
+int probe;
+FIXTURE
+
+assert_rejects "punctuated region name" "punctuates a '#pragma region' name" src/probe.hpp <<'FIXTURE'
+#pragma region Consistency & Transaction Tests: Sets
+#pragma endregion Consistency & Transaction Tests: Sets
+FIXTURE
+
+assert_accepts "plain region name" src/probe.hpp <<'FIXTURE'
+#pragma region Consistency and Transaction Tests for Sets
+#pragma endregion Consistency and Transaction Tests for Sets
+FIXTURE
+
+assert_rejects "pragma mark" "uses '#pragma mark'" src/probe.hpp <<'FIXTURE'
+#pragma mark - Constructors
+FIXTURE
+
+assert_rejects "orphaned docblock above a brace" "docblock with nothing to document" src/probe.hpp <<'FIXTURE'
+struct probe_t {
+    int member;
+    /** @brief Hashes for the fixture keys. */
+};
+FIXTURE
+
+assert_rejects "orphaned docblock above another docblock" "docblock with nothing to document" src/probe.hpp <<'FIXTURE'
+/** @brief The older description, displaced by the one below. */
+/** @brief The newer description. */
+void probe();
+FIXTURE
+
+assert_accepts "file docblock above pragma once" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *  @file src/probe.hpp
+ */
+#pragma once
+void probe();
+FIXTURE
+
+assert_rejects "bare @param" "@param without a direction" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *  @param key The key to probe for.
+ */
+void probe(int key);
+FIXTURE
+
+assert_accepts "directed @param" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *  @param[in] key The key to probe for.
+ */
+void probe(int key);
+FIXTURE
+
+assert_rejects "bare @section" "@section without an anchor" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *  @section Overview
+ */
+void probe();
+FIXTURE
+
+assert_rejects "markdown emphasis in a docblock" "Markdown emphasis in a Doxygen block" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A **probe**.
+ */
+void probe();
+FIXTURE
+
+assert_rejects "backticks in a docblock" "backticks inside a Doxygen block" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A `probe`.
+ */
+void probe();
+FIXTURE
+
+assert_accepts "@c markup in a docblock" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A @c probe.
+ */
+void probe();
+FIXTURE
+
+assert_rejects "split string literal" "string-literal fragments on one line" src/probe.hpp <<'FIXTURE'
+char const *probe = "the first fragment " "and the second";
+FIXTURE
+
+assert_rejects "sibling justification" "justifies a decision by another repo" src/probe.hpp <<'FIXTURE'
+// The same split StringZilla takes, for the same reason.
+void probe();
+FIXTURE
+
+assert_rejects "sibling justification, the shape phrasing" "justifies a decision by another repo" src/probe.hpp <<'FIXTURE'
+// The same shape NumKong's api_cdist takes.
+void probe();
+FIXTURE
+
+assert_accepts "naming a sibling as a dependency, which is allowed" src/probe.hpp <<'FIXTURE'
+// StringZilla ships the SIMD kernels this path calls into.
+void probe();
+FIXTURE
+
+assert_rejects "hash banner in a script" "draws a comment banner" scripts/probe.py <<'FIXTURE'
+# ==========================
+value = 1
+FIXTURE
+
+assert_accepts "ordinary python comment" scripts/probe.py <<'FIXTURE'
+# region Probes
+value = 1
+# endregion Probes
+FIXTURE
+
+assert_rejects "workflow step without a name" "workflow step without a 'name:'" .github/workflows/probe.yml <<'FIXTURE'
+jobs:
+  probe:
+    steps:
+      - run: echo probing
+FIXTURE
+
+assert_accepts "named workflow step" .github/workflows/probe.yml <<'FIXTURE'
+jobs:
+  probe:
+    steps:
+      - name: Probe
+        run: echo probing
+FIXTURE
+
+assert_rejects "generated artifact" "generated output" build/probe.pyc <<'FIXTURE'
+compiled
+FIXTURE
+
+# endregion Pre-commit fixtures
+
+# region Commit-message fixtures
+
+assert_message_accepts "approved verb" <<'FIXTURE'
+Fix: Consult the comparator a container was given
+FIXTURE
+
+assert_message_rejects "unapproved verb" "approved verb" <<'FIXTURE'
+Refactor: Rename the slot reference
+FIXTURE
+
+assert_message_rejects "lowercase summary" "approved verb" <<'FIXTURE'
+Fix: consult the comparator a container was given
+FIXTURE
+
+assert_message_rejects "no verb at all" "approved verb" <<'FIXTURE'
+Consult the comparator a container was given
+FIXTURE
+
+assert_message_accepts "merge commits are exempt" <<'FIXTURE'
+Merge branch 'main-dev' into feature
+FIXTURE
+
+assert_message_rejects "assistant co-author trailer" "assistant attribution" <<'FIXTURE'
+Fix: Consult the comparator a container was given
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+FIXTURE
+
+assert_message_rejects "generated-with footer" "assistant attribution" <<'FIXTURE'
+Fix: Consult the comparator a container was given
+
+Generated with Claude Code
+FIXTURE
+
+assert_message_rejects "session link" "assistant attribution" <<'FIXTURE'
+Fix: Consult the comparator a container was given
+
+https://claude.ai/code/session_01
+FIXTURE
+
+assert_message_accepts "prose that merely mentions generation" <<'FIXTURE'
+Improve: Keep a key's versions on its own chain
+
+A reserved slot already carries this generation, so the version replaces it.
+FIXTURE
+
+# endregion Commit-message fixtures
+
+echo ""
+echo "selftest: $passed passed, $failed failed"
+[ "$failed" -eq 0 ] || exit 1
+exit 0

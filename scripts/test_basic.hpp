@@ -174,32 +174,6 @@ struct heavy_key_t {
     bool operator==(std::string_view other) const noexcept { return compare_bytes(view(), other) == 0; }
 };
 
-/** @brief Hashes for the fixture keys, so the partitioned collection can shard them. */
-} // namespace ashvardanian::smashtable::scripts
-
-template <>
-struct std::hash<ashvardanian::smashtable::scripts::trivial_key_t> {
-    std::size_t operator()(ashvardanian::smashtable::scripts::trivial_key_t const &key) const noexcept {
-        return std::hash<ashvardanian::smashtable::scripts::trivial_id_t> {}(key.unique_id);
-    }
-};
-
-template <>
-struct std::hash<ashvardanian::smashtable::scripts::composite_key_t> {
-    std::size_t operator()(ashvardanian::smashtable::scripts::composite_key_t const &key) const noexcept {
-        return std::hash<ashvardanian::smashtable::scripts::trivial_id_t> {}(key.unique_id);
-    }
-};
-
-template <>
-struct std::hash<ashvardanian::smashtable::scripts::heavy_key_t> {
-    std::size_t operator()(ashvardanian::smashtable::scripts::heavy_key_t const &key) const noexcept {
-        return std::hash<std::string_view> {}(key.view());
-    }
-};
-
-namespace ashvardanian::smashtable::scripts {
-
 static_assert(std::is_same_v<versioning_for<heavy_key_t, std::less<void>>::value_type, heavy_key_t>);
 static_assert(std::is_same_v<versioning_for<heavy_key_t, std::less<void>>::identifier_type, heavy_key_t>);
 
@@ -827,3 +801,25 @@ void test_heterogeneous_heavy_string_view_find() {
 #pragma endregion Heterogeneous Lookup Test Templates
 
 } // namespace ashvardanian::smashtable::scripts
+
+/** @brief Hashes for the fixture keys, so the partitioned collection can shard them. */
+template <>
+struct std::hash<ashvardanian::smashtable::scripts::trivial_key_t> {
+    std::size_t operator()(ashvardanian::smashtable::scripts::trivial_key_t const &key) const noexcept {
+        return std::hash<ashvardanian::smashtable::scripts::trivial_id_t> {}(key.unique_id);
+    }
+};
+
+template <>
+struct std::hash<ashvardanian::smashtable::scripts::composite_key_t> {
+    std::size_t operator()(ashvardanian::smashtable::scripts::composite_key_t const &key) const noexcept {
+        return std::hash<ashvardanian::smashtable::scripts::trivial_id_t> {}(key.unique_id);
+    }
+};
+
+template <>
+struct std::hash<ashvardanian::smashtable::scripts::heavy_key_t> {
+    std::size_t operator()(ashvardanian::smashtable::scripts::heavy_key_t const &key) const noexcept {
+        return std::hash<std::string_view> {}(key.view());
+    }
+};
