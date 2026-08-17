@@ -6,8 +6,6 @@
  *  @date October 13, 2022
  */
 #pragma once
-#include <mutex>        // `std::unique_lock`
-#include <shared_mutex> // `std::shared_mutex`
 
 #include "shared.hpp"
 
@@ -22,7 +20,7 @@ namespace ashvardanian::smashtable {
  *
  *  One mutex spans the whole commit loop, which is what keeps the isolation level its parts promise.
  */
-template <typename collection_type_, typename shared_mutex_type_ = std::shared_mutex>
+template <typename collection_type_, typename shared_mutex_type_ = shared_mutex_t>
 class locked_collection {
 
   public:
@@ -60,7 +58,7 @@ class locked_collection {
         generation_t generation() const noexcept { return unlocked_.generation(); }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
-            std::shared_lock _ {store_.mutex_};
+            shared_lock _ {store_.mutex_};
             return unlocked_.watch(id);
         }
 
@@ -69,22 +67,22 @@ class locked_collection {
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept { return unlocked_.erase(id); }
 
         [[nodiscard]] status_t stage() noexcept {
-            std::unique_lock _ {store_.mutex_};
+            unique_lock _ {store_.mutex_};
             return unlocked_.stage();
         }
 
         [[nodiscard]] status_t reset() noexcept {
-            std::unique_lock _ {store_.mutex_};
+            unique_lock _ {store_.mutex_};
             return unlocked_.reset();
         }
 
         [[nodiscard]] status_t rollback() noexcept {
-            std::unique_lock _ {store_.mutex_};
+            unique_lock _ {store_.mutex_};
             return unlocked_.rollback();
         }
 
         [[nodiscard]] status_t commit() noexcept {
-            std::unique_lock _ {store_.mutex_};
+            unique_lock _ {store_.mutex_};
             return unlocked_.commit();
         }
 
@@ -92,7 +90,7 @@ class locked_collection {
                   typename callback_missing_type_ = no_op_fn_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            std::shared_lock _ {store_.mutex_};
+            shared_lock _ {store_.mutex_};
             unlocked_.find(std::forward<comparable_type_>(comparable),
                            std::forward<callback_found_type_>(callback_found),
                            std::forward<callback_missing_type_>(callback_missing));
@@ -112,7 +110,7 @@ class locked_collection {
                   typename callback_missing_type_ = no_op_fn_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept {
-            std::shared_lock _ {store_.mutex_};
+            shared_lock _ {store_.mutex_};
             unlocked_.upper_bound(std::forward<comparable_type_>(comparable),
                                   std::forward<callback_found_type_>(callback_found),
                                   std::forward<callback_missing_type_>(callback_missing));
@@ -125,7 +123,7 @@ class locked_collection {
 
     locked_collection(unlocked_t &&unlocked) noexcept : unlocked_(std::move(unlocked)) {}
     locked_collection &operator=(locked_collection &&other) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         unlocked_ = std::move(other.unlocked_);
         return *this;
     }
@@ -135,12 +133,12 @@ class locked_collection {
     locked_collection(locked_collection &&other) noexcept : unlocked_(std::move(other.unlocked_)) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         return unlocked_.size();
     }
 
     [[nodiscard]] bool empty() const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         return unlocked_.empty();
     }
 
@@ -153,19 +151,19 @@ class locked_collection {
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
         expected<transaction_t> result;
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         if (auto unlocked = unlocked_.transaction(); unlocked) result = transaction_t {*this, std::move(*unlocked)};
         return result;
     }
 
     [[nodiscard]] status_t upsert(value_t &&element) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         return unlocked_.upsert(std::forward<value_t>(element));
     }
 
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         return unlocked_.upsert(begin, end);
     }
 
@@ -173,7 +171,7 @@ class locked_collection {
               typename callback_missing_type_ = no_op_fn_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         unlocked_.find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                        std::forward<callback_missing_type_>(callback_missing));
     }
@@ -197,7 +195,7 @@ class locked_collection {
     /** @brief Inserts a batch, leaving already-present keys untouched. */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         return unlocked_.insert_if_missing(begin, end);
     }
 
@@ -205,7 +203,7 @@ class locked_collection {
               typename callback_missing_type_ = no_op_fn_t>
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         unlocked_.lower_bound(std::forward<comparable_type_>(comparable),
                               std::forward<callback_found_type_>(callback_found),
                               std::forward<callback_missing_type_>(callback_missing));
@@ -245,7 +243,7 @@ class locked_collection {
               typename callback_missing_type_ = no_op_fn_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         unlocked_.upper_bound(std::forward<comparable_type_>(comparable),
                               std::forward<callback_found_type_>(callback_found),
                               std::forward<callback_missing_type_>(callback_missing));
@@ -254,7 +252,7 @@ class locked_collection {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         unlocked_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                         std::forward<callback_type_>(callback));
     }
@@ -262,7 +260,7 @@ class locked_collection {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         unlocked_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                         std::forward<callback_type_>(callback));
     }
@@ -270,18 +268,18 @@ class locked_collection {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         unlocked_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                               std::forward<callback_type_>(callback));
     }
 
     [[nodiscard]] status_t clear() noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         return unlocked_.clear();
     }
 
     [[nodiscard]] status_t reserve(std::size_t size) noexcept {
-        std::unique_lock _ {mutex_};
+        unique_lock _ {mutex_};
         return unlocked_.reserve(size);
     }
 
@@ -289,7 +287,7 @@ class locked_collection {
               typename callback_type_ = no_op_fn_t>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                       callback_type_ &&callback) const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         unlocked_.sample_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
     }
@@ -297,7 +295,7 @@ class locked_collection {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                       std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
-        std::shared_lock _ {mutex_};
+        shared_lock _ {mutex_};
         unlocked_.sample_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                std::forward<generator_type_>(generator), seen, reservoir_capacity,
                                std::forward<output_iterator_type_>(reservoir));

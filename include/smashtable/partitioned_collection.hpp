@@ -6,10 +6,8 @@
  *  @date October 16, 2022
  */
 #pragma once
-#include <array>        // `std::array`
-#include <bit>          // `std::countr_zero`
-#include <mutex>        // `std::unique_lock`
-#include <shared_mutex> // `std::shared_mutex`, `std::shared_lock`
+#include <array> // `std::array`
+#include <bit>   // `std::countr_zero`
 
 #include "shared.hpp"
 
@@ -66,7 +64,7 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  @tparam parts_count_ Number of partitions to split the collection into, default 16.
  */
 template <typename collection_type_, typename hash_type_ = hash<typename collection_type_::identifier_t>,
-          typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_count_ = 16>
+          typename shared_mutex_type_ = shared_mutex_t, std::size_t parts_count_ = 16>
 class partitioned_collection {
 
   public:
@@ -76,8 +74,8 @@ class partitioned_collection {
     using part_t = collection_type_;
     using part_transaction_t = typename part_t::transaction_t;
     using shared_mutex_t = shared_mutex_type_;
-    using shared_lock_t = std::shared_lock<shared_mutex_t>;
-    using unique_lock_t = std::unique_lock<shared_mutex_t>;
+    using shared_lock_t = shared_lock<shared_mutex_t>;
+    using unique_lock_t = unique_lock<shared_mutex_t>;
 
     using mutexes_t = std::array<shared_mutex_t, parts_k>;
     using parts_t = std::array<part_t, parts_k>;
@@ -187,7 +185,7 @@ class partitioned_collection {
 
         identifier_t smallest_id;
         std::size_t smallest_index;
-        constexpr std::size_t not_found_index = std::numeric_limits<std::size_t>::max();
+        constexpr std::size_t not_found_index = size_max_k;
 
         // A key that was observed and then found gone is a bound the scan may step over, which is what
         // stops a restart from asking the same question again. Null until the first miss.

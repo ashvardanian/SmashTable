@@ -8,6 +8,8 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
+#include <shared_mutex> // `std::shared_mutex`, to keep the substitution path covered
+
 #include <smashtable/basic_avl_tree.hpp>
 #include <smashtable/locked_collection.hpp>
 #include <smashtable/partitioned_collection.hpp>
@@ -42,6 +44,15 @@ using transactional_composite_map_t = partitioned_collection<tree_composite_map_
 using tree_tracking_set_t = transactional_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 using partitioned_tracking_set_t = partitioned_collection<tree_tracking_set_t>;
 
+/**
+ *  Sharded on @c std::shared_mutex rather than the library's own.
+ *
+ *  The mutex is a template parameter, so the default is a choice and not the only thing that fits;
+ *  running the concurrency suites against the standard one is what keeps the substitution honest.
+ */
+using standard_mutex_set_t = partitioned_collection<tree_composite_set_t, hash<composite_key_t>, std::shared_mutex, 16>;
+using standard_mutex_map_t = partitioned_collection<tree_composite_map_t, hash<composite_key_t>, std::shared_mutex, 16>;
+
 /** One shared mutex over the whole collection. */
 using transactional_tracking_set_t = locked_collection<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_collection<tree_trivial_map_t>;
@@ -49,6 +60,14 @@ using transactional_tracking_map_t = locked_collection<tree_trivial_map_t>;
 /** @brief Walkers crossing a sharded map while an eraser churns it, with heap-owning keys. */
 static void sharded_concurrency_walks_never_race_erasures() {
     test_sharded_walks_never_race_erasures<transactional_composite_map_t>();
+    test_sharded_walks_never_race_erasures<standard_mutex_map_t>();
+}
+
+/** @brief The same suites against @c std::shared_mutex, so the substituted lock stays exercised. */
+static void sharded_concurrency_standard_mutex_substitutes() {
+    test_empty_container_operations<standard_mutex_set_t>();
+    test_single_element_operations<standard_mutex_set_t>();
+    test_sharded_stage_unwinds_on_partial_failure<standard_mutex_map_t>();
 }
 
 /** @brief Concurrent transaction opens must never share a generation. */
@@ -271,6 +290,8 @@ int main() {
     failures += run_test(filter, "sharded_concurrency.walks_never_race_erasures",
                          sharded_concurrency_walks_never_race_erasures);
     failures += run_test(filter, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);
+    failures += run_test(filter, "sharded_concurrency.standard_mutex_substitutes",
+                         sharded_concurrency_standard_mutex_substitutes);
     failures += run_test(filter, "sharded_concurrency.stage_unwinds_on_partial_failure",
                          sharded_concurrency_stage_unwinds_on_partial_failure);
     failures += run_test(filter, "basic_ops.single_element_operations", basic_ops_single_element_operations);

@@ -1040,6 +1040,9 @@ constexpr value_type_ const &smaller_of(value_type_ const &first, value_type_ co
 /** @brief How many bits a @c std::size_t holds here, which is not 64 everywhere. */
 inline constexpr std::size_t size_bits_k = sizeof(std::size_t) * CHAR_BIT;
 
+/** @brief The largest @c std::size_t, which also serves as the "no such index" sentinel. */
+inline constexpr std::size_t size_max_k = static_cast<std::size_t>(-1);
+
 /** @brief The number of bits needed to represent @p x, so @c 0 for zero and @c 1 for one. */
 constexpr std::size_t bits_to_hold(std::size_t x) noexcept {
     return size_bits_k - static_cast<std::size_t>(countl_zero(x));
@@ -1534,6 +1537,145 @@ template <typename... store_types_>
 [[nodiscard]] expected<transaction_group<store_types_...>> make_transaction_group(store_types_ &...stores) noexcept {
     return transaction_group<store_types_...>::make(stores...);
 }
+
+#pragma region Shared Mutex
+
+/**
+ *  @brief A reader-writer lock that spins briefly, then parks on @c std::atomic::wait.
+ *
+ *  Locks here are held across user code - callbacks, comparators, allocators, a whole commit loop -
+ *  so a pure spinner would burn a core while a holder walks a range, and pure parking would pay a
+ *  syscall for the uncontended case that dominates. A waiting writer sets a bit that turns new
+ *  readers away, so a steady read load cannot starve it indefinitely.
+ *
+ *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
+ *  timed acquisition, no upgrading. Both collection wrappers take the mutex as a template parameter,
+ *  so this is the default rather than the only choice.
+ */
+class shared_mutex_t {
+    static constexpr std::uint32_t writer_held_k = 1u << 31;
+    static constexpr std::uint32_t writer_waiting_k = 1u << 30;
+    static constexpr std::uint32_t readers_mask_k = writer_waiting_k - 1;
+    static constexpr std::uint32_t writer_bits_k = writer_held_k | writer_waiting_k;
+
+    /** @brief How long to spin before parking, which is about the cost of one uncontended handoff. */
+    static constexpr int spins_before_parking_k = 64;
+
+    std::atomic<std::uint32_t> state_ {0};
+
+    static void pause_briefly() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+        __builtin_ia32_pause();
+#elif defined(__aarch64__)
+        __asm__ __volatile__("yield" ::: "memory");
+#endif
+    }
+
+  public:
+    constexpr shared_mutex_t() noexcept = default;
+    shared_mutex_t(shared_mutex_t const &) = delete;
+    shared_mutex_t &operator=(shared_mutex_t const &) = delete;
+
+    [[nodiscard]] bool try_lock() noexcept {
+        std::uint32_t expected = 0;
+        return state_.compare_exchange_strong(expected, writer_held_k, std::memory_order_acquire,
+                                              std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] bool try_lock_shared() noexcept {
+        std::uint32_t observed = state_.load(std::memory_order_relaxed);
+        if (observed & writer_bits_k) return false;
+        return state_.compare_exchange_strong(observed, observed + 1, std::memory_order_acquire,
+                                              std::memory_order_relaxed);
+    }
+
+    void lock() noexcept {
+        for (int spin = 0; spin != spins_before_parking_k; ++spin) {
+            std::uint32_t expected = 0;
+            if (state_.compare_exchange_weak(expected, writer_held_k, std::memory_order_acquire,
+                                             std::memory_order_relaxed))
+                return;
+            pause_briefly();
+        }
+
+        // Announcing the intent is what stops a stream of readers from renewing the lock forever.
+        std::uint32_t observed = state_.fetch_or(writer_waiting_k, std::memory_order_relaxed) | writer_waiting_k;
+        while (true) {
+            if ((observed & (writer_held_k | readers_mask_k)) == 0) {
+                if (state_.compare_exchange_weak(observed, writer_held_k, std::memory_order_acquire,
+                                                 std::memory_order_relaxed))
+                    return;
+                continue; // ? The exchange refreshed `observed`
+            }
+            state_.wait(observed, std::memory_order_relaxed);
+            observed = state_.load(std::memory_order_relaxed);
+        }
+    }
+
+    void unlock() noexcept {
+        // Any writer still waiting re-announces itself on waking, so clearing the bit loses nothing.
+        state_.store(0, std::memory_order_release);
+        state_.notify_all();
+    }
+
+    void lock_shared() noexcept {
+        for (int spin = 0; spin != spins_before_parking_k; ++spin) {
+            std::uint32_t observed = state_.load(std::memory_order_relaxed);
+            if ((observed & writer_bits_k) == 0 &&
+                state_.compare_exchange_weak(observed, observed + 1, std::memory_order_acquire,
+                                             std::memory_order_relaxed))
+                return;
+            pause_briefly();
+        }
+
+        while (true) {
+            std::uint32_t observed = state_.load(std::memory_order_relaxed);
+            if ((observed & writer_bits_k) == 0) {
+                if (state_.compare_exchange_weak(observed, observed + 1, std::memory_order_acquire,
+                                                 std::memory_order_relaxed))
+                    return;
+            }
+            else { state_.wait(observed, std::memory_order_relaxed); }
+        }
+    }
+
+    void unlock_shared() noexcept {
+        std::uint32_t const previous = state_.fetch_sub(1, std::memory_order_release);
+        // The last reader out is the only one a waiting writer is still blocked on.
+        if ((previous & readers_mask_k) == 1) state_.notify_all();
+    }
+};
+
+/** @brief Holds @p mutex_type_ exclusively for the enclosing scope. */
+template <typename mutex_type_>
+class unique_lock {
+    mutex_type_ &mutex_;
+
+  public:
+    explicit unique_lock(mutex_type_ &mutex) noexcept : mutex_(mutex) { mutex_.lock(); }
+    ~unique_lock() noexcept { mutex_.unlock(); }
+    unique_lock(unique_lock const &) = delete;
+    unique_lock &operator=(unique_lock const &) = delete;
+};
+
+/** @brief Holds @p mutex_type_ for shared reading over the enclosing scope. */
+template <typename mutex_type_>
+class shared_lock {
+    mutex_type_ &mutex_;
+
+  public:
+    explicit shared_lock(mutex_type_ &mutex) noexcept : mutex_(mutex) { mutex_.lock_shared(); }
+    ~shared_lock() noexcept { mutex_.unlock_shared(); }
+    shared_lock(shared_lock const &) = delete;
+    shared_lock &operator=(shared_lock const &) = delete;
+};
+
+template <typename mutex_type_>
+unique_lock(mutex_type_ &) -> unique_lock<mutex_type_>;
+template <typename mutex_type_>
+shared_lock(mutex_type_ &) -> shared_lock<mutex_type_>;
+
+#pragma endregion Shared Mutex
 
 #pragma endregion Transaction Group
 
