@@ -40,6 +40,9 @@ class locked_collection {
     using is_transactional = std::true_type;
     using callback_reads = std::true_type;
 
+    /** @brief One mutex serializes whole transactions, so the inner store's promise carries over intact. */
+    static constexpr isolation_t isolation_k = unlocked_t::isolation_k;
+
     using comparator_t = typename unlocked_t::comparator_t;
     using identifier_t = typename unlocked_t::identifier_t;
     using generation_t = typename unlocked_t::generation_t;

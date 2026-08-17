@@ -1,6 +1,6 @@
 /**
  *  @brief Test instantiations for weight-balanced tree containers. Covers basic_wb_tree (non-transactional) and
- *      transactional_binary_tree<basic_wb_tree> (transactional). The weight-balanced tree also carries order
+ *      transactional_store<basic_wb_tree> (transactional). The weight-balanced tree also carries order
  *      statistics - @c rank and @c select.
  *  @author Ash Vardanian
  *  @file scripts/test_wb_tree.cpp
@@ -369,6 +369,34 @@ static void transactional_consistency_watch_detects_external_direct_modification
     test_watch_detects_external_direct_modification<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_abandoned_transaction_leaves_no_trace() {
+    test_abandoned_transaction_leaves_no_trace<transactional_trivial_map_t>();
+    test_abandoned_transaction_leaves_no_trace<transactional_tracking_map_t>();
+    test_abandoned_transaction_leaves_no_trace<transactional_composite_map_t>();
+    test_abandoned_transaction_leaves_no_trace<transactional_heavy_map_t>();
+}
+
+static void transactional_consistency_moved_transaction_unwinds_once() {
+    test_moved_transaction_unwinds_once<transactional_trivial_map_t>();
+    test_moved_transaction_unwinds_once<transactional_tracking_map_t>();
+    test_moved_transaction_unwinds_once<transactional_composite_map_t>();
+    test_moved_transaction_unwinds_once<transactional_heavy_map_t>();
+}
+
+static void transactional_consistency_watch_on_erased_key_can_commit() {
+    test_watch_on_erased_key_can_commit<transactional_trivial_map_t>();
+    test_watch_on_erased_key_can_commit<transactional_tracking_map_t>();
+    test_watch_on_erased_key_can_commit<transactional_composite_map_t>();
+    test_watch_on_erased_key_can_commit<transactional_heavy_map_t>();
+}
+
+static void transactional_consistency_absent_watch_survives_rollback() {
+    test_absent_watch_survives_rollback<transactional_trivial_map_t>();
+    test_absent_watch_survives_rollback<transactional_tracking_map_t>();
+    test_absent_watch_survives_rollback<transactional_composite_map_t>();
+    test_absent_watch_survives_rollback<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_watch_detects_staged_invisible_writes() {
     test_watch_detects_staged_invisible_writes<transactional_trivial_map_t>();
     test_watch_detects_staged_invisible_writes<transactional_tracking_map_t>();
@@ -464,6 +492,14 @@ int main() {
                          transactional_consistency_watch_detects_external_direct_modification);
     failures += run_test(filter, "transactional_consistency.watch_detects_staged_invisible_writes",
                          transactional_consistency_watch_detects_staged_invisible_writes);
+    failures += run_test(filter, "transactional_consistency.abandoned_transaction_leaves_no_trace",
+                         transactional_consistency_abandoned_transaction_leaves_no_trace);
+    failures += run_test(filter, "transactional_consistency.moved_transaction_unwinds_once",
+                         transactional_consistency_moved_transaction_unwinds_once);
+    failures += run_test(filter, "transactional_consistency.watch_on_erased_key_can_commit",
+                         transactional_consistency_watch_on_erased_key_can_commit);
+    failures += run_test(filter, "transactional_consistency.absent_watch_survives_rollback",
+                         transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
     failures += run_test(filter, "transactional_consistency.non_repeatable_reads_are_allowed",

@@ -93,6 +93,12 @@ class partitioned_collection {
     using is_transactional = std::true_type;
     using callback_reads = std::true_type;
 
+    /**
+     *  @brief A commit takes and releases one partition's lock at a time, so a reader crossing
+     *    partitions can catch a transaction half-applied. Only a single partition is atomic to it.
+     */
+    static constexpr isolation_t isolation_k = parts_k == 1 ? part_t::isolation_k : isolation_t::read_committed_k;
+
     using comparator_t = typename part_t::comparator_t;
     using identifier_t = typename part_t::identifier_t;
     using generation_t = typename part_t::generation_t;

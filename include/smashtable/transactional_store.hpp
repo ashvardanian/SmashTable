@@ -1,9 +1,10 @@
 /**
- *  @brief Generic transactional binary tree container with ACID semantics, providing 2-phase commit transactions. Can
- *      be instantiated with any binary search tree implementation (AVL, WB, etc.) supporting the required interface.
+ *  @brief Generic transactional container with ACID semantics, providing 2-phase commit transactions. Can be
+ *      instantiated with any key-addressable core - AVL trees, weight-balanced trees, open-addressed tables -
+ *      and gates its ordered surface behind the cores that supply an ordering.
  *      All operations use callback-based APIs and are exception-free via @c noexcept constraints.
  *  @author Ash Vardanian
- *  @file include/smashtable/transactional_binary_tree.hpp
+ *  @file include/smashtable/transactional_store.hpp
  *  @date October 13, 2022
  */
 #pragma once
@@ -16,6 +17,7 @@
 #include <utility>   // `std::exchange`
 
 #include "basic_avl_tree.hpp"
+#include "basic_hash_table.hpp"
 #include "basic_vector.hpp"
 #include "basic_wb_tree.hpp"
 #include "shared.hpp"
@@ -23,11 +25,11 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  @brief  Generic transactional binary tree providing 2-phase commits and "watch" operations.
- *    Can be instantiated with AVL trees, weight-balanced trees, or other binary search tree implementations.
+ *  @brief  Generic transactional store providing 2-phase commits and "watch" operations.
+ *    Can be instantiated with AVL trees, weight-balanced trees, or open-addressed hash tables.
  *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
- *  @section transactional_binary_tree_design_goals Design Goals
+ *  @section transactional_store_design_goals Design Goals
  *
  *  All operations are atomic. When updating multiple values, you don't want to break in an intermediate state
  *  where only some updates succeeded. With two-phase commit transactions, you can stage many changes and commit
@@ -48,7 +50,7 @@ namespace ashvardanian::smashtable {
  *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
  *  @see https://jepsen.io/consistency/models/read-committed
  *
- *  @section transactional_binary_tree_api_overview API Overview
+ *  @section transactional_store_api_overview API Overview
  *
  *  - All lookups are heterogeneous: you can provide any type comparable to the element type. Your comparator
  *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
@@ -67,32 +69,36 @@ namespace ashvardanian::smashtable {
  *  | upsert()             | Overwrites      | success_k        | Always update regardless of existence         |
  *  | update()             | Fails (error)   | key_not_found_k  | Strict: ensure key exists before updating     |
  *
- *  @tparam basic_tree_type_ The underlying binary search tree type (basic_avl_tree, basic_wb_tree, etc.).
- *    Must provide @c rebind template alias for type transformations.
+ *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and providing a
+ *    @c rebind template alias. Cores that also satisfy @c ordered_collection unlock the ordered surface -
+ *    bounds, ranges, and, with order statistics, @c select and @c rank.
  */
-template <typename basic_tree_type_>
-class transactional_binary_tree {
+template <typename collection_type_>
+class transactional_store {
 
   public:
 #pragma region Type Definitions
 
-    using value_t = typename owned_value_of<basic_tree_type_>::type;
+    using value_t = typename owned_value_of<collection_type_>::type;
     using value_type = value_t; // ? STL style
 
-    using key_t = typename basic_tree_type_::key_type;
+    using key_t = typename collection_type_::key_type;
     using key_type = key_t; // ? STL style
 
-    using mapped_t = typename basic_tree_type_::mapped_type;
+    using mapped_t = typename collection_type_::mapped_type;
     using mapped_type = mapped_t; // ? STL style
 
-    using is_associative = typename basic_tree_type_::is_associative;
+    using is_associative = typename collection_type_::is_associative;
     using is_transactional = std::true_type;
     using callback_reads = std::true_type;
 
-    using allocator_t = typename basic_tree_type_::allocator_type;
+    /** @brief A commit publishes every staged version before any reader can run, and takes no snapshot. */
+    static constexpr isolation_t isolation_k = isolation_t::monotonic_atomic_view_k;
+
+    using allocator_t = typename collection_type_::allocator_type;
 
     /** @brief What this core family rebinds on, and how a decorated entry is reached inside it. */
-    using storage_shape_t = versioned_storage_for<basic_tree_type_, value_t>;
+    using storage_shape_t = versioned_storage_for<collection_type_, value_t>;
 
     using comparator_t = typename storage_shape_t::addressing_source_t;
     using versioning_t = typename storage_shape_t::versioning_t;
@@ -186,32 +192,26 @@ class transactional_binary_tree {
     using changed_ids_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
     using changed_ids_vector_t = basic_vector<identifier_t, changed_ids_allocator_t>;
 
-    using store_t = transactional_binary_tree;
+    using store_t = transactional_store;
 
   public:
     class transaction_t {
 
         friend store_t;
-        enum class stage_t {
-            created_k,
-            staged_k,
-            commited_k,
-        };
-
         store_t *store_ {nullptr};
         versioned_set_t changes_ {};
         watches_vector_t watches_ {};
         changed_ids_vector_t changed_ids_ {};
         generation_t generation_ {0};
-        stage_t stage_ {stage_t::created_k};
-        bool is_snapshot_ {false};
+        staging_t staging_ {staging_t::pending_k};
 
         transaction_t(store_t &set) noexcept
             : store_(&set), changes_(storage_shape_t::template sibling<versioned_t>(set.entries_)),
               watches_(watches_allocator_t(storage_shape_t::allocator_of(set.entries_))),
               changed_ids_(changed_ids_allocator_t(storage_shape_t::allocator_of(set.entries_))),
               generation_(set.new_generation_()) {}
-        watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
+        /** @brief What this transaction saw when it looked at a key that was not there. */
+        static watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
 
         /**
          *  @brief Drops this transaction's version of the first @p processed changed identifiers.
@@ -228,9 +228,47 @@ class transactional_binary_tree {
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
 
+        /**
+         *  @brief Drops anything staged and never published, and gives up this transaction's claim.
+         *
+         *  Abandoning a staged transaction is the only way the store can accumulate versions that no
+         *  generation can ever name again, so the unwind is not optional. A null @c store_ marks a
+         *  moved-from transaction, which owns nothing and must undo nothing.
+         */
+        void unwind_() noexcept {
+            if (!store_) return;
+            if (staging_ == staging_t::staged_k) unstage_(changed_ids_.size());
+            staging_ = staging_t::pending_k;
+            store_ = nullptr;
+        }
+
       public:
-        transaction_t(transaction_t &&) noexcept = default;
-        transaction_t &operator=(transaction_t &&) noexcept = default;
+        /**
+         *  @brief Takes over @p other entirely, leaving it owning nothing.
+         *
+         *  Written out rather than defaulted: a defaulted move copies @c store_ into the new object
+         *  and leaves the old one pointing at the same store, so the destructor below would unstage
+         *  the same versions twice.
+         */
+        transaction_t(transaction_t &&other) noexcept
+            : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
+              watches_(std::move(other.watches_)), changed_ids_(std::move(other.changed_ids_)),
+              generation_(other.generation_), staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
+
+        transaction_t &operator=(transaction_t &&other) noexcept {
+            if (this == &other) return *this;
+            unwind_();
+            store_ = std::exchange(other.store_, nullptr);
+            changes_ = std::move(other.changes_);
+            watches_ = std::move(other.watches_);
+            changed_ids_ = std::move(other.changed_ids_);
+            generation_ = other.generation_;
+            staging_ = std::exchange(other.staging_, staging_t::pending_k);
+            return *this;
+        }
+
+        ~transaction_t() noexcept { unwind_(); }
+
         transaction_t(transaction_t const &) = delete;
         transaction_t &operator=(transaction_t const &) = delete;
 
@@ -261,7 +299,8 @@ class transactional_binary_tree {
          */
         [[nodiscard]] status_t insert(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
-            if (local_it != changes_.end() && !(*local_it).deleted) return {key_already_exists_k};
+            if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k)
+                return {key_already_exists_k};
             if (store_ref().contains(value)) return {key_already_exists_k};
 
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
@@ -271,8 +310,8 @@ class transactional_binary_tree {
 
             versioned_t versioned(std::move(value));
             versioned.generation = generation_;
-            versioned.deleted = false;
-            versioned.visible = false;
+            versioned.presence = presence_t::present_k;
+            versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (!result) return status_t {out_of_memory_heap_k};
 
@@ -289,7 +328,7 @@ class transactional_binary_tree {
          */
         [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
-            if (local_it != changes_.end() && !(*local_it).deleted) return {success_k};
+            if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k) return {success_k};
             if (store_ref().contains(value)) return {success_k};
 
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
@@ -299,8 +338,8 @@ class transactional_binary_tree {
 
             versioned_t versioned(std::move(value));
             versioned.generation = generation_;
-            versioned.deleted = false;
-            versioned.visible = false;
+            versioned.presence = presence_t::present_k;
+            versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (!result) return status_t {out_of_memory_heap_k};
 
@@ -323,8 +362,8 @@ class transactional_binary_tree {
 
             versioned_t versioned(std::move(value));
             versioned.generation = generation_;
-            versioned.deleted = false;
-            versioned.visible = false;
+            versioned.presence = presence_t::present_k;
+            versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (!result) return status_t {out_of_memory_heap_k};
 
@@ -341,7 +380,8 @@ class transactional_binary_tree {
          */
         [[nodiscard]] status_t update(value_t &&value) noexcept {
             auto local_it = changes_.find(value);
-            if (local_it != changes_.end() && !(*local_it).deleted) return upsert(std::move(value));
+            if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k)
+                return upsert(std::move(value));
             if (!store_ref().contains(value)) return {key_not_found_k};
             return upsert(std::move(value));
         }
@@ -359,10 +399,15 @@ class transactional_binary_tree {
             auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
             if (!reserve_status) return reserve_status;
 
-            versioned_t versioned(value_t {id});
+            // The tombstone owns its own identifier, and the list of changed identifiers owns another,
+            // so a move-only key needs two safe copies rather than one copy and one implicit one.
+            auto maybe_payload = copy_safely<identifier_t>(id);
+            if (!maybe_payload) return status_t {out_of_memory_heap_k};
+
+            versioned_t versioned(value_t {std::move(*maybe_payload)});
             versioned.generation = generation_;
-            versioned.deleted = true;
-            versioned.visible = false;
+            versioned.presence = presence_t::erased_k;
+            versioned.publication = publication_t::staged_k;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (!result) return status_t {out_of_memory_heap_k};
 
@@ -375,7 +420,13 @@ class transactional_binary_tree {
         [[nodiscard]] status_t watch(identifier_t id) noexcept {
             status_t result {success_k};
             auto found = [&](versioned_t const &versioned) noexcept {
-                result = watches_.push_back({std::move(id), watch_t {versioned.generation, versioned.deleted}});
+                // A committed tombstone is reported as found, since the public `find` has to see it
+                // to hide it. Validation resolves that same key to "missing", so a watch on it must
+                // record the missing shape or it could never match itself.
+                watch_t const observed = versioned.presence == presence_t::erased_k
+                                             ? missing_watch()
+                                             : watch_t {versioned.generation, versioned.presence};
+                result = watches_.push_back({std::move(id), observed});
             };
             auto missing = [&]() noexcept { result = watches_.push_back({std::move(id), missing_watch()}); };
             store_ref().find_visible_entry_(id, found, missing);
@@ -385,13 +436,13 @@ class transactional_binary_tree {
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
             auto maybe_id = copy_safely<identifier_t>(identifier_t {versioned.unversioned});
             if (!maybe_id) return status_t {out_of_memory_heap_k};
-            return watches_.push_back({std::move(*maybe_id), watch_t {versioned.generation, versioned.deleted}});
+            return watches_.push_back({std::move(*maybe_id), watch_t {versioned.generation, versioned.presence}});
         }
 
         /**
          *  @brief Finds a member @b equal to the given @p comparable.
          *    You may want to @c watch() the received object, it's not done by default.
-         *    Unlike @c transactional_binary_tree::find(), will include the entries added to this transaction.
+         *    Unlike @c transactional_store::find(), will include the entries added to this transaction.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
@@ -402,7 +453,8 @@ class transactional_binary_tree {
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
             if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end())
-                !(*iterator).deleted ? callback_found((*iterator).unversioned) : callback_missing();
+                (*iterator).presence == presence_t::present_k ? callback_found((*iterator).unversioned)
+                                                              : callback_missing();
             else
                 store_ref().find(std::forward<comparable_type_>(comparable),
                                  std::forward<callback_found_type_>(callback_found),
@@ -423,7 +475,7 @@ class transactional_binary_tree {
             // Only the fall-through branch forwards: a lookup that misses `changes_` is the last use, and
             // forwarding at both sites would hand the second one an already moved-from object.
             if (auto it = changes_.find(comparable); it != changes_.end()) {
-                if (!(*it).deleted) {
+                if ((*it).presence == presence_t::present_k) {
                     auto copy_result = copy_safely((*it).unversioned);
                     if (copy_result) {
                         result.outcome = std::move(*copy_result);
@@ -456,7 +508,7 @@ class transactional_binary_tree {
         /**
          *  @brief Finds the first member @b greater or equal to the given @p comparable.
          *    You may want to @c watch() the received object, it's not done by default.
-         *    Unlike @c transactional_binary_tree::lower_bound(), will include entries added to this transaction.
+         *    Unlike @c transactional_store::lower_bound(), will include entries added to this transaction.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
@@ -477,7 +529,7 @@ class transactional_binary_tree {
             }
 
             auto changed_lb = changes_.lower_bound(comparable);
-            while (changed_lb != changes_.end() && changed_lb->deleted) { ++changed_lb; }
+            while (changed_lb != changes_.end() && changed_lb->presence == presence_t::erased_k) { ++changed_lb; }
 
             if (!store_visible && changed_lb == changes_.end()) { callback_missing(); }
             else if (!store_visible) { callback_found(changed_lb->unversioned); }
@@ -522,7 +574,7 @@ class transactional_binary_tree {
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto const upper_internal_bound = identifier_t(upper);
             for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it)
-                if (!it->deleted) callback(it->unversioned);
+                if (it->presence == presence_t::present_k) callback(it->unversioned);
 
             store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                               [&](value_t const &external_value) {
@@ -546,7 +598,7 @@ class transactional_binary_tree {
             }
 
             auto changed_ub = changes_.upper_bound(comparable);
-            while (changed_ub != changes_.end() && changed_ub->deleted) { ++changed_ub; }
+            while (changed_ub != changes_.end() && changed_ub->presence == presence_t::erased_k) { ++changed_ub; }
 
             if (!store_visible && changed_ub == changes_.end()) { callback_missing(); }
             else if (!store_visible) { callback_found(changed_ub->unversioned); }
@@ -589,7 +641,7 @@ class transactional_binary_tree {
                 else { take_local = less(local_it->unversioned, store_node->fruit); }
 
                 if (take_local) {
-                    if (!local_it->deleted) {
+                    if (local_it->presence == presence_t::present_k) {
                         if (visible_index == k) {
                             callback_found(local_it->unversioned);
                             found = true;
@@ -600,7 +652,7 @@ class transactional_binary_tree {
                 }
                 else {
                     versioned_t const *store_visible = store_t::visible_version_(store_node->fruit);
-                    if (store_visible && !store_visible->deleted &&
+                    if (store_visible && store_visible->presence == presence_t::present_k &&
                         changes_.find(mapping_key_or_itself<value_t>(store_visible->unversioned)) == changes_.end()) {
                         if (visible_index == k) {
                             callback_found(store_visible->unversioned);
@@ -637,7 +689,7 @@ class transactional_binary_tree {
             auto const less = changes_.key_comp();
 
             auto local_target = changes_.find(target_id);
-            if (local_target != changes_.end() && !local_target->deleted) { found = true; }
+            if (local_target != changes_.end() && local_target->presence == presence_t::present_k) { found = true; }
             else if (store_ref().contains(target_id)) { found = true; }
 
             if (!found) {
@@ -656,12 +708,13 @@ class transactional_binary_tree {
                 else { take_local = less(local_it->unversioned, store_node->fruit); }
 
                 if (take_local) {
-                    if (!local_it->deleted && less(local_it->unversioned, target_id)) ++rank_value;
+                    if (local_it->presence == presence_t::present_k && less(local_it->unversioned, target_id))
+                        ++rank_value;
                     ++local_it;
                 }
                 else {
                     versioned_t const *store_visible = store_t::visible_version_(store_node->fruit);
-                    if (store_visible && !store_visible->deleted &&
+                    if (store_visible && store_visible->presence == presence_t::present_k &&
                         changes_.find(mapping_key_or_itself<value_t>(store_visible->unversioned)) == changes_.end() &&
                         less(store_visible->unversioned, target_id)) {
                         ++rank_value;
@@ -682,6 +735,8 @@ class transactional_binary_tree {
          */
         [[nodiscard]] status_t stage() noexcept {
             auto &store = store_ref();
+            auto const prepaid = storage_shape_t::prepare(store.entries_, changed_ids_.size());
+            if (!prepaid) return prepaid;
             auto const entry_missing = missing_watch();
             for (auto const &id_and_watch : watches_) {
                 auto consistency_violated = false;
@@ -712,8 +767,8 @@ class transactional_binary_tree {
                 }
                 versioned_t reservation(value_t {std::move(*reserved_id)});
                 reservation.generation = generation_;
-                reservation.deleted = false;
-                reservation.visible = false;
+                reservation.presence = presence_t::present_k;
+                reservation.publication = publication_t::staged_k;
                 auto result = storage_shape_t::upsert(store.entries_, versioned_chain_t {std::move(reservation)});
                 if (!result) {
                     unstage_(reserved);
@@ -733,43 +788,50 @@ class transactional_binary_tree {
             }
 
             changes_.clear();
-            stage_ = stage_t::staged_k;
+            staging_ = staging_t::staged_k;
             return {success_k};
         }
 
         [[nodiscard]] status_t reset() noexcept {
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k) unstage_(changed_ids_.size());
+            if (staging_ == staging_t::staged_k) unstage_(changed_ids_.size());
 
             watches_.clear();
             changes_.clear();
             changed_ids_.clear();
-            stage_ = stage_t::created_k;
+            staging_ = staging_t::pending_k;
             generation_ = store.new_generation_();
             return {success_k};
         }
 
         [[nodiscard]] status_t rollback() noexcept {
-            if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
 
             auto &store = store_ref();
             status_t result {success_k};
+
+            // The recovered versions carry the generation they were staged under, and this
+            // transaction is about to take a new one, so each is re-stamped on the way back. The
+            // changed identifiers are deliberately kept: these keys are still going to be written,
+            // and a later stage reserves a chain for each one before moving anything into it.
+            generation_t const resumed = store.new_generation_();
             for (identifier_t const &id : changed_ids_) {
                 versioned_t recovered;
                 // ! Don't materialize a new copy of `id` here, use a reference
                 if (store.chain_discard_(id, generation_, &recovered) == detach_outcome_t::not_found_k) continue;
+                recovered.generation = resumed;
+                recovered.publication = publication_t::staged_k;
                 auto reinstated = storage_shape_t::upsert(changes_, std::move(recovered));
                 if (!reinstated) result = status_t {out_of_memory_heap_k};
             }
 
-            changed_ids_.clear();
-            stage_ = stage_t::created_k;
-            generation_ = store.new_generation_();
+            staging_ = staging_t::pending_k;
+            generation_ = resumed;
             return result;
         }
 
         [[nodiscard]] status_t commit() noexcept {
-            if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
 
             // Once we make an entry visible, if there are more than one with the same key,
             // the older generation must die.
@@ -778,7 +840,7 @@ class transactional_binary_tree {
 
             changes_.clear();
             changed_ids_.clear();
-            stage_ = stage_t::created_k;
+            staging_ = staging_t::pending_k;
             return {success_k};
         }
     };
@@ -811,9 +873,9 @@ class transactional_binary_tree {
 
     /** @brief The one version a reader may see, or null while every version of the key is staged. */
     static versioned_t const *visible_version_(versioned_chain_t const &chain) noexcept {
-        if (chain.head.visible) return &chain.head;
+        if (chain.head.publication == publication_t::published_k) return &chain.head;
         for (version_node_t const *node = chain.others; node; node = node->next)
-            if (node->entry.visible) return &node->entry;
+            if (node->entry.publication == publication_t::published_k) return &node->entry;
         return nullptr;
     }
 
@@ -966,7 +1028,7 @@ class transactional_binary_tree {
 
     /**
      *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_t const &.
-     *    Used by internal methods that need access to generation/deleted/visible fields.
+     *    Used by internal methods that need access to generation, presence and publication fields.
      *    Only considers VISIBLE entries (committed/staged).
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
@@ -1004,7 +1066,7 @@ class transactional_binary_tree {
 
         auto found = entries_.find(std::forward<comparable_type_>(comparable));
         versioned_t const *latest = found != entries_.end() ? latest_version_(*found) : nullptr;
-        if (latest && !latest->deleted) callback_found(*latest);
+        if (latest && latest->presence == presence_t::present_k) callback_found(*latest);
         else callback_missing();
     }
 
@@ -1020,10 +1082,10 @@ class transactional_binary_tree {
         while (versioned_t const *doomed = visible_version_(chain)) {
             if (doomed->generation == generation_to_unmask) break;
             generation_t const doomed_generation = doomed->generation;
-            bool const doomed_was_deleted = doomed->deleted;
+            bool const doomed_was_erased = doomed->presence == presence_t::erased_k;
             auto const outcome = chain_detach_(chain, doomed_generation, nullptr);
             --visible_count_;
-            visible_deleted_count_ -= doomed_was_deleted;
+            visible_deleted_count_ -= doomed_was_erased;
             if (outcome == detach_outcome_t::detached_and_emptied_k) {
                 entries_.erase(id);
                 return;
@@ -1036,10 +1098,10 @@ class transactional_binary_tree {
             for (version_node_t *node = chain.others; node && !unmasked; node = node->next)
                 if (node->entry.generation == generation_to_unmask) unmasked = &node->entry;
 
-        if (unmasked && !unmasked->visible) {
-            unmasked->visible = true;
+        if (unmasked && unmasked->publication == publication_t::staged_k) {
+            unmasked->publication = publication_t::published_k;
             ++visible_count_;
-            if (unmasked->deleted) visible_deleted_count_++;
+            if (unmasked->presence == presence_t::erased_k) visible_deleted_count_++;
         }
     }
 
@@ -1048,21 +1110,21 @@ class transactional_binary_tree {
 #pragma region Constructors and Assignment
 
   public:
-    transactional_binary_tree() noexcept {}
+    transactional_store() noexcept {}
 
     /** @brief Seeds the underlying tree's allocator, which a stateful allocator needs. */
-    explicit transactional_binary_tree(allocator_t const &allocator) noexcept
+    explicit transactional_store(allocator_t const &allocator) noexcept
         : entries_(storage_shape_t::template build<versioned_chain_t>(allocator)) {}
 
     /** @brief Seeds the comparator as well, which a comparator carrying state or a dispatch pointer needs. */
-    transactional_binary_tree(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
+    transactional_store(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
         : entries_(storage_shape_t::template build<versioned_chain_t>(comparator, allocator)) {}
-    transactional_binary_tree(transactional_binary_tree &&other) noexcept
+    transactional_store(transactional_store &&other) noexcept
         : spare_versions_(std::exchange(other.spare_versions_, nullptr)), entries_(std::move(other.entries_)),
           generation_(other.generation_), visible_count_(other.visible_count_),
           visible_deleted_count_(other.visible_deleted_count_) {}
 
-    transactional_binary_tree &operator=(transactional_binary_tree &&other) noexcept {
+    transactional_store &operator=(transactional_store &&other) noexcept {
         if (this == &other) return *this;
         // The chains being dropped free their own version nodes, so the tree is emptied before the
         // spares are, and neither depends on the other surviving.
@@ -1076,7 +1138,7 @@ class transactional_binary_tree {
         return *this;
     }
 
-    ~transactional_binary_tree() noexcept {
+    ~transactional_store() noexcept {
         entries_.clear();
         release_spare_versions_();
     }
@@ -1322,8 +1384,8 @@ class transactional_binary_tree {
     [[nodiscard]] status_t upsert(value_t &&value) noexcept {
         versioned_t versioned(std::move(value));
         versioned.generation = new_generation_();
-        versioned.deleted = false;
-        versioned.visible = true;
+        versioned.presence = presence_t::present_k;
+        versioned.publication = publication_t::published_k;
 
         // A direct write carries the newest generation there is, so nothing this key already holds can
         // outrank it, staged versions included. The whole chain gives way to the single new version.
@@ -1332,7 +1394,7 @@ class transactional_binary_tree {
             auto &chain = mutable_ref_(*found);
             if (versioned_t const *displaced = visible_version_(chain)) {
                 --visible_count_;
-                visible_deleted_count_ -= displaced->deleted;
+                visible_deleted_count_ -= displaced->presence == presence_t::erased_k;
             }
             chain.release_others();
             chain.head = std::move(versioned);
@@ -1374,19 +1436,19 @@ class transactional_binary_tree {
 
         // Staging is what makes this all-or-nothing: bailing out before `stage()` leaves the store
         // untouched, and duplicates inside the range collapse onto a single staged version.
-        auto txn = transaction();
-        if (!txn) return {out_of_memory_heap_k};
+        auto opened = transaction();
+        if (!opened) return {out_of_memory_heap_k};
 
         for (; first != last; ++first) {
             value_t candidate(*first);
             if (contains(mapping_key_or_itself<value_t>(candidate))) return {invalid_argument_k};
-            auto status = txn->insert_if_missing(std::move(candidate));
+            auto status = opened->insert_if_missing(std::move(candidate));
             if (!status) return status;
         }
 
-        auto stage_status = txn->stage();
+        auto stage_status = opened->stage();
         if (!stage_status) return stage_status;
-        return txn->commit();
+        return opened->commit();
     }
 
     /**
@@ -1400,17 +1462,17 @@ class transactional_binary_tree {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        auto txn = transaction();
-        if (!txn) return {out_of_memory_heap_k};
+        auto opened = transaction();
+        if (!opened) return {out_of_memory_heap_k};
 
         for (; first != last; ++first) {
-            auto status = txn->insert_if_missing(value_t(*first));
+            auto status = opened->insert_if_missing(value_t(*first));
             if (!status) return status;
         }
 
-        auto stage_status = txn->stage();
+        auto stage_status = opened->stage();
         if (!stage_status) return stage_status;
-        return txn->commit();
+        return opened->commit();
     }
 
     /**
@@ -1423,17 +1485,17 @@ class transactional_binary_tree {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        auto txn = transaction();
-        if (!txn) return {out_of_memory_heap_k};
+        auto opened = transaction();
+        if (!opened) return {out_of_memory_heap_k};
 
         for (; first != last; ++first) {
-            auto status = txn->upsert(value_t(*first));
+            auto status = opened->upsert(value_t(*first));
             if (!status) return status;
         }
 
-        auto stage_status = txn->stage();
+        auto stage_status = opened->stage();
         if (!stage_status) return stage_status;
-        return txn->commit();
+        return opened->commit();
     }
 
     /**
@@ -1448,19 +1510,19 @@ class transactional_binary_tree {
     [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return {success_k};
 
-        auto txn = transaction();
-        if (!txn) return {out_of_memory_heap_k};
+        auto opened = transaction();
+        if (!opened) return {out_of_memory_heap_k};
 
         for (; first != last; ++first) {
             value_t candidate(*first);
             if (!contains(mapping_key_or_itself<value_t>(candidate))) return {key_not_found_k};
-            auto status = txn->upsert(std::move(candidate));
+            auto status = opened->upsert(std::move(candidate));
             if (!status) return status;
         }
 
-        auto stage_status = txn->stage();
+        auto stage_status = opened->stage();
         if (!stage_status) return stage_status;
-        return txn->commit();
+        return opened->commit();
     }
 
 #pragma endregion Modifiers
@@ -1484,7 +1546,7 @@ class transactional_binary_tree {
         find_visible_entry_(
             std::forward<comparable_type_>(comparable),
             [&](versioned_t const &versioned) noexcept {
-                if (versioned.deleted) callback_missing();
+                if (versioned.presence == presence_t::erased_k) callback_missing();
                 else callback_found(versioned.unversioned);
             },
             [&]() noexcept { callback_missing(); });
@@ -1596,7 +1658,7 @@ class transactional_binary_tree {
                                  if (versioned_t const *visible = visible_version_(chain)) {
                                      callback(visible->unversioned);
                                      --visible_count_;
-                                     visible_deleted_count_ -= visible->deleted;
+                                     visible_deleted_count_ -= visible->presence == presence_t::erased_k;
                                  }
                              });
         return status_t {success_k};
@@ -1658,7 +1720,7 @@ class transactional_binary_tree {
 
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
             versioned_t const *visible = visible_version_(node->fruit);
-            if (!visible || visible->deleted) return;
+            if (!visible || visible->presence == presence_t::erased_k) return;
             if (visible_index == k) {
                 callback_found(visible->unversioned);
                 found = true;
@@ -1692,7 +1754,7 @@ class transactional_binary_tree {
 
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
             versioned_t const *visible = visible_version_(node->fruit);
-            if (!visible || visible->deleted) return;
+            if (!visible || visible->presence == presence_t::erased_k) return;
 
             if (less.same(visible->unversioned, target_id)) {
                 callback_found(rank_value);
@@ -1742,7 +1804,7 @@ class transactional_binary_tree {
         if (doomed != entries_.end())
             if (versioned_t const *visible = visible_version_(*doomed)) {
                 --visible_count_;
-                visible_deleted_count_ -= visible->deleted;
+                visible_deleted_count_ -= visible->presence == presence_t::erased_k;
             }
         entries_.erase(comparable);
         return status_t {success_k};
@@ -1783,7 +1845,7 @@ class transactional_binary_tree {
         stream << "Items: " << entries_.size() << "\n";
         stream << "Imbalance: " << entries_.total_imbalance() << "\n";
         auto show = [&](versioned_t const &version) {
-            char const *marker = version.visible ? "✓" : "✗";
+            char const *marker = version.publication == publication_t::published_k ? "✓" : "✗";
             stream << identifier_t {version.unversioned} << " @" << version.generation;
             stream << marker << " ";
         };
@@ -1805,7 +1867,7 @@ class transactional_binary_tree {
  */
 template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
           typename allocator_type_ = std::allocator<value_type_>>
-using transactional_avl_set = transactional_binary_tree<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
+using transactional_avl_set = transactional_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional map using AVL tree.
@@ -1819,7 +1881,7 @@ using transactional_avl_set = transactional_binary_tree<basic_avl_tree<value_typ
 template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
 using transactional_avl_map =
-    transactional_binary_tree<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    transactional_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional set using weight-balanced tree with order statistics support.
@@ -1831,7 +1893,7 @@ using transactional_avl_map =
  */
 template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
           typename allocator_type_ = std::allocator<value_type_>>
-using transactional_wb_set = transactional_binary_tree<basic_wb_tree<value_type_, comparator_type_, allocator_type_>>;
+using transactional_wb_set = transactional_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional map using weight-balanced tree with order statistics support.
@@ -1845,7 +1907,36 @@ using transactional_wb_set = transactional_binary_tree<basic_wb_tree<value_type_
 template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
 using transactional_wb_map =
-    transactional_binary_tree<basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    transactional_store<basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional set using an open-addressed hash table.
+ *    Point access only - no bounds, ranges, or order statistics, as the core supplies no ordering.
+ *
+ *  @tparam key_type_ Type of elements stored in the set.
+ *  @tparam hasher_type_ Hasher for placing elements. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
+ */
+template <typename key_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
+          typename allocator_type_ = std::allocator<std::byte>>
+using transactional_hash_set =
+    transactional_store<basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>>;
+
+/**
+ *  @brief STL-style transactional map using an open-addressed hash table.
+ *    Point access only - no bounds, ranges, or order statistics, as the core supplies no ordering.
+ *
+ *  @tparam key_type_ Type of keys stored in the map.
+ *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam hasher_type_ Hasher for placing keys. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for heterogeneous lookups.
+ *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
+ */
+template <typename key_type_, typename value_type_, typename hasher_type_ = lazy_std_hash_t,
+          typename equals_type_ = std::equal_to<>, typename allocator_type_ = std::allocator<std::byte>>
+using transactional_hash_map =
+    transactional_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 #pragma endregion Order Statistics
 

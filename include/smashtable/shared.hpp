@@ -7,9 +7,9 @@
  *
  *  @section shared_store_tiers Store Tiers
  *
- *  @c transactional_binary_tree names a tree, but what it needs from its parameter is narrower than
- *  tree-ness. The concepts near the end of this file state that requirement, so a container which
- *  does not meet it says so at the call site rather than deep inside the adapter.
+ *  What @c transactional_store needs from its parameter is narrower than tree-ness. The concepts near
+ *  the end of this file state that requirement, so a container which does not meet it says so at the
+ *  call site rather than deep inside the adapter.
  *
  *  The requirements fall into two tiers, and the split is the point. Key-addressed work - staging a
  *  change, validating a watch, committing, reading one key - needs only point lookup and a
@@ -25,16 +25,27 @@
 #include <cstdint> // `std::int64_t`
 
 #include <atomic>      // `std::atomic_ref`
+#include <array>       // `std::array`
 #include <bit>         // `std::countl_zero`
 #include <concepts>    // `std::convertible_to`, `std::same_as`
 #include <optional>    // `std::optional`
+#include <tuple>       // `std::tuple`
 #include <type_traits> // `std::is_nothrow_invocable_v`
-#include <utility>     // `std::move`
+#include <utility>     // `std::move`, `std::index_sequence`
 
 namespace ashvardanian::smashtable {
 
 /** @brief Generation type for versioned elements. */
 using generation_t = std::int64_t;
+
+/**
+ *  @brief The generation no stored entry can carry, standing for a key that is not there.
+ *
+ *  Generations are handed out pre-incremented, so the first is 1 and zero is free to mean absence.
+ *  A watch on an absent key must be anchored to this rather than to the watching transaction's own
+ *  generation, which @c rollback reassigns - otherwise the watch stops matching itself.
+ */
+inline constexpr generation_t absent_generation_k = 0;
 
 /** @brief Error codes for the library. Zero is success, non-zero is failure. */
 enum errc_t {
@@ -467,16 +478,57 @@ struct comparable_particle_of<comparator_type_, comparable_type_, true> {
 
 #pragma region Versioning Machinery
 
+/**
+ *  @brief What a reader is promised, named as Jepsen names it and ordered by strength.
+ *  @see https://jepsen.io/consistency
+ */
+enum class isolation_t : std::uint8_t {
+    read_uncommitted_k = 0,
+    read_committed_k = 1,
+    monotonic_atomic_view_k = 2,
+    snapshot_k = 3,
+    serializable_k = 4,
+};
+
+/**
+ *  @brief Whether a transaction's writes are sitting in the store, invisible, or not there yet.
+ *
+ *  A committed transaction returns to @c pending_k and is immediately reusable, so there is no third
+ *  state to name - @c commit on a @c pending_k transaction already reports @c operation_not_permitted_k.
+ */
+enum class staging_t : bool {
+    /** @brief Accepting writes; the store holds nothing of this transaction. */
+    pending_k,
+    /** @brief The store has reserved every change, so @c commit cannot fail. */
+    staged_k,
+};
+
+/** @brief Whether an entry says its key is there, or says it was taken away and when. */
+enum class presence_t : bool {
+    /** @brief The key is there and this is its value. */
+    present_k,
+    /** @brief The key was erased. The stamp survives so a watch can date the erasure. */
+    erased_k,
+};
+
+/** @brief Whether a reader may see an entry, or a live transaction still owns it. */
+enum class publication_t : bool {
+    /** @brief Written or reserved by a transaction that has not committed. No reader sees it. */
+    staged_k,
+    /** @brief Committed. This is what a reader reads. */
+    published_k,
+};
+
 /** @brief Watch metadata for versioned elements. */
 struct watch_t {
     generation_t generation {0};
-    bool deleted {false};
+    presence_t presence {presence_t::present_k};
 
     inline bool operator==(watch_t const &watch) const noexcept {
-        return watch.deleted == deleted && watch.generation == generation;
+        return watch.presence == presence && watch.generation == generation;
     }
     inline bool operator!=(watch_t const &watch) const noexcept {
-        return watch.deleted != deleted || watch.generation != generation;
+        return watch.presence != presence || watch.generation != generation;
     }
 };
 
@@ -582,8 +634,8 @@ struct versioning_for {
     struct versioned_t {
         value_t unversioned;
         generation_t generation {0};
-        bool deleted {false};
-        bool visible {true};
+        presence_t presence {presence_t::present_k};
+        publication_t publication {publication_t::published_k};
 
         versioned_t() = default;
         versioned_t(versioned_t &&) noexcept = default;
@@ -593,10 +645,10 @@ struct versioning_for {
         versioned_t(value_t &&unversioned) noexcept : unversioned(std::move(unversioned)) {}
 
         bool operator==(watch_t const &watch) const noexcept {
-            return watch.deleted == deleted && watch.generation == generation;
+            return watch.presence == presence && watch.generation == generation;
         }
         bool operator!=(watch_t const &watch) const noexcept {
-            return watch.deleted != deleted || watch.generation != generation;
+            return watch.presence != presence || watch.generation != generation;
         }
     };
 
@@ -895,6 +947,12 @@ struct versioned_storage_for {
         return storage.allocator();
     }
 
+    /** @brief A node-based core has nothing to prepay; the placeholder pass reserves it. */
+    template <typename storage_type_>
+    static status_t prepare(storage_type_ &, std::size_t) noexcept {
+        return status_t {success_k};
+    }
+
     /** @brief Files @p element under its own key, overwriting whatever shared it. */
     template <typename storage_type_, typename element_type_>
     static status_t upsert(storage_type_ &storage, element_type_ &&element) noexcept {
@@ -958,6 +1016,15 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
     template <typename storage_type_>
     static decltype(auto) allocator_of(storage_type_ const &storage) noexcept {
         return storage.get_allocator();
+    }
+
+    /** @brief A slab grows once, so every later upsert lands in a slot already paid for. */
+    template <typename storage_type_>
+    static status_t prepare(storage_type_ &storage, std::size_t count) noexcept {
+        using slot_count_t = typename storage_type_::size_type;
+        using reserve_result_t = typename storage_type_::reserve_result_t;
+        auto const grown = storage.reserve_more(static_cast<slot_count_t>(count));
+        return grown == reserve_result_t::failed_k ? status_t {out_of_memory_heap_k} : status_t {success_k};
     }
 
     /** @brief Files @p element under its own key, overwriting whatever shared it. */

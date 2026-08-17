@@ -24,6 +24,8 @@
 #     `SMASHTABLE_FILTER`.
 #   * smashtable_test_hash_table - the unordered family, running the hash-specific suites of
 #     `scripts/test_unordered.hpp` instead, including the threaded ones.
+#   * smashtable_test_transactional_hash - the transactional store over the open-addressed table,
+#     running only the point-access suites an unordered core can answer.
 #
 # The Python extension is not built here: `setup.py` compiles the translation units under
 # `python/smashtable/` directly, as a wheel build has no use for the test and install machinery below.
@@ -138,12 +140,17 @@ if (SMASHTABLE_BUILD_TESTS)
     target_include_directories(smashtable_test_hash_table PRIVATE scripts/)
     target_link_libraries(smashtable_test_hash_table PRIVATE smashtable::smashtable smashtable_warnings)
 
+    add_executable(smashtable_test_transactional_hash scripts/test_transactional_hash.cpp)
+    target_include_directories(smashtable_test_transactional_hash PRIVATE scripts/)
+    target_link_libraries(smashtable_test_transactional_hash PRIVATE smashtable::smashtable smashtable_warnings)
+
     enable_testing()
     add_test(NAME test_std_set COMMAND smashtable_test_std_set)
     add_test(NAME test_avl_tree COMMAND smashtable_test_avl_tree)
     add_test(NAME test_wb_tree COMMAND smashtable_test_wb_tree)
     add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
     add_test(NAME test_hash_table COMMAND smashtable_test_hash_table)
+    add_test(NAME test_transactional_hash COMMAND smashtable_test_transactional_hash)
 endif ()
 
 option(SMASHTABLE_INSTALL "Install headers and CMake package files" ${SMASHTABLE_IS_MAIN_PROJECT})

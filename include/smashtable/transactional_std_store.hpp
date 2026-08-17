@@ -122,6 +122,9 @@ class transactional_std_store {
     using is_transactional = std::true_type;
     using callback_reads = std::true_type;
 
+    /** @brief A commit publishes every staged version before any reader can run, and takes no snapshot. */
+    static constexpr isolation_t isolation_k = isolation_t::monotonic_atomic_view_k;
+
     using versioning_t = versioning_for<value_t, comparator_t>;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
@@ -151,30 +154,74 @@ class transactional_std_store {
     class transaction_t {
 
         friend store_t;
-        enum class stage_t {
-            created_k,
-            staged_k,
-            committed_k,
-        };
-
         store_t *store_ {nullptr};
         entry_set_t changes_ {};
         watches_array_t watches_ {};
         changed_ids_vector_t changed_ids_ {};
         generation_t generation_ {0};
-        stage_t stage_ {stage_t::created_k};
+        staging_t staging_ {staging_t::pending_k};
 
         // The local change set must order exactly as the store does, so it borrows the store's comparator
         // rather than default-constructing one - otherwise a stateful comparator would sort the two apart.
         transaction_t(store_t &set) noexcept(false)
             : store_(&set), changes_(set.entries_.key_comp()), generation_(set.new_generation_()) {}
-        watch_t missing_watch() const noexcept { return watch_t {generation_, true}; }
+        /** @brief What this transaction saw when it looked at a key that was not there. */
+        static watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
 
+        /** @brief Erases every entry this transaction staged under its own generation. */
+        void unstage_() noexcept {
+            auto &store = store_ref();
+            for (auto const &id : changed_ids_) {
+                // Heterogeneous `erase` is only coming in C++23.
+                dated_identifier<identifier_t const &> dated {id, generation_};
+                if (auto iterator = store.entries_.find(dated); iterator != store.entries_.end())
+                    store.entries_.erase(iterator);
+            }
+        }
+
+        /**
+         *  @brief Drops anything staged and never published, and gives up this transaction's claim.
+         *
+         *  Abandoning a staged transaction is the only way the store can accumulate entries that no
+         *  generation can ever name again, so the unwind is not optional. A null @c store_ marks a
+         *  moved-from transaction, which owns nothing and must undo nothing.
+         */
+        void unwind_() noexcept {
+            if (!store_) return;
+            if (staging_ == staging_t::staged_k) unstage_();
+            staging_ = staging_t::pending_k;
+            store_ = nullptr;
+        }
+
       public:
-        transaction_t(transaction_t &&) noexcept = default;
-        transaction_t &operator=(transaction_t &&) noexcept = default;
+        /**
+         *  @brief Takes over @p other entirely, leaving it owning nothing.
+         *
+         *  Written out rather than defaulted: a defaulted move copies @c store_ into the new object
+         *  and leaves the old one pointing at the same store, so the destructor below would erase the
+         *  same staged entries twice.
+         */
+        transaction_t(transaction_t &&other) noexcept
+            : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
+              watches_(std::move(other.watches_)), changed_ids_(std::move(other.changed_ids_)),
+              generation_(other.generation_), staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
+
+        transaction_t &operator=(transaction_t &&other) noexcept {
+            if (this == &other) return *this;
+            unwind_();
+            store_ = std::exchange(other.store_, nullptr);
+            changes_ = std::move(other.changes_);
+            watches_ = std::move(other.watches_);
+            changed_ids_ = std::move(other.changed_ids_);
+            generation_ = other.generation_;
+            staging_ = std::exchange(other.staging_, staging_t::pending_k);
+            return *this;
+        }
+
+        ~transaction_t() noexcept { unwind_(); }
+
         transaction_t(transaction_t const &) = delete;
         transaction_t &operator=(transaction_t const &) = delete;
 
@@ -219,7 +266,7 @@ class transactional_std_store {
             if (!maybe_id) return maybe_id.status;
             auto const &id = *maybe_id;
             auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && !local_it->deleted) {
+            if (local_it != changes_.end() && local_it->presence == presence_t::present_k) {
                 callback_exists(local_it->unversioned);
                 return {invalid_argument_k};
             }
@@ -244,8 +291,8 @@ class transactional_std_store {
                     iterator = changes_.emplace_hint(iterator, std::move(element));
                 else const_cast<value_t &>(iterator->unversioned) = std::move(element);
                 const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<bool &>(iterator->deleted) = false;
-                const_cast<bool &>(iterator->visible) = false;
+                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
+                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
                 changed_ids_.push_back(std::move(*maybe_id));
             });
 
@@ -277,7 +324,7 @@ class transactional_std_store {
             if (!maybe_id) return maybe_id.status;
             auto const &id = *maybe_id;
             auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && !local_it->deleted) {
+            if (local_it != changes_.end() && local_it->presence == presence_t::present_k) {
                 callback_skipped(local_it->unversioned);
                 return {success_k}; // Success, just didn't insert
             }
@@ -302,8 +349,8 @@ class transactional_std_store {
                     iterator = changes_.emplace_hint(iterator, std::move(element));
                 else const_cast<value_t &>(iterator->unversioned) = std::move(element);
                 const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<bool &>(iterator->deleted) = false;
-                const_cast<bool &>(iterator->visible) = false;
+                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
+                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
                 changed_ids_.push_back(std::move(*maybe_id));
             });
 
@@ -334,7 +381,7 @@ class transactional_std_store {
             if (!maybe_id) return maybe_id.status;
             auto const &id = *maybe_id;
             auto local_it = changes_.find(id);
-            bool key_exists = (local_it != changes_.end() && !local_it->deleted);
+            bool key_exists = (local_it != changes_.end() && local_it->presence == presence_t::present_k);
 
             // Check in main store
             if (!key_exists) key_exists = store_ref().contains(id);
@@ -346,8 +393,8 @@ class transactional_std_store {
                     iterator = changes_.emplace_hint(iterator, std::move(element));
                 else const_cast<value_t &>(iterator->unversioned) = std::move(element);
                 const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<bool &>(iterator->deleted) = false;
-                const_cast<bool &>(iterator->visible) = false;
+                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
+                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
                 changed_ids_.push_back(std::move(*maybe_id));
             });
 
@@ -386,8 +433,8 @@ class transactional_std_store {
                     iterator = changes_.emplace_hint(iterator, value_t {std::move(*maybe_tombstone)});
                 else const_cast<value_t &>(iterator->unversioned) = value_t {std::move(*maybe_tombstone)};
                 const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<bool &>(iterator->deleted) = true;
-                const_cast<bool &>(iterator->visible) = false;
+                const_cast<presence_t &>(iterator->presence) = presence_t::erased_k;
+                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
                 changed_ids_.push_back(std::move(*maybe_id));
             });
         }
@@ -420,7 +467,7 @@ class transactional_std_store {
                 [&](versioned_entry_t const &entry) noexcept {
                     auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(entry.unversioned));
                     if (!maybe_id) status = maybe_id.status;
-                    else remember(std::move(*maybe_id), watch_t {entry.generation, entry.deleted});
+                    else remember(std::move(*maybe_id), watch_t {entry.generation, entry.presence});
                 },
                 [&]() noexcept {
                     auto maybe_id = copy_safely<identifier_t>(id);
@@ -441,7 +488,7 @@ class transactional_std_store {
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(entry.unversioned));
             if (!maybe_id) return maybe_id.status;
             return invoke_safely(
-                [&] { watches_.push_back({std::move(*maybe_id), watch_t {entry.generation, entry.deleted}}); });
+                [&] { watches_.push_back({std::move(*maybe_id), watch_t {entry.generation, entry.presence}}); });
         }
 
         /**
@@ -463,7 +510,7 @@ class transactional_std_store {
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
             if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
-                if (!iterator->deleted) callback_found(iterator->unversioned);
+                if (iterator->presence == presence_t::present_k) callback_found(iterator->unversioned);
                 else callback_missing();
             }
             else
@@ -524,7 +571,8 @@ class transactional_std_store {
 
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
+            while (internal_iterator != changes_.end() && internal_iterator->presence == presence_t::erased_k)
+                ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
             // we might face an entry, that was already deleted from here,
@@ -541,7 +589,8 @@ class transactional_std_store {
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
                 auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
+                if (external_element_internal_state != changes_.end() &&
+                    external_element_internal_state->presence == presence_t::erased_k) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                 }
@@ -580,7 +629,8 @@ class transactional_std_store {
 
             auto external_previous_id = identifier_t(comparable);
             auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->deleted) ++internal_iterator;
+            while (internal_iterator != changes_.end() && internal_iterator->presence == presence_t::erased_k)
+                ++internal_iterator;
 
             // Once picking the next smallest element from the global store,
             // we might face an entry, that was already deleted from here,
@@ -597,7 +647,8 @@ class transactional_std_store {
                 // Check if this entry was deleted and we should try again.
                 auto external_id = identifier_t(external_element);
                 auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() && external_element_internal_state->deleted) {
+                if (external_element_internal_state != changes_.end() &&
+                    external_element_internal_state->presence == presence_t::erased_k) {
                     faced_deleted_entry = true;
                     external_previous_id = external_id;
                 }
@@ -631,7 +682,7 @@ class transactional_std_store {
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
             for (auto it = lower_internal; it != upper_internal; ++it)
-                if (!it->deleted) callback(it->unversioned);
+                if (it->presence == presence_t::present_k) callback(it->unversioned);
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
             store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -668,7 +719,7 @@ class transactional_std_store {
             // Merge our current nodes into the store.
             // The visibility will be updated later in the `commit`.
             store.entries_.merge(changes_);
-            stage_ = stage_t::staged_k;
+            staging_ = staging_t::staged_k;
             return {success_k};
         }
 
@@ -683,18 +734,12 @@ class transactional_std_store {
             // If the transaction was "staged",
             // we must delete all the entries.
             auto &store = store_ref();
-            if (stage_ == stage_t::staged_k)
-                for (auto const &id : changed_ids_) {
-                    // Heterogeneous `erase` is only coming in C++23.
-                    dated_identifier<identifier_t const &> dated {id, generation_};
-                    if (auto iterator = store.entries_.find(dated); iterator != store.entries_.end())
-                        store.entries_.erase(iterator);
-                }
+            if (staging_ == staging_t::staged_k) unstage_();
 
             watches_.clear();
             changes_.clear();
             changed_ids_.clear();
-            stage_ = stage_t::created_k;
+            staging_ = staging_t::pending_k;
             generation_ = store.new_generation_();
             return {success_k};
         }
@@ -707,22 +752,30 @@ class transactional_std_store {
          *  @return Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         [[nodiscard]] status_t rollback() noexcept {
-            if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
 
             // Transaction was staged, we must extract all the entries back
             auto &store = store_ref();
+
+            // Entries are keyed by identifier and generation, and this transaction is about to take a
+            // new generation, so each is re-stamped while it is out of any container. The changed
+            // identifiers are deliberately kept: these keys are still going to be written, and commit
+            // walks that list to find what to publish.
+            generation_t const resumed = store.new_generation_();
             for (auto const &id : changed_ids_) {
                 dated_identifier<identifier_t const &> dated {id, generation_};
                 auto source = store.entries_.find(dated);
                 // Touching one key twice lists it twice, so the second pass finds nothing to pull back.
                 if (source == store.entries_.end()) continue;
-                changes_.insert(store.entries_.extract(source));
+                auto detached = store.entries_.extract(source);
+                detached.value().generation = resumed;
+                detached.value().publication = publication_t::staged_k;
+                changes_.insert(std::move(detached));
             }
 
             // Preserve watches_ for future stage operations (read watches persist across rollback)
-            changed_ids_.clear();
-            stage_ = stage_t::created_k;
-            generation_ = store.new_generation_();
+            staging_ = staging_t::pending_k;
+            generation_ = resumed;
             return {success_k};
         }
 
@@ -733,7 +786,7 @@ class transactional_std_store {
          *  @return Success, or @c operation_not_permitted_k if transaction is not staged.
          */
         [[nodiscard]] status_t commit() noexcept {
-            if (stage_ != stage_t::staged_k) return {operation_not_permitted_k};
+            if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
 
             // Once we make an entry visible,
             // if there are more than one with the same key,
@@ -744,7 +797,7 @@ class transactional_std_store {
                 store.unmask_and_compact_(range.first, range.second, generation_);
             }
 
-            stage_ = stage_t::created_k;
+            staging_ = staging_t::pending_k;
             return {success_k};
         }
     };
@@ -787,9 +840,9 @@ class transactional_std_store {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
-        while (range.first != range.second && !range.first->visible) ++range.first;
+        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
 
-        if (range.first != range.second && !range.first->deleted) callback_found(*range.first);
+        if (range.first != range.second && range.first->presence == presence_t::present_k) callback_found(*range.first);
         else callback_missing();
     }
 
@@ -814,7 +867,7 @@ class transactional_std_store {
             if (latest == range.second || it->generation > latest->generation) latest = it;
 
         // Invoke whichever callback matches the outcome.
-        if (latest == range.second || latest->deleted) callback_missing();
+        if (latest == range.second || latest->presence == presence_t::erased_k) callback_missing();
         else callback_found(*latest);
     }
 
@@ -822,10 +875,10 @@ class transactional_std_store {
     void erase_visible_(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
         entry_iterator_t current = begin;
         while (current != end)
-            if (current->visible) {
+            if (current->publication == publication_t::published_k) {
                 callback(current->unversioned);
                 --visible_count_;
-                visible_deleted_count_ -= current->deleted;
+                visible_deleted_count_ -= current->presence == presence_t::erased_k;
                 current = entries_.erase(current);
             }
             else ++current;
@@ -837,17 +890,18 @@ class transactional_std_store {
         for (; current != end; ++current) {
             auto keep_this = current->generation == generation_to_unmask;
             if (keep_this) {
-                visible_count_ += !current->visible;
-                visible_deleted_count_ += !current->visible && current->deleted;
-                const_cast<bool &>(current->visible) = true;
+                visible_count_ += current->publication == publication_t::staged_k;
+                visible_deleted_count_ +=
+                    current->publication == publication_t::staged_k && current->presence == presence_t::erased_k;
+                const_cast<publication_t &>(current->publication) = publication_t::published_k;
             }
 
-            if (!current->visible) continue;
+            if (current->publication == publication_t::staged_k) continue;
 
             // Older revisions must die
             if (last_visible_entry != end) {
                 --visible_count_;
-                visible_deleted_count_ -= last_visible_entry->deleted;
+                visible_deleted_count_ -= last_visible_entry->presence == presence_t::erased_k;
                 entries_.erase(last_visible_entry);
             }
             last_visible_entry = current;
@@ -871,9 +925,10 @@ class transactional_std_store {
      */
     [[nodiscard]] status_t insert_or_assign_(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
-            bool should_compact = source->visible;
-            visible_count_ += source->visible;
-            visible_deleted_count_ += source->visible && source->deleted;
+            bool should_compact = source->publication == publication_t::published_k;
+            visible_count_ += source->publication == publication_t::published_k;
+            visible_deleted_count_ +=
+                source->publication == publication_t::published_k && source->presence == presence_t::erased_k;
             auto source_node = sources.extract(source++);
             auto range_end = entries_.insert(std::move(source_node)).position;
             if (should_compact) {
@@ -927,10 +982,10 @@ class transactional_std_store {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Skip invisible entries
-        while (range.first != range.second && !range.first->visible) ++range.first;
+        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
 
         // Return 1 if we found a visible, non-deleted entry, otherwise 0
-        return (range.first != range.second && !range.first->deleted) ? 1 : 0;
+        return (range.first != range.second && range.first->presence == presence_t::present_k) ? 1 : 0;
     }
 
 #pragma endregion Capacity
@@ -1000,10 +1055,10 @@ class transactional_std_store {
         auto range = entries_.equal_range(id);
 
         // Skip invisible entries
-        while (range.first != range.second && !range.first->visible) ++range.first;
+        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
 
         // If we found a visible, non-deleted entry, key exists - fail
-        if (range.first != range.second && !range.first->deleted) {
+        if (range.first != range.second && range.first->presence == presence_t::present_k) {
             callback_exists(range.first->unversioned);
             return {invalid_argument_k};
         }
@@ -1013,8 +1068,8 @@ class transactional_std_store {
         auto status = invoke_safely([&]() {
             auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
+            entry.presence = presence_t::present_k;
+            entry.publication = publication_t::published_k;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->unversioned);
             ++visible_count_;
@@ -1047,10 +1102,10 @@ class transactional_std_store {
         auto range = entries_.equal_range(id);
 
         // Skip invisible entries
-        while (range.first != range.second && !range.first->visible) ++range.first;
+        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
 
         // If we found a visible, non-deleted entry, key exists - skip silently
-        if (range.first != range.second && !range.first->deleted) {
+        if (range.first != range.second && range.first->presence == presence_t::present_k) {
             callback_skipped(range.first->unversioned);
             return {success_k}; // Success, just didn't insert
         }
@@ -1060,8 +1115,8 @@ class transactional_std_store {
         auto status = invoke_safely([&]() {
             auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
+            entry.presence = presence_t::present_k;
+            entry.publication = publication_t::published_k;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->unversioned);
             ++visible_count_;
@@ -1091,15 +1146,15 @@ class transactional_std_store {
         // Check if key exists
         auto const &id = mapping_key_or_itself(element);
         auto range = entries_.equal_range(id);
-        while (range.first != range.second && !range.first->visible) ++range.first;
-        bool key_exists = (range.first != range.second && !range.first->deleted);
+        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
+        bool key_exists = (range.first != range.second && range.first->presence == presence_t::present_k);
 
         generation_t generation = new_generation_();
         auto status = invoke_safely([&]() {
             auto entry = versioned_entry_t {std::move(element)};
             entry.generation = generation;
-            entry.deleted = false;
-            entry.visible = true;
+            entry.presence = presence_t::present_k;
+            entry.publication = publication_t::published_k;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->unversioned);
             ++visible_count_;
@@ -1148,8 +1203,8 @@ class transactional_std_store {
             for (; begin != end; ++begin) {
                 auto iterator = batch->emplace(*begin).first;
                 const_cast<generation_t &>(iterator->generation) = generation;
-                const_cast<bool &>(iterator->visible) = true;
-                const_cast<bool &>(iterator->deleted) = false;
+                const_cast<publication_t &>(iterator->publication) = publication_t::published_k;
+                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
             }
         });
         if (!batch_construction_status) return batch_construction_status;
@@ -1178,11 +1233,11 @@ class transactional_std_store {
     [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return {errc_t::out_of_memory_heap_k};
-        auto &txn = *maybe_txn;
+        auto &transaction = *maybe_txn;
         for (; begin != end; ++begin)
-            if (auto status = txn.insert_if_missing(value_t(*begin)); !status) return status;
-        if (auto status = txn.stage(); !status) return status;
-        return txn.commit();
+            if (auto status = transaction.insert_if_missing(value_t(*begin)); !status) return status;
+        if (auto status = transaction.stage(); !status) return status;
+        return transaction.commit();
     }
 
 #pragma endregion Modifiers
@@ -1262,7 +1317,9 @@ class transactional_std_store {
         auto iterator = entries_.lower_bound(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
-        while (iterator != entries_.end() && (!iterator->visible || iterator->deleted)) ++iterator;
+        while (iterator != entries_.end() &&
+               (iterator->publication == publication_t::staged_k || iterator->presence == presence_t::erased_k))
+            ++iterator;
 
         iterator != entries_.end() ? callback_found(iterator->unversioned) : callback_missing();
     }
@@ -1286,7 +1343,9 @@ class transactional_std_store {
         auto iterator = entries_.upper_bound(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
-        while (iterator != entries_.end() && (!iterator->visible || iterator->deleted)) ++iterator;
+        while (iterator != entries_.end() &&
+               (iterator->publication == publication_t::staged_k || iterator->presence == presence_t::erased_k))
+            ++iterator;
 
         iterator != entries_.end() ? callback_found(iterator->unversioned) : callback_missing();
     }
@@ -1326,7 +1385,8 @@ class transactional_std_store {
 
         // Iterate through all entries with this key (should be at most one visible)
         for (auto it = range.first; it != range.second; ++it)
-            if (it->visible && !it->deleted) callback(it->unversioned);
+            if (it->publication == publication_t::published_k && it->presence == presence_t::present_k)
+                callback(it->unversioned);
     }
 
 #pragma endregion Lookup
@@ -1347,7 +1407,9 @@ class transactional_std_store {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (lower_iterator->visible && !lower_iterator->deleted) callback(lower_iterator->unversioned);
+            if (lower_iterator->publication == publication_t::published_k &&
+                lower_iterator->presence == presence_t::present_k)
+                callback(lower_iterator->unversioned);
     }
 
     /**
@@ -1368,7 +1430,9 @@ class transactional_std_store {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator) {
-            if (!lower_iterator->visible || lower_iterator->deleted) continue;
+            if (lower_iterator->publication == publication_t::staged_k ||
+                lower_iterator->presence == presence_t::erased_k)
+                continue;
             // ! STL's `std::set::iterator` dereferencing operator returns immutable references
             // ! to isolate keys from possible modifications, corrupting the ordered layout.
             auto &entry = const_cast<versioned_entry_t &>(*lower_iterator);
@@ -1393,10 +1457,10 @@ class transactional_std_store {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
-        while (range.first != range.second && !range.first->visible) ++range.first;
+        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
 
         // Check if there are no visible entries at all
-        if (range.first == range.second || range.first->deleted) {
+        if (range.first == range.second || range.first->presence == presence_t::erased_k) {
             callback_missing();
             return status_t {success_k};
         }
@@ -1406,7 +1470,7 @@ class transactional_std_store {
 
         // Erase the visible entry
         --visible_count_;
-        visible_deleted_count_ -= range.first->deleted;
+        visible_deleted_count_ -= range.first->presence == presence_t::erased_k;
         entries_.erase(range.first);
         return status_t {success_k};
     }

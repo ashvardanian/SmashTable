@@ -6,7 +6,8 @@
  *  @date January 12, 2023
  */
 #pragma once
-#include <vector> // `std::vector`
+#include <utility> // `std::move`
+#include <vector>  // `std::vector`
 
 #include "test_basic.hpp"
 
@@ -23,12 +24,12 @@ void test_empty_transaction_commit() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto txn = container.transaction();
-    st_verify_(txn.has_value());
+    auto transaction = container.transaction();
+    st_verify_(transaction.has_value());
 
     // Don't add anything, just commit
-    st_verify_(txn->stage());
-    st_verify_(txn->commit());
+    st_verify_(transaction->stage());
+    st_verify_(transaction->commit());
 
     st_verify_eq_(container.size(), 0);
 }
@@ -169,23 +170,23 @@ void test_multi_key_atomicity_10_keys() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto txn = container.transaction();
-    st_verify_(txn.has_value());
+    auto transaction = container.transaction();
+    st_verify_(transaction.has_value());
 
     // Insert 10 keys in transaction
-    for (std::size_t i = 0; i < 10; ++i) st_verify_(txn->upsert(trivial_id_to_member<member_t>(i, i * 10)));
+    for (std::size_t i = 0; i < 10; ++i) st_verify_(transaction->upsert(trivial_id_to_member<member_t>(i, i * 10)));
 
     // Before stage: should see 0
     std::size_t count_before_stage = 0;
     for (std::size_t i = 0; i < 10; ++i) count_before_stage += container.count(trivial_id_to_key<member_t>(i));
     st_verify_eq_(count_before_stage, 0);
-    st_verify_(txn->stage());
+    st_verify_(transaction->stage());
 
     // After stage, before commit: should see 0
     std::size_t count_after_stage = 0;
     for (std::size_t i = 0; i < 10; ++i) count_after_stage += container.count(trivial_id_to_key<member_t>(i));
     st_verify_eq_(count_after_stage, 0);
-    st_verify_(txn->commit());
+    st_verify_(transaction->commit());
 
     // After commit: should see ALL 10
     std::size_t count_after_commit = 0;
@@ -219,12 +220,12 @@ void test_rollback_makes_all_invisible() {
     container_t container;
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 1))); // Initial state
 
-    auto txn = container.transaction();
-    st_verify_(txn->upsert(trivial_id_to_member<member_t>(1, 100))); // Modify existing
-    st_verify_(txn->upsert(trivial_id_to_member<member_t>(2, 200))); // Add new
-    st_verify_(txn->upsert(trivial_id_to_member<member_t>(3, 300))); // Add new
-    st_verify_(txn->stage());
-    st_verify_(txn->rollback()); // ROLLBACK instead of commit
+    auto transaction = container.transaction();
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(1, 100))); // Modify existing
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(2, 200))); // Add new
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(3, 300))); // Add new
+    st_verify_(transaction->stage());
+    st_verify_(transaction->rollback()); // ROLLBACK instead of commit
 
     // Key 1 should have original value
     auto maybe1 = container.find_copy(trivial_id_to_key<member_t>(1));
@@ -265,8 +266,8 @@ void test_range_query_sees_atomic_boundaries() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    auto txn = container.transaction();
-    for (std::size_t i = 10; i < 20; ++i) st_verify_(txn->upsert(trivial_id_to_member<member_t>(i)));
+    auto transaction = container.transaction();
+    for (std::size_t i = 10; i < 20; ++i) st_verify_(transaction->upsert(trivial_id_to_member<member_t>(i)));
 
     // Before commit: range query sees 0
     std::size_t count_before = 0;
@@ -274,8 +275,8 @@ void test_range_query_sees_atomic_boundaries() {
                     [&](member_t const &) noexcept { count_before++; });
     st_verify_eq_(count_before, 0);
 
-    st_verify_(txn->stage());
-    st_verify_(txn->commit());
+    st_verify_(transaction->stage());
+    st_verify_(transaction->commit());
 
     // After commit: range query sees ALL 10
     std::size_t count_after = 0;
@@ -556,17 +557,17 @@ void test_watch_detects_external_direct_modification() {
     container_t container;
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 1)));
 
-    auto txn = container.transaction();
-    st_verify_(txn->watch(trivial_id_to_key<member_t>(1)));
+    auto transaction = container.transaction();
+    st_verify_(transaction->watch(trivial_id_to_key<member_t>(1)));
 
     // Direct modification to the set (not through a transaction)
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 777)));
 
     // Transaction attempts to modify
-    st_verify_(txn->upsert(trivial_id_to_member<member_t>(1, 888)));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(1, 888)));
 
     // Stage should detect the external change
-    auto status = txn->stage();
+    auto status = transaction->stage();
     st_verify_((!(status)) && "a watch must detect a direct write to the store");
     st_verify_eq_(status.errc, errc_t::consistency_k);
 }
@@ -643,10 +644,10 @@ void test_non_repeatable_reads_are_allowed() {
     container_t container;
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
 
-    auto txn = container.transaction();
+    auto transaction = container.transaction();
 
     // First read
-    auto first_read = txn->find_copy(trivial_id_to_key<member_t>(1));
+    auto first_read = transaction->find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(first_read.has_value());
     st_verify_eq_(first_read->mapped, 100);
 
@@ -654,7 +655,7 @@ void test_non_repeatable_reads_are_allowed() {
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 999)));
 
     // Second read in SAME transaction - CAN see new value (this is correct!)
-    auto second_read = txn->find_copy(trivial_id_to_key<member_t>(1));
+    auto second_read = transaction->find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(second_read.has_value());
 
     // With Read Committed, second read sees committed changes
@@ -688,7 +689,7 @@ void test_phantom_reads_are_allowed() {
     container_t container;
     for (std::size_t i = 0; i < 5; ++i) st_verify_(container.upsert(trivial_id_to_member<member_t>(i)));
 
-    auto txn = container.transaction();
+    auto transaction = container.transaction();
 
     // First range query: see 5 items (reads are on committed state)
     std::size_t first_count = 0;
@@ -700,7 +701,7 @@ void test_phantom_reads_are_allowed() {
     st_verify_(container.upsert(trivial_id_to_member<member_t>(5, 5)));
     st_verify_(container.upsert(trivial_id_to_member<member_t>(6, 6)));
 
-    // Second range query while txn still active - CAN see new items (phantom reads)
+    // Second range query while transaction still active - CAN see new items (phantom reads)
     // In Read Committed, reads always see latest committed state
     std::size_t second_count = 0;
     container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
@@ -749,18 +750,18 @@ void test_reset_clears_transaction_state() {
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1)));
     st_verify_(container.upsert(trivial_id_to_member<member_t>(2)));
 
-    auto txn = container.transaction();
-    st_verify_(txn->watch(trivial_id_to_key<member_t>(1)));
+    auto transaction = container.transaction();
+    st_verify_(transaction->watch(trivial_id_to_key<member_t>(1)));
     // Key 4 is absent from the store, so its presence afterwards can only come from this discarded change
-    st_verify_(txn->upsert(trivial_id_to_member<member_t>(4)));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(4)));
 
     // Reset the transaction
-    st_verify_(txn->reset());
+    st_verify_(transaction->reset());
 
     // After reset, can stage/commit successfully (watches cleared)
-    st_verify_(txn->upsert(trivial_id_to_member<member_t>(3)));
-    st_verify_(txn->stage());
-    st_verify_(txn->commit());
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(3)));
+    st_verify_(transaction->stage());
+    st_verify_(transaction->commit());
 
     auto found3 = container.contains(trivial_id_to_key<member_t>(3));
     auto found4 = container.contains(trivial_id_to_key<member_t>(4));
@@ -883,5 +884,133 @@ void test_stateful_comparator_is_consulted() {
     std::vector<std::size_t> const descending {3, 2, 1};
     st_verify_((walked == descending) && "the comparator the container was given must decide the order");
 }
+
+#pragma region Transaction Lifetime and Watches
+
+/**
+ *  @brief A transaction that stages and is then abandoned must leave the store as it found it.
+ *
+ *  Staged versions live inside the store, invisible, tagged with the transaction's generation. If
+ *  nothing unwinds them they stay there for good, unreachable and uncounted, so the destructor has
+ *  to do it. Nothing else in the public surface can observe them, which is why this counts entries
+ *  through a second transaction rather than through @c size.
+ */
+template <typename container_type_>
+void test_abandoned_transaction_leaves_no_trace() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
+
+    {
+        auto abandoned = container.transaction();
+        st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(2, 200)));
+        st_verify_(abandoned->stage());
+        // Falls out of scope neither committed nor rolled back.
+    }
+
+    // A later transaction writing the same key must find nothing of the abandoned one in its way.
+    auto follower = container.transaction();
+    st_verify_(follower->upsert(trivial_id_to_member<member_t>(2, 222)));
+    st_verify_(follower->stage());
+    st_verify_(follower->commit());
+
+    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(2));
+    st_verify_(maybe_final.has_value());
+    st_verify_((maybe_final->mapped) == (222) && "the abandoned version must not shadow a later write");
+}
+
+/**
+ *  @brief Moving a staged transaction must hand the claim over, not duplicate it.
+ *    A defaulted move would leave both halves pointing at the store, and the destructor would then
+ *    unstage the same versions twice.
+ */
+template <typename container_type_>
+void test_moved_transaction_unwinds_once() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    {
+        auto original = container.transaction();
+        st_verify_(original->upsert(trivial_id_to_member<member_t>(5, 500)));
+        st_verify_(original->stage());
+        auto moved = std::move(*original);
+        // Both halves are destroyed here; only the one holding the claim may unwind.
+    }
+
+    auto follower = container.transaction();
+    st_verify_(follower->upsert(trivial_id_to_member<member_t>(5, 555)));
+    st_verify_(follower->stage());
+    st_verify_(follower->commit());
+
+    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(5));
+    st_verify_(maybe_final.has_value());
+    st_verify_((maybe_final->mapped) == (555) && "a moved transaction must unwind exactly once");
+}
+
+/**
+ *  @brief Watching a key that was erased and committed must not, by itself, refuse a commit.
+ *
+ *  A committed erase leaves a dated tombstone. The watch has to record the same shape that
+ *  validation will later resolve the key to, or it can never match itself and every transaction
+ *  touching an erased key conflicts with nothing at all.
+ */
+template <typename container_type_>
+void test_watch_on_erased_key_can_commit() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(3, 300)));
+
+    {
+        auto remover = container.transaction();
+        st_verify_(remover->erase(trivial_id_to_key<member_t>(3)));
+        st_verify_(remover->stage());
+        st_verify_(remover->commit());
+    }
+
+    auto observer = container.transaction();
+    st_verify_(observer->watch(trivial_id_to_key<member_t>(3)));
+    st_verify_(observer->upsert(trivial_id_to_member<member_t>(4, 400)));
+    auto status = observer->stage();
+    st_verify_((status) && "watching an erased key must not conflict when nothing moved");
+    st_verify_(observer->commit());
+}
+
+/**
+ *  @brief A watch on an absent key must still match itself after a rollback.
+ *    Rollback hands the transaction a new generation, so anchoring absence to the transaction's own
+ *    generation would silently invalidate every absent watch it deliberately preserves.
+ */
+template <typename container_type_>
+void test_absent_watch_survives_rollback() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+
+    auto transaction = container.transaction();
+    st_verify_(transaction->watch(trivial_id_to_key<member_t>(9)));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(8, 800)));
+    st_verify_(transaction->stage());
+    st_verify_(transaction->rollback());
+
+    auto status = transaction->stage();
+    st_verify_((status) && "an absent watch must survive the rollback that preserved it");
+    st_verify_(transaction->commit());
+
+    auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(8));
+    st_verify_(maybe_final.has_value());
+    st_verify_((maybe_final->mapped) == (800) && "the rolled-back write must still commit");
+}
+
+#pragma endregion Transaction Lifetime and Watches
 
 } // namespace ashvardanian::smashtable::scripts
