@@ -96,6 +96,11 @@ namespace ashvardanian::smashtable {
  *  - Supports random sampling within ranges for statistical operations
  *  - All methods are static and work on raw node pointers for flexibility
  *
+ *  Layout: @c fruit is the stored entry, @c left, @c right and @c parent the links, and @c height the
+ *  longest downward path to a leaf. The root carries the biggest @c height in the tree, a non-NULL node
+ *  has at least one, and zero occurs only in the uninitialized detached state - which makes @c 1 << height
+ *  an upper bound on the branch size.
+ *
  *  @tparam value_type_ Type of entries to store in this tree.
  *    Those must be @c noexcept move-constructible.
  *
@@ -116,12 +121,6 @@ class basic_avl_node {
     node_t *right = nullptr;
     node_t *parent = nullptr;
 
-    /**
-     *  @brief Root has the biggest @c height in the tree.
-     *  Zero is possible only in the uninitialized detached state.
-     *  A non-NULL node would have height of one.
-     *  Allows you to guess the upper bound of branch size, as @c 1 << height.
-     */
     height_t height = 0;
 
     static height_t get_height(node_t *node) noexcept { return node ? node->height : 0; }
@@ -750,8 +749,10 @@ class basic_avl_node {
      *  @brief Result of a split operation.
      */
     struct split_result_t {
-        node_t *left = nullptr;  //!< Tree with all elements < key.
-        node_t *right = nullptr; //!< Tree with all elements >= key.
+        /** @brief Subtree with all elements ordered before the split key. */
+        node_t *left = nullptr;
+        /** @brief Subtree with all elements not ordered before the split key. */
+        node_t *right = nullptr;
     };
 
     /**
@@ -1144,10 +1145,7 @@ class basic_avl_tree {
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "basic_avl_tree requires allocators that propagate on move assignment");
 
-    using is_associative = std::conditional_t<requires {
-        typename value_t::key_type;
-        typename value_t::mapped_type;
-    }, std::true_type, std::false_type>;
+    using is_associative = std::bool_constant<is_mapping<value_t>>;
 
     /**
      *  @brief Rebind this tree type to different entry and comparator types.
@@ -1169,8 +1167,10 @@ class basic_avl_tree {
      *    Combines iterator to next element with operation status.
      */
     struct erase_result_t {
-        iterator next;   //!< Iterator to the element following the erased element (or end()).
-        status_t status; //!< Status of the erase operation.
+        /** @brief Iterator to the element following the erased one, or @c end(). */
+        iterator next;
+        /** @brief Status of the erase operation. */
+        status_t status;
     };
 
     /**
@@ -1400,17 +1400,9 @@ class basic_avl_tree {
      *  @return @c success_k when the copy completed, an error code otherwise.
      */
     static status_t copy_entry_into_(node_t *source, node_t *dest) noexcept {
-        if constexpr (has_copy_method<value_t>) {
-            auto entry_copy = source->fruit.copy();
-            if (!entry_copy) return entry_copy.status;
-            new (&dest->fruit) value_t(std::move(entry_copy.outcome));
-        }
-        else if constexpr (std::is_nothrow_copy_constructible_v<value_t>) { new (&dest->fruit) value_t(source->fruit); }
-        else {
-            static_assert(std::is_nothrow_copy_constructible_v<value_t> || has_copy_method<value_t>,
-                          "Entry type must be nothrow copy-constructible or provide .copy() method");
-            return status_t {unknown_k};
-        }
+        auto entry_copy = copy_safely(source->fruit);
+        if (!entry_copy) return entry_copy.status;
+        new (&dest->fruit) value_t(std::move(entry_copy.outcome));
         return status_t {success_k};
     }
 
@@ -2373,16 +2365,15 @@ class basic_avl_tree {
               typename callback_missing_type_ = no_op_fn_t>
     void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                callback_missing_type_ &&callback_missing) noexcept {
-        auto node = find(std::forward<comparable_type_>(comparable));
-        if (!node) {
+        auto position = find(comparable);
+        if (position == end()) {
             callback_missing();
             return;
         }
 
-        callback_found(node->fruit);
-        auto result = node_t::extract(root_, std::forward<comparable_type_>(comparable), comparator_);
-        root_ = result.root;
-        size_ -= result.extracted != nullptr;
+        callback_found(*position);
+        // The guard destroys the entry and returns the node to the allocator it came from.
+        [[maybe_unused]] extract_result_t const erased = extract(std::forward<comparable_type_>(comparable));
     }
 
     /**
@@ -2507,8 +2498,11 @@ class basic_avl_tree {
             auto result = node_t::insert(root_, node, comparator_);
             root_ = result.root;
             size_ += result.inserted;
-            // Key conflict - node wasn't inserted, deallocate it
-            if (!result.inserted) allocator_.deallocate(node, 1);
+            // Key conflict - node wasn't inserted, so release the entry it carried
+            if (!result.inserted) {
+                node->fruit.~value_t();
+                allocator_.deallocate(node, 1);
+            }
         });
         other.root_ = nullptr;
         other.size_ = 0;
@@ -2568,11 +2562,11 @@ class basic_avl_tree {
         std::size_t max_size = std::max(size_, other.size_);
 
         // Heuristic: Use DSW when both large and similar size
-        constexpr std::size_t dsw_threshold = 10000;
-        constexpr std::size_t size_ratio_threshold = 3;
+        constexpr std::size_t dsw_threshold_k = 10000;
+        constexpr std::size_t size_ratio_threshold_k = 3;
 
         // DSW for large similarly-sized trees: O(m+n)
-        if (min_size > dsw_threshold && max_size < min_size * size_ratio_threshold) {
+        if (min_size > dsw_threshold_k && max_size < min_size * size_ratio_threshold_k) {
             std::size_t new_size;
             root_ = node_t::merge_dsw(root_, other.root_, comparator_, new_size);
             size_ = new_size;
@@ -2604,8 +2598,11 @@ class basic_avl_tree {
         auto result = node_t::insert(root_, node_to_insert, comparator_);
         root_ = result.root;
         size_ += result.inserted;
-        // Key conflict - node wasn't inserted, deallocate it
-        if (!result.inserted) allocator_.deallocate(node_to_insert, 1);
+        // Key conflict - node wasn't inserted, so release the entry it carried
+        if (!result.inserted) {
+            node_to_insert->fruit.~value_t();
+            allocator_.deallocate(node_to_insert, 1);
+        }
     }
 
 #pragma endregion Merge Operations
@@ -2616,8 +2613,10 @@ class basic_avl_tree {
      *  @brief Result of a split operation on a tree.
      */
     struct split_result_t {
-        basic_avl_tree left;  //!< Tree with all elements < key.
-        basic_avl_tree right; //!< Tree with all elements >= key.
+        /** @brief Tree with all elements ordered before the split key. */
+        basic_avl_tree left;
+        /** @brief Tree with all elements not ordered before the split key. */
+        basic_avl_tree right;
     };
 
     /**
