@@ -1,11 +1,11 @@
 import os
+import pathlib
 import sys
-import platform
-from setuptools import setup, Extension
-from typing import List, Tuple
+
+from setuptools import Extension, setup
 
 
-def get_compile_args() -> Tuple[List[str], List[str]]:
+def get_compile_args() -> tuple[list[str], list[str]]:
     """Get platform-specific compile and link arguments"""
     compile_args = []
     link_args = []
@@ -17,6 +17,7 @@ def get_compile_args() -> Tuple[List[str], List[str]]:
             "-fdiagnostics-color=always",
             "-Wno-unknown-pragmas",
             "-fPIC",
+            "-fvisibility=hidden",
             "-pthread",
         ]
         link_args = [
@@ -32,6 +33,7 @@ def get_compile_args() -> Tuple[List[str], List[str]]:
             "-fcolor-diagnostics",
             "-Wno-unknown-pragmas",
             "-fPIC",
+            "-fvisibility=hidden",
             f"-mmacosx-version-min={min_macos}",
         ]
         link_args = ["-fPIC"]
@@ -50,26 +52,17 @@ def get_compile_args() -> Tuple[List[str], List[str]]:
 
 
 def main():
-    # Enforce Python 3.14+ requirement for sub-interpreter support
-    if sys.version_info < (3, 14):
-        print("ERROR: SmashTable requires Python 3.14 or later for sub-interpreter support", file=sys.stderr)
-        print(f"Current Python version: {sys.version_info.major}.{sys.version_info.minor}", file=sys.stderr)
-        sys.exit(1)
-
     compile_args, link_args = get_compile_args()
 
-    # Check if building for Python 3.14t (free-threading)
-    is_free_threaded = hasattr(sys, "abiflags") and "t" in sys.abiflags
-    if is_free_threaded:
-        print("✓ Building for Python 3.14t with FREE-THREADING support (GIL-free)")
-    else:
-        print("✓ Building for Python 3.14+ with sub-interpreter support")
+    # One translation unit per domain, all compiled into the single `smashtable` extension. The
+    # directory is never on sys.path, so it is a source layout rather than a Python package.
+    sources = sorted(str(path) for path in pathlib.Path("python/smashtable").glob("*.cpp"))
 
     ext_modules = [
         Extension(
             "smashtable",
-            sources=["python/smashtable.cpp"],
-            include_dirs=["include"],
+            sources=sources,
+            include_dirs=["include", "python/smashtable"],
             extra_compile_args=compile_args,
             extra_link_args=link_args,
             language="c++",
@@ -80,7 +73,7 @@ def main():
         name="smashtable",
         version="0.1.0",
         ext_modules=ext_modules,
-        description="Concurrent Thread-Safe Atomic & Consistent Collections for Parallel Python",
+        description="Safer associative containers with DBMS-like transactions in Python",
     )
 
 
