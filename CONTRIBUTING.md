@@ -20,30 +20,42 @@ build_debug/smashtable_test_avl_tree
 
 ### Running Tests
 
-Run all tests:
+Every container family runs the same suites, so `ctest` covers all four binaries:
+
+```bash
+ctest --test-dir build_debug --output-on-failure
+```
+
+Run one binary directly, or narrow it with a substring matched against `suite.name`:
 
 ```bash
 build_debug/smashtable_test_avl_tree
+SMASHTABLE_FILTER=transactional_consistency build_debug/smashtable_test_avl_tree
+SMASHTABLE_FILTER=basic_ops.insertion build_debug/smashtable_test_wb_tree
 ```
 
-Run specific test suites:
+Assertions abort on the first failure and print the expression, file and line, so a run reports one defect rather than a list.
+
+### Before Opening a Pull Request
+
+CI builds with warnings as errors on both compilers, and checks that every header compiles as the
+first thing a translation unit sees. Both are worth reproducing locally:
 
 ```bash
-build_debug/smashtable_test --gtest_filter="upsert_and_find*"
-build_debug/smashtable_test --gtest_filter="transaction_*"
-build_debug/smashtable_test --gtest_filter="*with_threads"
+cmake -B build_strict -DCMAKE_BUILD_TYPE=Debug -DSMASHTABLE_WERROR=ON
+cmake --build build_strict && ctest --test-dir build_strict --output-on-failure
+
+for header in include/smashtable/*.hpp; do
+    printf '#include <%s>\nint main() { return 0; }\n' "${header#include/}" \
+        | c++ -std=c++20 -fsyntax-only -Wall -Wextra -Iinclude -x c++ - || echo "FAILED $header"
+done
 ```
 
-Brief output:
+The lock-free paths carry a third check, since a data race in them is invisible to the address and behaviour sanitizers:
 
 ```bash
-build_debug/smashtable_test --gtest_brief=1
-```
-
-List available tests:
-
-```bash
-build_debug/smashtable_test --gtest_list_tests
+cmake -B build_tsan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+cmake --build build_tsan && ctest --test-dir build_tsan --output-on-failure
 ```
 
 ## Compiling Python Bindings
@@ -52,10 +64,20 @@ Python bindings are implemented using pure CPython, so you wouldn't need to inst
 Still, you need a virtual environment, and it's recommended to use `uv` to create one.
 
 ```bash
-uv venv --python 3.14t                  # it's recommended to use a recent free-threading version
+uv venv --python 3.14t                  # a free-threading build is the interesting one to test against
 source .venv/bin/activate               # to activate the virtual environment
-uv pip install setuptools wheel         # to pull the latest build tools
+uv pip install setuptools wheel pytest  # to pull the build and test tools
 uv pip install -e . --force-reinstall   # to build locally from source
+pytest test/
+```
+
+The extension requires 3.12 or later, where a module can declare per-interpreter GIL support.
+On a free-threading interpreter, run the suite under contention, since exercising such a build single-threaded proves nothing about it:
+
+```bash
+uv pip install pytest-run-parallel
+pytest test/ --parallel-threads=4 --iterations=2
+python -c "import sys, smashtable; assert not sys._is_gil_enabled()"
 ```
 
 ## Code Styling Guidelines
