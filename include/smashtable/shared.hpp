@@ -30,6 +30,7 @@
  */
 #pragma once
 #include <cerrno>  // `ENOMEM`, `EINVAL`, and the rest of the errno space
+#include <climits> // `CHAR_BIT`
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::int64_t`
 
@@ -37,6 +38,7 @@
 #include <array>       // `std::array`
 #include <bit>         // `std::countl_zero`
 #include <concepts>    // `std::convertible_to`, `std::same_as`
+#include <new>         // `::operator new`, `std::align_val_t`, `std::nothrow`
 #include <optional>    // `std::optional`
 #include <tuple>       // `std::tuple`
 #include <type_traits> // `std::is_nothrow_invocable_v`
@@ -182,6 +184,125 @@ inline constexpr bool is_safe_callback_for = true;
 template <typename callback_type_>
 inline constexpr bool is_safe_callback = true;
 #endif
+
+/**
+ *  @brief The allocator every container defaults to, over @c ::operator @c new asked not to throw.
+ *
+ *  @c std::allocator would serve, and costs @c <memory> - some fifty thousand preprocessed lines - in
+ *  headers that want nothing else from it. Exhaustion is reported by returning null, which is the
+ *  shape every caller here already checks, rather than by an exception nothing would catch.
+ */
+template <typename value_type_>
+struct default_allocator {
+    using value_type = value_type_;
+    using propagate_on_container_move_assignment = std::true_type;
+    using propagate_on_container_copy_assignment = std::true_type;
+    using propagate_on_container_swap = std::true_type;
+    using is_always_equal = std::true_type;
+
+    constexpr default_allocator() noexcept = default;
+    template <typename other_type_>
+    constexpr default_allocator(default_allocator<other_type_> const &) noexcept {}
+
+    [[nodiscard]] value_type_ *allocate(std::size_t count) noexcept {
+        std::size_t const bytes = count * sizeof(value_type_);
+        if constexpr (alignof(value_type_) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+            return static_cast<value_type_ *>(
+                ::operator new(bytes, std::align_val_t {alignof(value_type_)}, std::nothrow)); // allocator primitive
+        else return static_cast<value_type_ *>(::operator new(bytes, std::nothrow));           // allocator primitive
+    }
+
+    void deallocate(value_type_ *pointer, std::size_t) noexcept {
+        if constexpr (alignof(value_type_) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
+            ::operator delete(pointer, std::align_val_t {alignof(value_type_)}, std::nothrow); // allocator primitive
+        else ::operator delete(pointer, std::nothrow);                                         // allocator primitive
+    }
+
+    template <typename other_type_>
+    constexpr bool operator==(default_allocator<other_type_> const &) const noexcept {
+        return true;
+    }
+};
+
+/**
+ *  @brief Transparent ordering and equality, so a container needs no @c <functional>.
+ *
+ *  Both are heterogeneous - the @c is_transparent tag is what lets a lookup compare a key against
+ *  something merely comparable to it, without materializing a key first - which is the only property
+ *  the containers here relied on @c std::less and @c std::equal_to for.
+ */
+struct less_t {
+    using is_transparent = void;
+    template <typename left_type_, typename right_type_>
+    constexpr auto operator()(left_type_ const &left, right_type_ const &right) const noexcept {
+        return left < right;
+    }
+};
+
+struct equal_to_t {
+    using is_transparent = void;
+    template <typename left_type_, typename right_type_>
+    constexpr auto operator()(left_type_ const &left, right_type_ const &right) const noexcept {
+        return left == right;
+    }
+};
+
+/**
+ *  @brief The hash a container uses unless told otherwise. Specialize it for your own key.
+ *
+ *  Deliberately not a forward to @c std::hash: that would drag @c <functional> into every header, and
+ *  the point of a named trait is that an unhashable key says so at compile time. Hashing the bytes of
+ *  an arbitrary type instead would be worse than an error - padding, or an equality that ignores some
+ *  field, would give two equal keys different hashes and quietly lose lookups.
+ */
+template <typename key_type_, typename = void>
+struct hash {
+    static_assert(sizeof(key_type_) == 0,
+                  "No hash for this key. Specialize ashvardanian::smashtable::hash<key_type_> for it.");
+};
+
+/** @brief Integers and enumerations, mixed so that adjacent keys do not land in adjacent buckets. */
+template <typename key_type_>
+struct hash<key_type_, std::enable_if_t<std::is_integral_v<key_type_> || std::is_enum_v<key_type_>>> {
+    constexpr std::size_t operator()(key_type_ key) const noexcept {
+        // splitmix64's finalizer: a bijection, so distinct keys stay distinct.
+        std::uint64_t mixed = static_cast<std::uint64_t>(key) + 0x9E3779B97F4A7C15ull;
+        mixed = (mixed ^ (mixed >> 30)) * 0xBF58476D1CE4E5B9ull;
+        mixed = (mixed ^ (mixed >> 27)) * 0x94D049BB133111EBull;
+        return static_cast<std::size_t>(mixed ^ (mixed >> 31));
+    }
+};
+
+/** @brief A pointer hashes as the integer it is. */
+template <typename key_type_>
+struct hash<key_type_, std::enable_if_t<std::is_pointer_v<key_type_>>> {
+    std::size_t operator()(key_type_ key) const noexcept {
+        return hash<std::uintptr_t> {}(reinterpret_cast<std::uintptr_t>(key));
+    }
+};
+
+/** @brief Anything exposing contiguous bytes through @c data and @c size, which covers the string types. */
+template <typename key_type_>
+struct hash<key_type_, std::void_t<decltype(std::declval<key_type_ const &>().data()),
+                                   decltype(std::declval<key_type_ const &>().size())>> {
+    std::size_t operator()(key_type_ const &key) const noexcept {
+        // FNV-1a over the bytes: no table, no header, and adequate for bucket selection.
+        auto const *bytes = reinterpret_cast<unsigned char const *>(key.data());
+        std::size_t const count = key.size() * sizeof(*key.data());
+        std::uint64_t accumulated = 0xCBF29CE484222325ull;
+        for (std::size_t index = 0; index != count; ++index)
+            accumulated = (accumulated ^ bytes[index]) * 0x100000001B3ull;
+        return static_cast<std::size_t>(accumulated);
+    }
+};
+
+/** @brief How many steps separate two iterators, without the sixteen thousand lines of @c <iterator>. */
+template <typename iterator_type_>
+constexpr std::size_t distance_between(iterator_type_ first, iterator_type_ last) noexcept {
+    std::size_t count = 0;
+    for (; first != last; ++first) ++count;
+    return count;
+}
 
 /** @brief Sentinel type for range-based iteration end conditions. */
 struct end_sentinel_t {};
@@ -867,14 +988,74 @@ constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type
 #pragma region Numeric Helpers
 
 /**
+ *  @brief The larger of two values, and the smaller.
+ *
+ *  Spelled here rather than pulled from @c <algorithm>, which costs about ten thousand preprocessed
+ *  lines for these two. It also sidesteps the Windows headers, which define @c min and @c max as
+ *  function-like macros unless @c NOMINMAX is set, and would eat an unparenthesized @c std::max call.
+ */
+template <typename value_type_>
+constexpr value_type_ const &larger_of(value_type_ const &first, value_type_ const &second) noexcept {
+    return first < second ? second : first;
+}
+
+template <typename value_type_>
+constexpr value_type_ const &smaller_of(value_type_ const &first, value_type_ const &second) noexcept {
+    return second < first ? second : first;
+}
+
+/** @brief How many bits a @c std::size_t holds here, which is not 64 everywhere. */
+inline constexpr std::size_t size_bits_k = sizeof(std::size_t) * CHAR_BIT;
+
+/** @brief The number of bits needed to represent @p x, so @c 0 for zero and @c 1 for one. */
+constexpr std::size_t bits_to_hold(std::size_t x) noexcept {
+    return size_bits_k - static_cast<std::size_t>(countl_zero(x));
+}
+
+/**
  *  @brief Rounds up an integer to the next power of two.
  *    Returns 0 for input 0, and 1 for input 1.
  *  @param[in] x Value to round up.
- *  @return Smallest power of two greater than or equal to @p x.
+ *  @return Smallest power of two greater than or equal to @p x, or 0 when there is no such power.
  */
 constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
     if (x <= 1) return x;
-    return std::size_t {1} << (64 - countl_zero(x - 1));
+    std::size_t const shift = bits_to_hold(x - 1);
+    // Anything above the largest representable power of two has no next one to round up to, and
+    // shifting by the full width is undefined rather than saturating.
+    if (shift >= size_bits_k) return 0;
+    return std::size_t {1} << shift;
+}
+
+/**
+ *  @brief A uniform draw below @p bound, without the bias a modulo would introduce.
+ *
+ *  Masks to the next power of two and redraws when the value lands above the bound, which is unbiased
+ *  because every value under the mask is equally likely and the surplus is simply discarded. At least
+ *  half of the masked range is accepted, so fewer than two draws are expected.
+ *
+ *  @param[in] generator Any uniform random bit generator, which is what @c std::mt19937 and friends are.
+ *  @param[in] bound One past the largest value that may be returned; zero and one both draw nothing.
+ *  @note A generator narrower than the bound - @c std::mt19937 yields 32 bits - is called repeatedly
+ *    and the results concatenated, since masking a short draw could never reach the high bits.
+ */
+template <typename generator_type_>
+constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound) noexcept {
+    using generator_t = std::remove_reference_t<generator_type_>;
+    if (bound <= 1) return 0;
+
+    constexpr std::size_t generator_span_k = static_cast<std::size_t>(generator_t::max() - generator_t::min());
+    constexpr std::size_t generator_bits_k = bits_to_hold(generator_span_k);
+    std::size_t const mask = roundup_to_pow2(bound) - 1;
+    std::size_t const wanted_bits = bits_to_hold(mask);
+
+    while (true) {
+        std::size_t draw = static_cast<std::size_t>(generator() - generator_t::min());
+        for (std::size_t filled = generator_bits_k; filled < wanted_bits; filled += generator_bits_k)
+            draw = (draw << generator_bits_k) | static_cast<std::size_t>(generator() - generator_t::min());
+        draw &= mask;
+        if (draw < bound) return draw;
+    }
 }
 
 /**

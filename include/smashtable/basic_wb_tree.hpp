@@ -29,11 +29,8 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <algorithm> // `std::max`
-#include <iterator>  // `std::bidirectional_iterator_tag`
-#include <memory>    // `std::allocator`
-#include <random>    // `std::uniform_int_distribution`
-#include <utility>   // `std::pair`, `std::exchange`
+#include <memory>  // `std::allocator`
+#include <utility> // `std::pair`, `std::exchange`
 
 #include "shared.hpp"
 
@@ -686,8 +683,7 @@ class basic_wb_node {
             if constexpr (!std::is_same_v<std::remove_cvref_t<predicate_type_>, no_op_fn_t>)
                 if (!predicate(candidate)) return;
             ++seen;
-            std::uniform_int_distribution<std::size_t> pick {0, seen - 1};
-            if (pick(generator) == 0) chosen = candidate;
+            if (draw_below(generator, seen) == 0) chosen = candidate;
         });
         return chosen;
     }
@@ -806,7 +802,7 @@ class basic_wb_node {
  *
  *  Use cases: pagination, percentiles, quantiles, window functions.
  */
-template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
+template <typename value_type_, typename comparator_type_ = less_t,
           typename node_allocator_type_ = std::allocator<basic_wb_node<value_type_, comparator_type_>>>
 class basic_wb_tree {
   public:
@@ -1444,7 +1440,6 @@ class basic_wb_tree {
         friend class const_iterator;
 
       public:
-        using iterator_category = std::bidirectional_iterator_tag;
         using value_type = value_t;
         using difference_type = std::ptrdiff_t;
         using pointer = value_t *;
@@ -1496,7 +1491,6 @@ class basic_wb_tree {
         friend class basic_wb_tree;
 
       public:
-        using iterator_category = std::bidirectional_iterator_tag;
         using value_type = value_t const;
         using difference_type = std::ptrdiff_t;
         using pointer = value_t const *;
@@ -1664,7 +1658,8 @@ class basic_wb_tree {
      */
     erase_result_t erase(iterator pos) noexcept {
         if (pos == end()) return {end(), {success_k}};
-        auto next = std::next(pos);
+        auto next = pos;
+        ++next;
         bool erased = erase(*pos);
         return {next, erased ? status_t {success_k} : status_t {errc_t::unknown_k}};
     }
@@ -1839,13 +1834,12 @@ class basic_wb_tree {
     }
 };
 
-template <typename value_type_, typename comparator_type_ = std::less<void>,
-          typename allocator_type_ = std::allocator<void>>
+template <typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<void>>
 using wb_set = basic_wb_tree<value_type_, comparator_type_,
                              typename std::allocator_traits<allocator_type_>::template rebind_alloc<
                                  basic_wb_node<value_type_, comparator_type_>>>;
 
-template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<void>,
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<void>>
 using wb_map = basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_,
                              typename std::allocator_traits<allocator_type_>::template rebind_alloc<

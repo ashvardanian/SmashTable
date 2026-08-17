@@ -8,6 +8,8 @@
  *  thread-safety wrappers have to answer the same calls, so a surface that drifts between them
  *  fails here rather than in a binding. Nothing is asserted, and nothing needs to be.
  */
+#include <random> // `std::mt19937`, `std::random_device`
+
 #include <smashtable/locked_collection.hpp>
 #include <smashtable/partitioned_collection.hpp>
 #include <smashtable/transactional_store.hpp>

@@ -40,11 +40,8 @@
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`
 #include <cstring> // `std::memcpy`, `std::memset`
 
-#include <algorithm>   // `std::max`
 #include <atomic>      // `std::atomic_ref`
 #include <bit>         // `std::popcount`, `std::countr_zero`
-#include <functional>  // `std::hash`
-#include <memory>      // `std::allocator`
 #include <type_traits> // `std::is_same`, `std::conditional_t`
 #include <utility>     // `std::declval`, `std::move`
 
@@ -154,13 +151,13 @@ struct hash_slots_count_t {
         std::size_t needed_slots = (elements * 4ul) / 3ul;
         // We calculate the bucket index with AND masks, so it must be a power of two.
         raw = roundup_to_pow2(needed_slots);
-        raw = std::max(raw, hash_bucket_capacity_k);
+        raw = larger_of(raw, hash_bucket_capacity_k);
     }
 
     static constexpr hash_slots_count_t from_slots(std::size_t slots) noexcept {
         hash_slots_count_t result;
         if (slots == 0) return result;
-        result.raw = std::max(roundup_to_pow2(slots), hash_bucket_capacity_k);
+        result.raw = larger_of(roundup_to_pow2(slots), hash_bucket_capacity_k);
         return result;
     }
 
@@ -257,15 +254,15 @@ struct hash_layout_for<element_type_ const, hasher_type_> {
     static constexpr bool will_memcpy_vals() noexcept { return unqualified_t::will_memcpy_vals(); }
 };
 
-static_assert(hash_layout_for<int, std::hash<int>>::will_memcpy_keys());
-static_assert(hash_layout_for<mapping<int, int>, std::hash<int>>::will_memcpy_keys());
+static_assert(hash_layout_for<int, hash<int>>::will_memcpy_keys());
+static_assert(hash_layout_for<mapping<int, int>, hash<int>>::will_memcpy_keys());
 
-/** @brief Wraps @c std::hash default hasher that delays type resolution until invocation. */
-struct lazy_std_hash_t {
+/** @brief Defers to @c hash for whatever key it is finally handed, rather than fixing one at declaration. */
+struct default_hash_t {
 
     template <typename key_type_>
     std::size_t operator()(key_type_ const &key) const noexcept {
-        return std::hash<key_type_> {}(key);
+        return hash<key_type_> {}(key);
     }
 };
 

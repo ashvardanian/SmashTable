@@ -25,6 +25,8 @@
 
 #include <chrono>      // `std::chrono::steady_clock`
 #include <exception>   // `std::exception`
+#include <format>      // `std::format_to`, `std::format_string`
+#include <iterator>    // `std::output_iterator`
 #include <type_traits> // `std::is_void_v`
 
 #if defined(__linux__) && defined(__GLIBC__)
@@ -86,40 +88,76 @@ inline void install_test_signal_handlers() noexcept {
 
 #pragma endregion Crash Localization
 
+#pragma region Formatted Output
+
+/** @brief Output iterator handing each character straight to a @c std::FILE. */
+struct file_output_iterator_t {
+    using difference_type = std::ptrdiff_t;
+
+    std::FILE *stream {};
+
+    file_output_iterator_t &operator*() noexcept { return *this; }
+    file_output_iterator_t &operator++() noexcept { return *this; }
+    file_output_iterator_t operator++(int) noexcept { return *this; }
+    file_output_iterator_t &operator=(char character) noexcept {
+        std::fputc(character, stream);
+        return *this;
+    }
+};
+
+/**
+ *  @brief Writes one formatted line to @p stream, checking the pattern against its arguments and
+ *    terminating it here, so @p pattern carries no trailing newline of its own.
+ *  @warning Never from a signal handler - formatting is not async-signal-safe.
+ *
+ *  Formats straight into @p stream rather than into a @c std::string, so there is no allocation and
+ *  no buffer to size: a long @c what() prints whole instead of being truncated to fit.
+ */
+template <typename... args_types_>
+inline void print_line(std::FILE *stream, std::format_string<args_types_...> pattern, args_types_ &&...args) noexcept {
+    std::format_to(file_output_iterator_t {stream}, pattern, std::forward<args_types_>(args)...);
+    std::fputc('\n', stream);
+}
+
+#pragma endregion Formatted Output
+
 #pragma region Test Runner
 
 /**
  *  @brief Runs one named test, honoring @p filter, timing it, and reporting the outcome.
  *  @param[in] filter Substring matched against @p name, or @c nullptr to run everything.
  *  @param[in] name The test's "suite.name" label, which is also its filter key.
- *  @param[in] test_function Anything callable with no arguments.
+ *  @param[in] test_function A function taking no arguments.
  *  @return The number of failures - 0 on success or when skipped, 1 when the test threw.
  *
  *  A failed assertion aborts before this returns, so the count covers only thrown exceptions; naming
  *  them here beats a bare @c what() at the top of @c main. The started line prints before the call, so
  *  a hard crash leaves the running test as the last thing on stdout.
+ *
+ *  Takes a function pointer rather than any callable on purpose: a suite that grows a defaulted
+ *  parameter stops being a @c void() and would otherwise hide behind a lambda at every call site
+ *  instead of failing here.
  */
-template <typename function_type_>
-inline std::size_t run_test(char const *filter, char const *name, function_type_ &&test_function) noexcept {
+inline std::size_t run_test(char const *filter, char const *name, void (*test_function)()) noexcept {
     if (filter && filter[0] != '\0' && !std::strstr(name, filter)) {
-        std::printf("- %s ... skipped (SMASHTABLE_FILTER)\n", name);
+        print_line(stdout, "- {} ... skipped (SMASHTABLE_FILTER)", name);
         std::fflush(stdout);
         return 0;
     }
 
-    std::printf("- %s ...\n", name);
+    print_line(stdout, "- {} ...", name);
     std::fflush(stdout);
     auto const started = std::chrono::steady_clock::now();
     try {
         test_function();
     }
     catch (std::exception const &error) {
-        std::fprintf(stderr, "- %s ... FAILED: %s\n", name, error.what());
+        print_line(stderr, "- {} ... FAILED: {}", name, error.what());
         std::fflush(stderr);
         return 1;
     }
     double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    std::printf("- %s ... ok (%.2f s)\n", name, seconds);
+    print_line(stdout, "- {} ... ok ({:.2f} s)", name, seconds);
     std::fflush(stdout);
     return 0;
 }
@@ -127,10 +165,10 @@ inline std::size_t run_test(char const *filter, char const *name, function_type_
 /** @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status. */
 inline int report_test_failures(std::size_t failures) noexcept {
     if (failures != 0) {
-        std::fprintf(stderr, "\n%zu test(s) failed.\n", failures);
+        print_line(stderr, "\n{} test(s) failed.", failures);
         return 1;
     }
-    std::printf("\nAll tests passed!\n");
+    print_line(stdout, "\nAll tests passed!");
     return 0;
 }
 

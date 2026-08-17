@@ -119,10 +119,14 @@ check_region_names() {
 # either a leak waiting for an exception or memory the owning container cannot account for.
 # Placement `new (address) T(...)` is construction into storage an allocator already handed over,
 # which is a different thing and stays legal - it is told apart by the parenthesised address.
+# An allocator's own body is where the chain has to end, since it is what every other site routes
+# through; those lines say so with a trailing `// allocator primitive`, which has to be written out
+# and shows up in review rather than passing silently.
 check_allocating_new() {
     local allocations
     allocations=$(printf '%s\n' "$added" |
         grep -vE '^\+[[:space:]]*(\*|//)' |
+        grep -vE '//[[:space:]]*allocator primitive[[:space:]]*$' |
         sed -e 's|"[^"]*"||g' -e 's|/\*.*\*/||g' -e 's|//.*$||' |
         grep -E '::operator[[:space:]]+(new|delete)|new[[:space:]]*\([[:space:]]*std::nothrow|new[[:space:]]+[A-Za-z_]|(^|[^_[:alnum:]])delete[[:space:]]*(\[[[:space:]]*\])?[[:space:]]+[A-Za-z_]' || true)
     [ -z "$allocations" ] || fail "$allocations" \

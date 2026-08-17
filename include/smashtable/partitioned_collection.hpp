@@ -8,7 +8,6 @@
 #pragma once
 #include <array>        // `std::array`
 #include <bit>          // `std::countr_zero`
-#include <functional>   // `std::hash`
 #include <mutex>        // `std::unique_lock`
 #include <optional>     // `std::optional`
 #include <shared_mutex> // `std::shared_mutex`, `std::shared_lock`
@@ -67,7 +66,7 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
  *  @tparam shared_mutex_type_ Mutex type to use for partition locking, like @c std::shared_mutex.
  *  @tparam parts_count_ Number of partitions to split the collection into, default 16.
  */
-template <typename collection_type_, typename hash_type_ = std::hash<typename collection_type_::identifier_t>,
+template <typename collection_type_, typename hash_type_ = hash<typename collection_type_::identifier_t>,
           typename shared_mutex_type_ = std::shared_mutex, std::size_t parts_count_ = 16>
 class partitioned_collection {
 
@@ -281,12 +280,14 @@ class partitioned_collection {
         transaction_t &operator=(transaction_t &&) noexcept = default;
 
         [[nodiscard]] status_t reset() noexcept {
-            auto status = for_parts_(std::mem_fn(&part_transaction_t::reset));
+            // `std::mem_fn(&part_transaction_t::reset)` is cute... but we don't like heavy includes.
+            auto status = for_parts_([](part_transaction_t &part) noexcept { return part.reset(); });
             if (status) dirty_.clear();
             return status;
         }
         [[nodiscard]] status_t rollback() noexcept {
-            auto status = for_dirty_parts_(std::mem_fn(&part_transaction_t::rollback));
+            // `std::mem_fn(&part_transaction_t::rollback)` is cute... but we don't like heavy includes.
+            auto status = for_dirty_parts_([](part_transaction_t &part) noexcept { return part.rollback(); });
             if (status) dirty_.clear();
             return status;
         }

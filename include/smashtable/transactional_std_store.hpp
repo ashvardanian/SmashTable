@@ -7,10 +7,8 @@
  *  @date October 12, 2022
  */
 #pragma once
-#include <functional>  // `std::less` as default
 #include <memory>      // `std::allocator` as default
 #include <optional>    // `std::optional` for internal batch operations
-#include <random>      // `std::uniform_int_distribution` for sampling
 #include <set>         // `std::set` for inner versioned entries
 #include <type_traits> // `std::is_nothrow_invocable_v`
 #include <vector>      // `std::vector` for watches
@@ -104,8 +102,7 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  @tparam allocator_type_ Arbitrary "rebindable" allocator for all internal structures.
  */
 template < //
-    typename value_type_, typename comparator_type_ = std::less<value_type_>,
-    typename allocator_type_ = std::allocator<std::uint8_t>>
+    typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>>
 class transactional_std_store {
 
 #pragma region Type Definitions
@@ -1544,8 +1541,7 @@ class transactional_std_store {
 
         if (!count) return;
 
-        std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
-        std::size_t matches_to_skip = distribution(generator);
+        std::size_t matches_to_skip = draw_below(generator, count);
         range(lower, upper, [&](value_t const &element) noexcept {
             if (matches_to_skip) --matches_to_skip;
             else callback(element);
@@ -1575,8 +1571,7 @@ class transactional_std_store {
             if (seen < reservoir_capacity) reservoir[seen] = element;
 
             else {
-                std::uniform_int_distribution<std::size_t> distribution {0, seen};
-                auto slot_to_replace = distribution(generator);
+                auto slot_to_replace = draw_below(generator, seen + 1);
                 if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = element;
             }
 
@@ -1603,12 +1598,11 @@ void merge_overwrite(std::set<keys_type_, compare_type_, allocator_type_> &targe
 }
 
 template < //
-    typename value_type_, typename comparator_type_ = std::less<value_type_>,
-    typename allocator_type_ = std::allocator<std::uint8_t>>
+    typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>>
 using transactional_std_set = transactional_std_store<value_type_, comparator_type_, allocator_type_>;
 
 template < //
-    typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+    typename key_type_, typename value_type_, typename comparator_type_ = less_t,
     typename allocator_type_ = std::allocator<std::uint8_t>>
 using transactional_std_map =
     transactional_std_store<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>;

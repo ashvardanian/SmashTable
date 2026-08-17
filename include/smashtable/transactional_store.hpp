@@ -10,11 +10,9 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <algorithm> // `std::max`
-#include <memory>    // `std::allocator`, `std::construct_at`, `std::destroy_at`
-#include <optional>  // `std::optional`
-#include <random>    // `std::uniform_int_distribution`
-#include <utility>   // `std::exchange`
+#include <memory>   // `std::allocator`, `std::construct_at`, `std::destroy_at`
+#include <optional> // `std::optional`
+#include <utility>  // `std::exchange`
 
 #include "basic_avl_tree.hpp"
 #include "basic_hash_table.hpp"
@@ -1696,8 +1694,7 @@ class transactional_store {
             if (seen < reservoir_capacity) reservoir[seen] = value;
 
             else {
-                std::uniform_int_distribution<std::size_t> distribution {0, seen};
-                auto slot_to_replace = distribution(generator);
+                auto slot_to_replace = draw_below(generator, seen + 1);
                 if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = value;
             }
 
@@ -1865,7 +1862,7 @@ class transactional_store {
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
+template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<value_type_>>
 using transactional_avl_set = transactional_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
 
@@ -1878,7 +1875,7 @@ using transactional_avl_set = transactional_store<basic_avl_tree<value_type_, co
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
 using transactional_avl_map =
     transactional_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
@@ -1891,7 +1888,7 @@ using transactional_avl_map =
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename value_type_, typename comparator_type_ = std::less<value_type_>,
+template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<value_type_>>
 using transactional_wb_set = transactional_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_>>;
 
@@ -1904,7 +1901,7 @@ using transactional_wb_set = transactional_store<basic_wb_tree<value_type_, comp
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<key_type_>,
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
 using transactional_wb_map =
     transactional_store<basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
@@ -1918,7 +1915,7 @@ using transactional_wb_map =
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
  */
-template <typename key_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
+template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = std::allocator<std::byte>>
 using transactional_hash_set =
     transactional_store<basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>>;
@@ -1933,8 +1930,8 @@ using transactional_hash_set =
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename hasher_type_ = lazy_std_hash_t,
-          typename equals_type_ = std::equal_to<>, typename allocator_type_ = std::allocator<std::byte>>
+template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+          typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using transactional_hash_map =
     transactional_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
 

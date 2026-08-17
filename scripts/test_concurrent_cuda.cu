@@ -27,8 +27,6 @@
 #include <cstdint> // `std::uint64_t`
 #include <cstdio>  // `std::printf`
 
-#include <format> // `std::format`
-#include <string> // `std::string`
 #include <thread> // `std::thread`
 #include <vector> // `std::vector`
 
@@ -275,7 +273,7 @@ static void cuda_host_and_device_insert_together() {
     int concurrent_managed_access = 0;
     st_verify_cuda_(cudaDeviceGetAttribute(&concurrent_managed_access, cudaDevAttrConcurrentManagedAccess, 0));
     if (!concurrent_managed_access) {
-        std::printf("  (skipped: device lacks concurrent managed access)\n");
+        print_line(stdout, "  (skipped: device lacks concurrent managed access)");
         return;
     }
 
@@ -317,21 +315,18 @@ int main() {
     // or too-old device is a skip rather than a failure.
     int devices_count = 0;
     if (cudaGetDeviceCount(&devices_count) != cudaSuccess || devices_count == 0) {
-        std::printf("No CUDA device visible - skipping.\n");
+        print_line(stdout, "No CUDA device visible - skipping.");
         return 0;
     }
 
     cudaDeviceProp properties {};
     st_verify_cuda_(cudaGetDeviceProperties(&properties, 0));
     if (properties.major < 7) {
-        std::string const reason = std::format("Device {} is sm_{}{}; the slot spin needs sm_70 or newer - skipping.\n",
-                                               properties.name, properties.major, properties.minor);
-        std::fputs(reason.c_str(), stdout);
+        print_line(stdout, "Device {} is sm_{}{}; the slot spin needs sm_70 or newer - skipping.", properties.name,
+                   properties.major, properties.minor);
         return 0;
     }
-    std::string const banner =
-        std::format("Running on {} (sm_{}{})\n", properties.name, properties.major, properties.minor);
-    std::fputs(banner.c_str(), stdout);
+    print_line(stdout, "Running on {} (sm_{}{})", properties.name, properties.major, properties.minor);
 
     char const *const filter = std::getenv("SMASHTABLE_FILTER");
     std::size_t failures = 0;

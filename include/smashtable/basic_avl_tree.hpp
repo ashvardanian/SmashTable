@@ -70,10 +70,9 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <algorithm> // `std::max`
-#include <memory>    // `std::allocator`
-#include <random>    // `std::uniform_int_distribution`
-#include <utility>   // `std::exchange`
+#include <limits>  // `std::numeric_limits`
+#include <memory>  // `std::allocator`
+#include <utility> // `std::exchange`
 
 #include "shared.hpp"
 
@@ -358,8 +357,7 @@ class basic_avl_node {
 
         for_each_left_right(node, [&](node_t *current) noexcept {
             ++count;
-            std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
-            if (distribution(generator) == 0) result = current;
+            if (draw_below(generator, count) == 0) result = current;
         });
 
         return result;
@@ -386,8 +384,7 @@ class basic_avl_node {
         range(node, low, high, comparator, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
             ++count;
-            std::uniform_int_distribution<std::size_t> distribution {0, count - 1};
-            if (distribution(generator) == 0) result = node;
+            if (draw_below(generator, count) == 0) result = node;
         });
 
         return result;
@@ -421,8 +418,7 @@ class basic_avl_node {
 
             if (seen < reservoir_capacity) { reservoir[seen] = node; }
             else {
-                std::uniform_int_distribution<std::size_t> distribution {0, seen};
-                auto slot_to_replace = distribution(generator);
+                auto slot_to_replace = draw_below(generator, seen + 1);
                 if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = node;
             }
 
@@ -448,8 +444,8 @@ class basic_avl_node {
         y->parent = x;
 
         // Update heights
-        y->height = std::max(get_height(y->left), get_height(y->right)) + 1;
-        x->height = std::max(get_height(x->left), get_height(x->right)) + 1;
+        y->height = larger_of(get_height(y->left), get_height(y->right)) + 1;
+        x->height = larger_of(get_height(x->left), get_height(x->right)) + 1;
         return x;
     }
 
@@ -467,8 +463,8 @@ class basic_avl_node {
         x->parent = y;
 
         // Update heights
-        x->height = std::max(get_height(x->left), get_height(x->right)) + 1;
-        y->height = std::max(get_height(y->left), get_height(y->right)) + 1;
+        x->height = larger_of(get_height(x->left), get_height(x->right)) + 1;
+        y->height = larger_of(get_height(y->left), get_height(y->right)) + 1;
         return y;
     }
 
@@ -491,7 +487,7 @@ class basic_avl_node {
     inline static node_t *rebalance_on_insert(node_t *node, comparable_type_ &&comparable,
                                               comparator_t const &comparator) noexcept {
         // Update height and check if branches aren't balanced
-        node->height = std::max(get_height(node->left), get_height(node->right)) + 1;
+        node->height = larger_of(get_height(node->left), get_height(node->right)) + 1;
         auto balance = get_balance(node);
 
         // Left Left Case
@@ -595,7 +591,7 @@ class basic_avl_node {
         if (root->right) root->right->parent = root;
 
         // Set height (no balancing needed for perfectly balanced construction)
-        root->height = 1 + std::max(get_height(root->left), get_height(root->right));
+        root->height = 1 + larger_of(get_height(root->left), get_height(root->right));
 
         return root;
     }
@@ -612,7 +608,7 @@ class basic_avl_node {
     };
 
     static node_t *rebalance_after_extract(node_t *node) noexcept {
-        node->height = 1 + std::max(get_height(node->left), get_height(node->right));
+        node->height = 1 + larger_of(get_height(node->left), get_height(node->right));
         auto balance = get_balance(node);
 
         // Left Left Case
@@ -655,7 +651,7 @@ class basic_avl_node {
             successor->right = subtree_result.root;
             if (successor->right) successor->right->parent = successor;
             successor->parent = node->parent;
-            successor->height = 1 + std::max(get_height(successor->left), get_height(successor->right));
+            successor->height = 1 + larger_of(get_height(successor->left), get_height(successor->right));
             // Detach the `node` from the descendants.
             node->left = node->right = node->parent = nullptr;
             node->height = 1;
@@ -736,7 +732,7 @@ class basic_avl_node {
             return {extract_res.root, count};
         }
         else {
-            node->height = 1 + std::max(get_height(node->left), get_height(node->right));
+            node->height = 1 + larger_of(get_height(node->left), get_height(node->right));
             return {node, count + 1};
         }
     }
@@ -773,7 +769,7 @@ class basic_avl_node {
         if (left) left->parent = root_node;
         root_node->right = right;
         if (right) right->parent = root_node;
-        root_node->height = 1 + std::max(get_height(left), get_height(right));
+        root_node->height = 1 + larger_of(get_height(left), get_height(right));
 
         // Rebalance if necessary
         auto balance = get_balance(root_node);
@@ -822,14 +818,14 @@ class basic_avl_node {
         if (left_height > right_height + 1) {
             left->right = join(left->right, right, comparator);
             if (left->right) left->right->parent = left;
-            left->height = 1 + std::max(get_height(left->left), get_height(left->right));
+            left->height = 1 + larger_of(get_height(left->left), get_height(left->right));
             return rebalance_after_extract(left);
         }
         // If right tree is taller, join with left subtree of right
         else if (right_height > left_height + 1) {
             right->left = join(left, right->left, comparator);
             if (right->left) right->left->parent = right;
-            right->height = 1 + std::max(get_height(right->left), get_height(right->right));
+            right->height = 1 + larger_of(get_height(right->left), get_height(right->right));
             return rebalance_after_extract(right);
         }
         // Heights are balanced, extract min from right and use as root
@@ -1032,7 +1028,7 @@ class basic_avl_node {
             if (left) left->parent = root;
             root->right = right;
             if (right) right->parent = root;
-            root->height = 1 + std::max(get_height(left), get_height(right));
+            root->height = 1 + larger_of(get_height(left), get_height(right));
             return root;
         };
 
@@ -1114,7 +1110,7 @@ class basic_avl_node {
  *  @tparam comparator_type_ Comparator for ordering entries. Define @c is_transparent for heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes. Must be rebindable to @c basic_avl_node.
  */
-template <typename value_type_, typename comparator_type_ = std::less<void>,
+template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<basic_avl_node<value_type_, comparator_type_>>>
 class basic_avl_tree {
   public:
@@ -2284,7 +2280,7 @@ class basic_avl_tree {
      *  @return Theoretical maximum size.
      */
     std::size_t max_size() const noexcept {
-        return std::min(allocator_.max_size(), std::numeric_limits<std::size_t>::max() / sizeof(node_t));
+        return smaller_of(allocator_.max_size(), std::numeric_limits<std::size_t>::max() / sizeof(node_t));
     }
 
     /**
@@ -2558,8 +2554,8 @@ class basic_avl_tree {
         }
 
         // Strategy 2: Adaptive selection between split-based and DSW
-        std::size_t min_size = std::min(size_, other.size_);
-        std::size_t max_size = std::max(size_, other.size_);
+        std::size_t min_size = smaller_of(size_, other.size_);
+        std::size_t max_size = larger_of(size_, other.size_);
 
         // Heuristic: Use DSW when both large and similar size
         constexpr std::size_t dsw_threshold_k = 10000;
@@ -2674,11 +2670,10 @@ class basic_avl_tree {
     }
 };
 
-template <typename value_type_, typename comparator_type_ = std::less<void>,
-          typename allocator_type_ = std::allocator<void>>
+template <typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<void>>
 using avl_set = basic_avl_tree<value_type_, comparator_type_, allocator_type_>;
 
-template <typename key_type_, typename value_type_, typename comparator_type_ = std::less<void>,
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<void>>
 using avl_map = basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>;
 

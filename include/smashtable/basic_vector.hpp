@@ -33,9 +33,8 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <algorithm> // `std::max`
-#include <memory>    // `std::allocator`
-#include <utility>   // `std::exchange`, `std::forward`
+#include <memory>  // `std::allocator`
+#include <utility> // `std::exchange`, `std::forward`
 
 #include "shared.hpp"
 
@@ -183,7 +182,7 @@ class basic_vector {
     [[nodiscard]] status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return status_t {success_k};
 
-        std::size_t const grown_capacity = std::max<std::size_t>(new_capacity, capacity_ == 0 ? 4 : capacity_ * 2);
+        std::size_t const grown_capacity = larger_of<std::size_t>(new_capacity, capacity_ == 0 ? 4 : capacity_ * 2);
         auto new_data = allocator_.allocate(grown_capacity);
         if (!new_data) return status_t {out_of_memory_heap_k};
 

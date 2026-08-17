@@ -44,8 +44,6 @@
 #include <cassert> // `assert`
 #include <cstddef> // `std::byte`, `std::size_t`
 
-#include <algorithm>   // `std::max`
-#include <memory>      // `std::allocator`
 #include <type_traits> // `std::is_trivially_destructible`
 #include <utility>     // `std::move`, `std::forward`
 
@@ -66,8 +64,8 @@ namespace ashvardanian::smashtable {
  *  @tparam equals_type_ Compares two keys for equality.
  *  @tparam allocator_type_ Supplies the single byte buffer the table is carved from.
  */
-template <typename element_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
-          typename allocator_type_ = std::allocator<std::byte>>
+template <typename element_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
+          typename allocator_type_ = default_allocator<std::byte>>
 class concurrent_hash_table {
 
     using layout_t = hash_layout_for<element_type_, hasher_type_>;
@@ -160,7 +158,7 @@ class concurrent_hash_table {
     constexpr bool empty() const noexcept { return size() == 0; }
 
     /** @brief Slots this table will never exceed, since it cannot grow. */
-    constexpr offset_t capacity() const noexcept { return std::max(storage_.growth_threshold, size()); }
+    constexpr offset_t capacity() const noexcept { return larger_of(storage_.growth_threshold, size()); }
     constexpr offset_t slots_count() const noexcept { return storage_.slots_count; }
 
     /**
@@ -400,13 +398,13 @@ class concurrent_hash_table {
 
 #pragma region Aliases
 
-template <typename key_type_, typename value_type_, typename hasher_type_ = lazy_std_hash_t,
-          typename equals_type_ = std::equal_to<>, typename allocator_type_ = std::allocator<std::byte>>
+template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+          typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
 using concurrent_hash_map =
     concurrent_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>;
 
-template <typename key_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
-          typename allocator_type_ = std::allocator<std::byte>>
+template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
+          typename allocator_type_ = default_allocator<std::byte>>
 using concurrent_hash_set = concurrent_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
 
 #pragma endregion Aliases

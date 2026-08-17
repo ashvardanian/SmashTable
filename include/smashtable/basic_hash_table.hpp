@@ -76,10 +76,7 @@
 #include <cstdint> // `std::uint8_t`
 #include <cstring> // `std::memcpy`
 
-#include <algorithm>   // `std::max`
-#include <iterator>    // `std::input_iterator_tag`
 #include <limits>      // `std::numeric_limits`
-#include <memory>      // `std::allocator`
 #include <type_traits> // `std::is_same`, `std::enable_if`
 #include <utility>     // `std::move`, `std::swap`
 
@@ -94,8 +91,8 @@ template <typename type_, typename = void>
 struct is_iterator_type : std::false_type {};
 
 template <typename type_>
-struct is_iterator_type<type_, std::void_t<typename std::iterator_traits<type_>::iterator_category>> : std::true_type {
-};
+struct is_iterator_type<type_, std::void_t<decltype(*std::declval<type_ &>()), decltype(++std::declval<type_ &>())>>
+    : std::true_type {};
 
 /** @brief Type trait to check if a type is an iterator. */
 template <typename type_>
@@ -123,7 +120,6 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
     using base_t::keys_;
     using base_t::slot_;
 
-    using iterator_category = std::forward_iterator_tag;
     using difference_type = std::ptrdiff_t;
     using value_type = element_t;
     using reference = typename base_t::dereference_t;
@@ -179,13 +175,13 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
  *  @tparam hasher_type_ Hash function type. Must be copy-constructible. Defaults to a @c std::hash wrapper.
  *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be copy-constructible.
  *    Defaults to a transparent @c std::equal_to.
- *  @tparam allocator_type_ Allocator for internal memory management. Defaults to @c std::allocator<std::byte>.
+ *  @tparam allocator_type_ Allocator for internal memory management. Defaults to @c default_allocator<std::byte>.
  *
  *  @see https://en.cppreference.com/w/cpp/container/unordered_set
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
  */
-template <typename element_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
-          typename allocator_type_ = std::allocator<std::byte>>
+template <typename element_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
+          typename allocator_type_ = default_allocator<std::byte>>
 class basic_hash_table {
 
     using layout_t = hash_layout_for<element_type_, hasher_type_>;
@@ -345,7 +341,7 @@ class basic_hash_table {
     template <typename begin_iterator_type_, typename end_iterator_type_,
               typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
     [[nodiscard]] static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end) noexcept {
-        auto table = make(hash_slots_count_t {static_cast<std::size_t>(std::distance(begin, end))});
+        auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))});
         if (!table) return table;
         table->insert(begin, end, assume_reserved_t {});
         return table;
@@ -373,7 +369,7 @@ class basic_hash_table {
     offset_t deleted_count() const noexcept { return storage_.deleted_count; }
 
     offset_t optimal_capacity() const noexcept { return storage_.growth_threshold; }
-    offset_t capacity() const noexcept { return std::max(optimal_capacity(), size()); }
+    offset_t capacity() const noexcept { return larger_of(optimal_capacity(), size()); }
 
     std::size_t size_bytes() const noexcept { return storage_.size_bytes(); }
 
@@ -1168,12 +1164,12 @@ class basic_hash_table {
 
 #pragma region Aliases
 
-template <typename key_type_, typename value_type_, typename hasher_type_ = lazy_std_hash_t,
-          typename equals_type_ = std::equal_to<>, typename allocator_type_ = std::allocator<std::byte>>
+template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+          typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
 using hash_map = basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>;
 
-template <typename key_type_, typename hasher_type_ = lazy_std_hash_t, typename equals_type_ = std::equal_to<>,
-          typename allocator_type_ = std::allocator<std::byte>>
+template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
+          typename allocator_type_ = default_allocator<std::byte>>
 using hash_set = basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
 
 static_assert(sizeof(hash_set<int>) >= 3 * sizeof(void *), "Hash-Table is too small!");
