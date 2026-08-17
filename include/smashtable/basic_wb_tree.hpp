@@ -1403,7 +1403,7 @@ class basic_wb_tree {
 
     /** @brief Inserts a range, skipping keys that are already present. */
     template <typename input_iterator_type_>
-    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first) {
             value_t element(*first);
             if (find(element) != end()) continue;
@@ -1414,7 +1414,7 @@ class basic_wb_tree {
 
     /** @brief Upserts a range, overwriting any key already present. */
     template <typename input_iterator_type_>
-    status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first)
             if (upsert(value_t(*first)).node == nullptr) return status_t::out_of_memory_heap_k;
         return success_k;

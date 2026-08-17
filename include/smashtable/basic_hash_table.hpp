@@ -1139,7 +1139,7 @@ class basic_hash_table {
         else
             for_each([&target](const_slot_ref_t const &source_slot) noexcept {
                 if constexpr (has_values_k)
-                    target.emplace(source_slot.key(), source_slot.value(), assume_reserved_t {}, assume_unique_t {});
+                    target.emplace(source_slot.key(), *source_slot, assume_reserved_t {}, assume_unique_t {});
                 else target.emplace(source_slot.key(), assume_reserved_t {}, assume_unique_t {});
             });
 
@@ -1152,7 +1152,7 @@ class basic_hash_table {
         if (!target.storage_.is_allocated()) return target;
         for_each([&target](const_slot_ref_t const &source_slot) noexcept {
             if constexpr (has_values_k)
-                target.emplace(source_slot.key(), source_slot.value(), assume_reserved_t {}, assume_unique_t {});
+                target.emplace(source_slot.key(), *source_slot, assume_reserved_t {}, assume_unique_t {});
             else target.emplace(source_slot.key(), assume_reserved_t {}, assume_unique_t {});
         });
         return target;

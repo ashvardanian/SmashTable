@@ -8,7 +8,6 @@
  */
 #pragma once
 #include <memory>      // `std::allocator` as default
-#include <optional>    // `std::optional` for internal batch operations
 #include <set>         // `std::set` for inner versioned entries
 #include <stdexcept>   // `std::length_error`, which MSVC does not reach through `<set>`
 #include <type_traits> // `std::is_nothrow_invocable_v`
@@ -19,7 +18,7 @@
 namespace ashvardanian::smashtable {
 
 template <typename callable_type_>
-status_t invoke_safely(callable_type_ &&callable) noexcept {
+[[nodiscard]] status_t invoke_safely(callable_type_ &&callable) noexcept {
     if constexpr (noexcept(callable())) {
         callable();
         return success_k;
@@ -990,7 +989,7 @@ class transactional_std_store {
 #pragma region Observers
 
     /** @brief Builds a store around a specific comparator, for comparators that carry state. */
-    [[nodiscard]] static std::optional<store_t> make(comparator_t const &comparator) noexcept {
+    [[nodiscard]] static expected<store_t> make(comparator_t const &comparator) noexcept {
         return store_t {comparator};
     }
 
@@ -1000,10 +999,10 @@ class transactional_std_store {
      *
      *  @return Container instance, or empty on allocation failure.
      */
-    [[nodiscard]] static std::optional<store_t> make() noexcept {
-        std::optional<store_t> opt_store;
-        auto status = invoke_safely([&]() { opt_store.emplace(); });
-        if (failed(status)) return std::nullopt;
+    [[nodiscard]] static expected<store_t> make() noexcept {
+        expected<store_t> opt_store;
+        auto status = invoke_safely([&]() { opt_store = store_t {}; });
+        if (failed(status)) return status_t::out_of_memory_heap_k;
         return opt_store;
     }
 
@@ -1018,11 +1017,11 @@ class transactional_std_store {
      *
      *  @return Transaction instance, or empty on allocation failure.
      */
-    [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
-        std::optional<transaction_t> opt_txn;
+    [[nodiscard]] expected<transaction_t> transaction() noexcept {
+        expected<transaction_t> opt_txn;
         // The constructor is private, so `emplace` cannot reach it; build here, where we are a friend.
         auto status = invoke_safely([&]() { opt_txn = transaction_t {*this}; });
-        if (failed(status)) return std::nullopt;
+        if (failed(status)) return status_t::out_of_memory_heap_k;
         return opt_txn;
     }
 
@@ -1194,7 +1193,7 @@ class transactional_std_store {
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         generation_t generation = new_generation_();
-        std::optional<entry_set_t> batch;
+        expected<entry_set_t> batch;
         auto batch_construction_status = invoke_safely([&]() {
             batch = entry_set_t {};
             for (; begin != end; ++begin) {
@@ -1206,7 +1205,7 @@ class transactional_std_store {
         });
         if (failed(batch_construction_status)) return batch_construction_status;
 
-        return insert_or_assign_(batch.value());
+        return insert_or_assign_(*batch);
     }
 
     /**
@@ -1445,8 +1444,8 @@ class transactional_std_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
-    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                   callback_missing_type_ &&callback_missing = {}) noexcept {
+    [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
+                                 callback_missing_type_ &&callback_missing = {}) noexcept {
 
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
@@ -1590,7 +1589,7 @@ void merge_overwrite(std::set<keys_type_, compare_type_, allocator_type_> &targe
     for (auto source_it = source.begin(); source_it != source.end();) {
         auto node = source.extract(source_it++);
         auto result = target.insert(std::move(node));
-        if (!result.inserted) std::swap(*result.position, result.node.value());
+        if (!result.inserted) std::swap(*result.position, result.*node);
     }
 }
 

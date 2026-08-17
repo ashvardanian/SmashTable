@@ -9,7 +9,6 @@
 #include <array>        // `std::array`
 #include <bit>          // `std::countr_zero`
 #include <mutex>        // `std::unique_lock`
-#include <optional>     // `std::optional`
 #include <shared_mutex> // `std::shared_mutex`, `std::shared_lock`
 
 #include "shared.hpp"
@@ -31,12 +30,13 @@ constexpr std::array<type_, count_> move_to_array(type_ (&a)[count_]) noexcept {
 }
 
 /**
- *  @brief Takes a generator that produces @c bool -convertible and dereference-able objects like @c std::optional,
- *    and builds up fixed-size of array of such object, but only if all were successfully built. If type_ least one
- *    generator call fails, the entire resulting @c std::optional is returned to NULL state.
+ *  @brief Builds a fixed-size array from @p generator, or nothing at all if any element refuses.
+ *
+ *  The generator hands back an @c expected per element, and a single failure destroys the prefix
+ *  already built, so no half-populated array is ever observable.
  */
 template <typename type_, std::size_t count_, typename generator_type_>
-static std::optional<std::array<type_, count_>> generate_array_safely(generator_type_ &&generator) noexcept {
+static expected<std::array<type_, count_>> generate_array_safely(generator_type_ &&generator) noexcept {
     constexpr std::size_t count_k = count_;
     using value_t = type_;
     using raw_array_t = value_t[count_];
@@ -44,8 +44,7 @@ static std::optional<std::array<type_, count_>> generate_array_safely(generator_
     value_t *raw_parts = reinterpret_cast<value_t *>(raw_parts_mem);
     for (std::size_t part_index = 0; part_index != count_k; ++part_index) {
 
-        if (auto new_part = generator(part_index); new_part)
-            new (raw_parts + part_index) value_t(std::move(new_part).value());
+        if (auto new_part = generator(part_index); new_part) new (raw_parts + part_index) value_t(std::move(*new_part));
         else {
             // Destruct all the previous parts.
             for (std::size_t destructed_index = 0; destructed_index != part_index; ++destructed_index)
@@ -405,11 +404,11 @@ class partitioned_collection {
         return *this;
     }
 
-    static std::optional<parts_t> new_parts() noexcept {
+    static expected<parts_t> new_parts() noexcept {
         return generate_array_safely<part_t, parts_k>([](std::size_t) { return part_t::make(); });
     }
 
-    static std::optional<parts_t> new_parts(comparator_t const &comparator) noexcept {
+    static expected<parts_t> new_parts(comparator_t const &comparator) noexcept {
         // Backends differ in whether they also take an allocator here, so the shape is detected rather
         // than assumed - a tree seeds both policies, a `std::set`-backed store only the comparator.
         return generate_array_safely<part_t, parts_k>([&](std::size_t) {
@@ -434,10 +433,9 @@ class partitioned_collection {
 
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-    [[nodiscard]] static std::optional<partitioned_collection> make() noexcept {
-        std::optional<partitioned_collection> result;
-        if (std::optional<parts_t> unlocked = new_parts(); unlocked)
-            result.emplace(partitioned_collection {std::move(unlocked).value()});
+    [[nodiscard]] static expected<partitioned_collection> make() noexcept {
+        expected<partitioned_collection> result;
+        if (expected<parts_t> unlocked = new_parts(); unlocked) result = partitioned_collection {std::move(*unlocked)};
         return result;
     }
 
@@ -447,20 +445,20 @@ class partitioned_collection {
      *  @param[in] hasher The instance that maps an identifier to its partition.
      *  @return Collection instance or empty optional on failure.
      */
-    [[nodiscard]] static std::optional<partitioned_collection> make(comparator_t const &comparator,
-                                                                    hash_t const &hasher) noexcept {
-        std::optional<partitioned_collection> result;
-        if (std::optional<parts_t> unlocked = new_parts(comparator); unlocked)
-            result.emplace(partitioned_collection {std::move(unlocked).value(), hasher, comparator});
+    [[nodiscard]] static expected<partitioned_collection> make(comparator_t const &comparator,
+                                                               hash_t const &hasher) noexcept {
+        expected<partitioned_collection> result;
+        if (expected<parts_t> unlocked = new_parts(comparator); unlocked)
+            result = partitioned_collection {std::move(*unlocked), hasher, comparator};
         return result;
     }
 
-    [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
+    [[nodiscard]] expected<transaction_t> transaction() noexcept {
         auto maybe = generate_array_safely<part_transaction_t, parts_k>(
             [&](std::size_t part_index) { return parts_[part_index].transaction(); });
         if (!maybe) return {};
 
-        return transaction_t(*this, std::move(maybe).value());
+        return transaction_t(*this, std::move(*maybe));
     }
 
     [[nodiscard]] status_t upsert(value_t &&element) noexcept {
@@ -670,7 +668,7 @@ class partitioned_collection {
         if (!maybe) return unknown_k;
 
         lock_every_part_<unique_lock_t>(mutexes_);
-        parts_ = std::move(maybe).value();
+        parts_ = std::move(*maybe);
         for (auto &mutex : mutexes_) mutex.unlock();
         return success_k;
     }

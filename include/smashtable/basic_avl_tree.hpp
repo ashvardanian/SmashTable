@@ -2063,7 +2063,8 @@ class basic_avl_tree {
      *    Temp tree is destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last,
+                                             tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
@@ -2110,7 +2111,7 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to insert.
      *  @return First error encountered, or success if all elements inserted.
      */
-    status_t insert_if_missing(std::initializer_list<value_t> ilist) noexcept {
+    [[nodiscard]] status_t insert_if_missing(std::initializer_list<value_t> ilist) noexcept {
         return insert_if_missing(ilist.begin(), ilist.end());
     }
 
@@ -2139,7 +2140,7 @@ class basic_avl_tree {
      *    During merge, duplicate keys are UPDATED (not skipped).
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
@@ -2188,7 +2189,9 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to upsert.
      *  @return First error encountered, or success if all elements processed.
      */
-    status_t upsert(std::initializer_list<value_t> ilist) noexcept { return upsert(ilist.begin(), ilist.end()); }
+    [[nodiscard]] status_t upsert(std::initializer_list<value_t> ilist) noexcept {
+        return upsert(ilist.begin(), ilist.end());
+    }
 
     /**
      *  @brief Updates a range of existing entries (transactional all-or-nothing).
@@ -2212,7 +2215,7 @@ class basic_avl_tree {
      *    Temp tree is destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
@@ -2256,7 +2259,9 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to update.
      *  @return Success if all keys updated, or error if any key missing or OOM.
      */
-    status_t update(std::initializer_list<value_t> ilist) noexcept { return update(ilist.begin(), ilist.end()); }
+    [[nodiscard]] status_t update(std::initializer_list<value_t> ilist) noexcept {
+        return update(ilist.begin(), ilist.end());
+    }
 
 #pragma endregion Modifiers
 

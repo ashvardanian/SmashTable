@@ -10,9 +10,8 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <memory>   // `std::allocator`, `std::construct_at`, `std::destroy_at`
-#include <optional> // `std::optional`
-#include <utility>  // `std::exchange`
+#include <memory>  // `std::allocator`, `std::construct_at`, `std::destroy_at`
+#include <utility> // `std::exchange`
 
 #include "basic_avl_tree.hpp"
 #include "basic_hash_table.hpp"
@@ -43,7 +42,7 @@ namespace ashvardanian::smashtable {
  *  The state management doesn't rely on entry pointers or iterators. Those could simplify the implementation,
  *  but introduce require validity constraints for re-allocations and modifications of the tree and underlying
  *  allocator behavior. So all entry IDs must either be nothrow-copyable or provide a @c copy() member method
- *  returning an @c std::optional<T> to support safe copying for watch bookkeeping.
+ *  returning an @c expected<T> to support safe copying for watch bookkeeping.
  *
  *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
  *  @see https://jepsen.io/consistency/models/read-committed
@@ -313,7 +312,7 @@ class transactional_store {
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
 
-            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
+            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return success_k;
         }
 
@@ -341,7 +340,7 @@ class transactional_store {
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
 
-            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
+            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return success_k;
         }
 
@@ -365,7 +364,7 @@ class transactional_store {
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
 
-            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
+            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return success_k;
         }
 
@@ -409,7 +408,7 @@ class transactional_store {
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
 
-            changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
+            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
             return success_k;
         }
 
@@ -1249,7 +1248,7 @@ class transactional_store {
      *  @param[in] allocator Optional allocator instance.
      *  @return Container instance or empty optional on failure.
      */
-    [[nodiscard]] static std::optional<store_t> make(allocator_t const &allocator = {}) noexcept {
+    [[nodiscard]] static expected<store_t> make(allocator_t const &allocator = {}) noexcept {
         return store_t {allocator};
     }
 
@@ -1259,8 +1258,7 @@ class transactional_store {
      *  @param[in] allocator Optional allocator instance.
      *  @return Container instance or empty optional on failure.
      */
-    [[nodiscard]] static std::optional<store_t> make(comparator_t const &comparator,
-                                                     allocator_t const &allocator) noexcept {
+    [[nodiscard]] static expected<store_t> make(comparator_t const &comparator, allocator_t const &allocator) noexcept {
         return store_t {comparator, allocator};
     }
 
@@ -1275,7 +1273,7 @@ class transactional_store {
      *
      *  @return Transaction instance or empty optional on failure.
      */
-    [[nodiscard]] std::optional<transaction_t> transaction() noexcept { return transaction_t {*this}; }
+    [[nodiscard]] expected<transaction_t> transaction() noexcept { return transaction_t {*this}; }
 
 #pragma endregion Transaction Management
 
@@ -1747,8 +1745,8 @@ class transactional_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
-    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                   callback_missing_type_ &&callback_missing = {}) noexcept {
+    [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
+                                 callback_missing_type_ &&callback_missing = {}) noexcept {
         // `find` already unwraps to the stored value, and `comparable` is read twice below,
         // so it stays an lvalue rather than being forwarded away on the first use.
         bool found = false;

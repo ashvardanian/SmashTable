@@ -206,7 +206,7 @@ class basic_vector {
      *  @param[in] value Element to append (moved into the vector).
      *  @return Always returns success for noexcept move construction.
      */
-    status_t push_back(assume_reserved_t, element_t &&value) noexcept {
+    [[nodiscard]] status_t push_back(assume_reserved_t, element_t &&value) noexcept {
         assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
         new (&data_[size_++]) element_t(std::move(value));
         return success_k;

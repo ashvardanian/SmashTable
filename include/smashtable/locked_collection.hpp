@@ -7,7 +7,6 @@
  */
 #pragma once
 #include <mutex>        // `std::unique_lock`
-#include <optional>     // `std::optional`
 #include <shared_mutex> // `std::shared_mutex`
 
 #include "shared.hpp"
@@ -145,18 +144,17 @@ class locked_collection {
         return unlocked_.empty();
     }
 
-    [[nodiscard]] static std::optional<locked_collection> make() noexcept {
-        std::optional<locked_collection> result;
-        if (std::optional<unlocked_t> unlocked = unlocked_t::make(); unlocked)
-            result.emplace(locked_collection {std::move(unlocked).value()});
+    [[nodiscard]] static expected<locked_collection> make() noexcept {
+        expected<locked_collection> result;
+        if (expected<unlocked_t> unlocked = unlocked_t::make(); unlocked)
+            result = locked_collection {std::move(*unlocked)};
         return result;
     }
 
-    [[nodiscard]] std::optional<transaction_t> transaction() noexcept {
-        std::optional<transaction_t> result;
+    [[nodiscard]] expected<transaction_t> transaction() noexcept {
+        expected<transaction_t> result;
         std::unique_lock _ {mutex_};
-        if (auto unlocked = unlocked_.transaction(); unlocked)
-            result.emplace(transaction_t {*this, std::move(unlocked).value()});
+        if (auto unlocked = unlocked_.transaction(); unlocked) result = transaction_t {*this, std::move(*unlocked)};
         return result;
     }
 

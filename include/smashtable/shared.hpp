@@ -39,7 +39,6 @@
 #include <bit>         // `std::countl_zero`
 #include <concepts>    // `std::convertible_to`, `std::same_as`
 #include <new>         // `::operator new`, `std::align_val_t`, `std::nothrow`
-#include <optional>    // `std::optional`
 #include <tuple>       // `std::tuple`
 #include <type_traits> // `std::is_nothrow_invocable_v`
 #include <utility>     // `std::move`, `std::index_sequence`
@@ -1428,11 +1427,11 @@ class transaction_group {
      *    A store that refuses leaves the already-opened transactions to their destructors, which is
      *    why they must unwind themselves.
      */
-    [[nodiscard]] static std::optional<transaction_group> make(store_types_ &...stores) noexcept {
-        std::tuple<std::optional<typename store_types_::transaction_t>...> opened {stores.transaction()...};
+    [[nodiscard]] static expected<transaction_group> make(store_types_ &...stores) noexcept {
+        std::tuple<expected<typename store_types_::transaction_t>...> opened {stores.transaction()...};
         bool const all_opened =
-            std::apply([](auto const &...maybe) noexcept { return (maybe.has_value() && ...); }, opened);
-        if (!all_opened) return std::nullopt;
+            std::apply([](auto const &...maybe) noexcept { return (static_cast<bool>(maybe) && ...); }, opened);
+        if (!all_opened) return status_t::out_of_memory_heap_k;
 
         std::array<void const *, participants_k> const addresses {static_cast<void const *>(&stores)...};
         auto moved = std::apply([](auto &...maybe) noexcept { return transactions_t {std::move(*maybe)...}; }, opened);
@@ -1520,8 +1519,7 @@ class transaction_group {
 
 /** @brief Deduces the store types, so a caller names the stores and not their spellings. */
 template <typename... store_types_>
-[[nodiscard]] std::optional<transaction_group<store_types_...>> make_transaction_group(
-    store_types_ &...stores) noexcept {
+[[nodiscard]] expected<transaction_group<store_types_...>> make_transaction_group(store_types_ &...stores) noexcept {
     return transaction_group<store_types_...>::make(stores...);
 }
 
