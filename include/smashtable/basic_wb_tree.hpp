@@ -52,7 +52,12 @@ namespace ashvardanian::smashtable {
  *  Δ=3: Rotation threshold. Rebalance if size(left) >= 3×size(right) or vice versa.
  *  Γ=2: Rotation type selector. Single rotation if size(heavy.inner) < 2×size(heavy.outer).
  *
- *  These are the @b only valid integer parameters, proven in Coq.
+ *  These are the @b only valid integer parameters, proven in Coq by Hirai and Yamamoto in 2011, and are
+ *  exposed as @c delta_k and @c gamma_k.
+ *
+ *  Layout: @c fruit is the stored entry, @c left and @c right the links, and @c size the number of nodes
+ *  in the subtree rooted here - invariant @c size @c = @c 1 @c + @c size(left) @c + @c size(right), which
+ *  is what makes @c select and @c rank logarithmic.
  */
 template <typename value_type_, typename comparator_type_>
 class basic_wb_node {
@@ -66,18 +71,8 @@ class basic_wb_node {
     node_t *left = nullptr;
     node_t *right = nullptr;
 
-    /**
-     *  @brief Subtree size (number of nodes in subtree rooted at this node).
-     *    Invariant: size = 1 + size(left) + size(right)
-     *    Enables O(log n) order statistics: @c select(k), @c rank(x).
-     */
     size_t size = 1;
 
-    /**
-     *  @brief WBT rebalancing parameters (Hirai & Yamamoto, 2011).
-     *    Δ=3: Triggers rotation when size imbalance >= 3×
-     *    Γ=2: Chooses single vs double rotation based on grandchild sizes
-     */
     static constexpr size_t delta_k = 3;
     static constexpr size_t gamma_k = 2;
 
@@ -399,10 +394,6 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Check if node satisfies weight-balance invariant.
-     *  @return True if balanced: size(left) < Δ×size(right) AND size(right) < Δ×size(left)
-     */
-    /**
      *  @brief Weight of a subtree, counting the empty tree as 1.
      *    Hirai and Yamamoto state the invariant over @c size+1; comparing raw sizes makes
      *    every node with an empty child look unbalanced and asks for rotations that cannot
@@ -410,6 +401,10 @@ class basic_wb_node {
      */
     static size_t get_weight(node_t *node) noexcept { return get_size(node) + 1; }
 
+    /**
+     *  @brief Check if node satisfies weight-balance invariant.
+     *  @return True if balanced: size(left) < Δ×size(right) AND size(right) < Δ×size(left)
+     */
     static bool is_balanced(node_t *node) noexcept {
         if (!node) return true;
         size_t left_weight = get_weight(node->left);
@@ -705,8 +700,10 @@ class basic_wb_node {
      *  @brief Result of splitting a tree at a key.
      */
     struct split_result_t {
-        node_t *left = nullptr;  //!< Tree with all elements < key.
-        node_t *right = nullptr; //!< Tree with all elements >= key.
+        /** @brief Subtree with all elements ordered before the split key. */
+        node_t *left = nullptr;
+        /** @brief Subtree with all elements not ordered before the split key. */
+        node_t *right = nullptr;
     };
 
     /**
@@ -1029,9 +1026,6 @@ class basic_wb_tree {
 
 #pragma region Lookup
 
-    /**
-     *  @brief Checks if an element exists in the tree.
-     */
     /** @brief Existence check, heterogeneous when the comparator declares @c is_transparent. */
     template <typename comparable_type_ = value_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
@@ -1251,24 +1245,28 @@ class basic_wb_tree {
 
     /**
      *  @brief Merges another tree using upsert semantics (updates duplicates instead of skipping).
-     *  @param[in] other Tree to merge from. Will be empty after merge.
+     *  @param[inout] other Tree to merge from. Emptied on success, and on an allocation failure
+     *    it keeps every entry that could not be moved across.
      */
     void merge_with_upsert(wb_tree_t &other) noexcept {
         while (other.size() > 0) {
             node_t *other_root = other.root_;
             if (!other_root) break;
 
-            // Extract root node and upsert into this tree
+            // The extracted node only carries its entry across; the guard frees the node itself
+            // once the entry has been upserted into this tree.
             auto extracted = other.extract(other_root->fruit);
-            if (extracted) {
-                node_t *node_to_insert = extracted.release();
-                auto result = node_t::upsert(root_, std::move(node_to_insert->fruit), comparator_,
-                                             [&]() noexcept { return allocator_.allocate(1); });
-                root_ = result.root;
-                size_ += result.inserted;
-                node_to_insert->fruit.~value_t();
-                allocator_.deallocate(node_to_insert, 1);
+            if (!extracted) continue;
+
+            auto result = node_t::upsert(root_, std::move(extracted.node_ptr_->fruit), comparator_,
+                                         [&]() noexcept { return allocator_.allocate(1); });
+            // Out of memory - hand the node back to the source tree rather than drop its entry
+            if (result.failed()) {
+                other.merge(std::move(extracted));
+                return;
             }
+            root_ = result.root;
+            size_ += result.inserted;
         }
     }
 
@@ -1431,8 +1429,10 @@ class basic_wb_tree {
      *    Combines iterator to next element with operation status.
      */
     struct erase_result_t {
-        iterator next;   //!< Iterator to the element following the erased element (or end()).
-        status_t status; //!< Status of the erase operation.
+        /** @brief Iterator to the element following the erased one, or @c end(). */
+        iterator next;
+        /** @brief Status of the erase operation. */
+        status_t status;
     };
 
     /**
@@ -1712,8 +1712,10 @@ class basic_wb_tree {
      *    Contains two trees: left (all < key) and right (all >= key).
      */
     struct split_result_t {
-        wb_tree_t left;  //!< Tree with all elements < key.
-        wb_tree_t right; //!< Tree with all elements >= key.
+        /** @brief Tree with all elements ordered before the split key. */
+        wb_tree_t left;
+        /** @brief Tree with all elements not ordered before the split key. */
+        wb_tree_t right;
 
         split_result_t() = default;
         split_result_t(wb_tree_t &&l, wb_tree_t &&r) : left(std::move(l)), right(std::move(r)) {}
