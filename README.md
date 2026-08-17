@@ -1,41 +1,148 @@
 # SmashTable
 
-SmashTable is a library of data-structures, with Atomic, Consistent, and Isolated transactions, similar to databases, but at the level of individual in-memory containers, without any Durability promises.
-It's implemented in __C++ 20__ as header-only templates, and also exposed to __Python 3__ via raw CPython API.
-At the lower C++ level it enables Systems Engineers to build safer concurrent software, avoiding exuberant costs of Multi-Version Concurrency Control (MVCC) in favor of cheaper mechanisms.
-At the higher Python level, it simplifies multi-core programming for data-intensive scripts, by providing shared collections that work across GIL-free sub-interpreters.
+SmashTable makes __one update span several containers__.
+Either every change lands or none does, and the containers never disagree about which happened.
+It's implemented in __C++ 20__ as header-only templates, and exposed to __Python 3__ through the raw CPython API.
+
+Three `std::map`s cannot do this, and neither can three `dict`s.
+It needs no threads to be useful — the same guarantee that keeps two indexes consistent under contention is what keeps them consistent when an exception unwinds a loop halfway through.
 
 ![SmashTable Thumbnail](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/SmashTable.jpg?raw=true)
 
 ## Python Quick Start
 
-To install SmashTable for Python, simply run:
-
 ```bash
 pip install smashtable
 ```
 
-Then, you can use it as follows to create a parallel Python application.
-Let's say you've also installed `stringzilla` and want to find all of the unique words in a large text file using multiple CPU cores:
+Two indexes over the same entities have to move together, or a lookup by name finds an identifier that no longer resolves:
 
 ```python
-import stringzilla as sz
 import smashtable as st
-import concurrent.futures
 
-doc = sz.File("enwik9.txt")
-words = sz.SortedSet(dtype=str)
+by_id = st.SortedMap(key=int)     # entity id → record
+by_name = st.SortedMap(key=str)   # name      → entity id
 
-for word in doc.split_iter():
-    words.add(word)
-
-assert len(words) > 0
-assert words[:3] == [ ... ]
+with st.atomic(by_id, by_name) as (ids, names):
+    ids[42] = "carol"
+    names["carol"] = 42
+# both indexes became visible together
 ```
 
-## C++ Quick Start
+Each container is a mapping in its own right, so the usual vocabulary works:
 
-To use SmashTable in C++, simply borrow the desired header files or install via CMake:
+```python
+list(by_id)                  # [42]           — keys, in order
+dict(by_name)                # {'carol': 42}
+by_id.items()                # a lazy view, not a copy
+by_id.scan(0, 100)           # the half-open window [0, 100)
+```
+
+If the block raises, nothing was applied:
+
+```python
+try:
+    with st.atomic(by_id, by_name) as (ids, names):
+        ids[43] = "dave"
+        names["dave"] = 43
+        raise ValueError("failed validation")
+except ValueError:
+    pass
+
+assert 43 not in by_id and "dave" not in by_name
+```
+
+Without this, the alternative is an O(n) defensive copy that every alias to the container can still read through mid-update:
+
+```python
+backup = dict(cache)                      # copies the whole thing
+try:
+    for key, value in updates.items():
+        cache[key] = transform(value)     # raises on item 40 of 100
+except Exception:
+    cache.clear(); cache.update(backup)   # O(n) again, and readers already saw the torn state
+```
+
+### Optimistic Concurrency
+
+`watch` makes a transaction fail rather than overwrite a key someone else touched first.
+`ConflictError` is the retry signal, and the only exception a correct program is expected to catch routinely:
+
+```python
+while True:
+    try:
+        with st.atomic(accounts) as (view,):
+            view.watch("alice")
+            view["alice"] = view["alice"] - 100
+        break
+    except st.ConflictError:
+        continue    # nothing was applied, so retrying is safe
+```
+
+### The Two Phases
+
+`with` is exactly `begin()`, the body, `stage()`, `commit()`.
+Both phases are also available directly:
+
+```python
+group = st.atomic(by_id, by_name)
+ids, names = group.begin()
+ids[42] = "carol"; names["carol"] = 42
+group.stage()      # validates watches and reserves; still invisible, and may raise ConflictError
+group.commit()     # flips visibility
+```
+
+Separating the fallible phase from the applying phase is what lets independent transactions compose into one all-or-nothing unit.
+`stage` is where a conflict or an allocation failure surfaces; by `commit` there is nothing left to fail on.
+
+### What It Guarantees, and What It Does Not
+
+- __A group applies in full or not at all.__ A body that raises resets every participant. A stage that fails on one participant unwinds them all.
+- __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
+- __A transaction reads its own writes__ — `view[k]` sees what `view[k] = v` put there.
+- __Commit is not a snapshot.__ It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead. A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
+- __Scans are not snapshots either.__ `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
+
+### Stored Types
+
+Values are `int`, `float`, `bool`, `str` and `bytes`, deep-copied into memory the library owns, so a stored value outlives the object it came from.
+`str` and `bytes` stay distinct, and `bool` round-trips as `bool` rather than as `1`.
+
+A container may instead hold arbitrary objects, which it stores by reference rather than by copy:
+
+```python
+documents = st.SortedMap(key=str, value='object')
+documents['doc'] = {'nested': [1, 2]}   # the very same object comes back out
+```
+
+The mode is named rather than inferred, because it is what the scalar guarantee rests on.
+In the default scalar mode nothing stored can touch a reference count, so the interpreter lock is released around every store; in object mode it is held, and the container is correspondingly slower.
+
+__Keys are typed and homogeneous.__
+A container names its key layout at construction and refuses every other type:
+
+```python
+st.SortedMap(key=int)      # signed 64-bit
+st.SortedMap(key='uint')   # unsigned 64-bit, the only way to ask, since Python has no unsigned type
+st.SortedMap(key=str)      # UTF-8, ordered bytewise
+st.SortedMap(key=bytes)    # opaque, never decoded
+```
+
+That is what lets every comparison skip type dispatch: the ordering function is chosen once, at construction, rather than re-derived from a tag on each of the millions of comparisons a tree makes.
+
+`float` and `bool` are values but never keys.
+A float key would make ordering depend on a total order over NaN, and `bool` is a subclass of `int` in Python, so accepting it would silently alias two key spaces:
+
+```python
+m = st.SortedMap(key=int)
+m[1] = 'one'      # fine
+m[1.0] = 'one'    # TypeError: float is not a valid key
+m[True] = 'one'   # TypeError: bool is not a valid key
+```
+
+This is the one place the library is deliberately stricter than `dict`, which treats `1`, `1.0` and `True` as one key.
+
+## C++ Quick Start
 
 ```cmake
 include(FetchContent)
@@ -48,95 +155,60 @@ FetchContent_MakeAvailable(smashtable)
 target_link_libraries(your_target PRIVATE smashtable::smashtable)
 ```
 
-For system-wide installation, SmashTable supports standard CMake package discovery:
+For a system-wide install, standard CMake package discovery works:
 
 ```bash
 sudo cmake --install build_release
 ```
-
-Then in your CMakeLists.txt:
 
 ```cmake
 find_package(smashtable REQUIRED)
 target_link_libraries(your_target PRIVATE smashtable::smashtable)
 ```
 
-The library is designed to avoid exceptions entirely, no `throw` anywhere.
-Mutation APIs (`upsert`, `insert`, `erase`, `reserve`, `clear`, etc.) return `status_t` to indicate success or failure.
-All containers are compatible with custom memory allocators, and can be pre-allocated to reduce runtime memory allocations.
-Basic containers (`basic_avl_tree`, `basic_hash_table`) provide full STL-style iterator support with bidirectional traversal.
-Transactional containers don't support iterators due to complexity of maintaining validity in presence of concurrent updates:
+The library throws nowhere.
+Mutating APIs return `status_t`; read-only operations cannot fail and deliver results through `noexcept` callbacks.
+All containers take custom allocators and can be pre-allocated.
 
-- Query APIs like `find()`, `lower_bound()`, and `upper_bound()` return `void` and use 2 noexcept callbacks for found/missing cases.
-- Range operations like `equal_range()` and `sample_range()` return `void` and use a single noexcept callback invoked for each element.
-- Callbacks must be `noexcept` as they're invoked directly without exception wrapping.
-
-Most APIs are similar to STL containers:
+The same shape as the Python example, with no threads in sight:
 
 ```cpp
-#include <smashtable/transactional_std_store.hpp>
+#include <smashtable/basic_avl_tree.hpp>
+#include <smashtable/transactional_binary_tree.hpp>
 
 namespace st = ashvardanian::smashtable;
 
-int main() {
-    using pair_t = mapping<std::string_view, int>;  // cheaper than `std::pair`
-    using map_t = st::transactional_std_store<pair_t>;  // builds on top of `std::map`
-    auto map = *map_t::make();                          // instead of constructors to return optionals
-    _ = map.reserve(100);                               // optionally reserve space
-    
-    // STL-style operations outside of transactions
-    _ = map.clear(); _ = map.merge(another_map);
-    _ = map.insert({"alice", 2}); _ = map.insert_or_assign({"bob", 2}); _ = map.erase("alice");
-    _ = map.insert({"carol", 3});
+using id_t = std::uint64_t;
+using by_id_t = st::transactional_avl_map<id_t, record_t>;      // id   → record
+using by_name_t = st::transactional_avl_map<name_t, id_t>;      // name → id
 
-    // Some operations will look different from STL
-    _ = map.upsert({"dave", 4});                        // "upsert" = insert or update
-    _ = map.insert_if_missing({"carol", 5});            // similar to `try_emplace` - skips if exists
-    map.find("alice",                                   // "find" won't return iterators!
-        [](pair_t const &existing) noexcept { ... },    // scoped processing of a found element
-        []() noexcept { ... });                         // handle the missing case
-    map.lower_bound(..., [](auto) noexcept { }, []() noexcept { });
-    map.upper_bound(..., [](auto) noexcept { }, []() noexcept { });
-    map.equal_range(..., [](auto const &) noexcept { });     // one key, invokes callback for matches
+auto by_id = *by_id_t::make();
+auto by_name = *by_name_t::make();
 
-    // Transactions are the crucial part
-    auto t1 = *map.transaction();                       // can't copy or move transactions
-    _ = t1.reserve(5);                                  // optionally reserve space for 5 updates
-    _ = t1.insert("al", 1); _ = t1.upsert("bob", 2);    // update some key-value pairs
-    _ = t1.watch("carol");                              // transaction will fail if "carol" is later modified
+auto ids = *by_id.transaction();
+auto names = *by_name.transaction();
 
-    // Even within a single thread, many transactions can be active simultaneously
-    auto t2 = *map.transaction();
-    _ = t2.insert("carol", 5); _ = t2.erase("dave");
+_ = ids.upsert({id, record});
+_ = names.upsert({record.name, id});
+_ = ids.watch(id);                  // fail rather than clobber a concurrent write
 
-    // Committing the transactions can happen in any order
-    _ = t2.commit();                                    // will succeed
-    _ = t1.commit();                                    // must fail, as "carol" was modified by `t2`
-
-    return 0;
-}
+_ = ids.stage();                    // both reserve, nothing visible yet
+_ = names.stage();
+_ = ids.commit();                   // both become visible
+_ = names.commit();
 ```
 
-## Why Do You Need The Python Library?
+Basic containers — `basic_avl_tree`, `basic_wb_tree` — carry STL-style bidirectional iterators.
+Transactional containers do not, because keeping an iterator valid across concurrent updates costs more than it returns:
 
-Python is famous for its Global Interpreter Lock (GIL) and the frequency of Twitter flame wars about it.
-More recently, sub-interpreters have been added to CPython to enable multi-core parallelism without the GIL.
-However, sub-interpreters can't share Python objects directly, as each interpreter has its own memory space and object management.
-The only [recommended sharing structures](https://docs.python.org/3/library/concurrent.interpreters.html#communication-between-interpreters) are the `memoryview` and `concurrent.interpreters.Queue`, which are limited in functionality and performance.
-One way to address this could be to:
+- `find()`, `lower_bound()` and `upper_bound()` return `void` and take two `noexcept` callbacks, for the found and missing cases.
+- `equal_range()` and `sample_range()` return `void` and take one callback, invoked per element.
+- `find_copy()`, `lower_bound_copy()` and `upper_bound_copy()` return an `expected<value_t>` for callers that cannot use a callback.
 
-- allow read-only access to parent interpreter objects from sub-interpreters.
-- allow returning sub-interpreter created objects to the parent interpreter on completion.
+## Why The C++ Library
 
-This, however, generally requires serializing and deserializing objects, which is expensive and error-prone... especially if you `pickle`!
-To address this gap, SmashTable provides shared associative and set containers of trivially copyable types, where keys and values of basic types (integers, floats, strings) can be shared directly between sub-interpreters without serialization.
-Create it once in the parent interpreter, and use it from multiple sub-interpreters concurrently!
-
-## Why Do You Need The C++ Library?
-
-Like any library, the C++ standard library has many loose ends when it comes to consistency.
-For example, the `std::set` container provides an API to insert a range of elements - `insert(first, last)`.
-But if an allocation failure happens halfway through the insertion, some elements will have already been inserted, while others won't.
+The standard library has loose ends around failure.
+`std::set::insert(first, last)` has no defined behaviour on partial failure, and in practice an allocation failure leaves some elements inserted and the rest not:
 
 ```cpp
 #include <cstddef>  // `std::size_t`
@@ -183,42 +255,33 @@ int main() {
 }
 ```
 
-Compiled with Clang++ 21 and G++ 15, this program produces:
+Under Clang++ 21 and G++ 15 that prints:
 
 ```
 std::bad_alloc after 3 allocations
 set contains 3 elements:
-0 1 2 
+0 1 2
 ```
 
-The standard doesn't define which exceptions can be thrown by `insert(first, last)`, but in practice, it's usually `std::bad_alloc` from memory allocation failures.
-
+Where this matters is secondary-index consistency inside a storage engine — an `id → slot` map, a `slot → vector` map and a deleted set that have to move together, and where "the crash left index B disagreeing with index A" is a corruption bug someone has already debugged.
 
 ## Collections
 
-SmashTable implements several collections with different consistency and concurrency models.
-Same tree structures and hash tables can be used for both "sets" and associative "maps", storing key-comparable key-value pairs.
-But before enumerating them, let's constrain our terminology:
+Terminology first, since both words are overloaded:
 
-- "Concurrency" doesn't imply thread-safety or multi-threaded access... it can be simultaneous operations on the same thread.
-- "Consistency" doesn't imply "strict serializability" or "linearizability"... [weaker consistency levels exist too](https://jepsen.io/consistency/models).
+- "Concurrency" does not imply threads. Several transactions can be open on one thread.
+- "Consistency" does not imply strict serializability. [Weaker levels exist](https://jepsen.io/consistency/models), and this library targets one of them.
 
-All of the header files are grouped as follows:
-
-- `smashtable/basic_*.hpp` - "use at your own risk" building blocks
-- `smashtable/transactional_*.hpp` - bringing 2-phase commit semantics
-- `smashtable/*_collection.hpp` - composable wrappers to reduce contention
-
-In more detail:
+Headers group as:
 
 ```bash
-  basic_*               → Core data structures w/out transactions
+  basic_*               → Core structures, no transactions
     ├─ basic_vector<T, Alloc>
     ├─ basic_avl_tree<T, Comparator, Alloc>
-    └─ basic_hash_table<T, Hash, KeyEqual, Alloc>
+    └─ basic_wb_tree<T, Comparator, Alloc>        # also `rank` and `select`
 
-  transactional_*       → Add 2-phase commit + watch and CAS semantics
-    ├─ transactional_avl_tree<T, Comparator, Alloc>
+  transactional_*       → 2-phase commit, watch and CAS
+    ├─ transactional_binary_tree<Tree>            # generic over both trees
     └─ transactional_std_store<T, Comparator, Alloc>
 
   *_collection          → Thread-safety wrappers
@@ -226,86 +289,88 @@ In more detail:
     └─ partitioned_collection<Collection, Hash, Mutex, PartsCount>
 ```
 
-All collections support custom memory allocators, and avoid exceptions entirely.
-Mutation APIs return `status_t` to indicate success or failure.
-The `status_t` that can have non-`success_k` values include `out_of_memory_heap_k == ENOMEM`, `invalid_argument_k == EINVAL` and others marked `[[nodiscard]]`.
-Read-only operations never fail, and use `noexcept` callbacks to return results instead of throwing exceptions.
+`status_t` reports `out_of_memory_heap_k == ENOMEM`, `invalid_argument_k == EINVAL`, `key_not_found_k == ENOENT` and others, and is `[[nodiscard]]` on every mutating API.
 
 ### Making `std::set` Transactional
 
-> Refers to `smashtable/transactional_std_store.hpp`.
+> `smashtable/transactional_std_store.hpp`
 
-The `std::set` was used to create a baseline reference design for the SmashTable functionality.
-Beyond the underlying `std::set` and similar `std::map` containers, it adds "transactions".
-Updates to the collection can be grouped together, and either all of them succeed, or none of them do, providing "Atomicity".
-Those transactions can be "staged" and "rolled back" before being "committed", enabling inter-dependent updates across many such collections.
-Read consistency is also provided, at the "Monotonic Atomic View" isolation level, so that transactions won't see partial updates from other concurrent transactions.
-It's not as strong as "Strict Serializability", as we can't guarantee, that all of the reads happening within a transaction see the same snapshot of the collection.
-On the bright side, it's much faster (in terms of runtime) and cheaper (in terms of memory consumption) than MVCC-based approaches.
+The baseline reference design, and the yardstick the tree containers are held against — it runs the same test suites they do.
+Updates group into transactions that stage and roll back before committing, which is what lets inter-dependent updates span several collections.
+
+Reads are consistent at the [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) level, so a transaction never sees another's partial update.
+That is weaker than strict serializability — there is no guarantee that every read within one transaction sees the same snapshot — and much cheaper than MVCC in both time and memory.
 
 ### Adelson-Velsky and Landis Trees
 
-#### Basic AVL Trees
+> `smashtable/basic_avl_tree.hpp`
 
-> Refers to `smashtable/basic_avl_tree.hpp`.
+Rarely called by its full name, the AVL tree is the simplest clean self-balancing binary search tree, from 1962.
+`basic_avl_tree<value, comparator, allocator>` is an ordered collection in the shape of `std::set` or `std::map`.
+Standard libraries usually pick Red-Black trees; AVL balances more rigidly, trading slightly slower updates for faster lookups.
 
-Rarely referred to by the full name, the AVL tree is one of the simplest and cleanest self-balancing binary search tree structures, proposed in 1962.
-The basic AVL tree template - `basic_avl_tree<entry, comparator, allocator>` provides a baseline ordered collection, similar to `std::set` or `std::map`.
-The standard implementations typically use Red-Black trees, which are slightly more complex, but provide similar performance.
-The AVL tree is more rigidly balanced, providing faster lookups at the cost of slightly slower insertions and deletions.
+Its API differs from the STL where exception-free reporting demands it:
 
-The `basic_avl_tree` provides STL-compatible iterators for traversal, but some APIs differ to accommodate exception-free error reporting:
+- `insert()` returns `std::pair<iterator, bool>`, as the STL does.
+- `erase(iterator)` returns `erase_result_t { iterator next; status_t status; }`.
+- Range `insert(first, last)` returns `status_t`.
+- Hint-based `insert(hint, value)` and `emplace_hint()` are deleted, since AVL trees gain nothing from a hint.
 
-- `insert()` returns `std::pair<iterator, bool>` (STL-compatible)
-- `erase(iterator)` returns `erase_result_t { iterator next; status_t status; }` instead of just iterator
-- Range `insert(first, last)` returns `status_t` instead of `void`
-- Hint-based `insert(hint, value)` and `emplace_hint()` are explicitly deleted (AVL trees don't benefit from hints)
+### Weight-Balanced Trees
 
-#### Transactional AVL Trees
+> `smashtable/basic_wb_tree.hpp`
 
-> Refers to `smashtable/transactional_avl_tree.hpp`.
+`basic_wb_tree` balances on subtree sizes rather than heights, using Δ=3 and Γ=2 — the only proven integer solution, per Hirai and Yamamoto.
+Storing sizes buys __order statistics__: `select(k)` finds the k-th smallest and `rank(x)` finds a key's position, both in O(log n).
+That is what pagination, percentiles and quantiles need, and it is the one thing the AVL tree cannot offer.
 
-The higher-level `transactional_avl_tree<entry, comparator, allocator>` template builds on top of the basic AVL tree, adding transactional semantics similar to those described for `transactional_sset`.
-Like the `transactional_std_store`, it provides Atomicity and Monotonic Atomic View isolation for grouped updates.
+Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amortized rotations per update.
+
+### Transactional Trees
+
+> `smashtable/transactional_binary_tree.hpp`
+
+`transactional_binary_tree<Tree>` adds two-phase commit, watches and CAS on top of either tree.
+`transactional_avl_set`, `transactional_avl_map`, `transactional_wb_set` and `transactional_wb_map` are the aliases you'll name directly.
 
 ### Hash Tables
 
-#### Somewhat Thread-Safe Hash Tables
+> `smashtable/basic_hash_table.hpp`
 
-> Refers to `smashtable/basic_hash_table.hpp`.
+`hash_set<key>` and `hash_map<key, value>` are open-addressing containers with linear probing.
+They differ from `google::dense_hash_map` and `tsl::robin_map` by not reserving sentinel key values for tombstones, by unpacking keys and values into disjoint arrays, and by carrying two bits of metadata per slot rather than a byte.
 
-The `basic_hash_table<entry, hash, key_equal, allocator>` template implements a lock-free hash table using open addressing with constant probing - step size of 1.
-There is no shortage of hash-table designs, like the `google::dense_hash_map` or `tsl::robin_map`, but there are several noticeable improvement areas.
-Especially if you can optimize for around a certain hash function in StringZilla or parallel access patterns in ForkUnion.
+Keys and values live in separate regions, so a lookup that only compares keys never pulls values into cache — which is most of them, since a miss touches no value at all.
+Thirty-two slots share one 64-bit header holding two parallel bitmasks, encoding free, deleted, populated and locked in two bits each.
+Sixty-four bits is the widest atomic every target supports, which is what lets a whole bucket header move in one instruction.
 
-Unlike Google's hash-tables:
+Non-allocating operations have lock-free variants — `emplace_atomic()`, `find_atomic()`, `erase_atomic()`, `update_atomic()` — reached either directly or through the `threadsafe_t` tag.
+They take a slot by setting both its bits with a `fetch_or` and release it with a `fetch_xor` of the difference to the desired state, so neither path needs a compare-and-swap loop.
+These require a prior `reserve()`, because a reallocation cannot happen underneath a concurrent reader, and they must not be mixed with the non-atomic operations on the same table.
 
-- SmashTable doesn't reserve special key values to mark tombstones or empty slots, which simplifies usage with arbitrary key types.
-- SmashTable unpacks key-value pairs into disjoint arrays to achieve higher density, especially for abnormally sized entries, like the 5-byte wide `uint40_t` in USearch.
-- SmashTable provides Lock-Free mechanisms for concurrent reads and writes, avoiding Compare-And-Swap (CAS) loops and Mutexes for most operations, using only 2 bits of metadata per slot.
-- SmashTable provides additional APIs for faster DBMS-style operations, like joins, merges, and random sampling.
+Order-dependent operations are absent by construction: there is no `range`, `erase_range`, `lower_bound` or `select`.
+The transactional wrappers do not yet accept this container — that needs the version-chain storage described in the roadmap, since the current transactional layer keys its entries on `(identifier, generation)` and enumerates a key's versions with an ordered range scan.
 
-#### Optimizing for String Keys
+The small-string specialization mentioned in the header is a design note, not shipped behaviour.
 
-StringZilla's hash function is one of the fastest and highest quality non-cryptographic hash functions available.
-On AVX-512 capable CPUs it has a fast path for short strings under 16 bytes, which is a common case for hash table keys in many applications.
-In the spirit of co-design, SmashTable's hash table provides a specialization optimized for StringZilla's strings, using 2 separate tables under the hood:
+## Testing
 
-1. A table for small keys (up to 15 bytes + length encoded in the last byte), storing them inline within the hash table slots in 16 bytes of space.
-2. A table for large keys (16 bytes and above), storing a pointer to a null-terminated string and the 64-bit hash, also taking just 16 bytes together.
+```bash
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSMASHTABLE_WERROR=ON
+cmake --build build
+ctest --test-dir build --output-on-failure
+```
 
-Thanks to that, probing within the hash-table can immediately check multiple strings for equality.
-On AVX-512 machines, for small strings, we load and compare 4x 16-byte buffers at once.
-For longer strings we can "gather" the pointers to the candidate strings and compare them in parallel, as long as we don't saturate the Line Fill Buffer (LFB).
+`SMASHTABLE_FILTER` selects a subset by substring, matched against `suite.name`:
 
-- Intel's Sandy Bridge through Ice Lake can only handle 10 concurrent L1D cache misses.
-- AMD's Zen 3/4 can handle 16-20 L1D cache misses, thus performing better with pointer-heavy workloads.
+```bash
+SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
+```
 
-#### Transactional Hash Tables
+Four binaries run the same suites over every container family — the `std::set` store, both trees, and both thread-safety wrappers — so a behavioural difference between them shows up as a failure rather than a surprise.
 
-> Refers to `smashtable/transactional_hash_table.hpp`.
+For the Python side:
 
-The common design for parallel hash-tables is to take multiple independent serial hash-tables, wrap each with a mutex, and shard the keys across them.
-With 4x or 16x the number of shards compared to CPU cores, this approach can work well for many workloads, especially if you interleave the buckets between NUMA nodes to flatten memory access latencies.
-To further reduce contention, one will increase the number of locks.
-
+```bash
+pip install -e . && pytest test.py
+```
