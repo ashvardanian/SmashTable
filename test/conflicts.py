@@ -30,7 +30,9 @@ def test_an_external_write_to_a_watched_key_conflicts(container, keygen):
         group.stage()
 
 
-@pytest.mark.thread_unsafe(reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on")
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_conflicted_stage_applies_nothing(container, keygen):
@@ -47,7 +49,9 @@ def test_a_conflicted_stage_applies_nothing(container, keygen):
     assert container[key] == 999
 
 
-@pytest.mark.thread_unsafe(reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on")
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_an_undisturbed_watch_commits(container, keygen):
@@ -60,7 +64,9 @@ def test_an_undisturbed_watch_commits(container, keygen):
     assert container[key] == 50
 
 
-@pytest.mark.thread_unsafe(reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on")
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_an_unwatched_key_does_not_conflict(container, keygen):
@@ -91,7 +97,9 @@ def test_watching_an_absent_key_conflicts_when_it_appears(container, keygen):
         group.stage()
 
 
-@pytest.mark.thread_unsafe(reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on")
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_watching_the_same_key_twice_is_idempotent(container, keygen):
@@ -133,7 +141,9 @@ def test_a_conflict_in_one_container_aborts_the_whole_group(container_class, key
     assert key not in second
 
 
-@pytest.mark.thread_unsafe(reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on")
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_the_retry_loop_converges(container, keygen):

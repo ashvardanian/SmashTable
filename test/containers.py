@@ -79,6 +79,9 @@ def test_population_matches_dict(populated):
     assert_same_state(container, model)
 
 
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
@@ -108,6 +111,10 @@ def test_missing_key_raises_like_dict(container, keygen, op):
     apply_op(container, {}, Op(op.name, (key,)))
 
 
+@pytest.mark.iterations(1)
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
@@ -139,6 +146,10 @@ def test_clear_empties(populated):
     assert container.key_type == layout
 
 
+@pytest.mark.iterations(1)
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
@@ -153,6 +164,9 @@ def test_update_from_mapping_and_pairs(container, keygen, valuegen):
     assert_same_state(container, model)
 
 
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
@@ -175,6 +189,10 @@ def test_popitem_on_empty_raises(container):
         container.popitem()
 
 
+@pytest.mark.iterations(1)
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])

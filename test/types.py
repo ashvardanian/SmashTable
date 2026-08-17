@@ -166,6 +166,9 @@ def test_string_edges_round_trip(container, key):
 # region Value typing
 
 
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)

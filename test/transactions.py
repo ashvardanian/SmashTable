@@ -23,7 +23,9 @@ class _Abort(Exception):
 
 
 @pytest.mark.iterations(1)
-@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_changes_are_invisible_until_the_block_ends(container, keygen):
@@ -74,7 +76,9 @@ def test_a_batch_lands_whole(container, keygen):
     assert all(container[key] == "batch" for key in keys)
 
 
-@pytest.mark.thread_unsafe(reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on")
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_erase_reports_presence(container, keygen):

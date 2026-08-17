@@ -30,6 +30,10 @@ class _Abort(Exception):
     """Aborts a batch, distinct from anything the library raises."""
 
 
+@pytest.mark.iterations(1)
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.repeat(4)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
@@ -41,6 +45,10 @@ def test_a_random_sequence_matches_dict(container, keygen, valuegen, rng):
     replay(container, {}, random_map_ops(rng, keys, values, count=150))
 
 
+@pytest.mark.iterations(1)
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.repeat(4)
 @pytest.mark.parametrize("class_name", set_class_names)
 @pytest.mark.parametrize("key_type", key_types)
@@ -98,6 +106,9 @@ def test_random_scan_windows_match_the_sorted_model(container, keygen, rng):
         assert got == want, f"scan({low}, {high}) gave {got}, model gave {want}"
 
 
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
+)
 @pytest.mark.repeat(4)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])

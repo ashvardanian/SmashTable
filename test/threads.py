@@ -34,7 +34,9 @@ def _drive(worker, count: int, failures: list[str], timeout: float = 60.0) -> No
 # region With the GIL
 
 
-@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_concurrent_writers_to_disjoint_keys(container, failures):
@@ -223,7 +225,9 @@ def test_one_transaction_staged_by_many_threads(container, keygen, failures):
     assert all(container[key] == 1 for key in keys)
 
 
-@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.slow
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
@@ -262,7 +266,9 @@ def test_a_transactional_counter_converges(container, failures):
 # region Free-threaded
 
 
-@pytest.mark.thread_unsafe(reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it")
+@pytest.mark.thread_unsafe(
+    reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
+)
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_parallel_disjoint_writers(container, failures):
