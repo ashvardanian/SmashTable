@@ -14,11 +14,6 @@ namespace ashvardanian::smashtable::py {
 
 #pragma region Construction
 
-std::uint64_t next_container_ordinal() noexcept {
-    static std::atomic<std::uint64_t> counter {0};
-    return counter.fetch_add(1, std::memory_order_relaxed);
-}
-
 static char const doc_SortedMap[] =                                                      //
     "SortedMap(*, key)\n"                                                                //
     "\n"                                                                                 //
@@ -62,6 +57,8 @@ static PyObject *SortedMap_new(PyTypeObject *type, PyObject *args, PyObject *key
     if (!ops) return nullptr;
     value_mode_t mode = value_mode_t::scalars_k;
     if (!value_mode_from_python(value_specification, mode)) return nullptr;
+    module_state_t *state = state_of_heap_type(type);
+    if (!state) return nullptr;
 
     auto *self = object_as<sorted_map_object_t>(type->tp_alloc(type, 0));
     if (!self) return nullptr;
@@ -75,7 +72,7 @@ static PyObject *SortedMap_new(PyTypeObject *type, PyObject *args, PyObject *key
     // in place. Nothing owns it but this object, and `tp_dealloc` destroys it.
     new (&self->store) map_store_t(std::move(*made));
     self->base.ops = ops;
-    self->base.ordinal = next_container_ordinal();
+    self->base.ordinal = state->next_ordinal.fetch_add(1, std::memory_order_relaxed);
     self->base.mode = mode;
     return reinterpret_cast<PyObject *>(self);
 }

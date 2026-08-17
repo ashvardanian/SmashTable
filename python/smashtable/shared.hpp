@@ -32,6 +32,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::int64_t`
 
+#include <atomic>   // `std::atomic`
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
 #include <variant>  // `std::variant`
@@ -320,8 +321,14 @@ object_type_ *object_as(PyObject *object) noexcept {
  *
  *  @c ops is the key layout this container was built around, never null after construction. @c mode
  *  says whether its values may be arbitrary objects, which decides whether the GIL may be released
- *  around a value. @c ordinal is a process-wide rank giving every group the same staging order, which
- *  is what keeps two groups sharing containers from deadlocking on each other.
+ *  around a value.
+ *
+ *  @c ordinal is what stops two groups deadlocking on each other. A group stages its participants in
+ *  ordinal order rather than argument order, so @c atomic(a, b) on one thread and @c atomic(b, a) on
+ *  another acquire the same partition locks in the same sequence; without it each would hold what the
+ *  other waits for. Any consistent total order would do - creation order is used because it is
+ *  reproducible across runs, which an address is not, and a hang is the one failure worth being able
+ *  to replay.
  */
 struct container_object_t {
     PyObject_HEAD key_ops_t const *ops;
@@ -342,7 +349,8 @@ struct sorted_set_object_t {
 };
 
 /** @brief Assigns each container a process-wide rank, used to order staging deterministically. */
-std::uint64_t next_container_ordinal() noexcept;
+/** @brief The module state reached from a heap type, for the constructors that have no instance. */
+module_state_t *state_of_heap_type(PyTypeObject *type) noexcept;
 
 #pragma endregion Object Layouts
 
@@ -588,7 +596,17 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
 
 #pragma region Module State
 
+/**
+ *  @brief Everything this module owns, per interpreter.
+ *
+ *  Nothing here is a process-wide static. That is deliberate: the module declares
+ *  @c Py_MOD_PER_INTERPRETER_GIL_SUPPORTED, and a hidden global would be shared by interpreters that
+ *  are meant to share nothing - including @c next_ordinal, which is state rather than a constant.
+ */
 struct module_state_t {
+    /** @brief Hands each container its staging rank. See @c container_object_t::ordinal. */
+    std::atomic<std::uint64_t> next_ordinal;
+
     PyTypeObject *sorted_map_type;
     PyTypeObject *sorted_set_type;
     PyTypeObject *transaction_type;
