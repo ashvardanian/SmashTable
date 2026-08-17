@@ -3,21 +3,19 @@
 # SmashTable pre-commit: enforce the house style on staged changes before they land.
 #
 # Each check inspects only the ADDED lines of a staged file, so legacy code migrates on its own
-# schedule while no new violation sneaks in, and each prints the specific reason when it fires.
-# The dispatch loop at the bottom diffs every staged file exactly once and hands the added lines
-# to each check through the `file` / `added` globals - the checks themselves are grep one-liners.
+# schedule while no new violation sneaks in. The dispatch loop at the bottom diffs every staged file
+# exactly once and hands the added lines to each check through the `file` / `added` globals.
 # Configuring the CMake build arms these hooks; see the `core.hooksPath` block in CMakeLists.txt.
 #
 # Bypass knowingly (you almost never should) with: git commit --no-verify
 
 set -u
-LC_ALL=C # ? Byte-wise regexes, immune to the committer's locale
+export LC_ALL=C # Byte-wise regexes, immune to the committer's locale
 
 failed=0
 
 # Prints the reason and the first offending lines, and marks the commit rejected. `failed` counts
-# rather than latches: `selftest` asserts that a bad fixture trips EXACTLY ONE rule, which is what
-# turns every negative case into a false-positive test for all the other rules.
+# rather than latches, because `selftest` asserts that a bad fixture trips exactly one rule.
 fail() { # fail <matches> <message-line>...
     local matches=$1
     shift
@@ -48,9 +46,7 @@ check_ascii_arrows() {
 }
 
 # An unqualified `memcpy` reaches for the C library through a name the standard only promises inside
-# `std::`. Where a raw byte copy really is the operation - a type-erased buffer, a region an allocator
-# handed over - `std::memcpy` says so with the qualification intact; anywhere else, assignment or
-# `std::bit_cast` says it better and keeps the types.
+# `std::`. Where a raw byte copy really is the operation, the qualified spelling says so.
 check_memcpy() {
     local copies
     copies=$(printf '%s\n' "$added" |
@@ -65,8 +61,7 @@ check_memcpy() {
 # reader nothing. Name the states in an enum, ideally a scoped one backed by `bool`.
 check_boolean_parameters() {
     local switches
-    # A single-argument `explicit` constructor is wrapping a boolean VALUE, not selecting behaviour -
-    # a variant alternative or a strong typedef over `bool` has to accept one somewhere.
+    # A single-argument `explicit` constructor wraps a boolean VALUE rather than selecting behaviour.
     switches=$(printf '%s\n' "$added" |
         grep -E '\b(bool)[[:space:]]+[a-z_][a-z_0-9]*[[:space:]]*[,)]' |
         grep -vE '\b(is|has|was|can|should|contains|empty|equals)_?' |
@@ -102,9 +97,8 @@ check_hash_banners() {
         "$file draws a comment banner - label the section with a plain comment or '# region <Name>':"
 }
 
-# clang-format tokenises punctuation inside a `#pragma region` name and reflows the spacing around
-# it, so `region A & B: C` and its `endregion` drift apart and stop pairing in every editor that
-# folds them. Words, digits and underscores survive; nothing else does.
+# clang-format reflows the spacing around punctuation in a `#pragma region` name, so the region and
+# its `endregion` drift apart and stop pairing. Words, digits and underscores survive.
 check_region_names() {
     local punctuated
     punctuated=$(printf '%s\n' "$added" |
@@ -116,12 +110,10 @@ check_region_names() {
 }
 
 # Allocation goes through an allocator everywhere in this library, so a bare `new` or `delete` is
-# either a leak waiting for an exception or memory the owning container cannot account for.
-# Placement `new (address) T(...)` is construction into storage an allocator already handed over,
-# which is a different thing and stays legal - it is told apart by the parenthesised address.
-# An allocator's own body is where the chain has to end, since it is what every other site routes
-# through; those lines say so with a trailing `// allocator primitive`, which has to be written out
-# and shows up in review rather than passing silently.
+# memory the owning container cannot account for. Placement `new (address) T(...)` constructs into
+# storage an allocator already handed over and stays legal, told apart by the parenthesised address.
+# An allocator's own body is where that chain ends, and says so with a trailing `// allocator
+# primitive` - spelled out, so it shows up in review rather than passing silently.
 check_allocating_new() {
     local allocations
     allocations=$(printf '%s\n' "$added" |
@@ -134,10 +126,9 @@ check_allocating_new() {
         "Placement new into allocator-provided storage is fine; owning allocation is not:"
 }
 
-# Runtime polymorphism, in a codebase whose type sets are closed and known at compile time. A vtable
-# buys dispatch over an OPEN set; where the alternatives are fixed, `std::variant` plus `std::visit`
-# lowers to a switch with no indirect call, no per-object vtable pointer and no separate allocation.
-# `override` and `final` only ever appear alongside `virtual`, so they are the same violation.
+# A vtable buys dispatch over an OPEN set, and every type set here is closed and known at compile
+# time, where `std::variant` plus `std::visit` lowers to a switch instead. `override` and `final`
+# only ever appear alongside `virtual`, so they are the same violation.
 check_virtual_dispatch() {
     local dispatch
     dispatch=$(printf '%s\n' "$added" |
@@ -148,9 +139,8 @@ check_virtual_dispatch() {
         "std::variant and dispatch with std::visit, which costs a switch rather than a vtable:"
 }
 
-# Trailing member documentation. A column of `//!<` beside the fields drifts out of alignment on every
-# rename, and the house rule is all-or-none anyway - so the explanation belongs in the type's own
-# docblock, naming each member in prose, with the members left bare.
+# A column of `//!<` beside the fields drifts out of alignment on every rename, and the house rule is
+# all-or-none anyway, so the explanation belongs in the type's own docblock.
 check_trailing_member_docs() {
     local trailing
     trailing=$(printf '%s\n' "$added" | grep -E '(//!<|///<|/\*\*<)' || true)
@@ -159,9 +149,8 @@ check_trailing_member_docs() {
         "docblock and leave the members bare:"
 }
 
-# A docblock immediately followed by a closing brace or a `#pragma` documents neither - Doxygen binds
-# it to whatever comes next, which is the wrong symbol or nothing at all. Re-derived from its own
-# diff rather than the shared `added`, so two distant hunks are never mistaken for adjacent lines.
+# A docblock immediately followed by a closing brace or a `#pragma` documents neither. Re-derived
+# from its own diff rather than the shared `added`, so two distant hunks are never read as adjacent.
 check_orphan_docblocks() {
     local orphans
     orphans=$(git diff --cached -U0 -- "$file" | awk '
@@ -169,13 +158,11 @@ check_orphan_docblocks() {
         /^\+/ {
             current = substr($0, 2)
             sub(/^[[:space:]]+/, "", current)
-            # A block naming @file documents the translation unit, and `#pragma once` is exactly what
-            # it belongs above - every header in this project is written that way.
+            # A block naming @file documents the translation unit, and belongs above `#pragma once`.
             if (current ~ /@file/) carries_file = 1
             if (previous ~ /\*\/$/ &&
                 (current ~ /^\}/ || current ~ /^\/\*\*/ || (current ~ /^#pragma/ && !carries_file))) print $0
-            # Cleared only once past the block and its pragma, so the `*/` line does not drop the
-            # flag one line before the `#pragma once` it exists to exempt.
+            # Cleared only past the block and its pragma, so the flag survives to the `#pragma once`.
             if (current !~ /^[\/ ]?\*/ && current !~ /^#pragma/ && current !~ /^\/\*/) carries_file = 0
             if (current != "") previous = current
             next
@@ -227,12 +214,9 @@ check_doxygen_backticks() {
         "$file uses backticks inside a Doxygen block - mark code tokens with @c:"
 }
 
-
-# clang-format's `BreakStringLiterals` splits an overlong literal in place, leaving two fragments on
-# one line with the continuation re-indented under them. A hand-broken literal never leaves two
-# fragments on the same line, so same-line adjacency is the mangle's exact signature. The escape
-# hatch is a trailing `//` comment pinning the split as deliberate, as when stopping `"\x9F" "e"`
-# from parsing as one escape - clang-format never re-joins a line ending in a comment.
+# clang-format's `BreakStringLiterals` splits an overlong literal in place, and a hand-broken literal
+# never leaves two fragments on one line, so same-line adjacency is the mangle's exact signature. A
+# trailing `//` pins a deliberate split, as when stopping `"\x9F" "e"` from parsing as one escape.
 check_mangled_literals() {
     local fragments
     fragments=$(printf '%s\n' "$added" | grep -E '"([^"\\]|\\.)*"[[:space:]]+"' | grep -v '//' || true)
@@ -244,9 +228,7 @@ check_mangled_literals() {
 # A design justified by another project's design ages into a lie the moment that project moves.
 check_sibling_justification() {
     local excuses
-    # Naming a sibling as a dependency, an oracle, or a data source is fine and often necessary, so
-    # the sentences that read that way are excused first. What is banned is citing one as the reason
-    # this code is shaped the way it is - a line that ages into a lie the moment that project moves.
+    # Naming a sibling as a dependency, an oracle or a data source is fine, and excused first.
     excuses=$(printf '%s\n' "$added" |
         grep -E '(//|/\*|^\+[[:space:]]*\*)' |
         grep -iE 'stringzilla|numkong|usearch|forkunion|simsimd|smallfield|stringtape' |
@@ -254,6 +236,34 @@ check_sibling_justification() {
         grep -iE '\b(match(es|ing)?|mirrors?|mimics?|borrow(s|ed)?|follow(s|ing)?|same|like|takes|convention|idiom|shape|split|the way|sibling)\b' || true)
     [ -z "$excuses" ] || fail "$excuses" \
         "$file justifies a decision by another repo - state what this code does and why:"
+}
+
+# Abbreviated identifiers are banned in favour of whole words: lo/hi/bot must be low/high/bottom.
+# Literals and comments are blanked first, because this checks IDENTIFIERS: a binding exposing
+# Python's own type names has to write `str` and `bytes`, which are full names rather than short ones.
+check_abbreviated_identifiers() {
+    local abbreviations
+    abbreviations=$(printf '%s\n' "$added" |
+        sed -e 's|"[^"]*"||g' -e "s|'[^']*'||g" -e 's|//.*$||' -e 's|^\+[[:space:]]*\*.*$||' |
+        grep -E '\b(lo|hi|bot|idx|tmp|cnt|ptr|buf|len|str|val|obj|elem|iter)\b' | grep -v '@' || true)
+    [ -z "$abbreviations" ] || fail "$abbreviations" \
+        "$file uses an abbreviated identifier - spell it out:"
+}
+
+# The formatters are the arbiter of layout, so the hook only asks whether the staged bytes already
+# agree with them. Both are optional: a checkout without them installed still commits.
+check_clang_format() {
+    [ "$clang_format_available" = 1 ] || return 0
+    git show ":$file" | clang-format --assume-filename="$file" --dry-run -Werror > /dev/null 2>&1 && return 0
+    echo "pre-commit: $file is not clang-format clean - run \`clang-format -i $file\`"
+    failed=$((failed + 1))
+}
+
+check_cmake_format() {
+    [ "$cmake_format_available" = 1 ] || return 0
+    cmake-format --check "$file" > /dev/null 2>&1 && return 0
+    echo "pre-commit: $file is not cmake-format clean - run \`cmake-format -i\` with the repo profile"
+    failed=$((failed + 1))
 }
 
 # The Actions UI and required checks reference jobs and steps by name.
@@ -268,8 +278,21 @@ if ! git rev-parse --verify HEAD > /dev/null 2>&1; then
     exit 0
 fi
 
+clang_format_available=0
+cmake_format_available=0
+command -v clang-format > /dev/null 2>&1 && [ -f .clang-format ] && clang_format_available=1
+command -v cmake-format > /dev/null 2>&1 && [ -f .cmake-format.py ] && cmake_format_available=1
+
 while IFS= read -r -d '' file; do
     check_generated_artifacts
+
+    # Layout is judged on the staged bytes rather than the added lines, so a change that only
+    # deletes still has to leave the file formatted.
+    case "$file" in
+    *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh) check_clang_format ;;
+    CMakeLists.txt | *.cmake) check_cmake_format ;;
+    esac
+
     added=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' || true)
     [ -n "$added" ] || continue
     case "$file" in
@@ -291,6 +314,7 @@ while IFS= read -r -d '' file; do
         check_doxygen_backticks
         check_mangled_literals
         check_sibling_justification
+        check_abbreviated_identifiers
         ;;
     .github/workflows/*)
         check_workflow_names
@@ -309,53 +333,6 @@ while IFS= read -r -d '' file; do
         ;;
     esac
 done < <(git diff --cached --name-only --diff-filter=ACM -z)
-
-# Abbreviated identifiers are banned in favour of whole words: lo/hi/bot must be low/high/bottom.
-#
-# String literals and comments are blanked out first, because this checks IDENTIFIERS and their
-# contents are neither. A binding that exposes Python's own type names has to write `str` and
-# `bytes` in its messages and its prose, and those are the full names of those types rather than
-# abbreviations of anything.
-while IFS= read -r -d '' file; do
-    case "$file" in
-    *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh) ;;
-    *) continue ;;
-    esac
-    abbreviations=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' |
-        sed -e 's|"[^"]*"||g' -e "s|'[^']*'||g" -e 's|//.*$||' -e 's|^\+[[:space:]]*\*.*$||' |
-        grep -nE '\b(lo|hi|bot|idx|tmp|cnt|ptr|buf|len|str|val|obj|elem|iter)\b' | grep -v '@' || true)
-    if [ -n "$abbreviations" ]; then
-        echo "pre-commit: $file uses an abbreviated identifier - spell it out:"
-        printf '%s\n' "$abbreviations" | head -3
-        failed=$((failed + 1))
-    fi
-done < <(git diff --cached --name-only --diff-filter=ACM -z)
-
-if command -v clang-format > /dev/null 2>&1 && [ -f .clang-format ]; then
-    while IFS= read -r -d '' file; do
-        case "$file" in
-        *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh) ;;
-        *) continue ;;
-        esac
-        if ! git show ":$file" | clang-format --assume-filename="$file" --dry-run -Werror > /dev/null 2>&1; then
-            echo "pre-commit: $file is not clang-format clean - run \`clang-format -i $file\`"
-            failed=$((failed + 1))
-        fi
-    done < <(git diff --cached --name-only --diff-filter=ACM -z)
-fi
-
-if command -v cmake-format > /dev/null 2>&1 && [ -f .cmake-format.py ]; then
-    while IFS= read -r -d '' file; do
-        case "$file" in
-        CMakeLists.txt | *.cmake) ;;
-        *) continue ;;
-        esac
-        if ! cmake-format --check "$file" > /dev/null 2>&1; then
-            echo "pre-commit: $file is not cmake-format clean - run \`cmake-format -i\` with the repo profile"
-            failed=$((failed + 1))
-        fi
-    done < <(git diff --cached --name-only --diff-filter=ACM -z)
-fi
 
 if [ "$failed" -ne 0 ]; then
     echo ""
