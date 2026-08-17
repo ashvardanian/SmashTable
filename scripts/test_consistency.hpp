@@ -1013,4 +1013,80 @@ void test_absent_watch_survives_rollback() {
 
 #pragma endregion Transaction Lifetime and Watches
 
+#pragma region Transaction Groups
+
+/**
+ *  @brief Two stores committed by one group become visible together, and neither before the commit.
+ *    Both participants are the same type here, which is also the case a compile-time ordering could
+ *    not have separated - the group orders by store address for exactly that reason.
+ */
+template <typename container_type_>
+void test_group_commits_participants_together() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t first, second;
+    {
+        auto group = make_transaction_group(first, second);
+        st_verify_((group.has_value()) && "a group over two live stores must open");
+        st_verify_(group->template participant<0>().upsert(trivial_id_to_member<member_t>(1, 100)));
+        st_verify_(group->template participant<1>().upsert(trivial_id_to_member<member_t>(2, 200)));
+
+        st_verify_(group->stage());
+        st_verify_((!first.find_copy(trivial_id_to_key<member_t>(1)).has_value()) &&
+                   "a staged write must stay invisible");
+        st_verify_((!second.find_copy(trivial_id_to_key<member_t>(2)).has_value()) &&
+                   "a staged write must stay invisible");
+
+        st_verify_(group->commit());
+    }
+
+    st_verify_(first.find_copy(trivial_id_to_key<member_t>(1)).has_value());
+    st_verify_(second.find_copy(trivial_id_to_key<member_t>(2)).has_value());
+}
+
+/**
+ *  @brief When one participant refuses to stage, no participant is left staged.
+ *
+ *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made are
+ *  still pending afterwards and the group can be retried without rebuilding them.
+ */
+template <typename container_type_>
+void test_group_unwinds_every_participant_on_conflict() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t first, second;
+    st_verify_(second.upsert(trivial_id_to_member<member_t>(7, 700)));
+
+    auto group = make_transaction_group(first, second);
+    st_verify_(group.has_value());
+    st_verify_(group->template participant<1>().watch(trivial_id_to_key<member_t>(7)));
+    st_verify_(group->template participant<0>().upsert(trivial_id_to_member<member_t>(3, 300)));
+    st_verify_(group->template participant<1>().upsert(trivial_id_to_member<member_t>(4, 400)));
+
+    // Move the watched key from outside, so this group's stage must be refused.
+    {
+        auto interloper = second.transaction();
+        st_verify_(interloper->upsert(trivial_id_to_member<member_t>(7, 777)));
+        st_verify_(interloper->stage());
+        st_verify_(interloper->commit());
+    }
+
+    auto status = group->stage();
+    st_verify_((!status) && "a moved watch must refuse the whole group");
+    st_verify_eq_(status.errc, errc_t::consistency_k);
+
+    // Nothing may be left staged in the participant that did succeed.
+    st_verify_(group->reset());
+    st_verify_((!first.find_copy(trivial_id_to_key<member_t>(3)).has_value()) &&
+               "a refused group must leave no participant staged");
+    st_verify_((!second.find_copy(trivial_id_to_key<member_t>(4)).has_value()) &&
+               "a refused group must leave no participant staged");
+}
+
+#pragma endregion Transaction Groups
+
 } // namespace ashvardanian::smashtable::scripts

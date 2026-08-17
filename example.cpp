@@ -35,16 +35,16 @@ void api() {
     _ = container.size();
 
     // Transactions
-    auto txn = *container.transaction();
-    _ = txn.upsert(value_t {});
-    _ = txn.watch(identifier_t {});
-    _ = txn.erase(identifier_t {});
-    txn.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
-    txn.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
-    _ = txn.stage();
-    _ = txn.rollback();
-    _ = txn.commit();
-    _ = txn.reset();
+    auto transaction = *container.transaction();
+    _ = transaction.upsert(value_t {});
+    _ = transaction.watch(identifier_t {});
+    _ = transaction.erase(identifier_t {});
+    transaction.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
+    transaction.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
+    _ = transaction.stage();
+    _ = transaction.rollback();
+    _ = transaction.commit();
+    _ = transaction.reset();
 
     // Machine Learning
     std::random_device random_device;

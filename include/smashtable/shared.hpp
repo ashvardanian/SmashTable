@@ -1084,4 +1084,171 @@ struct storage_node_of<collection_type_, std::void_t<typename collection_type_::
 
 #pragma endregion Storage Shape
 
+#pragma region Transaction Group
+
+/**
+ *  @brief A two-phase commit over several stores at once.
+ *
+ *  @tparam store_types_ The stores taking part. Each must expose a nested @c transaction_t and a
+ *    @c transaction() factory, which every transactional container in this library does.
+ */
+template <typename... store_types_>
+class transaction_group {
+  public:
+    static constexpr std::size_t participants_k = sizeof...(store_types_);
+    static_assert(participants_k > 0, "a group needs at least one participant");
+
+    using transactions_t = std::tuple<typename store_types_::transaction_t...>;
+
+  private:
+    transactions_t transactions_;
+    /** @brief Positions into @c transactions_, ordered by the address of the store each belongs to. */
+    std::array<std::size_t, participants_k> order_ {};
+    staging_t staging_ {staging_t::pending_k};
+
+    static_assert((std::is_nothrow_move_constructible_v<typename store_types_::transaction_t> && ...),
+                  "a group moves its participants into place, so each must move without throwing");
+
+    explicit transaction_group(transactions_t &&opened, std::array<void const *, participants_k> const &stores) noexcept
+        : transactions_(std::move(opened)) {
+        for (std::size_t position = 0; position != participants_k; ++position) order_[position] = position;
+        // Insertion sort: the participant count is a handful, and this keeps the header free of
+        // `<algorithm>` for a sort that will never see more than a few elements.
+        for (std::size_t position = 1; position != participants_k; ++position) {
+            std::size_t const carried = order_[position];
+            std::size_t scan = position;
+            while (scan != 0 && stores[order_[scan - 1]] > stores[carried]) {
+                order_[scan] = order_[scan - 1];
+                --scan;
+            }
+            order_[scan] = carried;
+        }
+    }
+
+    /**
+     *  @brief Applies @p visitor to the participant sitting at @p position of @c transactions_.
+     *    A fold over the pack rather than a jump table, since the count is known and tiny.
+     */
+    template <typename visitor_type_, std::size_t... indices_>
+    status_t visit_at_(std::size_t position, visitor_type_ &&visitor, std::index_sequence<indices_...>) noexcept {
+        status_t result {success_k};
+        ((indices_ == position ? (void)(result = visitor(std::get<indices_>(transactions_))) : (void)0), ...);
+        return result;
+    }
+
+    template <typename visitor_type_>
+    status_t visit_at_(std::size_t position, visitor_type_ &&visitor) noexcept {
+        return visit_at_(position, std::forward<visitor_type_>(visitor), std::make_index_sequence<participants_k> {});
+    }
+
+  public:
+    transaction_group(transaction_group &&) noexcept = default;
+    transaction_group &operator=(transaction_group &&) noexcept = default;
+    transaction_group(transaction_group const &) = delete;
+    transaction_group &operator=(transaction_group const &) = delete;
+
+    /**
+     *  @brief Opens one transaction per store, or none at all.
+     *    A store that refuses leaves the already-opened transactions to their destructors, which is
+     *    why they must unwind themselves.
+     */
+    [[nodiscard]] static std::optional<transaction_group> make(store_types_ &...stores) noexcept {
+        std::tuple<std::optional<typename store_types_::transaction_t>...> opened {stores.transaction()...};
+        bool const all_opened =
+            std::apply([](auto const &...maybe) noexcept { return (maybe.has_value() && ...); }, opened);
+        if (!all_opened) return std::nullopt;
+
+        std::array<void const *, participants_k> const addresses {static_cast<void const *>(&stores)...};
+        auto moved = std::apply([](auto &...maybe) noexcept { return transactions_t {std::move(*maybe)...}; }, opened);
+        return transaction_group {std::move(moved), addresses};
+    }
+
+    /** @brief This group's participant in @p store_index_, counted in the caller's argument order. */
+    template <std::size_t store_index_>
+    auto &participant() noexcept {
+        static_assert(store_index_ < participants_k, "no such participant");
+        return std::get<store_index_>(transactions_);
+    }
+
+    /** @brief Whether the group's writes are sitting in their stores, invisible. */
+    staging_t staging() const noexcept { return staging_; }
+
+    /**
+     *  @brief Validates every watch and reserves every write, undoing all of it if one refuses.
+     *
+     *  A partial stage is never observable. The undo rolls the staged prefix back rather than
+     *  resetting it, so the caller's pending writes survive and the group can be retried.
+     */
+    [[nodiscard]] status_t stage() noexcept {
+        if (staging_ == staging_t::staged_k) return {operation_not_permitted_k};
+
+        std::size_t staged_count = 0;
+        status_t result {success_k};
+        for (std::size_t position = 0; position != participants_k; ++position) {
+            result = visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.stage(); });
+            if (!result) break;
+            ++staged_count;
+        }
+
+        if (!result) {
+            while (staged_count != 0) {
+                --staged_count;
+                [[maybe_unused]] status_t const unwound =
+                    visit_at_(order_[staged_count], [](auto &transaction) noexcept { return transaction.rollback(); });
+            }
+            return result;
+        }
+
+        staging_ = staging_t::staged_k;
+        return {success_k};
+    }
+
+    /** @brief Publishes every participant. Cannot fail once @c stage has succeeded. */
+    [[nodiscard]] status_t commit() noexcept {
+        if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
+        status_t result {success_k};
+        for (std::size_t position = 0; position != participants_k; ++position) {
+            status_t const one =
+                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
+            if (!one) result = one;
+        }
+        staging_ = staging_t::pending_k;
+        return result;
+    }
+
+    /** @brief Pulls every staged write back into its transaction, leaving the group retryable. */
+    [[nodiscard]] status_t rollback() noexcept {
+        if (staging_ != staging_t::staged_k) return {operation_not_permitted_k};
+        status_t result {success_k};
+        for (std::size_t position = participants_k; position-- != 0;) {
+            status_t const one =
+                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
+            if (!one) result = one;
+        }
+        staging_ = staging_t::pending_k;
+        return result;
+    }
+
+    /** @brief Discards every participant's staged and pending changes. */
+    [[nodiscard]] status_t reset() noexcept {
+        status_t result {success_k};
+        for (std::size_t position = 0; position != participants_k; ++position) {
+            status_t const one =
+                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.reset(); });
+            if (!one) result = one;
+        }
+        staging_ = staging_t::pending_k;
+        return result;
+    }
+};
+
+/** @brief Deduces the store types, so a caller names the stores and not their spellings. */
+template <typename... store_types_>
+[[nodiscard]] std::optional<transaction_group<store_types_...>> make_transaction_group(
+    store_types_ &...stores) noexcept {
+    return transaction_group<store_types_...>::make(stores...);
+}
+
+#pragma endregion Transaction Group
+
 } // namespace ashvardanian::smashtable

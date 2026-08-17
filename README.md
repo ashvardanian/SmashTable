@@ -174,7 +174,7 @@ The same shape as the Python example, with no threads in sight:
 
 ```cpp
 #include <smashtable/basic_avl_tree.hpp>
-#include <smashtable/transactional_binary_tree.hpp>
+#include <smashtable/transactional_store.hpp>
 
 namespace st = ashvardanian::smashtable;
 
@@ -185,18 +185,21 @@ using by_name_t = st::transactional_avl_map<name_t, id_t>;      // name → id
 auto by_id = *by_id_t::make();
 auto by_name = *by_name_t::make();
 
-auto ids = *by_id.transaction();
-auto names = *by_name.transaction();
+auto group = *st::make_transaction_group(by_id, by_name);
+auto &ids = group.participant<0>();
+auto &names = group.participant<1>();
 
 _ = ids.upsert({id, record});
 _ = names.upsert({record.name, id});
 _ = ids.watch(id);                  // fail rather than clobber a concurrent write
 
-_ = ids.stage();                    // both reserve, nothing visible yet
-_ = names.stage();
-_ = ids.commit();                   // both become visible
-_ = names.commit();
+_ = group.stage();                  // both reserve, or neither does
+_ = group.commit();                 // both become visible
 ```
+
+Staging the two by hand would leave the first one staged when the second refuses, which is the bug a group exists to remove.
+Participants are visited in order of the store's address rather than of the argument list, so two groups naming the same stores in opposite orders cannot deadlock on each other.
+A refused `stage()` rolls the staged prefix back rather than resetting it, so the writes survive and the group can be retried.
 
 Basic containers — `basic_avl_tree`, `basic_wb_tree` — carry STL-style bidirectional iterators.
 Transactional containers do not, because keeping an iterator valid across concurrent updates costs more than it returns:
@@ -286,18 +289,19 @@ Headers group as:
        ↑ ::adopt(std::move(growable).release())   ↓ ::adopt(std::move(pinned).release())
 
   transactional_*       → 2-phase commit, watch and CAS
-    ├─ transactional_binary_tree<Tree>            # generic over both trees
+    ├─ transactional_store<Collection>            # generic over both trees and the hash table
     └─ transactional_std_store<T, Comparator, Alloc>
 
-  *_collection          → Thread-safety wrappers
+  *_collection          → Serialized transactions across threads
     ├─ locked_collection<Collection, Mutex>
     └─ partitioned_collection<Collection, Hash, Mutex, PartsCount>
+
+  transaction_group<Stores...>  → One 2-phase commit spanning several stores
 ```
 
-Both wrappers serialize whole __transactions__, so the unit of exclusion is a two-phase commit rather than a single operation.
-`locked_collection` holds one lock across the whole commit, so whatever its inner store promises survives intact.
-`partitioned_collection` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied — above a single partition only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives.
-Every partition walk acquires in ascending index order, which is what keeps two of them from waiting on each other.
+The two tiers are two independent axes, not one ladder.
+A `*_collection` serializes whole __transactions__, so its unit of exclusion is a two-phase commit.
+`locked_collection` takes one lock across the whole commit and keeps whatever its inner store promises, while `partitioned_collection` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives above a single partition.
 Every container publishes what it promises as `isolation_k`, so the level is checkable rather than folklore.
 `concurrent_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_collection`.
 
@@ -345,7 +349,6 @@ Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amor
 `transactional_store<Collection>` adds two-phase commit, watches and CAS on top of any key-addressable core.
 `transactional_avl_set`, `transactional_avl_map`, `transactional_wb_set` and `transactional_wb_map` are the aliases you'll name directly.
 `transactional_hash_set` and `transactional_hash_map` back the same store with the open-addressed table, which supplies no ordering, so bounds, ranges and order statistics are gated out of those instantiations at compile time.
-
 
 ### Hash Tables
 
@@ -400,7 +403,7 @@ ctest --test-dir build --output-on-failure
 SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
 ```
 
-Four binaries run the same suites over every container family — the `std::set` store, both trees, and both thread-safety wrappers — so a behavioural difference between them shows up as a failure rather than a surprise.
+One binary per container family runs the same suites — the `std::set` store, both trees, both thread-safety wrappers, the bare hash table and the transactional store over it — so a behavioural difference between them shows up as a failure rather than a surprise.
 
 For the Python side:
 
