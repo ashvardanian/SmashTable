@@ -58,11 +58,18 @@ def main():
     # directory is never on sys.path, so it is a source layout rather than a Python package.
     sources = sorted(str(path) for path in pathlib.Path("python/smashtable").glob("*.cpp"))
 
+    # Headers are listed as dependencies because setuptools rebuilds a translation unit only when
+    # its own `.cpp` is newer than the object file. Without this, editing a header leaves a stale
+    # extension in place and every test afterwards reports on code that is no longer there.
+    headers = sorted(str(path) for path in pathlib.Path("python/smashtable").glob("*.hpp"))
+    headers += sorted(str(path) for path in pathlib.Path("include/smashtable").glob("*.hpp"))
+
     ext_modules = [
         Extension(
             "smashtable",
             sources=sources,
             include_dirs=["include", "python/smashtable"],
+            depends=headers,
             extra_compile_args=compile_args,
             extra_link_args=link_args,
             language="c++",

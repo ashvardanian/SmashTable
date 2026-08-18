@@ -37,6 +37,7 @@
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
 #include <utility>  // `std::exchange`, `std::swap`
+#include <vector>   // `std::vector`
 #include <variant>  // `std::variant`
 
 #include <smashtable/basic_vector.hpp>
@@ -63,6 +64,81 @@ struct bytes_t {
     bool operator==(bytes_t const &other) const noexcept { return data == other.data; }
 };
 
+#pragma region Deferred Releases
+
+/**
+ *  @brief Where a reference dropped inside a store call waits until that call's lock is gone.
+ *
+ *  A stored value's destructor gives back a reference, and the last one runs @c __del__ - arbitrary
+ *  Python. The store destroys what it displaces while holding its own lock, and that lock is not
+ *  recursive, so a finalizer touching the container it was stored in blocks forever against the
+ *  write that freed it.
+ *
+ *  While a store call is in flight the drop is therefore recorded rather than performed, and what
+ *  was recorded is released once the call has returned. Per-thread, because the lock is held per
+ *  thread; counted rather than flagged, because a finalizer run here may enter the store again.
+ */
+namespace deferred {
+
+inline thread_local std::vector<PyObject *> pending {};
+inline thread_local std::size_t depth {0};
+
+/** @brief Whether a store call is in flight on this thread, so a drop has to wait for it. */
+inline bool armed() noexcept { return depth != 0; }
+
+/**
+ *  @brief Releases everything recorded so far. The GIL must be held and no store lock may be.
+ *
+ *  Drains into a local first, because releasing one reference can run a finalizer that enters the
+ *  store and records more, and a vector being appended to while iterated is a dangling read.
+ */
+inline void release_recorded() noexcept {
+    while (!pending.empty()) {
+        std::vector<PyObject *> draining;
+        draining.swap(pending);
+        for (PyObject *object : draining) Py_DECREF(object);
+    }
+}
+
+} // namespace deferred
+
+/**
+ *  @brief Gives one reference back, now or once the store call in flight has returned.
+ *
+ *  Under memory exhaustion the drop cannot be recorded, and releasing it here risks the very
+ *  deadlock this exists to avoid. That is the better of the two answers available: a hang is
+ *  unrecoverable, while the finalizer that would deadlock is one the caller wrote.
+ */
+inline void release_reference(PyObject *object) noexcept {
+    if (!object) return;
+    if (deferred::armed()) {
+        try {
+            deferred::pending.push_back(object);
+            return;
+        }
+        catch (...) {
+        }
+    }
+    Py_DECREF(object);
+}
+
+/**
+ *  @brief Arms deferral for the span of one store call, releasing what it collected afterwards.
+ *
+ *  Held across the call inside the bridge rather than around it at the container, so the release
+ *  happens at the one point where the store's lock is known to have been dropped.
+ */
+struct deferring_store_call_t {
+    deferring_store_call_t() noexcept { ++deferred::depth; }
+    deferring_store_call_t(deferring_store_call_t const &) = delete;
+    deferring_store_call_t &operator=(deferring_store_call_t const &) = delete;
+    ~deferring_store_call_t() noexcept {
+        if (--deferred::depth == 0) deferred::release_recorded();
+    }
+};
+
+#pragma endregion Deferred Releases
+
 /**
  *  @brief One owned Python reference, for a container whose values may be arbitrary objects.
  *
@@ -81,7 +157,7 @@ struct object_t {
         if (this != &other) {
             PyObject *previous = held;
             held = Py_XNewRef(other.held);
-            Py_XDECREF(previous);
+            release_reference(previous);
         }
         return *this;
     }
@@ -89,7 +165,7 @@ struct object_t {
         std::swap(held, other.held);
         return *this;
     }
-    ~object_t() noexcept { Py_XDECREF(held); }
+    ~object_t() noexcept { release_reference(std::exchange(held, nullptr)); }
 
     // Never ordered or hashed - only a value may be an object, and values are neither.
     bool operator==(object_t const &other) const noexcept { return held == other.held; }

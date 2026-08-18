@@ -97,7 +97,10 @@ struct store_bridge {
         return expected<void *> {static_cast<void *>(owned), success_k};
     }
 
-    static void destroy(void *store) noexcept { delete static_cast<store_t *>(store); }
+    static void destroy(void *store) noexcept {
+        deferring_store_call_t deferral;
+        delete static_cast<store_t *>(store);
+    }
 
 #pragma endregion Lifetime
 
@@ -105,11 +108,15 @@ struct store_bridge {
 
     static std::size_t size(void *store) noexcept { return store_of(store).size(); }
 
-    static status_t clear(void *store) noexcept { return store_of(store).clear(); }
+    static status_t clear(void *store) noexcept {
+        deferring_store_call_t deferral;
+        return store_of(store).clear();
+    }
 
     static bool contains(void *store, key_variant_t const &key) noexcept { return store_of(store).contains(key); }
 
     static bool find(void *store, key_variant_t const &key, value_variant_t &value) noexcept {
+        deferring_store_call_t deferral;
         bool found = false;
         if constexpr (associative_k)
             store_of(store).find(
@@ -118,13 +125,18 @@ struct store_bridge {
     }
 
     static status_t upsert(void *store, key_variant_t &&key, value_variant_t *value) noexcept {
+        deferring_store_call_t deferral;
         return store_of(store).upsert(element_of(std::move(key), value));
     }
 
-    static status_t erase(void *store, key_variant_t const &key) noexcept { return store_of(store).erase(key); }
+    static status_t erase(void *store, key_variant_t const &key) noexcept {
+        deferring_store_call_t deferral;
+        return store_of(store).erase(key);
+    }
 
     static status_t insert_if_missing(void *store, key_variant_t const &key, value_variant_t &&value,
                                       value_variant_t &winner) noexcept {
+        deferring_store_call_t deferral;
         if constexpr (!associative_k) return operation_not_permitted_k;
         else {
             auto copied = key.copy();
@@ -155,6 +167,7 @@ struct store_bridge {
                             value_variant_t *value) noexcept
         requires ordered_k
     {
+        deferring_store_call_t deferral;
         bool found = false;
         store_of(store).lower_bound(
             from, [&](value_t const &element) noexcept { take(element, key, value), found = true; }, no_op_t {});
@@ -165,6 +178,7 @@ struct store_bridge {
                             value_variant_t *value) noexcept
         requires ordered_k
     {
+        deferring_store_call_t deferral;
         bool found = false;
         store_of(store).upper_bound(
             from, [&](value_t const &element) noexcept { take(element, key, value), found = true; }, no_op_t {});
@@ -182,6 +196,7 @@ struct store_bridge {
     static status_t erase_range(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept
         requires ordered_k
     {
+        deferring_store_call_t deferral;
         auto &self = store_of(store);
         if (lower && upper) return self.erase_range(*lower, *upper);
         if (lower) return self.erase_from(*lower);
@@ -201,13 +216,17 @@ struct store_bridge {
         return expected<void *> {static_cast<void *>(owned), success_k};
     }
 
-    static void transaction_destroy(void *transaction) noexcept { delete static_cast<transaction_t *>(transaction); }
+    static void transaction_destroy(void *transaction) noexcept {
+        deferring_store_call_t deferral;
+        delete static_cast<transaction_t *>(transaction);
+    }
 
     static bool transaction_contains(void *transaction, key_variant_t const &key) noexcept {
         return transaction_of(transaction).contains(key);
     }
 
     static bool transaction_find(void *transaction, key_variant_t const &key, value_variant_t &value) noexcept {
+        deferring_store_call_t deferral;
         bool found = false;
         if constexpr (associative_k)
             transaction_of(transaction)
@@ -217,10 +236,12 @@ struct store_bridge {
     }
 
     static status_t transaction_upsert(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept {
+        deferring_store_call_t deferral;
         return transaction_of(transaction).upsert(element_of(std::move(key), value));
     }
 
     static status_t transaction_erase(void *transaction, key_variant_t const &key) noexcept {
+        deferring_store_call_t deferral;
         return transaction_of(transaction).erase(key);
     }
 
@@ -228,10 +249,22 @@ struct store_bridge {
         return transaction_of(transaction).watch(key);
     }
 
-    static status_t transaction_stage(void *transaction) noexcept { return transaction_of(transaction).stage(); }
-    static status_t transaction_commit(void *transaction) noexcept { return transaction_of(transaction).commit(); }
-    static status_t transaction_rollback(void *transaction) noexcept { return transaction_of(transaction).rollback(); }
-    static status_t transaction_reset(void *transaction) noexcept { return transaction_of(transaction).reset(); }
+    static status_t transaction_stage(void *transaction) noexcept {
+        deferring_store_call_t deferral;
+        return transaction_of(transaction).stage();
+    }
+    static status_t transaction_commit(void *transaction) noexcept {
+        deferring_store_call_t deferral;
+        return transaction_of(transaction).commit();
+    }
+    static status_t transaction_rollback(void *transaction) noexcept {
+        deferring_store_call_t deferral;
+        return transaction_of(transaction).rollback();
+    }
+    static status_t transaction_reset(void *transaction) noexcept {
+        deferring_store_call_t deferral;
+        return transaction_of(transaction).reset();
+    }
 
 #pragma endregion Transactions
 

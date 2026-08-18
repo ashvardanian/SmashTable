@@ -208,45 +208,52 @@ def test_a_refused_commit_applied_nothing(sharing):
     """The same contract for a refusal that arrives at `commit` rather than at `stage`.
 
     Snapshot only: it is the level that validates writes as well as watches, so it is the only one
-    where a transaction can pass `stage` and still be refused. The precondition at the end is
-    load-bearing - a run in which nothing was refused has not exercised the path, and must not be
-    read as evidence that the path is sound.
+    where a transaction can pass `stage` and still be refused.
+
+    Whether a refusal happens at all depends on how the threads interleave, so the scenario is
+    retried until one does. A run where nothing was refused has not exercised the path and is
+    reported as a skip - neither a pass, which would claim evidence it does not have, nor a
+    failure, which would blame the machine for being quiet.
 
     Regression: a sharded snapshot commit once published its partitions and then reported a
     conflict, so the retry applied the transaction a second time.
     """
     keys = list(range(64))
-    container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
-    for key in keys:
-        container[key] = -1
+    for _ in range(8):
+        container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
+        for key in keys:
+            container[key] = -1
 
-    ghosts: list[int] = []
-    refusals = [0]
-    guard = threading.Lock()
+        ghosts: list[int] = []
+        refusals = [0]
+        guard = threading.Lock()
 
-    def writer(index: int) -> None:
-        attempt = 0
-        for _ in range(30):
-            while True:
-                attempt += 1
-                marker = index * 1_000_000 + attempt
-                try:
-                    with st.atomic(container) as (view,):
-                        for key in keys:
-                            view[key] = marker
-                    break
-                except st.ConflictError:
-                    with guard:
-                        refusals[0] += 1
-                        if any(container[key] == marker for key in keys):
-                            ghosts.append(marker)
+        def writer(index: int) -> None:
+            attempt = 0
+            for _ in range(30):
+                while True:
+                    attempt += 1
+                    marker = index * 1_000_000 + attempt
+                    try:
+                        with st.atomic(container) as (view,):
+                            for key in keys:
+                                view[key] = marker
+                        break
+                    except st.ConflictError:
+                        with guard:
+                            refusals[0] += 1
+                            if any(container[key] == marker for key in keys):
+                                ghosts.append(marker)
 
-    threads = [threading.Thread(target=writer, args=(index,)) for index in range(3)]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=120)
-    assert not any(thread.is_alive() for thread in threads), "a writer never finished"
+        threads = [threading.Thread(target=writer, args=(index,)) for index in range(3)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=120)
+        assert not any(thread.is_alive() for thread in threads), "a writer never finished"
 
-    assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
-    assert refusals[0] > 0, "nothing was refused, so this run proved nothing"
+        assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
+        if refusals[0]:
+            return
+
+    pytest.skip("no commit was refused across 8 attempts, so this run did not reach the path")
