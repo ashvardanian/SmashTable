@@ -99,6 +99,35 @@ constexpr bool succeeded(status_t status) noexcept { return status == status_t::
 constexpr bool failed(status_t status) noexcept { return status != status_t::success_k; }
 
 /**
+ *  @brief A plain condition is already its own verdict, so generic code can ask either shape.
+ *
+ *  Without this, a caller holding a @c bool has to spell the question differently from one holding a
+ *  @c status_t, and anything asking it of both - a check, a gate, a fold - needs a branch on which it
+ *  was handed.
+ */
+constexpr bool succeeded(bool is_satisfied) noexcept { return is_satisfied; }
+
+/** @brief The same of a plain condition, so @c succeeded and @c failed stay a pair for every shape. */
+constexpr bool failed(bool is_satisfied) noexcept { return !is_satisfied; }
+
+/** @brief The enumerator's own spelling, for a message a person reads rather than decodes. */
+constexpr char const *name_of(status_t status) noexcept {
+    switch (status) {
+    case status_t::success_k: return "success_k";
+    case status_t::unknown_k: return "unknown_k";
+    case status_t::consistency_k: return "consistency_k";
+    case status_t::out_of_memory_heap_k: return "out_of_memory_heap_k";
+    case status_t::invalid_argument_k: return "invalid_argument_k";
+    case status_t::operation_not_permitted_k: return "operation_not_permitted_k";
+    case status_t::operation_would_block_k: return "operation_would_block_k";
+    case status_t::capacity_exhausted_k: return "capacity_exhausted_k";
+    case status_t::key_already_exists_k: return "key_already_exists_k";
+    case status_t::key_not_found_k: return "key_not_found_k";
+    }
+    return "unrecognized";
+}
+
+/**
  *  @brief The same question of a richer result - one that reports its own success, like the node
  *    handles the trees hand back - so generic code can ask it without knowing which it holds.
  */
@@ -177,7 +206,7 @@ concept is_mapping = requires {
  *
  *  When ST_STRICT_CALLBACK_CHECKS_ is defined, these traits perform full compile-time
  *  validation using std::is_nothrow_invocable_v. This catches type errors early but prevents
- *  generic lambdas like [](auto const&) noexcept {} from compiling.
+ *  generic lambdas like no_op_t {} from compiling.
  *
  *  When undefined (default), traits always return true, allowing generic lambdas while still
  *  documenting the intent that callbacks should be noexcept.
@@ -431,7 +460,7 @@ class expected {
     constexpr expected() noexcept {}
 
     /** @brief A reason with nothing behind it; a success has no value to report, so it reads as @c unknown_k. */
-    constexpr expected(status_t status) noexcept : status_(failed(status) ? status : unknown_k) {}
+    constexpr expected(status_t status) noexcept : status_(status != success_k ? status : unknown_k) {}
 
     /**
      *  @brief A value, kept only while @p status says there is one.
@@ -467,6 +496,9 @@ class expected {
     constexpr explicit operator bool() const noexcept { return succeeded(status_); }
     constexpr bool has_value() const noexcept { return succeeded(status_); }
 
+    /** @brief Whether there is no value, which is the protocol every result in the library answers. */
+    constexpr bool failed() const noexcept { return !succeeded(status_); }
+
     /** @brief Why there is no value, or success when there is one. */
     constexpr status_t status() const noexcept { return status_; }
 
@@ -499,6 +531,36 @@ class expected {
         else return status_;
     }
 };
+
+/**
+ *  @brief Whether @p result carries @p status - the reason it failed, or success when it holds a value.
+ *
+ *  Saves a @c .status() at the call site, and reads the way the question is asked out loud. C++20
+ *  synthesizes the reversed and negated forms, so this one definition covers all four spellings.
+ */
+template <typename value_type_>
+[[nodiscard]] constexpr bool operator==(expected<value_type_> const &result, status_t status) noexcept {
+    return result.status() == status;
+}
+
+/**
+ *  @brief Whether @p result holds a value equal to @p value.
+ *
+ *  @warning A failed @c expected equals no value, so a @c false answer covers both "held something
+ *    else" and "held nothing at all". Where a test needs those apart, check the result first and
+ *    compare the value second.
+ *
+ *  Excluded for @c status_t so the overload above stays the one that answers a status, which also
+ *  keeps @c expected<status_t> unambiguous - there, this asks about the reason and not the payload.
+ */
+template <typename value_type_, typename comparable_type_>
+    requires(!std::same_as<std::remove_cvref_t<comparable_type_>, status_t>) &&
+            requires(value_type_ const &held, comparable_type_ const &other) {
+                { held == other } -> std::convertible_to<bool>;
+            }
+[[nodiscard]] constexpr bool operator==(expected<value_type_> const &result, comparable_type_ const &value) noexcept {
+    return result.has_value() && *result == value;
+}
 
 /**
  *  @brief Concept checking if a type has a @c .copy() method returning @c expected<T>.
@@ -1278,6 +1340,14 @@ concept supports_order_statistics =
 #pragma endregion Tree Concepts
 
 #pragma region Container Traits
+
+/** @brief A store whose members are bare keys, which is what @c *_set names. */
+template <typename store_type_>
+concept set_shaped_store = !is_mapping<typename store_type_::value_t>;
+
+/** @brief A store whose members pair a key with a value, which is what @c *_map names. */
+template <typename store_type_>
+concept map_shaped_store = is_mapping<typename store_type_::value_t>;
 
 /**
  *  @brief A container that reports whether it maps keys to values, and how reads are delivered.

@@ -134,6 +134,9 @@ class reference_store {
     using versioned_entry_t = typename versioning_t::versioned_entry_t;
     using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
 
+    /** @brief What this store calls itself, so generic code spells an engine and a wrapper alike. */
+    using store_t = reference_store;
+
     /**
      *  @brief The one shape a watch records, whatever the read that produced it looked like.
      *
@@ -161,8 +164,6 @@ class reference_store {
     using changed_identifiers_allocator_t =
         typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
     using changed_identifiers_vector_t = std::vector<identifier_t, changed_identifiers_allocator_t>;
-
-    using store_t = reference_store;
 
   public:
     class transaction_t {
@@ -230,7 +231,7 @@ class reference_store {
                     present = true;
                     callback_present(element);
                 },
-                []() noexcept {});
+                no_op_t {});
             return present;
         }
 
@@ -325,6 +326,37 @@ class reference_store {
             if (staging_ == staging_t::staged_k) unstage_();
             staging_ = staging_t::pending_k;
             store_ = nullptr;
+        }
+
+        /**
+         *  @brief Hands @p callback every element this transaction reads, in the container's own order.
+         *
+         *  Both sides are ordered sets, so they are merged as the walk goes rather than concatenated -
+         *  which is what an ordinal needs and what the unordered @c for_each cannot promise. A key this
+         *  transaction touched is answered from its own staged version, and the committed side skips
+         *  whatever @c changes_ already speaks for, so no key is visited twice.
+         *
+         *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+         */
+        template <typename callback_type_>
+        void for_each_ordered_(callback_type_ &&callback) const noexcept {
+            auto const &store = store_ref();
+            auto const ordering = changes_.key_comp();
+            auto staged = changes_.begin();
+            auto committed = store.entries_.begin();
+
+            while (staged != changes_.end() || committed != store.entries_.end()) {
+                if (committed == store.entries_.end() ||
+                    (staged != changes_.end() && ordering.per_key_compare(*staged, *committed))) {
+                    if (staged->presence == presence_t::present_k) callback(staged->payload);
+                    ++staged;
+                    continue;
+                }
+                if (visible_now(committed->committed) && committed->presence == presence_t::present_k &&
+                    changes_.find(committed->payload) == changes_.end())
+                    callback(committed->payload);
+                ++committed;
+            }
         }
 
       public:
@@ -459,6 +491,18 @@ class reference_store {
         [[nodiscard]] status_t upsert(value_t &&element) noexcept { return insert_or_assign_(std::move(element)); }
 
         /**
+         *  @brief Stages a write that refuses a key this transaction cannot already see.
+         *    The strict counterpart to @c upsert(), which takes the key either way.
+         *
+         *  @param[in] element Element to write (moved into the transaction when the key is there).
+         *  @return Success, @c key_not_found_k when the key is absent, or an allocation failure.
+         */
+        [[nodiscard]] status_t update(value_t &&element) noexcept {
+            if (!contains(mapping_key_or_itself(element))) return key_not_found_k;
+            return insert_or_assign_(std::move(element));
+        }
+
+        /**
          *  @brief Stages a delete operation for the element with the given identifier.
          *    The deletion is not visible until after @c stage() and @c commit().
          *
@@ -582,7 +626,7 @@ class reference_store {
             expected<value_t> result {status_t::key_not_found_k};
             find(
                 std::forward<comparable_type_>(comparable),
-                [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
             return result;
         }
 
@@ -598,8 +642,20 @@ class reference_store {
             bool found = false;
             find(
                 std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; },
-                []() noexcept {});
+                no_op_t {});
             return found;
+        }
+
+        /**
+         *  @brief Finds every member equal to @p comparable, including this transaction's own writes.
+         *    For a unique-key container that is at most one element.
+         *
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+         *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
+        void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
         }
 
         /**
@@ -670,7 +726,7 @@ class reference_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
@@ -686,6 +742,67 @@ class reference_store {
                                   if (local_state == changes_.end()) callback(external_element);
                                   // If modified locally, we already processed it above
                               });
+        }
+
+        /**
+         *  @brief Finds the @p ordinal -th smallest element this transaction reads, counting from zero.
+         *    Merges the staged and committed sides as it walks, which is linear and meant to be: this
+         *    is the oracle the ranked engines are checked against.
+         *
+         *  @param[in] ordinal Zero-based position among the elements this transaction can see.
+         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be @c noexcept.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        void select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+            static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
+                          "callback_found must be noexcept invocable with value_t const &");
+            static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
+            std::size_t visible_index = 0;
+            bool found = false;
+            for_each_ordered_([&](value_t const &element) noexcept {
+                // The merge has no early exit, so the answer guards itself against every element after it.
+                if (found) return;
+                if (visible_index == ordinal) {
+                    callback_found(element);
+                    found = true;
+                    return;
+                }
+                ++visible_index;
+            });
+            if (!found) callback_missing();
+        }
+
+        /**
+         *  @brief Hands @p callback_found how many elements this transaction orders before @p comparable.
+         *    A linear merge, for the reason @c select() takes one.
+         *
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered when @p comparable is not visible. Must be @c noexcept.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+            static_assert(is_safe_callback_for<callback_found_type_, std::size_t>,
+                          "callback_found must be noexcept invocable with std::size_t");
+            static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
+            auto const ordering = changes_.key_comp();
+            identifier_t const target(comparable);
+            std::size_t preceding = 0;
+            bool found = false;
+            for_each_ordered_([&](value_t const &element) noexcept {
+                if (ordering.same(element, target)) found = true;
+                else if (!found && ordering.per_key_compare(element, target)) ++preceding;
+            });
+            if (found) callback_found(preceding);
+            else callback_missing();
         }
 
         /**
@@ -1252,6 +1369,18 @@ class reference_store {
     [[nodiscard]] status_t upsert(value_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
     /**
+     *  @brief Atomically writes an element, refusing a key that is not already there.
+     *    The strict counterpart to @c insert_or_assign(), which takes the key either way.
+     *
+     *  @param[in] element Element to write (moved into the container when the key is present).
+     *  @return Success, @c key_not_found_k when no visible element carries the key, or an allocation failure.
+     */
+    [[nodiscard]] status_t update(value_t &&element) noexcept {
+        if (find_visible_present_(mapping_key_or_itself(element)) == entries_.end()) return key_not_found_k;
+        return insert_or_assign(std::move(element));
+    }
+
+    /**
      *  @brief Deleted: Use @c insert_if_missing() instead for "insert only if missing" semantics.
      *    The @c std::map::try_emplace() name doesn't clearly communicate insert failure strategies.
      *    We provide three explicit alternatives:
@@ -1318,6 +1447,27 @@ class reference_store {
         return transaction.commit();
     }
 
+    /**
+     *  @brief Atomically writes a batch, refusing the group if any key is absent.
+     *  @param[in] begin Iterator to the first element.
+     *  @param[in] end Iterator past the last element.
+     *  @return Success, @c key_not_found_k if any key is absent, or an allocation failure. Nothing is
+     *    written unless all of it is.
+     */
+    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    [[nodiscard]] status_t update(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+        auto maybe_txn = transaction();
+        if (!maybe_txn) return status_t::out_of_memory_heap_k;
+        auto &transaction = *maybe_txn;
+        for (; begin != end; ++begin) {
+            value_t candidate(*begin);
+            if (find_visible_present_(mapping_key_or_itself(candidate)) == entries_.end()) return key_not_found_k;
+            if (auto status = transaction.upsert(std::move(candidate)); failed(status)) return status;
+        }
+        if (auto status = transaction.stage(); failed(status)) return status;
+        return transaction.commit();
+    }
+
 #pragma endregion Modifiers
 
 #pragma region Lookup
@@ -1355,7 +1505,7 @@ class reference_store {
         expected<value_t> result {status_t::key_not_found_k};
         find(
             std::forward<comparable_type_>(comparable),
-            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
@@ -1369,9 +1519,7 @@ class reference_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
         bool found = false;
-        find(
-            std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; },
-            []() noexcept {});
+        find(std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; }, no_op_t {});
         return found;
     }
 
@@ -1433,7 +1581,7 @@ class reference_store {
         expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
             std::forward<comparable_type_>(comparable),
-            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
@@ -1443,7 +1591,7 @@ class reference_store {
         expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
             std::forward<comparable_type_>(comparable),
-            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
@@ -1464,6 +1612,73 @@ class reference_store {
     }
 
 #pragma endregion Lookup
+
+#pragma region Order Statistics
+
+    /**
+     *  @brief Hands @p callback_found the @p ordinal -th smallest visible element, counting from zero.
+     *
+     *  A linear walk of the whole store, and deliberately so: this is the oracle the ranked engines are
+     *  checked against, so it is written to be obviously right rather than fast. Nothing here is
+     *  augmented, and an ordinal read from a plain ordered walk cannot disagree with the walk.
+     *
+     *  @param[in] ordinal Zero-based position among the visible elements.
+     *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be @c noexcept.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    void select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+        static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
+                      "callback_found must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
+        std::size_t visible_index = 0;
+        for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator) {
+            if (!visible_now(iterator->committed) || iterator->presence != presence_t::present_k) continue;
+            if (visible_index == ordinal) {
+                callback_found(iterator->payload);
+                return;
+            }
+            ++visible_index;
+        }
+        callback_missing();
+    }
+
+    /**
+     *  @brief Hands @p callback_found how many visible elements the store orders before @p comparable.
+     *    A linear walk, for the reason @c select() takes one.
+     *
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered when @p comparable is not visible. Must be @c noexcept.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+              callback_missing_type_ &&callback_missing = {}) const noexcept {
+
+        static_assert(is_safe_callback_for<callback_found_type_, std::size_t>,
+                      "callback_found must be noexcept invocable with std::size_t");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
+        // `comparable` is read twice below, so it stays an lvalue rather than being forwarded away.
+        auto const boundary = entries_.lower_bound(comparable);
+        std::size_t preceding = 0;
+        for (auto iterator = entries_.begin(); iterator != boundary; ++iterator)
+            if (visible_now(iterator->committed) && iterator->presence == presence_t::present_k) ++preceding;
+
+        auto const matches = entries_.equal_range(comparable);
+        for (auto iterator = matches.first; iterator != matches.second; ++iterator)
+            if (visible_now(iterator->committed) && iterator->presence == presence_t::present_k) {
+                callback_found(preceding);
+                return;
+            }
+        callback_missing();
+    }
+
+#pragma endregion Order Statistics
 
 #pragma region Enumeration
 
@@ -1501,7 +1716,7 @@ class reference_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
@@ -1517,10 +1732,12 @@ class reference_store {
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
      *  @param[in] callback Callback invoked with (key_type const&, value_type&) for each element. Must be @c noexcept.
+     *  @return Always success here; the status is reported so a mutator that can fail on a sibling
+     *    engine has the same channel on all three.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+    [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_mapping<value_t>
     {
         generation_t generation = next_generation_();
@@ -1534,6 +1751,7 @@ class reference_store {
             callback(entry.payload.key, entry.payload.mapped);
             entry.generation = generation;
         }
+        return success_k;
     }
 
     /**
@@ -1653,12 +1871,16 @@ class reference_store {
     }
 
     /**
-     *  @brief Hints to the container to pre-allocate memory. No-op.
+     *  @brief Accepts a capacity hint and does nothing with it.
      *
-     *  @param[in] size Suggested capacity (ignored for std::set).
+     *  Every allocation this store makes is one node at a time, drawn when the write happens: the
+     *  entries live in a node-based ordered set, and the vectors it also holds belong to transactions
+     *  rather than to the store, which is why the transaction-level @c reserve() does real work while
+     *  this one has nothing to reserve. Reserving here would therefore promise a later insert cannot
+     *  run out of memory, which it still can.
+     *
+     *  @param[in] size Suggested capacity, ignored.
      *  @return Always succeeds.
-     *
-     *  @note This is a no-op because @c std::set doesn't support reserving capacity.
      */
     [[nodiscard]] status_t reserve(std::size_t) noexcept { return {}; }
 
@@ -1685,15 +1907,15 @@ class reference_store {
 #pragma region Sampling
 
     /**
-     *  @brief Uniformly samples a single random entry from the range [ @p lower, @p upper).
-     *    Uses a two-pass algorithm: first counts entries, then selects random offset.
+     *  @brief Draws one visible entry uniformly from [ @p lower, @p upper), handing it to @p callback.
+     *    Counts the window, then walks it again to the drawn offset - linear both times, and meant to
+     *    be: this is the oracle the descending engines are checked against.
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
      *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
-     *  @param[in] callback Callback to receive the sampled element. Must be @c noexcept.
-     *
-     *  @note Inefficient for large ranges. Use reservoir sampling overload for multiple samples.
+     *  @param[in] callback Callback to receive the sampled element. Must be @c noexcept. Invoked at most
+     *    once, and never when the window shows nothing.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1705,9 +1927,15 @@ class reference_store {
         if (!count) return;
 
         std::size_t matches_to_skip = draw_below(generator, count);
+        bool drawn = false;
         range(lower, upper, [&](value_t const &element) noexcept {
+            // The walk has no early exit, so the draw has to guard itself against every element after it.
+            if (drawn) return;
             if (matches_to_skip) --matches_to_skip;
-            else callback(element);
+            else {
+                callback(element);
+                drawn = true;
+            }
         });
     }
 

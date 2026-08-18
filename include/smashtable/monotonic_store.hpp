@@ -107,6 +107,9 @@ class monotonic_store {
     using versioned_t = typename versioning_t::versioned_t;
     using versioned_entry_t = versioned_t;
 
+    /** @brief What this store calls itself, so generic code spells an engine and a wrapper alike. */
+    using store_t = monotonic_store;
+
     /**
      *  @brief The one shape a watch records, whatever the read that produced it looked like.
      *
@@ -206,8 +209,6 @@ class monotonic_store {
     using changed_identifiers_allocator_t =
         typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
     using changed_identifiers_vector_t = basic_vector<identifier_t, changed_identifiers_allocator_t>;
-
-    using store_t = monotonic_store;
 
   public:
     class transaction_t {
@@ -438,16 +439,23 @@ class monotonic_store {
 
         [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.reserve(size); }
 
-        [[nodiscard]] status_t watch(identifier_t identifier) noexcept {
-            status_t result = success_k;
-            auto found = [&](versioned_t const &versioned) noexcept {
-                result = watches_.push_back({std::move(identifier), watch_shape_of(&versioned)});
-            };
-            auto missing = [&]() noexcept {
-                result = watches_.push_back({std::move(identifier), watch_shape_of(nullptr)});
-            };
-            store_ref().find_visible_entry_(identifier, found, missing);
-            return result;
+        /**
+         *  @brief Records what this transaction resolves @p identifier to, so a later commit can refuse
+         *    if anything published over it in the meantime.
+         *
+         *  @param[in] identifier Identifier to watch, borrowed and copied into the read set - the read
+         *    set outlives the call, and a caller's identifier is never consumed by a read.
+         *  @return Success unless the read set could not grow, or the identifier could not be copied.
+         */
+        [[nodiscard]] status_t watch(identifier_t const &identifier) noexcept {
+            auto maybe_identifier = copy_safely<identifier_t>(identifier);
+            if (!maybe_identifier) return maybe_identifier.status();
+
+            watch_t shape = watch_shape_of(nullptr);
+            store_ref().find_visible_entry_(
+                identifier, [&](versioned_t const &versioned) noexcept { shape = watch_shape_of(&versioned); },
+                no_op_t {});
+            return watches_.push_back({std::move(*maybe_identifier), shape});
         }
 
         /**
@@ -460,16 +468,19 @@ class monotonic_store {
                                               callback_missing_type_ &&callback_missing = {}) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(comparable);
             if (!maybe_identifier) return maybe_identifier.status();
-            status_t const recorded = watch(std::move(*maybe_identifier));
+            status_t const recorded = watch(*maybe_identifier);
             if (failed(recorded)) return recorded;
             find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                  std::forward<callback_missing_type_>(callback_missing));
             return success_k;
         }
 
+        /** @brief Records @p versioned as the version this transaction read of its own key. */
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(identifier_t {versioned.payload});
-            if (!maybe_identifier) return out_of_memory_heap_k;
+            // Through `copy_safely` rather than a braced `identifier_t`, so a move-only identifier
+            // compiles here and an identifier that allocates reports instead of throwing.
+            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
+            if (!maybe_identifier) return maybe_identifier.status();
             return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&versioned)});
         }
 
@@ -525,9 +536,7 @@ class monotonic_store {
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
             bool found = false;
-            find(
-                std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; },
-                []() noexcept {});
+            find(std::forward<comparable_type_>(comparable), [&](auto const &) noexcept { found = true; }, no_op_t {});
             return found;
         }
 
@@ -572,7 +581,7 @@ class monotonic_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
+            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
         }
 
         /**
@@ -1497,19 +1506,6 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Atomically inserts an element only if missing. Silently skips if key exists (no error).
-     *    This is the "silent no-op" insert semantics.
-     *
-     *  @param[in] value Element to insert (moved into the tree).
-     *  @return Always succeeds (unless OOM). Returns success even if key exists.
-     *  @sa The three-argument overload reports which of the two happened, which the status cannot.
-     */
-    [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
-        if (contains(value)) return success_k;
-        return upsert(std::move(value));
-    }
-
-    /**
      *  @brief Inserts only if the key is absent, reporting which of the two outcomes occurred.
      *    Declining to overwrite is a success, so the status alone cannot distinguish the cases and a
      *    caller that needs to know would otherwise pay for a membership probe of its own.
@@ -1519,10 +1515,12 @@ class monotonic_store {
      *  @param[in] callback_existing Invoked with the element already present, which keeps its value.
      *    Must be @c noexcept.
      *  @return Success, or @c out_of_memory_heap_k when a fresh insert cannot allocate.
+     *  @note Reporting the fresh insert costs a copy of the identifier and a second lookup, so a caller
+     *    that leaves @p callback_inserted at its default pays for neither.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-    [[nodiscard]] status_t insert_if_missing(value_t &&value, callback_inserted_type_ &&callback_inserted,
-                                             callback_existing_type_ &&callback_existing) noexcept {
+    [[nodiscard]] status_t insert_if_missing(value_t &&value, callback_inserted_type_ &&callback_inserted = {},
+                                             callback_existing_type_ &&callback_existing = {}) noexcept {
         bool exists = false;
         find(
             mapping_key_or_itself<value_t>(value),
@@ -1530,8 +1528,11 @@ class monotonic_store {
                 exists = true;
                 callback_existing(present);
             },
-            []() noexcept {});
+            no_op_t {});
         if (exists) return success_k;
+
+        if constexpr (std::is_same_v<std::remove_cvref_t<callback_inserted_type_>, no_op_t>)
+            return upsert(std::move(value));
 
         // The identifier has to be taken before the move, or the lookup below searches by a
         // moved-from key - which compares wrongly rather than failing loudly.
@@ -1540,7 +1541,7 @@ class monotonic_store {
 
         auto status = upsert(std::move(value));
         if (failed(status)) return status;
-        find(*maybe_identifier, [&](value_t const &stored) noexcept { callback_inserted(stored); }, []() noexcept {});
+        find(*maybe_identifier, callback_inserted, no_op_t {});
         return status;
     }
 
@@ -1711,7 +1712,7 @@ class monotonic_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
+        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
     }
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -1775,9 +1776,18 @@ class monotonic_store {
                             });
     }
 
+    /**
+     *  @brief Hands @p callback the mapped half of every visible element in [ @p lower, @p upper ).
+     *
+     *  @param[in] lower Lower bound, inclusive.
+     *  @param[in] upper Upper bound, exclusive.
+     *  @param[in] callback Callback invoked with (key const &, mapped &) per element. Must be @c noexcept.
+     *  @return Always success here, since the revision is written in place; the status is reported so a
+     *    sibling engine that has to copy the value first has the same channel.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+    [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_mapping<value_t> && ordered_collection<versioned_chains_t>
     {
         generation_t generation = next_generation_();
@@ -1790,6 +1800,7 @@ class monotonic_store {
                                 callback(mutable_version.payload.key, mutable_version.payload.mapped);
                                 mutable_version.generation = generation;
                             });
+        return success_k;
     }
 
     /**
@@ -2007,6 +2018,10 @@ class monotonic_store {
         if (!found) callback_missing();
     }
 
+#pragma endregion Order Statistics
+
+#pragma region Modifiers and Diagnostics
+
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
@@ -2031,7 +2046,7 @@ class monotonic_store {
                 found = true;
                 callback_found(value);
             },
-            []() noexcept {});
+            no_op_t {});
 
         if (!found) {
             callback_missing();
@@ -2048,16 +2063,17 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Hints to the tree to pre-allocate memory. No-op for tree implementations.
-     *    Provided for API consistency with other containers. Doesn't guarantee subsequent
-     *    insertions won't fail with "out of memory".
+     *  @brief Asks the core to make room for @p size more entries.
      *
-     *  @param[in] size Suggested capacity (ignored for tree structures).
-     *  @return Always succeeds.
+     *  Honoured wherever the core has one allocation to grow - the open-addressed table reserves its
+     *  slab here, and a later write lands in a slot already paid for. A node-based core allocates one
+     *  node per write and has nothing to prepay, so there the hint is accepted and nothing happens.
+     *  Either way a later write may still report @c out_of_memory_heap_k.
      *
-     *  @note This is a no-op because tree structures don't support reserving capacity efficiently.
+     *  @param[in] size How many more entries to make room for.
+     *  @return Success, or @c out_of_memory_heap_k when the core could not grow.
      */
-    [[nodiscard]] status_t reserve(std::size_t) noexcept { return success_k; }
+    [[nodiscard]] status_t reserve(std::size_t size) noexcept { return storage_shape_t::prepare(entries_, size); }
 
     /**
      *  @brief Removes all elements from the tree.
@@ -2095,6 +2111,8 @@ class monotonic_store {
     }
 };
 
+#pragma endregion Modifiers and Diagnostics
+
 /**
  *  @brief STL-style transactional set using AVL tree.
  *    Stores unique elements in sorted order with ACID transaction semantics.
@@ -2123,7 +2141,9 @@ using monotonic_avl_map =
 
 /**
  *  @brief STL-style transactional set using weight-balanced tree with order statistics support.
- *    Stores unique elements in sorted order with ACID transaction semantics and O(log n) rank/select operations.
+ *    Stores unique elements in sorted order with ACID transaction semantics, and answers @c rank and
+ *    @c select - by an ordered walk, not a descent: a subtree weight here counts versions rather than
+ *    visible values, so the counts cannot be indexed into.
  *
  *  @tparam value_type_ Type of elements stored in the set.
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
@@ -2135,7 +2155,8 @@ using monotonic_wb_set = monotonic_store<basic_wb_tree<value_type_, comparator_t
 
 /**
  *  @brief STL-style transactional map using weight-balanced tree with order statistics support.
- *    Stores key-value pairs in sorted order with ACID transaction semantics and O(log n) rank/select operations.
+ *    Stores key-value pairs in sorted order with ACID transaction semantics, and answers @c rank and
+ *    @c select - by an ordered walk, not a descent, for the reason @c monotonic_wb_set names.
  *
  *  @tparam key_type_ Type of keys stored in the map.
  *  @tparam value_type_ Type of values stored in the map.
@@ -2174,7 +2195,5 @@ template <typename key_type_, typename value_type_, typename hasher_type_ = defa
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using monotonic_hash_map =
     monotonic_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
-
-#pragma endregion Order Statistics
 
 } // namespace ashvardanian::smashtable

@@ -72,15 +72,15 @@ static void test_point_insert_strategies() {
     auto first = container.transaction();
     st_verify_(first.has_value());
 
-    st_verify_(succeeded(first->insert(trivial_id_to_member<member_t>(1))));
-    st_verify_(failed(first->insert(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(first->insert_if_missing(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(first->upsert(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(first->update(trivial_id_to_member<member_t>(1))));
-    st_verify_(failed(first->update(trivial_id_to_member<member_t>(2))));
+    st_verify_(first->insert(trivial_id_to_member<member_t>(1)));
+    st_verify_eq_(first->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
+    st_verify_(first->insert_if_missing(trivial_id_to_member<member_t>(1)));
+    st_verify_(first->upsert(trivial_id_to_member<member_t>(1)));
+    st_verify_(first->update(trivial_id_to_member<member_t>(1)));
+    st_verify_eq_(first->update(trivial_id_to_member<member_t>(2)), status_t::key_not_found_k);
 
-    st_verify_(succeeded(first->stage()));
-    st_verify_(succeeded(first->commit()));
+    st_verify_(first->stage());
+    st_verify_(first->commit());
     st_verify_eq_(container.size(), 1);
     st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
     st_verify_(!container.contains(trivial_id_to_key<member_t>(2)));
@@ -94,18 +94,16 @@ static void test_point_erase_visibility() {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    for (std::size_t index = 0; index < 8; ++index)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
+    for (std::size_t index = 0; index < 8; ++index) st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
     st_verify_eq_(container.size(), 8);
 
     auto erasing = container.transaction();
     st_verify_(erasing.has_value());
-    for (std::size_t index = 0; index < 4; ++index)
-        st_verify_(succeeded(erasing->erase(trivial_id_to_key<member_t>(index))));
-    st_verify_(succeeded(erasing->stage()));
+    for (std::size_t index = 0; index < 4; ++index) st_verify_(erasing->erase(trivial_id_to_key<member_t>(index)));
+    st_verify_(erasing->stage());
     for (std::size_t index = 0; index < 4; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
 
-    st_verify_(succeeded(erasing->commit()));
+    st_verify_(erasing->commit());
     for (std::size_t index = 0; index < 4; ++index) st_verify_(!container.contains(trivial_id_to_key<member_t>(index)));
     for (std::size_t index = 4; index < 8; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
 }
@@ -118,14 +116,13 @@ static void test_point_rollback_restores_store() {
     using member_t = typename container_t::value_type;
 
     container_t container;
-    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1))));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1)));
 
     auto writing = container.transaction();
     st_verify_(writing.has_value());
-    for (std::size_t index = 1; index <= 5; ++index)
-        st_verify_(succeeded(writing->upsert(trivial_id_to_member<member_t>(index))));
-    st_verify_(succeeded(writing->stage()));
-    st_verify_(succeeded(writing->rollback()));
+    for (std::size_t index = 1; index <= 5; ++index) st_verify_(writing->upsert(trivial_id_to_member<member_t>(index)));
+    st_verify_(writing->stage());
+    st_verify_(writing->rollback());
 
     st_verify_eq_(container.size(), 1);
     st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
@@ -133,8 +130,8 @@ static void test_point_rollback_restores_store() {
         st_verify_(!container.contains(trivial_id_to_key<member_t>(index)));
 
     // The rolled-back versions are still the transaction's, so a second staging lands them all
-    st_verify_(succeeded(writing->stage()));
-    st_verify_(succeeded(writing->commit()));
+    st_verify_(writing->stage());
+    st_verify_(writing->commit());
     st_verify_eq_(container.size(), 5);
 }
 
@@ -149,9 +146,9 @@ static void test_point_staging_survives_growth(std::size_t size = 500) {
     auto writing = container.transaction();
     st_verify_(writing.has_value());
     for (std::size_t index = 0; index < size; ++index)
-        st_verify_(succeeded(writing->upsert(trivial_id_to_member<member_t>(index))));
-    st_verify_(succeeded(writing->stage()));
-    st_verify_(succeeded(writing->commit()));
+        st_verify_(writing->upsert(trivial_id_to_member<member_t>(index)));
+    st_verify_(writing->stage());
+    st_verify_(writing->commit());
 
     st_verify_eq_(container.size(), size);
     for (std::size_t index = 0; index < size; ++index)
@@ -177,7 +174,7 @@ static void test_point_enumeration_visits_every_member() {
     std::vector<key_t> keys;
     for (std::size_t index = 0; index < size; ++index) {
         keys.push_back(trivial_id_to_key<member_t>(index));
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
     }
 
     std::vector<std::size_t> tally(size, 0);
@@ -193,8 +190,8 @@ static void test_point_enumeration_visits_every_member() {
     // A transaction reports its own staged writes and hides its own tombstones.
     auto writing = container.transaction();
     st_verify_(writing.has_value());
-    st_verify_(succeeded(writing->erase(trivial_id_to_key<member_t>(0))));
-    st_verify_(succeeded(writing->upsert(trivial_id_to_member<member_t>(size))));
+    st_verify_(writing->erase(trivial_id_to_key<member_t>(0)));
+    st_verify_(writing->upsert(trivial_id_to_member<member_t>(size)));
 
     std::vector<std::size_t> staged_tally(size, 0);
     std::size_t staged_visits = 0;
@@ -208,7 +205,7 @@ static void test_point_enumeration_visits_every_member() {
     for (std::size_t index = 1; index < size; ++index) st_verify_eq_(staged_tally[index], 1);
 
     // Nothing the transaction staged is published, so the store still reports what it did before.
-    st_verify_(succeeded(writing->stage()));
+    st_verify_(writing->stage());
     std::size_t published_visits = 0;
     container.for_each([&](member_t const &) noexcept { ++published_visits; });
     st_verify_eq_(published_visits, size);
@@ -423,19 +420,19 @@ static void test_watch_on_erased_version_commits() {
     {
         auto writer = container.transaction();
         st_verify_(writer.has_value());
-        st_verify_(succeeded(writer->insert(trivial_id_to_member<member_t>(1))));
-        st_verify_(succeeded(writer->stage()));
-        st_verify_(succeeded(writer->commit()));
+        st_verify_(writer->insert(trivial_id_to_member<member_t>(1)));
+        st_verify_(writer->stage());
+        st_verify_(writer->commit());
     }
 
     generation_t erased_generation = 0;
     {
         auto eraser = container.transaction();
         st_verify_(eraser.has_value());
-        st_verify_(succeeded(eraser->erase(trivial_id_to_key<member_t>(1))));
+        st_verify_(eraser->erase(trivial_id_to_key<member_t>(1)));
         erased_generation = eraser->generation();
-        st_verify_(succeeded(eraser->stage()));
-        st_verify_(succeeded(eraser->commit()));
+        st_verify_(eraser->stage());
+        st_verify_(eraser->commit());
     }
     st_verify_(!container.contains(trivial_id_to_key<member_t>(1)));
 
@@ -444,10 +441,10 @@ static void test_watch_on_erased_version_commits() {
     versioned_entry_t tombstone {trivial_id_to_member<member_t>(1)};
     tombstone.generation = erased_generation;
     tombstone.presence = presence_t::erased_k;
-    st_verify_(succeeded(watcher->watch(tombstone)));
-    st_verify_(succeeded(watcher->insert(trivial_id_to_member<member_t>(2))));
-    st_verify_(succeeded(watcher->stage()));
-    st_verify_(succeeded(watcher->commit()));
+    st_verify_(watcher->watch(tombstone));
+    st_verify_(watcher->insert(trivial_id_to_member<member_t>(2)));
+    st_verify_(watcher->stage());
+    st_verify_(watcher->commit());
     st_verify_(container.contains(trivial_id_to_key<member_t>(2)));
 }
 
@@ -508,6 +505,46 @@ static void transactional_consistency_group_unwinds_every_participant_on_conflic
 }
 
 #pragma endregion Transactional Store Defects
+
+#pragma region Reserve
+
+/**
+ *  @brief A capacity hint reaches the slab the table grows, rather than being swallowed.
+ *
+ *  The ledger is what makes the difference observable: a hint that is honoured asks the allocator for
+ *  a slab before any element is written, and a hint that is merely accepted asks for nothing.
+ */
+static void test_reserve_reaches_the_slab() {
+    using member_t = mapping<trivial_key_t, int>;
+    using ledgered_map_t = monotonic_hash_map<trivial_key_t, int, default_hash_t, equal_to_t, stateful_allocator_t>;
+
+    allocation_ledger_t ledger;
+    {
+        ledgered_map_t container {stateful_allocator_t {ledger}};
+        st_verify_eq_(ledger.granted_count, std::size_t {0});
+
+        st_verify_(container.reserve(64));
+        st_verify_(ledger.granted_count > 0);
+        st_verify_(ledger.largest_request_elements() > 0);
+
+        for (trivial_id_t identifier = 0; identifier != 64; ++identifier)
+            st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 1)));
+        st_verify_eq_(container.size(), 64);
+    }
+    ledger.verify_balanced();
+
+    // A slab the budget refuses is reported rather than thrown, which is the whole point of a status.
+    allocation_ledger_t starved;
+    starved.refuse_everything();
+    {
+        ledgered_map_t container {stateful_allocator_t {starved}};
+        st_verify_eq_(container.reserve(64), status_t::out_of_memory_heap_k);
+        st_verify_eq_(container.size(), 0);
+    }
+    starved.verify_balanced();
+}
+
+#pragma endregion Reserve
 
 #pragma region Commit Stamp
 
@@ -647,6 +684,8 @@ int main() {
                          transactional_defects_clear_keeps_generations_moving);
     failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_point_reads",
                          transactional_defects_committed_erase_hidden_from_point_reads);
+    failures += run_test(filter, "reserve.reaches_the_slab", test_reserve_reaches_the_slab);
+
     failures += run_test(filter, "transactional_defects.vacuum_reclaims_committed_tombstones",
                          transactional_defects_vacuum_reclaims_committed_tombstones);
     failures += run_test(filter, "transactional_defects.vacuum_spares_staged_versions",

@@ -28,25 +28,25 @@ void test_rolled_back_stage_does_not_abort_a_peer() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 100))));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
 
     // The writer stages a change it will never publish.
     auto writer = container.transaction();
-    st_verify_(succeeded(writer->upsert(trivial_id_to_member<member_t>(1, 999))));
-    st_verify_(succeeded(writer->stage()));
+    st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 999)));
+    st_verify_(writer->stage());
 
     // The peer reads the key, records what it saw, and stages its own change on top of that read.
     auto peer = container.transaction();
     int observed = 0;
-    st_verify_(succeeded(peer->find_and_watch(
+    st_verify_(peer->find_and_watch(
         trivial_id_to_key<member_t>(1), [&](member_t const &member) noexcept { observed = int(member.mapped); },
-        []() noexcept {})));
+        []() noexcept {}));
     st_verify_eq_(observed, 100);
-    st_verify_(succeeded(peer->upsert(trivial_id_to_member<member_t>(1, 200))));
+    st_verify_(peer->upsert(trivial_id_to_member<member_t>(1, 200)));
     st_verify_(succeeded(peer->stage()) && "a write nobody has committed must not refuse a reader");
 
     // The writer gives up, so the peer's read was never invalidated by anything.
-    st_verify_(succeeded(writer->rollback()));
+    st_verify_(writer->rollback());
     st_verify_(succeeded(peer->commit()) && "a rolled-back write must not refuse the commit either");
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
@@ -71,31 +71,30 @@ void test_lost_update_is_refused() {
     static_assert(container_t::is_transactional::value, "Container must be transactional");
 
     container_t container;
-    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 100))));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
 
     auto first = container.transaction();
     auto second = container.transaction();
 
     int read_by_first = 0, read_by_second = 0;
-    st_verify_(succeeded(first->find_and_watch(
+    st_verify_(first->find_and_watch(
         trivial_id_to_key<member_t>(1), [&](member_t const &member) noexcept { read_by_first = int(member.mapped); },
-        []() noexcept {})));
-    st_verify_(succeeded(second->find_and_watch(
+        []() noexcept {}));
+    st_verify_(second->find_and_watch(
         trivial_id_to_key<member_t>(1), [&](member_t const &member) noexcept { read_by_second = int(member.mapped); },
-        []() noexcept {})));
+        []() noexcept {}));
     st_verify_eq_(read_by_first, read_by_second);
 
     // Each stages the increment it computed. Neither is committed, so neither refuses the other.
-    st_verify_(succeeded(first->upsert(trivial_id_to_member<member_t>(1, read_by_first + 1))));
-    st_verify_(succeeded(second->upsert(trivial_id_to_member<member_t>(1, read_by_second + 1))));
-    st_verify_(succeeded(first->stage()));
-    st_verify_(succeeded(second->stage()));
+    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, read_by_first + 1)));
+    st_verify_(second->upsert(trivial_id_to_member<member_t>(1, read_by_second + 1)));
+    st_verify_(first->stage());
+    st_verify_(second->stage());
 
     // The first to publish wins the key, and the second is turned away rather than losing the
     // increment underneath it.
-    st_verify_(succeeded(first->commit()));
+    st_verify_(first->commit());
     auto const refused = second->commit();
-    st_verify_(failed(refused) && "a second commit from the same base must be refused");
     st_verify_eq_(refused, status_t::consistency_k);
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
@@ -121,16 +120,15 @@ void test_find_and_watch_records_absence() {
 
     auto reader = container.transaction();
     bool saw_absence = false;
-    st_verify_(succeeded(reader->find_and_watch(
-        trivial_id_to_key<member_t>(7), [](member_t const &) noexcept {}, [&]() noexcept { saw_absence = true; })));
+    st_verify_(reader->find_and_watch(
+        trivial_id_to_key<member_t>(7), [](member_t const &) noexcept {}, [&]() noexcept { saw_absence = true; }));
     st_verify_(saw_absence && "the key must be reported missing");
 
     // Somebody else creates the key the reader was promised was absent.
-    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(7, 42))));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(7, 42)));
 
-    st_verify_(succeeded(reader->upsert(trivial_id_to_member<member_t>(7, 43))));
+    st_verify_(reader->upsert(trivial_id_to_member<member_t>(7, 43)));
     auto const refused = reader->stage();
-    st_verify_(failed(refused) && "a watched absence must be invalidated by the key appearing");
     st_verify_eq_(refused, status_t::consistency_k);
 }
 

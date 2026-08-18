@@ -82,7 +82,7 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
     // A bulk upsert opens a transaction underneath, and a refusal there is an allocation failure -
     // never the serialization conflict this once reported.
     auto const seeded = container.upsert(std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
-    st_verify_(succeeded(seeded));
+    st_verify_(seeded);
     st_verify_((seeded != status_t::consistency_k) &&
                "a bulk upsert that cannot open is out of memory, not in conflict");
     st_verify_eq_(container.size(), key_span);
@@ -143,7 +143,7 @@ void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size
 
     container_t container;
     for (std::size_t identifier = 0; identifier < key_span; identifier += 2)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
 
     // Quiescent: the exact probe answers for an even key, the successor probe for an odd one.
     for (std::size_t identifier = 0; identifier + 2 < key_span; identifier += 2) {
@@ -202,7 +202,7 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
 
     container_t container;
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
 
     std::atomic<bool> stop {false};
     std::atomic<std::size_t> steps_walked {0};
@@ -378,19 +378,19 @@ void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
 
     // Spread writes across partitions, so a refusal partway through has predecessors to undo.
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier))));
+        st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier)));
 
-    st_verify_(succeeded(transaction->stage()));
-    st_verify_(succeeded(transaction->rollback()));
+    st_verify_(transaction->stage());
+    st_verify_(transaction->rollback());
 
     // Whatever the outcome, nothing may be visible and nothing may be left reserved: a later
     // transaction writing the same keys must find every one of them free to take.
     auto follower = container.transaction();
     st_verify_((follower) && "a transaction must open after the unwind");
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
-        st_verify_(succeeded(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span))));
-    st_verify_(succeeded(follower->stage()));
-    st_verify_(succeeded(follower->commit()));
+        st_verify_(follower->upsert(trivial_id_to_member<member_t>(identifier, identifier + key_span)));
+    st_verify_(follower->stage());
+    st_verify_(follower->commit());
 
     for (std::size_t identifier = 0; identifier < key_span; ++identifier) {
         auto found = container.find_copy(trivial_id_to_key<member_t>(identifier));
@@ -427,17 +427,17 @@ inline void test_locked_store_forwards_construction_and_writes() {
     auto made = guarded_t::make(no_default_less_t {7}, std::allocator<entry_t> {});
     st_verify_((made) && "a comparator without a default constructor must still reach the inner store");
     auto &store = *made;
-    st_verify_(succeeded(store.upsert({1, 100})));
+    st_verify_(store.upsert({1, 100}));
 
     bool inserted = false, existing = false;
-    st_verify_(succeeded(store.insert_if_missing(
+    st_verify_(store.insert_if_missing(
         {1, 999}, [&](entry_t const &) noexcept { inserted = true; },
-        [&](entry_t const &) noexcept { existing = true; })));
+        [&](entry_t const &) noexcept { existing = true; }));
     st_verify_((!inserted && existing) && "an occupied key must report the incumbent, not a fresh insert");
 
     bool found = false, missing = false;
-    st_verify_(succeeded(store.erase(
-        std::uint64_t {1}, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; })));
+    st_verify_(store.erase(
+        std::uint64_t {1}, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; }));
     st_verify_((found && !missing) && "erase must report presence without a second probe");
     st_verify_eq_(store.size(), 0u);
 }
@@ -462,7 +462,7 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
 
     container_t container;
     for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, 0))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 0)));
 
     std::atomic<bool> writing {true};
     std::atomic<std::size_t> torn_across_keys {0};
@@ -537,7 +537,7 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
 
     container_t container;
     for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, 0))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 0)));
 
     std::atomic<std::size_t> commit_refusals {0};
     std::atomic<std::size_t> published_refusals {0};
@@ -602,7 +602,7 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
 
     container_t container;
     for (std::size_t identifier = 0; identifier != stable_count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::atomic<bool> churning {true};
     std::atomic<bool> churn_started {false};

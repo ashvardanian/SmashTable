@@ -37,11 +37,11 @@ void test_container_balances_counted_keys(std::size_t size = 128) {
     {
         container_t container;
         for (std::size_t identifier = 0; identifier != size; ++identifier)
-            st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+            st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
         // Overwriting is where a container can drop the incumbent without destroying it.
         for (std::size_t identifier = 0; identifier < size; identifier += 2)
-            st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+            st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
         for (std::size_t identifier = 0; identifier < size; identifier += 3) [[maybe_unused]]
             auto const erased = container.erase(trivial_id_to_key<member_t>(identifier));
@@ -67,15 +67,15 @@ void test_rollback_balances_counted_keys(std::size_t size = 64) {
 
         auto committed = container.transaction();
         for (std::size_t identifier = 0; identifier != size; ++identifier)
-            st_verify_(succeeded(committed->upsert(trivial_id_to_member<member_t>(identifier))));
-        st_verify_(succeeded(committed->stage()));
-        st_verify_(succeeded(committed->commit()));
+            st_verify_(committed->upsert(trivial_id_to_member<member_t>(identifier)));
+        st_verify_(committed->stage());
+        st_verify_(committed->commit());
 
         auto abandoned = container.transaction();
         for (std::size_t identifier = size; identifier != size * 2; ++identifier)
-            st_verify_(succeeded(abandoned->upsert(trivial_id_to_member<member_t>(identifier))));
-        st_verify_(succeeded(abandoned->stage()));
-        st_verify_(succeeded(abandoned->rollback()));
+            st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(identifier)));
+        st_verify_(abandoned->stage());
+        st_verify_(abandoned->rollback());
 
         clear_container(container);
     }
@@ -104,7 +104,7 @@ void test_container_walks_collision_runs(std::size_t groups = 4) {
 
     container_t container;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         st_verify_((container.contains(trivial_id_to_key<member_t>(identifier))) &&
@@ -132,18 +132,18 @@ void test_transaction_walks_collision_runs(std::size_t groups = 4) {
 
     container_t container;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     auto transaction = container.transaction();
     for (std::size_t identifier = size; identifier != size + groups; ++identifier)
-        st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(identifier))));
-    st_verify_(succeeded(transaction->stage()));
+        st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier)));
+    st_verify_(transaction->stage());
 
     for (std::size_t identifier = size; identifier != size + groups; ++identifier)
         st_verify_((!container.contains(trivial_id_to_key<member_t>(identifier))) &&
                    "a staged key must stay invisible however long its probe run is");
 
-    st_verify_(succeeded(transaction->commit()));
+    st_verify_(transaction->commit());
 
     for (std::size_t identifier = 0; identifier != size + groups; ++identifier)
         st_verify_((container.contains(trivial_id_to_key<member_t>(identifier))) &&
@@ -168,7 +168,7 @@ void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
 
     container_t container;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::size_t worst_equalities = 0;
     for (std::size_t identifier = 0; identifier < size; identifier += 97) {
@@ -196,7 +196,7 @@ void test_container_honours_over_alignment(std::size_t size = 64) {
 
     container_t container;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         container.find(
@@ -222,7 +222,7 @@ void test_find_copy_reports_a_refused_copy() {
 
     container_t container;
     copy_budget_t::reset();
-    st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1))));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1)));
 
     copy_budget_t::allow(0);
     auto const refused = container.find_copy(trivial_id_to_key<member_t>(1));

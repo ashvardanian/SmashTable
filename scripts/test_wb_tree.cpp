@@ -694,11 +694,11 @@ static void weight_balance_erase_iterator_range() {
 
     auto const result = tree.erase(tree.lower_bound(40), tree.lower_bound(160));
     oracle.erase(oracle.lower_bound(40), oracle.lower_bound(160));
-    st_verify_(succeeded(result.status));
+    st_verify_(result.status);
     verify_against_oracle(tree, oracle);
 
     auto const empty_result = tree.erase(tree.begin(), tree.begin());
-    st_verify_(succeeded(empty_result.status));
+    st_verify_(empty_result.status);
     verify_against_oracle(tree, oracle);
 }
 
@@ -1056,7 +1056,7 @@ static void upsert_reports_placement() {
 
     auto const made = tree.upsert(traced_key_t(1));
     st_verify_((made.placement == placement_t::made_k) && "a fresh key must report a node of its own");
-    st_verify_(succeeded(made));
+    st_verify_(made);
     st_verify_ne_(made.node, nullptr);
 
     auto const matched = tree.upsert(traced_key_t(1));

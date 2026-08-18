@@ -1697,7 +1697,7 @@ class basic_avl_tree {
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto it = lower_bound(std::forward<comparable_type_>(comparable));
         if (it == end()) return key_not_found_k;
-        else return copy_safely(*it);
+        return copy_safely(*it);
     }
 
     /**
@@ -1710,7 +1710,7 @@ class basic_avl_tree {
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto it = upper_bound(std::forward<comparable_type_>(comparable));
         if (it == end()) return key_not_found_k;
-        else return copy_safely(*it);
+        return copy_safely(*it);
     }
 
     /**

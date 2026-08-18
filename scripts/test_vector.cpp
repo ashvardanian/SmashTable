@@ -119,8 +119,8 @@ static void vector_emplace_back_through_make() {
     static_assert(has_make_method<fallible_element_t, int>, "the test element must qualify for the make branch");
 
     basic_vector<fallible_element_t> vector;
-    st_verify_(succeeded(vector.emplace_back(7)));
-    st_verify_(succeeded(vector.emplace_back(8)));
+    st_verify_(vector.emplace_back(7));
+    st_verify_(vector.emplace_back(8));
     st_verify_eq_(vector.size(), 2u);
     st_verify_eq_(vector[0].value, 7);
     st_verify_eq_(vector[1].value, 8);
@@ -129,8 +129,8 @@ static void vector_emplace_back_through_make() {
     st_verify_eq_(vector.emplace_back(-1), status_t::invalid_argument_k);
     st_verify_eq_(vector.size(), 2u);
 
-    st_verify_(succeeded(vector.reserve(8)));
-    st_verify_(succeeded(vector.emplace_back(assume_reserved, 9)));
+    st_verify_(vector.reserve(8));
+    st_verify_(vector.emplace_back(assume_reserved, 9));
     st_verify_eq_(vector.size(), 3u);
     st_verify_eq_(vector[2].value, 9);
     st_verify_eq_(vector.emplace_back(assume_reserved, -5), status_t::invalid_argument_k);
@@ -138,7 +138,7 @@ static void vector_emplace_back_through_make() {
 
     // The nothrow branch still wins where it applies.
     basic_vector<int> integers;
-    st_verify_(succeeded(integers.emplace_back(42)));
+    st_verify_(integers.emplace_back(42));
     st_verify_eq_(integers[0], 42);
 }
 
@@ -165,18 +165,18 @@ static void vector_reserve_refuses_wrapping_capacity() {
 
     // Ordinary growth is untouched by the guard, and still at least doubles.
     basic_vector<long long> heap_vector;
-    st_verify_(succeeded(heap_vector.reserve(1)));
+    st_verify_(heap_vector.reserve(1));
     st_verify_eq_(heap_vector.capacity(), 4u);
-    st_verify_(succeeded(heap_vector.reserve(5)));
+    st_verify_(heap_vector.reserve(5));
     st_verify_(heap_vector.capacity() >= 8u);
-    st_verify_(succeeded(heap_vector.push_back(11)));
+    st_verify_(heap_vector.push_back(11));
     st_verify_eq_(heap_vector[0], 11);
 }
 
 /** @brief Growth amortizes: appending one at a time must double rather than grow by one. */
 static void vector_growth_is_amortized() {
     basic_vector<int> vector;
-    for (int value = 0; value < 100; ++value) st_verify_(succeeded(vector.push_back(int {value})));
+    for (int value = 0; value < 100; ++value) st_verify_(vector.push_back(int {value}));
     st_verify_eq_(vector.size(), 100u);
     st_verify_(vector.capacity() >= 100u);
     st_verify_(vector.capacity() < 200u);
@@ -192,7 +192,7 @@ static void vector_growth_is_amortized() {
 /** @brief A failed @c resize leaves the elements alone, whatever it did to the capacity. */
 static void vector_resize_rolls_back_elements() {
     basic_vector<budgeted_element_t> vector;
-    st_verify_(succeeded(vector.push_back(budgeted_element_t {})));
+    st_verify_(vector.push_back(budgeted_element_t {}));
     vector[0].value = 3;
 
     budgeted_element_t pattern;
@@ -205,18 +205,18 @@ static void vector_resize_rolls_back_elements() {
     st_verify_eq_(vector[0].value, 3);
 
     budgeted_element_t::copies_left = 16;
-    st_verify_(succeeded(vector.resize(5, pattern)));
+    st_verify_(vector.resize(5, pattern));
     st_verify_eq_(vector.size(), 5u);
     st_verify_eq_(vector[4].value, 9);
 
-    st_verify_(succeeded(vector.resize(2)));
+    st_verify_(vector.resize(2));
     st_verify_eq_(vector.size(), 2u);
 }
 
 /** @brief @c copy is all-or-nothing, and @c swap moves the storage across. */
 static void vector_copy_and_swap() {
     basic_vector<fallible_element_t> vector;
-    for (int value = 0; value < 5; ++value) st_verify_(succeeded(vector.emplace_back(value)));
+    for (int value = 0; value < 5; ++value) st_verify_(vector.emplace_back(value));
 
     auto copied = vector.copy();
     st_verify_(static_cast<bool>(copied));
@@ -224,13 +224,13 @@ static void vector_copy_and_swap() {
     for (std::size_t index = 0; index < 5; ++index) st_verify_eq_((*copied)[index].value, vector[index].value);
 
     basic_vector<fallible_element_t> empty;
-    st_verify_(succeeded(empty.swap(vector)));
+    st_verify_(empty.swap(vector));
     st_verify_eq_(empty.size(), 5u);
     st_verify_eq_(vector.size(), 0u);
 
     // A failing copy hands back nothing at all rather than a partial vector.
     basic_vector<budgeted_element_t> budgeted;
-    for (int value = 0; value < 4; ++value) st_verify_(succeeded(budgeted.push_back(budgeted_element_t {})));
+    for (int value = 0; value < 4; ++value) st_verify_(budgeted.push_back(budgeted_element_t {}));
     budgeted_element_t::copies_left = 2;
     auto refused = budgeted.copy();
     st_verify_(!refused);
@@ -244,7 +244,7 @@ static void vector_move_semantics() {
     st_verify_(static_cast<bool>(made));
     basic_vector<int> vector = std::move(*made);
     st_verify_(vector.capacity() >= 16u);
-    for (int value = 0; value < 16; ++value) st_verify_(succeeded(vector.push_back(assume_reserved, int {value})));
+    for (int value = 0; value < 16; ++value) st_verify_(vector.push_back(assume_reserved, int {value}));
 
     basic_vector<int> moved = std::move(vector);
     st_verify_eq_(moved.size(), 16u);
@@ -253,7 +253,7 @@ static void vector_move_semantics() {
     st_verify_eq_(vector.data(), nullptr);
 
     basic_vector<int> assigned;
-    st_verify_(succeeded(assigned.push_back(1)));
+    st_verify_(assigned.push_back(1));
     assigned = std::move(moved);
     st_verify_eq_(assigned.size(), 16u);
     st_verify_eq_(assigned.back(), 15);

@@ -459,6 +459,9 @@ class snapshot_store {
                                            typename versioning_t::versioned_t>;
     using versioned_entry_t = versioned_t;
 
+    /** @brief What this store calls itself, so generic code spells an engine and a wrapper alike. */
+    using store_t = snapshot_store;
+
     /**
      *  @brief The one shape a watch records, whatever the read that produced it looked like.
      *
@@ -494,8 +497,6 @@ class snapshot_store {
 
     using values_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<value_t>;
     using values_vector_t = basic_vector<value_t, values_allocator_t>;
-
-    using store_t = snapshot_store;
 
     /** @brief Whether the core orders its keys, which is what unlocks bounds and ranges. */
     static constexpr bool ordered_core_k = ordered_collection<dated_entries_t>;
@@ -595,7 +596,7 @@ class snapshot_store {
         /** @brief Copies out the key the cursor stands on, or reports that the walk is over. */
         [[nodiscard]] expected<value_t> peek_copy() const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            peek([&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            peek([&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
             return result;
         }
 
@@ -826,19 +827,24 @@ class snapshot_store {
         /**
          *  @brief Records what this transaction's snapshot resolves @p identifier to, so a later commit can
          *    refuse if anything published over it in the meantime.
-         *  @param[in] identifier Identifier to watch, moved into the read set.
-         *  @return Success unless the read set could not grow.
+         *  @param[in] identifier Identifier to watch, borrowed and copied into the read set - the read
+         *    set outlives the call, and a caller's identifier is never consumed by a read.
+         *  @return Success unless the read set could not grow, or the identifier could not be copied.
          */
-        [[nodiscard]] status_t watch(identifier_t identifier) noexcept {
+        [[nodiscard]] status_t watch(identifier_t const &identifier) noexcept {
+            auto maybe_identifier = copy_safely<identifier_t>(identifier);
+            if (!maybe_identifier) return maybe_identifier.status();
             auto const &store = store_ref();
             versioned_t const *seen = store.visible_version_(identifier, snapshot_);
-            return watches_.push_back({std::move(identifier), watch_shape_of(seen)});
+            return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(seen)});
         }
 
         /** @brief Records @p versioned as the version this transaction read of its own key. */
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
-            auto maybe_identifier = copy_safely<identifier_t>(identifier_t {versioned.payload});
-            if (!maybe_identifier) return out_of_memory_heap_k;
+            // Through `copy_safely` rather than a braced `identifier_t`, so a move-only identifier
+            // compiles here and an identifier that allocates reports instead of throwing.
+            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
+            if (!maybe_identifier) return maybe_identifier.status();
             return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&versioned)});
         }
 
@@ -852,7 +858,7 @@ class snapshot_store {
                                               callback_missing_type_ &&callback_missing = {}) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(comparable);
             if (!maybe_identifier) return maybe_identifier.status();
-            status_t const recorded = watch(std::move(*maybe_identifier));
+            status_t const recorded = watch(*maybe_identifier);
             if (failed(recorded)) return recorded;
             find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                  std::forward<callback_missing_type_>(callback_missing));
@@ -887,7 +893,7 @@ class snapshot_store {
             expected<value_t> result {status_t::key_not_found_k};
             find(
                 std::forward<comparable_type_>(comparable),
-                [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
             return result;
         }
 
@@ -897,7 +903,7 @@ class snapshot_store {
             bool found = false;
             find(
                 std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; },
-                []() noexcept {});
+                no_op_t {});
             return found;
         }
 
@@ -993,7 +999,7 @@ class snapshot_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
+            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
         }
 
         /**
@@ -2079,7 +2085,7 @@ class snapshot_store {
         expected<value_t> result {status_t::key_not_found_k};
         find(
             std::forward<comparable_type_>(comparable),
-            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
@@ -2129,7 +2135,7 @@ class snapshot_store {
         expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
             std::forward<comparable_type_>(comparable),
-            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
@@ -2141,7 +2147,7 @@ class snapshot_store {
         expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
             std::forward<comparable_type_>(comparable),
-            [&](value_t const &value) noexcept { result = copy_safely(value); }, []() noexcept {});
+            [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
@@ -2180,7 +2186,7 @@ class snapshot_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
+        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
     }
 
 #pragma endregion Lookup
@@ -2266,16 +2272,7 @@ class snapshot_store {
 
     /** @brief Publishes @p value only if the key is absent, reporting a clash rather than hiding it. */
     [[nodiscard]] status_t insert(value_t &&value) noexcept {
-        if (contains(mapping_key_or_itself<value_t>(value))) return invalid_argument_k;
-        return upsert(std::move(value));
-    }
-
-    /**
-     *  @brief Publishes @p value only if the key is absent, treating an existing key as a no-op.
-     *  @sa The three-argument overload reports which of the two happened, which the status cannot.
-     */
-    [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
-        if (contains(mapping_key_or_itself<value_t>(value))) return success_k;
+        if (contains(mapping_key_or_itself<value_t>(value))) return key_already_exists_k;
         return upsert(std::move(value));
     }
 
@@ -2293,8 +2290,8 @@ class snapshot_store {
      *    still-open transaction staged is neither a clash nor what @p callback_inserted hands back.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-    [[nodiscard]] status_t insert_if_missing(value_t &&value, callback_inserted_type_ &&callback_inserted,
-                                             callback_existing_type_ &&callback_existing) noexcept {
+    [[nodiscard]] status_t insert_if_missing(value_t &&value, callback_inserted_type_ &&callback_inserted = {},
+                                             callback_existing_type_ &&callback_existing = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                       "callback_existing must be noexcept invocable with value_t const &");
@@ -2305,6 +2302,9 @@ class snapshot_store {
             callback_existing(present->payload);
             return success_k;
         }
+
+        if constexpr (std::is_same_v<std::remove_cvref_t<callback_inserted_type_>, no_op_t>)
+            return upsert(std::move(value));
 
         // The identifier has to be taken before the move, or the lookup below searches by a
         // moved-from key - which compares wrongly rather than failing loudly.
@@ -2576,11 +2576,45 @@ class snapshot_store {
 #pragma region Sampling
 
     /**
+     *  @brief Draws one key uniformly from [ @p lower, @p upper ), handing it to @p callback.
+     *
+     *  Two passes over the visible walk rather than one tree descent, which is what snapshot isolation
+     *  costs here: every version of a key is its own node, so a descent weighted by subtree size would
+     *  draw a key in proportion to how much history it still carries. The walk knows which single
+     *  version each key shows, so counting it is the only unbiased draw available.
+     *
+     *  @param[in] lower Lower bound, inclusive.
+     *  @param[in] upper Upper bound, exclusive.
+     *  @param[inout] generator Random number generator, such as @c std::mt19937.
+     *  @param[in] callback Callback handed the drawn element. Must be @c noexcept. Never invoked when
+     *    the window shows nothing.
+     */
+    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
+    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                    callback_type_ &&callback) const noexcept
+        requires ordered_core_k
+    {
+        std::size_t visible_count = 0;
+        range(lower, upper, [&](value_t const &) noexcept { ++visible_count; });
+        if (visible_count == 0) return;
+
+        std::size_t matches_to_skip = draw_below(generator, visible_count);
+        bool drawn = false;
+        range(lower, upper, [&](value_t const &element) noexcept {
+            if (drawn) return;
+            if (matches_to_skip) --matches_to_skip;
+            else {
+                callback(element);
+                drawn = true;
+            }
+        });
+    }
+
+    /**
      *  @brief Samples up to @p reservoir_capacity keys uniformly from [ @p lower, @p upper ).
      *
      *  Unbiased over the keys the store shows rather than over the versions it holds, since the walk it
-     *  draws from is the visible one. No single-draw counterpart: a tree descent would weigh a key by
-     *  how many versions it still carries.
+     *  draws from is the visible one.
      *
      *  @param[in] lower Lower bound, inclusive.
      *  @param[in] upper Upper bound, exclusive.
@@ -2619,9 +2653,10 @@ class snapshot_store {
      *  stays, and what goes is a version some newer commit already masked, or a tombstone whose
      *  erasure predates every live snapshot - which answers exactly what absence answers.
      *
-     *  @return How many versions were reclaimed.
+     *  @return How many versions were reclaimed, or the reason the sweep could not run. Never a bare
+     *    zero standing for both, which is why the count travels inside @c expected.
      */
-    [[nodiscard]] std::size_t vacuum() noexcept {
+    [[nodiscard]] expected<std::size_t> vacuum() noexcept {
         if constexpr (ordered_core_k) {
             return vacuum_runs_(entries_.begin(), [](versioned_t const &) noexcept { return true; });
         }
@@ -2642,10 +2677,10 @@ class snapshot_store {
      *  The window is closed on whole runs: a run is judged by its first entry, which is where a bare
      *  key's @c lower_bound lands, so no key is left with half its history swept.
      *
-     *  @return How many versions were reclaimed.
+     *  @return How many versions were reclaimed, or the reason the sweep could not run.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t>
-    [[nodiscard]] std::size_t vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
+    [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
         requires ordered_core_k
     {
         auto const ordering = entries_.key_comp();

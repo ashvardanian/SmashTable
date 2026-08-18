@@ -594,7 +594,7 @@ static void test_copy_preserves_parent_links() {
     using member_t = typename tree_type_::value_type;
     tree_type_ tree;
     for (trivial_id_t identifier : {5u, 2u, 8u, 1u, 3u, 7u, 9u})
-        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
 
     auto copied = tree.copy();
     st_verify_(copied.has_value());
@@ -611,13 +611,13 @@ static void test_bulk_sorted_insert_links_parents() {
     using member_t = typename tree_type_::value_type;
     for (std::size_t count = 1; count <= 64; ++count) {
         tree_type_ tree;
-        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(1000))));
+        st_verify_(tree.upsert(trivial_id_to_member<member_t>(1000)));
 
         std::vector<member_t> sorted;
         for (std::size_t index = 0; index < count; ++index) sorted.push_back(trivial_id_to_member<member_t>(index));
 
-        st_verify_(succeeded(tree.insert_if_missing(std::make_move_iterator(sorted.begin()),
-                                                    std::make_move_iterator(sorted.end()), assume_sorted_t {})));
+        st_verify_(tree.insert_if_missing(std::make_move_iterator(sorted.begin()),
+                                          std::make_move_iterator(sorted.end()), assume_sorted_t {}));
         verify_invariants(tree);
         st_verify_eq_(tree.size(), count + 1);
 
@@ -633,7 +633,7 @@ static void test_erase_root_rebalances_promoted_node() {
     using member_t = typename tree_type_::value_type;
     tree_type_ tree;
     for (trivial_id_t identifier : {10u, 5u, 15u, 3u, 7u})
-        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
     verify_invariants(tree);
 
     st_verify_(tree.erase(trivial_id_to_key<member_t>(10)));
@@ -647,7 +647,7 @@ static void test_range_excludes_upper_bound() {
     using member_t = typename tree_type_::value_type;
     tree_type_ tree;
     for (trivial_id_t identifier = 1; identifier <= 5; ++identifier)
-        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::vector<trivial_id_t> seen;
     tree.range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(4),
@@ -665,7 +665,7 @@ static void test_split_and_erase_range_stay_balanced() {
     for (std::size_t total = 1; total <= 128; ++total) {
         tree_type_ tree;
         for (std::size_t index = 0; index < total; ++index)
-            st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(index * 2))));
+            st_verify_(tree.upsert(trivial_id_to_member<member_t>(index * 2)));
 
         auto halves = tree.split(trivial_id_to_key<member_t>(total));
         verify_invariants(halves.left);
@@ -674,7 +674,7 @@ static void test_split_and_erase_range_stay_balanced() {
 
         tree_type_ rebuilt;
         for (std::size_t index = 0; index < total; ++index)
-            st_verify_(succeeded(rebuilt.upsert(trivial_id_to_member<member_t>(index))));
+            st_verify_(rebuilt.upsert(trivial_id_to_member<member_t>(index)));
         rebuilt.erase_range(trivial_id_to_key<member_t>(total / 4), trivial_id_to_key<member_t>(total / 2));
         verify_invariants(rebuilt);
 
@@ -691,8 +691,8 @@ static void test_merge_unique_stays_balanced() {
     for (std::size_t total = 1; total <= 128; ++total) {
         tree_type_ evens, odds;
         for (std::size_t index = 0; index < total; ++index) {
-            st_verify_(succeeded(evens.upsert(trivial_id_to_member<member_t>(index * 2))));
-            st_verify_(succeeded(odds.upsert(trivial_id_to_member<member_t>(index * 2 + 1))));
+            st_verify_(evens.upsert(trivial_id_to_member<member_t>(index * 2)));
+            st_verify_(odds.upsert(trivial_id_to_member<member_t>(index * 2 + 1)));
         }
 
         evens.merge(odds, assume_unique_t {});
@@ -706,8 +706,8 @@ static void test_merge_unique_stays_balanced() {
         // Fully ordered inputs take the join fast path instead of the split-based one.
         tree_type_ low, high;
         for (std::size_t index = 0; index < total; ++index) {
-            st_verify_(succeeded(low.upsert(trivial_id_to_member<member_t>(index))));
-            st_verify_(succeeded(high.upsert(trivial_id_to_member<member_t>(index + total))));
+            st_verify_(low.upsert(trivial_id_to_member<member_t>(index)));
+            st_verify_(high.upsert(trivial_id_to_member<member_t>(index + total)));
         }
         low.merge(high, assume_unique_t {});
         verify_invariants(low);
@@ -726,7 +726,7 @@ static void test_random_mutations_preserve_invariants(std::size_t steps = 4000, 
     for (std::size_t step = 0; step < steps; ++step) {
         trivial_id_t const identifier = generator() % 300;
         if (generator() % 2) {
-            st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+            st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
             oracle.insert(identifier);
         }
         else { st_verify_eq_(tree.erase(trivial_id_to_key<member_t>(identifier)), oracle.erase(identifier) == 1); }
@@ -752,7 +752,7 @@ static void test_iterator_post_decrement() {
     using member_t = typename tree_type_::value_type;
     tree_type_ tree;
     for (trivial_id_t identifier = 1; identifier <= 3; ++identifier)
-        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
 
     auto position = tree.end();
     auto const previous = position--;
@@ -769,7 +769,7 @@ static void test_node_equal_range() {
     using node_t = typename tree_type_::node_t;
     tree_type_ tree;
     for (trivial_id_t identifier = 1; identifier <= 5; ++identifier)
-        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
 
     typename tree_type_::comparator_t const comparator = tree.key_comp();
     auto const present = node_t::equal_range(tree.root(), trivial_id_to_key<member_t>(3), comparator);
@@ -788,7 +788,7 @@ static void test_bulk_upsert_pays_only_while_staging() {
     allocation_ledger_t ledger;
     ledger.allow(64);
     budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
-    for (trivial_id_t identifier : {1u, 2u}) st_verify_(succeeded(tree.upsert(trivial_key_t(identifier))));
+    for (trivial_id_t identifier : {1u, 2u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
 
     // Too little for the three-node temporary, so the whole batch fails and this tree is untouched.
     std::vector<trivial_key_t> const members = {trivial_key_t(1), trivial_key_t(2), trivial_key_t(99)};
@@ -801,7 +801,7 @@ static void test_bulk_upsert_pays_only_while_staging() {
     // Exactly enough for the temporary, and the merge relinks its nodes rather than asking for more.
     ledger.reset();
     ledger.allow(3);
-    st_verify_(succeeded(tree.upsert(members.begin(), members.end())));
+    st_verify_(tree.upsert(members.begin(), members.end()));
     st_verify_(tree.contains(trivial_key_t(99)));
     st_verify_eq_(ledger.granted_count, std::size_t {3});
     st_verify_eq_(ledger.refused_count, std::size_t {0});
@@ -823,7 +823,7 @@ static void test_upsert_reports_placement() {
 
     auto const made = tree.upsert(trivial_key_t(1));
     st_verify_((made.placement == placement_t::made_k) && "a fresh key must report a node of its own");
-    st_verify_(succeeded(made));
+    st_verify_(made);
     st_verify_((made.node != nullptr));
 
     auto const matched = tree.upsert(trivial_key_t(1));
@@ -978,12 +978,12 @@ static void fixture_coverage_rollback_balances_counted_keys() {
 /** @brief Erasing through a const iterator must instantiate; nothing in the tree called it before. */
 static void structure_erase_const_iterator() {
     trivial_set_t tree;
-    for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(succeeded(tree.upsert(trivial_key_t(identifier))));
+    for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
 
     trivial_set_t::const_iterator const position = tree.find(trivial_key_t(2));
     st_verify_(position != tree.end());
     auto const erased = tree.erase(position);
-    st_verify_(succeeded(erased.status));
+    st_verify_(erased.status);
     st_verify_(!tree.contains(trivial_key_t(2)));
     st_verify_eq_(tree.size(), 2u);
     verify_invariants(tree);

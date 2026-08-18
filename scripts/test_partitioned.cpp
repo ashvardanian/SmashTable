@@ -39,6 +39,9 @@ using tree_composite_map_t = monotonic_avl_map<composite_key_t, guarded_payload_
 using transactional_trivial_set_t = partitioned_set<tree_trivial_set_t>;
 using transactional_composite_set_t = partitioned_store<tree_composite_set_t>;
 using transactional_trivial_map_t = partitioned_map<tree_trivial_map_t>;
+
+using refusing_tree_map_t = refusing_store<tree_trivial_map_t>;
+using sharded_refusing_map_t = partitioned_store<refusing_tree_map_t>;
 using transactional_composite_map_t = partitioned_store<tree_composite_map_t>;
 
 /** Sharded, and built around a comparator instance rather than a default-constructed one. */
@@ -144,6 +147,38 @@ using partitioned_enumerable_set_t = partitioned_store<enumerable_set_t>;
 /** One shared mutex over the whole collection, reached through the shape-naming aliases. */
 using transactional_tracking_set_t = locked_set<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
+
+/**
+ *  The shape-naming aliases wrap one class each, so what distinguishes them is which stores they
+ *  accept: an alias that took every store would name the same type as its sibling and catch nothing.
+ */
+template <typename store_type_>
+constexpr bool names_locked_set_k = requires { typename locked_set<store_type_>; };
+template <typename store_type_>
+constexpr bool names_locked_map_k = requires { typename locked_map<store_type_>; };
+template <typename store_type_>
+constexpr bool names_partitioned_set_k = requires { typename partitioned_set<store_type_>; };
+template <typename store_type_>
+constexpr bool names_partitioned_map_k = requires { typename partitioned_map<store_type_>; };
+
+static_assert(names_locked_set_k<tree_trivial_set_t>, "the set alias takes a store of plain keys");
+static_assert(names_locked_map_k<tree_trivial_map_t>, "the map alias takes a store of mappings");
+static_assert(!names_locked_map_k<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
+static_assert(!names_locked_set_k<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
+static_assert(names_partitioned_set_k<tree_trivial_set_t>, "the set alias takes a store of plain keys");
+static_assert(names_partitioned_map_k<tree_trivial_map_t>, "the map alias takes a store of mappings");
+static_assert(!names_partitioned_map_k<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
+static_assert(!names_partitioned_set_k<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
+
+/**
+ *  A wrapper names itself @c store_t, which is what every engine calls its own self-alias, so one name
+ *  means one thing whichever kind of store a generic caller is handed.
+ */
+static_assert(std::is_same<typename locked_store<tree_trivial_set_t>::store_t, locked_store<tree_trivial_set_t>>(),
+              "a store names itself");
+static_assert(
+    std::is_same<typename partitioned_store<tree_trivial_set_t>::store_t, partitioned_store<tree_trivial_set_t>>(),
+    "a store names itself");
 
 #pragma endregion Type Aliases
 
@@ -470,30 +505,30 @@ static void test_forwarded_strict_insert() {
 
     expected<inner_type_> bare_made = built_store<inner_type_>();
     inner_type_ &bare = *bare_made;
-    st_verify_(succeeded(bare.upsert(trivial_id_to_member<member_t>(7))));
+    st_verify_(bare.upsert(trivial_id_to_member<member_t>(7)));
     status_t const bare_refusal = bare.insert(trivial_id_to_member<member_t>(7));
-    st_verify_(failed(bare_refusal) && "a bare store must refuse an occupied key");
+    st_verify_eq_(bare_refusal, status_t::key_already_exists_k);
 
     expected<wrapper_type_> wrapped_made = built_store<wrapper_type_>();
     wrapper_type_ &wrapped = *wrapped_made;
-    st_verify_(succeeded(wrapped.upsert(trivial_id_to_member<member_t>(7))));
+    st_verify_(wrapped.upsert(trivial_id_to_member<member_t>(7)));
     st_verify_eq_(wrapped.insert(trivial_id_to_member<member_t>(7)), bare_refusal);
     st_verify_eq_(wrapped.size(), 1u);
-    st_verify_(succeeded(wrapped.insert(trivial_id_to_member<member_t>(8))));
+    st_verify_(wrapped.insert(trivial_id_to_member<member_t>(8)));
     st_verify_eq_(wrapped.size(), 2u);
 
     // The same refusal staged rather than published, which is the level a binding reaches for.
     expected<typename inner_type_::transaction_t> bare_writer = bare.transaction();
     st_verify_((bare_writer) && "the bare store must open a transaction");
     status_t const bare_staged_refusal = bare_writer->insert(trivial_id_to_member<member_t>(7));
-    st_verify_(failed(bare_staged_refusal) && "a bare transaction must refuse an occupied key");
+    st_verify_eq_(bare_staged_refusal, status_t::key_already_exists_k);
 
     expected<typename wrapper_type_::transaction_t> wrapped_writer = wrapped.transaction();
     st_verify_((wrapped_writer) && "the wrapped store must open a transaction");
     st_verify_eq_(wrapped_writer->insert(trivial_id_to_member<member_t>(7)), bare_staged_refusal);
-    st_verify_(succeeded(wrapped_writer->insert(trivial_id_to_member<member_t>(9))));
-    st_verify_(succeeded(wrapped_writer->stage()));
-    st_verify_(succeeded(wrapped_writer->commit()));
+    st_verify_(wrapped_writer->insert(trivial_id_to_member<member_t>(9)));
+    st_verify_(wrapped_writer->stage());
+    st_verify_(wrapped_writer->commit());
     st_verify_eq_(wrapped.size(), 3u);
 }
 
@@ -506,21 +541,21 @@ static void test_forwarded_strict_update() {
     expected<inner_type_> bare_made = built_store<inner_type_>();
     inner_type_ &bare = *bare_made;
     status_t const bare_refusal = bare.update(trivial_id_to_member<member_t>(3));
-    st_verify_(failed(bare_refusal) && "a bare store must refuse an absent key");
+    st_verify_eq_(bare_refusal, status_t::key_not_found_k);
 
     expected<wrapper_type_> wrapped_made = built_store<wrapper_type_>();
     wrapper_type_ &wrapped = *wrapped_made;
     st_verify_eq_(wrapped.update(trivial_id_to_member<member_t>(3)), bare_refusal);
     st_verify_eq_(wrapped.size(), 0u);
 
-    st_verify_(succeeded(wrapped.upsert(trivial_id_to_member<member_t>(3))));
-    st_verify_(succeeded(wrapped.update(trivial_id_to_member<member_t>(3))));
+    st_verify_(wrapped.upsert(trivial_id_to_member<member_t>(3)));
+    st_verify_(wrapped.update(trivial_id_to_member<member_t>(3)));
     st_verify_eq_(wrapped.size(), 1u);
 
     expected<typename wrapper_type_::transaction_t> writer = wrapped.transaction();
     st_verify_((writer) && "the wrapped store must open a transaction");
-    st_verify_(failed(writer->update(trivial_id_to_member<member_t>(4))));
-    st_verify_(succeeded(writer->update(trivial_id_to_member<member_t>(3))));
+    st_verify_eq_(writer->update(trivial_id_to_member<member_t>(4)), status_t::key_not_found_k);
+    st_verify_(writer->update(trivial_id_to_member<member_t>(3)));
 }
 
 /** @brief Ordinals through a wrapper must name the same elements the merged order does. */
@@ -532,7 +567,7 @@ static void test_forwarded_order_statistics(std::size_t count = 64) {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &container = *made;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     for (std::size_t identifier = 0; identifier != count; ++identifier) {
         member_t selected {};
@@ -573,9 +608,9 @@ static void test_forwarded_vacuum(std::size_t count = 32) {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &container = *made;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
     for (std::size_t identifier = 0; identifier < count; identifier += 2)
-        st_verify_(succeeded(container.erase(trivial_id_to_key<member_t>(identifier))));
+        st_verify_(container.erase(trivial_id_to_key<member_t>(identifier)));
 
     expected<std::size_t> const reclaimed = container.vacuum();
     st_verify_((reclaimed) && "a sweep that cannot refuse must still answer with a count");
@@ -595,9 +630,9 @@ static void test_forwarded_windowed_vacuum(std::size_t count = 32) {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &container = *made;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.erase(trivial_id_to_key<member_t>(identifier))));
+        st_verify_(container.erase(trivial_id_to_key<member_t>(identifier)));
 
     expected<std::size_t> const reclaimed =
         container.vacuum(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(count / 2));
@@ -616,13 +651,13 @@ static void test_forwarded_update_range(std::size_t count = 32) {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &container = *made;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
 
     std::size_t const window_begin = count / 4;
     std::size_t const window_end = count / 2;
-    st_verify_(succeeded(container.update_range(
+    st_verify_(container.update_range(
         trivial_id_to_key<member_t>(window_begin), trivial_id_to_key<member_t>(window_end),
-        [](key_t const &, mapped_t &mapped) noexcept { mapped = static_cast<mapped_t>(mapped + 100); })));
+        [](key_t const &, mapped_t &mapped) noexcept { mapped = static_cast<mapped_t>(mapped + 100); }));
 
     for (std::size_t identifier = 0; identifier != count; ++identifier) {
         std::size_t const bonus = identifier >= window_begin && identifier < window_end ? 100 : 0;
@@ -644,19 +679,19 @@ static void test_forwarded_open_ended_erase(std::size_t count = 32) {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &container = *made;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::size_t erased = 0;
-    st_verify_(succeeded(
-        container.erase_from(trivial_id_to_key<member_t>(count / 2), [&](member_t const &) noexcept { ++erased; })));
+    st_verify_(
+        container.erase_from(trivial_id_to_key<member_t>(count / 2), [&](member_t const &) noexcept { ++erased; }));
     st_verify_eq_(erased, count - count / 2);
     st_verify_eq_(container.size(), count / 2);
     st_verify_(container.contains(trivial_id_to_key<member_t>(count / 2 - 1)));
     st_verify_(!container.contains(trivial_id_to_key<member_t>(count / 2)));
 
     erased = 0;
-    st_verify_(succeeded(
-        container.erase_up_to(trivial_id_to_key<member_t>(count / 4), [&](member_t const &) noexcept { ++erased; })));
+    st_verify_(
+        container.erase_up_to(trivial_id_to_key<member_t>(count / 4), [&](member_t const &) noexcept { ++erased; }));
     st_verify_eq_(erased, count / 4);
     st_verify_eq_(container.size(), count / 2 - count / 4);
     st_verify_(!container.contains(trivial_id_to_key<member_t>(0)));
@@ -672,7 +707,7 @@ static void test_forwarded_for_each(std::size_t count = 200) {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &container = *made;
     for (std::size_t identifier = 0; identifier != count; ++identifier)
-        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::vector<std::size_t> visits(count, 0);
     std::size_t total = 0;
@@ -685,7 +720,7 @@ static void test_forwarded_for_each(std::size_t count = 200) {
     st_verify_eq_(total, count);
     for (std::size_t identifier = 0; identifier != count; ++identifier) st_verify_eq_(visits[identifier], 1u);
 
-    st_verify_(succeeded(container.erase(trivial_id_to_key<member_t>(count / 2))));
+    st_verify_(container.erase(trivial_id_to_key<member_t>(count / 2)));
     total = 0;
     container.for_each([&](member_t const &) noexcept { ++total; });
     st_verify_eq_(total, count - 1);
@@ -708,11 +743,11 @@ static void test_forwarded_transaction_moves_as_a_value() {
     wrapper_type_ &store = *made;
 
     basic_vector<transaction_t> writers;
-    st_verify_(succeeded(writers.reserve(2)));
+    st_verify_(writers.reserve(2));
     for (std::size_t opened = 0; opened != 2; ++opened) {
         expected<transaction_t> writer = store.transaction();
         st_verify_((writer) && "the wrapped store must open a transaction");
-        st_verify_(succeeded(writers.push_back(std::move(*writer))));
+        st_verify_(writers.push_back(std::move(*writer)));
     }
     st_verify_eq_(writers.size(), 2u);
 
@@ -726,12 +761,12 @@ static void test_forwarded_transaction_moves_as_a_value() {
     st_verify_eq_(writers[1].generation(), first_generation);
 
     // And a transaction that travelled still reaches the store it was opened on.
-    st_verify_(succeeded(writers[0].upsert(trivial_id_to_member<member_t>(11))));
-    st_verify_(succeeded(writers[0].stage()));
-    st_verify_(succeeded(writers[0].commit()));
+    st_verify_(writers[0].upsert(trivial_id_to_member<member_t>(11)));
+    st_verify_(writers[0].stage());
+    st_verify_(writers[0].commit());
     st_verify_eq_(store.size(), 1u);
-    st_verify_(succeeded(writers[1].upsert(trivial_id_to_member<member_t>(12))));
-    st_verify_(succeeded(writers[1].reset()));
+    st_verify_(writers[1].upsert(trivial_id_to_member<member_t>(12)));
+    st_verify_(writers[1].reset());
 }
 
 /** @brief Every member equal to a key, which one partition owns outright and one lock covers. */
@@ -743,7 +778,7 @@ static void test_forwarded_equal_range() {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
     for (std::size_t identifier = 0; identifier != 8; ++identifier)
-        st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::size_t matched = 0;
     store.equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; });
@@ -773,17 +808,18 @@ static void test_forwarded_heterogeneous_erase() {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
     for (std::size_t identifier = 0; identifier != 6; ++identifier)
-        st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::size_t removed = 0;
-    st_verify_(succeeded(store.erase(static_cast<trivial_id_t>(2), [&](member_t const &) noexcept { ++removed; })));
+    st_verify_(store.erase(static_cast<trivial_id_t>(2), [&](member_t const &) noexcept { ++removed; }));
     st_verify_eq_(removed, 1u);
     st_verify_eq_(store.size(), 5u);
     st_verify_(!store.contains(static_cast<trivial_id_t>(2)));
 
     std::size_t missed = 0;
-    st_verify_(failed(
-        store.erase(static_cast<trivial_id_t>(2), [](member_t const &) noexcept {}, [&]() noexcept { ++missed; })));
+    st_verify_eq_(store.erase(
+                      static_cast<trivial_id_t>(2), [](member_t const &) noexcept {}, [&]() noexcept { ++missed; }),
+                  status_t::key_not_found_k);
     st_verify_eq_(missed, 1u);
 }
 
@@ -795,16 +831,16 @@ static void test_forwarded_transaction_staged_surface() {
 
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
-    st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(1))));
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(1)));
 
     expected<typename wrapper_type_::transaction_t> writer = store.transaction();
     st_verify_((writer) && "the wrapped store must open a transaction");
     st_verify_(!writer->has_changes());
     st_verify_eq_(writer->changes_count(), 0u);
 
-    st_verify_(succeeded(writer->reserve(4)));
-    st_verify_(succeeded(writer->insert_if_missing(trivial_id_to_member<member_t>(2))));
-    st_verify_(succeeded(writer->insert_if_missing(trivial_id_to_member<member_t>(1))));
+    st_verify_(writer->reserve(4));
+    st_verify_(writer->insert_if_missing(trivial_id_to_member<member_t>(2)));
+    st_verify_(writer->insert_if_missing(trivial_id_to_member<member_t>(1)));
     st_verify_(writer->has_changes());
     st_verify_eq_(writer->changes_count(), 1u);
 
@@ -817,8 +853,8 @@ static void test_forwarded_transaction_staged_surface() {
                   [&](member_t const &) noexcept { ++within; });
     st_verify_eq_(within, 1u);
 
-    st_verify_(succeeded(writer->stage()));
-    st_verify_(succeeded(writer->commit()));
+    st_verify_(writer->stage());
+    st_verify_(writer->commit());
     st_verify_eq_(store.size(), 2u);
 }
 
@@ -831,8 +867,8 @@ static void test_forwarded_version_bookkeeping() {
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
     for (std::size_t identifier = 0; identifier != 4; ++identifier)
-        st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(identifier))));
-    st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(0))));
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(0)));
 
     st_verify_(store.versions_count() >= 4u);
     st_verify_(store.versions_count(trivial_id_to_key<member_t>(0)) >= 1u);
@@ -935,11 +971,20 @@ static void forwarded_surface_for_each_sees_every_stable_element() {
     test_sharded_enumeration_sees_every_stable_element<locked_enumerable_set_t>();
 }
 
+static void failure_policy_distinct_causes() {
+    test_store_maps_causes_to_distinct_statuses<transactional_trivial_map_t>();
+}
+static void failure_policy_relayed_causes() { test_wrapper_relays_every_cause<sharded_refusing_map_t>(); }
+static void failure_policy_bulk_methods() { test_bulk_methods_match_declared_policy<sharded_refusing_map_t>(); }
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
     std::size_t failures = 0;
 
+    failures += run_test(filter, "failure_policy.distinct_causes", failure_policy_distinct_causes);
+    failures += run_test(filter, "failure_policy.relayed_causes", failure_policy_relayed_causes);
+    failures += run_test(filter, "failure_policy.bulk_methods", failure_policy_bulk_methods);
     failures += run_test(filter, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
     failures += run_test(filter, "sharded_concurrency.walks_never_race_erasures",
                          sharded_concurrency_walks_never_race_erasures);

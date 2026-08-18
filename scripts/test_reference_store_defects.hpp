@@ -19,9 +19,9 @@ void commit_erase_of(container_type_ &container, trivial_id_t identifier) {
     using member_t = typename container_type_::value_type;
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->erase(trivial_id_to_key<member_t>(identifier))));
-    st_verify_(succeeded(transaction->stage()));
-    st_verify_(succeeded(transaction->commit()));
+    st_verify_(transaction->erase(trivial_id_to_key<member_t>(identifier)));
+    st_verify_(transaction->stage());
+    st_verify_(transaction->commit());
 }
 
 /**
@@ -38,7 +38,7 @@ void test_committed_tombstones_are_reclaimable(std::size_t size = 32) {
     auto &container = *maybe_container;
 
     for (std::size_t identifier = 0; identifier < size; ++identifier)
-        st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.insert(trivial_id_to_member<member_t>(identifier)));
     for (std::size_t identifier = 0; identifier < size; ++identifier) commit_erase_of(container, identifier);
 
     st_verify_eq_(container.size(), 0u);
@@ -61,7 +61,7 @@ void test_vacuum_respects_its_window(std::size_t size = 32) {
     auto &container = *maybe_container;
 
     for (std::size_t identifier = 0; identifier < size; ++identifier)
-        st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(container.insert(trivial_id_to_member<member_t>(identifier)));
     for (std::size_t identifier = 0; identifier < size; ++identifier) commit_erase_of(container, identifier);
 
     std::size_t const midpoint = size / 2;
@@ -82,7 +82,7 @@ void test_erase_reports_and_reclaims_tombstone() {
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(7))));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(7)));
     commit_erase_of(container, 7);
 
     bool reported_missing = false;
@@ -106,13 +106,13 @@ void test_erase_range_skips_tombstones() {
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(2))));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(1)));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(2)));
     commit_erase_of(container, 1);
 
     std::size_t reported = 0;
-    st_verify_(succeeded(container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
-                                               [&](member_t const &) noexcept { ++reported; })));
+    st_verify_(container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
+                                     [&](member_t const &) noexcept { ++reported; }));
     st_verify_eq_(reported, 1u);
     st_verify_eq_(container.size(), 0u);
 }
@@ -125,19 +125,19 @@ void test_vacuum_leaves_staged_entries() {
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(3))));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(3)));
     commit_erase_of(container, 3);
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(3))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(3)));
+    st_verify_(transaction->stage());
 
     auto const reclaimed = container.vacuum();
     st_verify_(reclaimed.has_value());
     st_verify_eq_(*reclaimed, 1u);
 
-    st_verify_(succeeded(transaction->commit()));
+    st_verify_(transaction->commit());
     st_verify_(container.contains(trivial_id_to_key<member_t>(3)));
     st_verify_eq_(container.size(), 1u);
 }
@@ -156,10 +156,10 @@ void test_commit_reports_lost_versions() {
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(5))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(5)));
+    st_verify_(transaction->stage());
 
-    st_verify_(succeeded(container.clear()));
+    st_verify_(container.clear());
     st_verify_eq_(transaction->commit(), status_t::consistency_k);
     st_verify_eq_(container.size(), 0u);
 }
@@ -175,11 +175,11 @@ void test_commit_reports_success_when_published(std::size_t size = 8) {
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
     for (std::size_t identifier = 0; identifier < size; ++identifier)
-        st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(identifier))));
+        st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier)));
 
     // Touching one key twice lists it twice, and the second pass must not read as a loss.
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(0))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(0)));
+    st_verify_(transaction->stage());
     st_verify_eq_(transaction->commit(), status_t::success_k);
     st_verify_eq_(container.size(), size);
 }
@@ -207,17 +207,17 @@ void test_staged_entries_keep_one_generation() {
     st_verify_(transaction.has_value());
     st_verify_ne_(transaction->generation(), absent_generation_k);
 
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(transaction->erase(trivial_id_to_key<member_t>(1))));
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(1))));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(1)));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(1)));
+    st_verify_(transaction->erase(trivial_id_to_key<member_t>(1)));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(1)));
     st_verify_eq_(transaction->changes_count(), 1u);
 
-    st_verify_(succeeded(transaction->stage()));
-    st_verify_(succeeded(transaction->rollback()));
+    st_verify_(transaction->stage());
+    st_verify_(transaction->rollback());
     st_verify_ne_(transaction->generation(), absent_generation_k);
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(2))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(2)));
+    st_verify_(transaction->stage());
     st_verify_eq_(transaction->commit(), status_t::success_k);
     st_verify_eq_(container.size(), 2u);
 }
@@ -238,17 +238,17 @@ void test_clear_keeps_generations_running() {
 
     auto early = container.transaction();
     st_verify_(early.has_value());
-    st_verify_(succeeded(container.clear()));
+    st_verify_(container.clear());
     auto late = container.transaction();
     st_verify_(late.has_value());
     st_verify_ne_(early->generation(), late->generation());
 
-    st_verify_(succeeded(late->upsert(trivial_id_to_member<member_t>(5, 500))));
-    st_verify_(succeeded(late->stage()));
+    st_verify_(late->upsert(trivial_id_to_member<member_t>(5, 500)));
+    st_verify_(late->stage());
     st_verify_eq_(late->commit(), status_t::success_k);
 
-    st_verify_(succeeded(early->upsert(trivial_id_to_member<member_t>(5, 100))));
-    st_verify_(succeeded(early->stage()));
+    st_verify_(early->upsert(trivial_id_to_member<member_t>(5, 100)));
+    st_verify_(early->stage());
     st_verify_eq_(early->commit(), status_t::success_k);
 
     auto const stored = container.find_copy(trivial_id_to_key<member_t>(5));
@@ -268,13 +268,13 @@ void test_insert_refuses_with_key_already_exists() {
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(1))));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(1)));
     st_verify_eq_(container.insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
     st_verify_eq_(transaction->insert(trivial_id_to_member<member_t>(1)), status_t::key_already_exists_k);
-    st_verify_(succeeded(transaction->insert(trivial_id_to_member<member_t>(2))));
+    st_verify_(transaction->insert(trivial_id_to_member<member_t>(2)));
     st_verify_eq_(transaction->insert(trivial_id_to_member<member_t>(2)), status_t::key_already_exists_k);
 }
 
@@ -296,28 +296,28 @@ void test_insert_reports_the_stored_element() {
         existing_reports += mapping_key_or_itself(existing) == expected_key;
     };
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(3), note_stored, note_existing)));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(3), note_stored, note_existing));
     st_verify_eq_(stored_reports, 1u);
     st_verify_eq_(container.insert(trivial_id_to_member<member_t>(3), note_stored, note_existing),
                   status_t::key_already_exists_k);
     st_verify_eq_(existing_reports, 1u);
 
     expected_key = trivial_id_to_key<member_t>(4);
-    st_verify_(succeeded(container.insert_if_missing(trivial_id_to_member<member_t>(4), note_stored, note_existing)));
+    st_verify_(container.insert_if_missing(trivial_id_to_member<member_t>(4), note_stored, note_existing));
     st_verify_eq_(stored_reports, 2u);
-    st_verify_(succeeded(container.insert_if_missing(trivial_id_to_member<member_t>(4), note_stored, note_existing)));
+    st_verify_(container.insert_if_missing(trivial_id_to_member<member_t>(4), note_stored, note_existing));
     st_verify_eq_(existing_reports, 2u);
 
     expected_key = trivial_id_to_key<member_t>(5);
-    st_verify_(succeeded(container.insert_or_assign(trivial_id_to_member<member_t>(5), note_stored, note_existing)));
+    st_verify_(container.insert_or_assign(trivial_id_to_member<member_t>(5), note_stored, note_existing));
     st_verify_eq_(stored_reports, 3u);
-    st_verify_(succeeded(container.insert_or_assign(trivial_id_to_member<member_t>(5), note_stored, note_existing)));
+    st_verify_(container.insert_or_assign(trivial_id_to_member<member_t>(5), note_stored, note_existing));
     st_verify_eq_(existing_reports, 3u);
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
     expected_key = trivial_id_to_key<member_t>(6);
-    st_verify_(succeeded(transaction->insert(trivial_id_to_member<member_t>(6), note_stored, note_existing)));
+    st_verify_(transaction->insert(trivial_id_to_member<member_t>(6), note_stored, note_existing));
     st_verify_eq_(stored_reports, 4u);
     st_verify_eq_(transaction->insert(trivial_id_to_member<member_t>(6), note_stored, note_existing),
                   status_t::key_already_exists_k);
@@ -340,13 +340,13 @@ void test_insert_after_local_erase_succeeds() {
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(7, 700))));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(7, 700)));
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->erase(trivial_id_to_key<member_t>(7))));
-    st_verify_(succeeded(transaction->insert(trivial_id_to_member<member_t>(7, 777))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->erase(trivial_id_to_key<member_t>(7)));
+    st_verify_(transaction->insert(trivial_id_to_member<member_t>(7, 777)));
+    st_verify_(transaction->stage());
     st_verify_eq_(transaction->commit(), status_t::success_k);
 
     auto const stored = container.find_copy(trivial_id_to_key<member_t>(7));
@@ -368,8 +368,8 @@ void test_stage_refuses_when_already_staged() {
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(1))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(1)));
+    st_verify_(transaction->stage());
     st_verify_eq_(transaction->stage(), status_t::operation_not_permitted_k);
     st_verify_eq_(transaction->commit(), status_t::success_k);
     st_verify_eq_(container.size(), 1u);
@@ -385,10 +385,10 @@ void test_rollback_reports_lost_versions() {
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(5))));
-    st_verify_(succeeded(transaction->stage()));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(5)));
+    st_verify_(transaction->stage());
 
-    st_verify_(succeeded(container.clear()));
+    st_verify_(container.clear());
     st_verify_eq_(transaction->rollback(), status_t::consistency_k);
 }
 
@@ -409,13 +409,13 @@ void test_transaction_bounds_skip_locally_erased() {
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
 
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(5, 50))));
-    st_verify_(succeeded(container.insert(trivial_id_to_member<member_t>(9, 90))));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(5, 50)));
+    st_verify_(container.insert(trivial_id_to_member<member_t>(9, 90)));
 
     auto transaction = container.transaction();
     st_verify_(transaction.has_value());
-    st_verify_(succeeded(transaction->erase(trivial_id_to_key<member_t>(5))));
-    st_verify_(succeeded(transaction->upsert(trivial_id_to_member<member_t>(9, 99))));
+    st_verify_(transaction->erase(trivial_id_to_key<member_t>(5)));
+    st_verify_(transaction->upsert(trivial_id_to_member<member_t>(9, 99)));
 
     std::size_t found = 0;
     auto const ninth = trivial_id_to_key<member_t>(9);

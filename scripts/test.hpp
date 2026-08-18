@@ -28,13 +28,55 @@
 #include <format>      // `std::format_to`, `std::format_string`
 #include <iterator>    // `std::output_iterator`
 #include <type_traits> // `std::is_void_v`
+#include <utility>     // `std::cmp_equal`
 
 #if defined(__linux__) && defined(__GLIBC__)
 #include <execinfo.h> // `backtrace`, `backtrace_symbols_fd`
 #include <unistd.h>   // `STDERR_FILENO`
 #endif
 
+#include <smashtable/shared.hpp> // `status_t`, `succeeded`, `name_of`
+
 #pragma region Assertions
+
+/** @brief Adds the status a check was handed, where it was handed one, to the message it prints. */
+template <typename type_>
+inline void st_explain_(type_ const &answered) noexcept {
+    if constexpr (std::is_same_v<std::remove_cvref_t<type_>, ::ashvardanian::smashtable::status_t>)
+        std::fprintf(stderr, " (answered %s)", ::ashvardanian::smashtable::name_of(answered));
+    else if constexpr (requires { answered.status(); })
+        std::fprintf(stderr, " (answered %s)", ::ashvardanian::smashtable::name_of(answered.status()));
+}
+
+/**
+ *  @brief Whether the two compare equal, across signedness where both sides are whole numbers.
+ *
+ *  Binding each side to a variable is what lets the message name it, and it also turns a literal
+ *  @c 0 into an @c int object - so an unsigned count compared against it would warn where the bare
+ *  literal did not. Comparing whole numbers by value rather than by promotion answers correctly for
+ *  every pairing and leaves everything else to its own @c operator==.
+ */
+template <typename left_type_, typename right_type_>
+[[nodiscard]] constexpr bool st_equal_(left_type_ const &left, right_type_ const &right) noexcept {
+    using bare_left_t = std::remove_cvref_t<left_type_>;
+    using bare_right_t = std::remove_cvref_t<right_type_>;
+    constexpr bool both_whole_numbers_k = std::is_integral_v<bare_left_t> && std::is_integral_v<bare_right_t> &&
+                                          !std::is_same_v<bare_left_t, bool> && !std::is_same_v<bare_right_t, bool>;
+    if constexpr (both_whole_numbers_k) return std::cmp_equal(left, right);
+    else return left == right;
+}
+
+/** @brief Adds one side of a comparison to the message, naming a status rather than numbering it. */
+template <typename type_>
+inline void st_print_operand_(char const *label, type_ const &value) noexcept {
+    using bare_t = std::remove_cvref_t<type_>;
+    if constexpr (std::is_same_v<bare_t, ::ashvardanian::smashtable::status_t>)
+        std::fprintf(stderr, ", %s = %s", label, ::ashvardanian::smashtable::name_of(value));
+    else if constexpr (requires { value.status(); })
+        std::fprintf(stderr, ", %s = %s", label, ::ashvardanian::smashtable::name_of(value.status()));
+    else if constexpr (std::is_integral_v<bare_t>)
+        std::fprintf(stderr, ", %s = %lld", label, static_cast<long long>(value));
+}
 
 /**
  *  @brief Verification that stays active regardless of @c NDEBUG - a test's oracle must never compile out.
@@ -43,16 +85,49 @@
  *  swallows a dangling @c else. Context belongs inside the condition as @c &&"text", which the
  *  stringified expression then prints; there is no streamed message and no object to return.
  */
-#define st_verify_(condition)                                                                         \
-    do {                                                                                              \
-        if (!(condition)) {                                                                           \
-            std::fprintf(stderr, "Verification failed: %s, %s:%d\n", #condition, __FILE__, __LINE__); \
-            std::abort();                                                                             \
-        }                                                                                             \
+#define st_verify_(condition)                                            \
+    do {                                                                 \
+        auto const &st_answered_ = (condition);                          \
+        if (!::ashvardanian::smashtable::succeeded(st_answered_)) {      \
+            std::fprintf(stderr, "Verification failed: %s", #condition); \
+            st_explain_(st_answered_);                                   \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);       \
+            std::abort();                                                \
+        }                                                                \
     } while (0)
 
-#define st_verify_eq_(first, second) st_verify_((first) == (second))
-#define st_verify_ne_(first, second) st_verify_((first) != (second))
+/**
+ *  @brief Verification that two values match, naming both when they do not.
+ *
+ *  Stringifying the two expressions says which comparison broke and neither of the values it
+ *  compared, which for a status is the whole of what a reader needs.
+ */
+#define st_verify_eq_(first, second)                                                \
+    do {                                                                            \
+        auto const &st_left_ = (first);                                             \
+        auto const &st_right_ = (second);                                           \
+        if (!st_equal_(st_left_, st_right_)) {                                      \
+            std::fprintf(stderr, "Verification failed: %s == %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                    \
+            st_print_operand_("right", st_right_);                                  \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
+            std::abort();                                                           \
+        }                                                                           \
+    } while (0)
+
+/** @brief Verification that two values differ, naming both when they do not. */
+#define st_verify_ne_(first, second)                                                \
+    do {                                                                            \
+        auto const &st_left_ = (first);                                             \
+        auto const &st_right_ = (second);                                           \
+        if (st_equal_(st_left_, st_right_)) {                                       \
+            std::fprintf(stderr, "Verification failed: %s != %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                    \
+            st_print_operand_("right", st_right_);                                  \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
+            std::abort();                                                           \
+        }                                                                           \
+    } while (0)
 
 #pragma endregion Assertions
 
