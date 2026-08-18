@@ -14,6 +14,7 @@ Run:
     python -m test.finalizers            # the same cases, directly, for debugging a hang
 """
 
+import gc
 import subprocess
 import sys
 
@@ -108,6 +109,30 @@ def test_no_release_path_deadlocks():
     except subprocess.TimeoutExpired:
         pytest.fail("deadlocked: a finalizer reaching into its own container hung on a store lock")
     assert finished.returncode == 0, f"exited {finished.returncode}: {finished.stderr[-500:]}"
+
+
+@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+def test_a_finalizer_may_touch_its_container_during_collection(sharing):
+    """The collector breaking a cycle drops the container's objects, which runs their finalizers.
+
+    The nastiest ordering there is: `tp_clear` empties the store, the last reference goes, and the
+    finalizer reaches back into the container being collected. It has to release outside the lock
+    there too, and the container has to still answer.
+    """
+    container = st.SortedMap(key=int, value="object", sharing=sharing)
+    observed = []
+
+    class Nasty:
+        def __init__(self, owner):
+            self.owner = owner  # closes the cycle: container -> Nasty -> container
+
+        def __del__(self):
+            observed.append(len(self.owner))
+
+    container[1] = Nasty(container)
+    del container
+    gc.collect()
+    assert observed == [1], "a finalizer fired by the collector could not read its own container"
 
 
 @pytest.mark.parametrize("sharing", sharing_modes, indirect=True)

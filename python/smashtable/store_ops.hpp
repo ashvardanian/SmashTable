@@ -40,6 +40,9 @@ struct store_bridge {
 
     /** @brief Whether elements carry a mapped value, which decides map-versus-set at every shared site. */
     static constexpr bool associative_k = is_mapping<value_t>;
+    /** @brief Whether the core can hand back every element, which the collector's traversal needs. */
+    static constexpr bool enumerable_k = requires(store_t const &store) { store.for_each(no_op_t {}); };
+
     /** @brief Whether the core orders its keys, which is what the ordered slots rest on. */
     static constexpr bool ordered_k = requires(store_t &store, key_variant_t const &key) {
         store.lower_bound(key, no_op_t {}, no_op_t {});
@@ -266,6 +269,25 @@ struct store_bridge {
         return transaction_of(transaction).reset();
     }
 
+    /**
+     *  @brief Reports every stored object to the collector, so a cycle through a container is seen.
+     *
+     *  Runs with the GIL held and the store's lock taken for the walk. That is sound only because
+     *  nothing inside allocates a Python object: the visitor merely records, and a reference is
+     *  never dropped here - dropping is what @c tp_clear does, through the deferring path.
+     */
+    static int visit_values(void *store, visitproc visit, void *arg) noexcept
+        requires(enumerable_k && associative_k)
+    {
+        int outcome = 0;
+        store_of(store).for_each([&](value_t const &element) noexcept {
+            if (outcome != 0) return;
+            auto const *held = std::get_if<object_t>(&element.mapped.value);
+            if (held && held->held) outcome = visit(held->held, arg);
+        });
+        return outcome;
+    }
+
 #pragma endregion Transactions
 
     /** @brief The whole table, with every slot a core cannot supply left null. */
@@ -291,6 +313,8 @@ struct store_bridge {
             built.upper_bound = &upper_bound;
             built.erase_range = &erase_range;
         }
+
+        if constexpr (enumerable_k && associative_k) built.visit_values = &visit_values;
 
         built.transaction_make = &transaction_make;
         built.transaction_destroy = &transaction_destroy;

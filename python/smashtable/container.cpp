@@ -189,8 +189,33 @@ static void container_dealloc(PyObject *self) noexcept {
     Py_DECREF(type); // Heap types are reference-counted by their instances
 }
 
+/**
+ *  @brief Reports the type and every stored object, so a cycle through a container is collectable.
+ *
+ *  An object-mode container holds strong references, and a collector that is not told about them
+ *  sees the objects as externally reachable and never breaks the cycle. Reporting them is what
+ *  makes @c tp_clear reachable in the first place.
+ */
 static int container_traverse(PyObject *self, visitproc visit, void *arg) noexcept {
     Py_VISIT(Py_TYPE(self));
+    auto *container = object_as<container_object_t>(self);
+    if (container->mode != value_mode_t::objects_k || !container->store) return 0;
+    if (!container->store_ops->visit_values) return 0;
+    return container->store_ops->visit_values(container->store, visit, arg);
+}
+
+/**
+ *  @brief Drops everything the container holds, which is how the collector breaks the cycle.
+ *
+ *  Emptying the store is the whole of it: the references it holds are the only ones a container
+ *  owns. The drops go through the store call, so each is released after its lock is gone rather
+ *  than inside it - a finalizer here would otherwise deadlock exactly as it did on an ordinary
+ *  write.
+ */
+static int container_gc_clear(PyObject *self) noexcept {
+    auto *container = object_as<container_object_t>(self);
+    if (container->mode != value_mode_t::objects_k || !container->store) return 0;
+    [[maybe_unused]] status_t const emptied = container->store_ops->clear(container->store);
     return 0;
 }
 
@@ -1373,6 +1398,7 @@ static PyType_Slot sorted_map_slots[] = {
     {Py_tp_new, reinterpret_cast<void *>(SortedMap_new)},
     {Py_tp_dealloc, reinterpret_cast<void *>(container_dealloc)},
     {Py_tp_traverse, reinterpret_cast<void *>(container_traverse)},
+    {Py_tp_clear, reinterpret_cast<void *>(container_gc_clear)},
     {Py_tp_methods, reinterpret_cast<void *>(SortedMap_methods)},
     {Py_tp_getset, reinterpret_cast<void *>(map_getset)},
     {Py_tp_iter, reinterpret_cast<void *>(container_iter)},
@@ -1404,6 +1430,7 @@ static PyType_Slot sorted_set_slots[] = {
     {Py_tp_new, reinterpret_cast<void *>(SortedSet_new)},
     {Py_tp_dealloc, reinterpret_cast<void *>(container_dealloc)},
     {Py_tp_traverse, reinterpret_cast<void *>(container_traverse)},
+    {Py_tp_clear, reinterpret_cast<void *>(container_gc_clear)},
     {Py_tp_methods, reinterpret_cast<void *>(SortedSet_methods)},
     {Py_tp_getset, reinterpret_cast<void *>(set_getset)},
     {Py_tp_iter, reinterpret_cast<void *>(container_iter)},
@@ -1462,6 +1489,7 @@ static PyType_Slot hash_map_slots[] = {
     {Py_tp_new, reinterpret_cast<void *>(HashMap_new)},
     {Py_tp_dealloc, reinterpret_cast<void *>(container_dealloc)},
     {Py_tp_traverse, reinterpret_cast<void *>(container_traverse)},
+    {Py_tp_clear, reinterpret_cast<void *>(container_gc_clear)},
     {Py_tp_methods, reinterpret_cast<void *>(HashMap_methods)},
     {Py_tp_getset, reinterpret_cast<void *>(map_getset)},
     {Py_tp_repr, reinterpret_cast<void *>(Unordered_repr)},
@@ -1477,6 +1505,7 @@ static PyType_Slot hash_set_slots[] = {
     {Py_tp_new, reinterpret_cast<void *>(HashSet_new)},
     {Py_tp_dealloc, reinterpret_cast<void *>(container_dealloc)},
     {Py_tp_traverse, reinterpret_cast<void *>(container_traverse)},
+    {Py_tp_clear, reinterpret_cast<void *>(container_gc_clear)},
     {Py_tp_methods, reinterpret_cast<void *>(HashSet_methods)},
     {Py_tp_getset, reinterpret_cast<void *>(set_getset)},
     {Py_tp_repr, reinterpret_cast<void *>(Unordered_repr)},

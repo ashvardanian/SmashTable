@@ -529,6 +529,15 @@ struct store_ops_t {
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept;
 
+    /**
+     *  @brief Hands every stored @c PyObject to @p visit, for the collector's traversal.
+     *
+     *  Null where the core cannot enumerate, or where values are never objects. A container whose
+     *  slot is null reports no references, so a cycle through it is seen as reachable and leaks
+     *  rather than being collected wrongly.
+     */
+    int (*visit_values)(void *store, visitproc visit, void *arg) noexcept;
+
     /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
     expected<void *> (*transaction_make)(void *store) noexcept;
     void (*transaction_destroy)(void *transaction) noexcept;

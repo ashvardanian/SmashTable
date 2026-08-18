@@ -402,13 +402,22 @@ def test_clear_releases_every_stored_object(container_class, key_type, keygen):
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_cycle_through_a_container_is_collectable(container_class, key_type, keygen):
-    """An object holding the container that holds it must not leak."""
-    container = make(container_class, key_type, "object")
-    cycle = {}
-    cycle["self"] = container
-    container[keygen(1)[0]] = cycle
-    del cycle, container
-    assert gc.collect() >= 0  # No crash, and the pair is reachable only from each other
+    """An object holding the container that holds it must not leak.
+
+    Asserts the collection rather than merely surviving it. The container reports what it holds
+    through `tp_traverse`, so the collector can see the cycle, and drops it through `tp_clear`, so
+    it can break it; without either the pair is reachable forever and this reads as a slow leak.
+    """
+    gc.collect()
+    before = len(gc.get_objects())
+    for _ in range(50):
+        container = make(container_class, key_type, "object")
+        cycle = {"self": container}
+        container[keygen(1)[0]] = cycle
+        del cycle, container
+    gc.collect()
+    retained = len(gc.get_objects()) - before
+    assert retained == 0, f"{retained} objects survived a collection of 50 container cycles"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
