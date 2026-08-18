@@ -406,6 +406,55 @@ static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_heavy_map_t>();
 }
 
+/**
+ *  @brief Tests that a watch on an erased version records the shape validation re-derives.
+ *
+ *  The tombstone is built by hand because the public surface hides one: a caller that kept the
+ *  version it erased holds exactly this, and handing it back must not doom every later commit.
+ */
+template <typename container_type_>
+static void test_watch_on_erased_version_commits() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using versioned_entry_t = typename container_t::versioned_entry_t;
+
+    container_t container;
+    {
+        auto writer = container.transaction();
+        st_verify_(writer.has_value());
+        st_verify_(succeeded(writer->insert(trivial_id_to_member<member_t>(1))));
+        st_verify_(succeeded(writer->stage()));
+        st_verify_(succeeded(writer->commit()));
+    }
+
+    generation_t erased_generation = 0;
+    {
+        auto eraser = container.transaction();
+        st_verify_(eraser.has_value());
+        st_verify_(succeeded(eraser->erase(trivial_id_to_key<member_t>(1))));
+        erased_generation = eraser->generation();
+        st_verify_(succeeded(eraser->stage()));
+        st_verify_(succeeded(eraser->commit()));
+    }
+    st_verify_(!container.contains(trivial_id_to_key<member_t>(1)));
+
+    auto watcher = container.transaction();
+    st_verify_(watcher.has_value());
+    versioned_entry_t tombstone {trivial_id_to_member<member_t>(1)};
+    tombstone.generation = erased_generation;
+    tombstone.presence = presence_t::erased_k;
+    st_verify_(succeeded(watcher->watch(tombstone)));
+    st_verify_(succeeded(watcher->insert(trivial_id_to_member<member_t>(2))));
+    st_verify_(succeeded(watcher->stage()));
+    st_verify_(succeeded(watcher->commit()));
+    st_verify_(container.contains(trivial_id_to_key<member_t>(2)));
+}
+
+static void transactional_consistency_watch_on_erased_version_commits() {
+    test_watch_on_erased_version_commits<transactional_trivial_set_t>();
+}
+
 #pragma endregion Consistency and Transaction Tests
 
 #pragma region Transactional Store Defects
@@ -571,6 +620,8 @@ int main() {
                          transactional_consistency_watch_detects_external_direct_modification);
     failures += run_test(filter, "transactional_consistency.watch_detects_staged_invisible_writes",
                          transactional_consistency_watch_detects_staged_invisible_writes);
+    failures += run_test(filter, "transactional_consistency.watch_on_erased_version_commits",
+                         transactional_consistency_watch_on_erased_version_commits);
     failures += run_test(filter, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
                          transactional_consistency_watch_detects_staged_writes_of_older_generation);
     failures += run_test(filter, "transactional_consistency.abandoned_transaction_leaves_no_trace",

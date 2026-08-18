@@ -18,6 +18,7 @@
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_surface_parity.hpp"
 #include "test_consistency.hpp"
 #include "test_sharded_concurrency.hpp"
 
@@ -60,15 +61,6 @@ using standard_mutex_map_t = partitioned_store<tree_composite_map_t, hash<compos
  *  resolution rather than inside an instantiation of a body that cannot compile.
  */
 using hash_store_t = monotonic_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
-
-template <typename store_type_>
-constexpr bool offers_ordered_surface_k =
-    requires(store_type_ &store, typename store_type_::identifier_t const &key, no_op_t callback) {
-        store.lower_bound(key, callback, callback);
-        store.upper_bound(key, callback, callback);
-        store.range(key, key, callback);
-        store.erase_range(key, key, callback);
-    };
 
 static_assert(offers_ordered_surface_k<tree_trivial_set_t>, "the tree-backed store is ordered");
 static_assert(offers_ordered_surface_k<locked_store<tree_trivial_set_t>>,
@@ -115,13 +107,6 @@ struct enumerable_set_t : tree_trivial_set_t {
     }
 };
 
-template <typename store_type_>
-constexpr bool offers_order_statistics_k = requires(
-    store_type_ const &store, typename store_type_::identifier_t const &key, std::size_t ordinal, no_op_t callback) {
-    store.select(ordinal, callback, callback);
-    store.rank(key, callback, callback);
-};
-
 static_assert(offers_order_statistics_k<ranked_set_t>, "the weight-balanced store answers by ordinal");
 static_assert(offers_order_statistics_k<locked_store<monotonic_ranked_set_t>>,
               "the ordinal surface travels through the wrapper whichever store family carries it");
@@ -139,10 +124,6 @@ static_assert(!offers_order_statistics_k<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper must not claim ordinals its inner core cannot answer");
 static_assert(!offers_order_statistics_k<locked_store<hash_store_t>>, "an unordered core has no ordinals at all");
 static_assert(!offers_order_statistics_k<partitioned_store<hash_store_t>>, "an unordered core has no ordinals at all");
-
-template <typename store_type_>
-constexpr bool offers_enumeration_k =
-    requires(store_type_ const &store, no_op_t callback) { store.for_each(callback); };
 
 static_assert(offers_enumeration_k<enumerable_set_t>, "the fixture store enumerates");
 static_assert(offers_enumeration_k<locked_store<enumerable_set_t>>,
@@ -163,6 +144,63 @@ using partitioned_enumerable_set_t = partitioned_store<enumerable_set_t>;
 /** One shared mutex over the whole collection, reached through the shape-naming aliases. */
 using transactional_tracking_set_t = locked_set<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
+
+#pragma endregion Type Aliases
+
+#pragma region Surface Parity
+
+/** The snapshot-isolated families, which carry the surfaces the monotonic ones never had. */
+using snapshot_trivial_set_t = snapshot_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+using snapshot_trivial_map_t =
+    snapshot_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+using snapshot_hash_store_t =
+    snapshot_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
+
+/**
+ *  Every public surface of every shipped store, against every wrapper nesting.
+ *
+ *  One line per store: the fold names the surface, the wrapper and the store in the diagnostic, so a
+ *  forward that goes missing fails here rather than at whatever call site happened to want it.
+ */
+static_assert(every_wrapper_keeps_surfaces_k<tree_trivial_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<tree_trivial_map_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<monotonic_ranked_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<hash_store_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<enumerable_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<snapshot_trivial_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<snapshot_trivial_map_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<ranked_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces_k<snapshot_hash_store_t>, "a wrapper must keep what its store offers");
+
+/** A wrapper meant to be invisible must not change what an outer wrapper concludes about isolation. */
+static_assert(nesting_preserves_isolation_k<tree_trivial_set_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation_k<snapshot_trivial_set_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation_k<snapshot_trivial_map_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation_k<ranked_set_t>, "a transparent wrapper decides nothing");
+
+/** Sharding a stamped store keeps its promise whole, and a wrapper between the two takes nothing from it. */
+static_assert(partitioned_store<snapshot_trivial_map_t>::isolation_k == snapshot_trivial_map_t::isolation_k,
+              "one clock across partitions carries the inner store's isolation");
+static_assert(partitioned_store<locked_store<snapshot_trivial_map_t>>::isolation_k ==
+                  snapshot_trivial_map_t::isolation_k,
+              "one clock across partitions carries the inner store's isolation");
+
+/** A transaction has to survive being stored, which is what a deleted move assignment takes away. */
+static_assert(transaction_moves_as_a_value_k<locked_store<tree_trivial_set_t>>, "a transaction moves as a value");
+static_assert(transaction_moves_as_a_value_k<partitioned_store<tree_trivial_set_t>>, "a transaction moves as a value");
+static_assert(transaction_moves_as_a_value_k<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
+              "a transaction moves as a value");
+
+/** The wrappers stay in the group the concept describes, which now also asks how a transaction moves. */
+static_assert(optimistically_concurrent_store<locked_store<tree_trivial_set_t>>, "the lock wrapper stays in the group");
+static_assert(optimistically_concurrent_store<partitioned_store<tree_trivial_set_t>>,
+              "the partitioned wrapper stays in the group");
+static_assert(optimistically_concurrent_store<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
+              "the nesting stays in the group");
+
+#pragma endregion Surface Parity
+
+#pragma region Suites
 
 /** @brief Walkers crossing a sharded map while an eraser churns it, with heap-owning keys. */
 static void sharded_concurrency_walks_never_race_erasures() {
@@ -388,8 +426,6 @@ static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_composite_map_t>();
 }
 
-#pragma endregion Type Aliases
-
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<self_tracking_set_t>();
 }
@@ -408,6 +444,8 @@ static void transactional_consistency_find_does_not_watch() {
     test_find_does_not_watch<transactional_trivial_map_t>();
     test_find_does_not_watch<transactional_composite_map_t>();
 }
+
+#pragma endregion Suites
 
 #pragma region Forwarded Surface
 
@@ -653,6 +691,157 @@ static void test_forwarded_for_each(std::size_t count = 200) {
     st_verify_eq_(total, count - 1);
 }
 
+/**
+ *  @brief A transaction has to survive being stored, moved and rearranged inside a container.
+ *
+ *  A defaulted move assignment over a reference member is silently deleted, which no declaration
+ *  reports and no bare store ever hit, so the wrappers were the only ones that failed - and only at
+ *  the call site that tried to rearrange one.
+ */
+template <typename wrapper_type_>
+static void test_forwarded_transaction_moves_as_a_value() {
+
+    using transaction_t = typename wrapper_type_::transaction_t;
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &store = *made;
+
+    basic_vector<transaction_t> writers;
+    st_verify_(succeeded(writers.reserve(2)));
+    for (std::size_t opened = 0; opened != 2; ++opened) {
+        expected<transaction_t> writer = store.transaction();
+        st_verify_((writer) && "the wrapped store must open a transaction");
+        st_verify_(succeeded(writers.push_back(std::move(*writer))));
+    }
+    st_verify_eq_(writers.size(), 2u);
+
+    // The swap is the whole point: it is three move assignments, and a deleted one refuses here.
+    auto const first_generation = writers[0].generation();
+    auto const second_generation = writers[1].generation();
+    transaction_t held = std::move(writers[0]);
+    writers[0] = std::move(writers[1]);
+    writers[1] = std::move(held);
+    st_verify_eq_(writers[0].generation(), second_generation);
+    st_verify_eq_(writers[1].generation(), first_generation);
+
+    // And a transaction that travelled still reaches the store it was opened on.
+    st_verify_(succeeded(writers[0].upsert(trivial_id_to_member<member_t>(11))));
+    st_verify_(succeeded(writers[0].stage()));
+    st_verify_(succeeded(writers[0].commit()));
+    st_verify_eq_(store.size(), 1u);
+    st_verify_(succeeded(writers[1].upsert(trivial_id_to_member<member_t>(12))));
+    st_verify_(succeeded(writers[1].reset()));
+}
+
+/** @brief Every member equal to a key, which one partition owns outright and one lock covers. */
+template <typename wrapper_type_>
+static void test_forwarded_equal_range() {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &store = *made;
+    for (std::size_t identifier = 0; identifier != 8; ++identifier)
+        st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    std::size_t matched = 0;
+    store.equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; });
+    st_verify_eq_(matched, 1u);
+
+    matched = 0;
+    store.equal_range(trivial_id_to_key<member_t>(99), [&](member_t const &) noexcept { ++matched; });
+    st_verify_eq_(matched, 0u);
+
+    expected<typename wrapper_type_::transaction_t> writer = store.transaction();
+    st_verify_((writer) && "the wrapped store must open a transaction");
+    matched = 0;
+    writer->equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; });
+    st_verify_eq_(matched, 1u);
+}
+
+/**
+ *  @brief An erase through a wrapper must take whatever the inner store compares against.
+ *    A composite key is looked up by its identifier alone, which a wrapper narrowed to
+ *    @c identifier_t refuses before the store is ever asked.
+ */
+template <typename wrapper_type_>
+static void test_forwarded_heterogeneous_erase() {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &store = *made;
+    for (std::size_t identifier = 0; identifier != 6; ++identifier)
+        st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    std::size_t removed = 0;
+    st_verify_(succeeded(store.erase(static_cast<trivial_id_t>(2), [&](member_t const &) noexcept { ++removed; })));
+    st_verify_eq_(removed, 1u);
+    st_verify_eq_(store.size(), 5u);
+    st_verify_(!store.contains(static_cast<trivial_id_t>(2)));
+
+    std::size_t missed = 0;
+    st_verify_(failed(
+        store.erase(static_cast<trivial_id_t>(2), [](member_t const &) noexcept {}, [&]() noexcept { ++missed; })));
+    st_verify_eq_(missed, 1u);
+}
+
+/** @brief What a transaction has staged, and the walks that show it, must survive both wrappers. */
+template <typename wrapper_type_>
+static void test_forwarded_transaction_staged_surface() {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &store = *made;
+    st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(1))));
+
+    expected<typename wrapper_type_::transaction_t> writer = store.transaction();
+    st_verify_((writer) && "the wrapped store must open a transaction");
+    st_verify_(!writer->has_changes());
+    st_verify_eq_(writer->changes_count(), 0u);
+
+    st_verify_(succeeded(writer->reserve(4)));
+    st_verify_(succeeded(writer->insert_if_missing(trivial_id_to_member<member_t>(2))));
+    st_verify_(succeeded(writer->insert_if_missing(trivial_id_to_member<member_t>(1))));
+    st_verify_(writer->has_changes());
+    st_verify_eq_(writer->changes_count(), 1u);
+
+    std::size_t walked = 0;
+    writer->for_each([&](member_t const &) noexcept { ++walked; });
+    st_verify_eq_(walked, 2u);
+
+    std::size_t within = 0;
+    writer->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(2),
+                  [&](member_t const &) noexcept { ++within; });
+    st_verify_eq_(within, 1u);
+
+    st_verify_(succeeded(writer->stage()));
+    st_verify_(succeeded(writer->commit()));
+    st_verify_eq_(store.size(), 2u);
+}
+
+/** @brief The version bookkeeping a snapshot store keeps must be readable through both wrappers. */
+template <typename wrapper_type_>
+static void test_forwarded_version_bookkeeping() {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &store = *made;
+    for (std::size_t identifier = 0; identifier != 4; ++identifier)
+        st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(identifier))));
+    st_verify_(succeeded(store.upsert(trivial_id_to_member<member_t>(0))));
+
+    st_verify_(store.versions_count() >= 4u);
+    st_verify_(store.versions_count(trivial_id_to_key<member_t>(0)) >= 1u);
+    [[maybe_unused]] auto const mark = store.low_water_mark();
+
+    [[maybe_unused]] expected<std::size_t> const reclaimed = store.vacuum();
+    st_verify_eq_(store.size(), 4u);
+}
+
 #pragma endregion Forwarded Surface
 
 static void forwarded_surface_strict_insert() {
@@ -700,6 +889,46 @@ static void forwarded_surface_for_each() {
     test_forwarded_for_each<partitioned_enumerable_set_t>();
 }
 
+/** @brief A transaction must survive being stored in a container and rearranged inside it. */
+static void forwarded_surface_transaction_moves_as_a_value() {
+    test_forwarded_transaction_moves_as_a_value<tree_trivial_set_t>();
+    test_forwarded_transaction_moves_as_a_value<locked_store<tree_trivial_set_t>>();
+    test_forwarded_transaction_moves_as_a_value<partitioned_store<tree_trivial_set_t>>();
+    test_forwarded_transaction_moves_as_a_value<partitioned_store<locked_store<tree_trivial_set_t>>>();
+    test_forwarded_transaction_moves_as_a_value<partitioned_store<locked_store<snapshot_trivial_map_t>>>();
+}
+
+static void forwarded_surface_equal_range() {
+    test_forwarded_equal_range<locked_store<tree_trivial_set_t>>();
+    test_forwarded_equal_range<partitioned_store<tree_trivial_set_t>>();
+    test_forwarded_equal_range<locked_store<tree_trivial_map_t>>();
+    test_forwarded_equal_range<partitioned_store<tree_trivial_map_t>>();
+    test_forwarded_equal_range<partitioned_store<locked_store<snapshot_trivial_map_t>>>();
+}
+
+static void forwarded_surface_heterogeneous_erase() {
+    test_forwarded_heterogeneous_erase<locked_store<tree_composite_set_t>>();
+    test_forwarded_heterogeneous_erase<partitioned_store<tree_composite_set_t>>();
+}
+
+static void forwarded_surface_transaction_staged_surface() {
+    test_forwarded_transaction_staged_surface<locked_store<tree_trivial_set_t>>();
+    test_forwarded_transaction_staged_surface<partitioned_store<tree_trivial_set_t>>();
+    test_forwarded_transaction_staged_surface<partitioned_store<locked_store<tree_trivial_set_t>>>();
+}
+
+static void forwarded_surface_version_bookkeeping() {
+    test_forwarded_version_bookkeeping<locked_store<snapshot_trivial_set_t>>();
+    test_forwarded_version_bookkeeping<partitioned_store<snapshot_trivial_set_t>>();
+    test_forwarded_version_bookkeeping<partitioned_store<locked_store<snapshot_trivial_set_t>>>();
+}
+
+/** @brief The nesting a transparent wrapper creates has to behave like the shard set without it. */
+static void forwarded_surface_nested_wrapper_behaves() {
+    test_empty_container_operations<partitioned_store<locked_store<snapshot_trivial_set_t>>>();
+    test_single_element_operations<partitioned_store<locked_store<snapshot_trivial_set_t>>>();
+}
+
 /** @brief An enumeration crossing a writer must still see everything that stayed put, exactly once. */
 static void forwarded_surface_for_each_sees_every_stable_element() {
     test_sharded_enumeration_sees_every_stable_element<partitioned_enumerable_set_t>();
@@ -727,6 +956,14 @@ int main() {
     failures += run_test(filter, "basic_ops.range_query_head_state", basic_ops_range_query_head_state);
     failures += run_test(filter, "basic_ops.erase_range_head_state", basic_ops_erase_range_head_state);
     failures += run_test(filter, "basic_ops.heterogeneous_lookups", basic_ops_heterogeneous_lookups);
+    failures += run_test(filter, "forwarded_surface.transaction_moves_as_a_value",
+                         forwarded_surface_transaction_moves_as_a_value);
+    failures += run_test(filter, "forwarded_surface.equal_range", forwarded_surface_equal_range);
+    failures += run_test(filter, "forwarded_surface.heterogeneous_erase", forwarded_surface_heterogeneous_erase);
+    failures +=
+        run_test(filter, "forwarded_surface.transaction_staged_surface", forwarded_surface_transaction_staged_surface);
+    failures += run_test(filter, "forwarded_surface.version_bookkeeping", forwarded_surface_version_bookkeeping);
+    failures += run_test(filter, "forwarded_surface.nested_wrapper_behaves", forwarded_surface_nested_wrapper_behaves);
 
     failures += run_test(filter, "transactional_consistency.empty_transaction_commit",
                          transactional_consistency_empty_transaction_commit);

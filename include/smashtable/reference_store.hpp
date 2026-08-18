@@ -134,6 +134,20 @@ class reference_store {
     using versioned_entry_t = typename versioning_t::versioned_entry_t;
     using versioned_comparator_t = typename versioning_t::versioned_comparator_t;
 
+    /**
+     *  @brief The one shape a watch records, whatever the read that produced it looked like.
+     *
+     *  A committed tombstone is handed out as found - the public @c find has to see it in order to
+     *  hide it - so a watch on one has to record the same shape a watch on an absent key records, or
+     *  it could never match itself. Validation re-derives the shape here too, so the two cannot drift.
+     *
+     *  @param[in] resolved The entry a read resolved to, or null when the key resolves to nothing.
+     */
+    [[nodiscard]] static watch_t watch_shape_of(versioned_entry_t const *resolved) noexcept {
+        if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
+        return watch_t {resolved->generation, resolved->presence};
+    }
+
   private:
     using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<versioned_entry_t>;
     using entry_set_t = std::set< //
@@ -278,10 +292,14 @@ class reference_store {
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            return validate_watches(watches_,
-                                    [&](identifier_t const &identifier, auto &&on_found, auto &&on_missing) noexcept {
-                                        store.find_committed_entry_(identifier, on_found, on_missing);
-                                    });
+            for (watched_identifier_t const &watched : watches_) {
+                watch_t latest = missing_watch();
+                store.find_committed_entry_(watched.identifier, [&](versioned_entry_t const &entry) noexcept {
+                    latest = watch_shape_of(&entry);
+                });
+                if (latest != watched.watch) return status_t::consistency_k;
+            }
+            return success_k;
         }
 
         /** @brief Erases every entry this transaction staged under its own generation. */
@@ -485,12 +503,12 @@ class reference_store {
                 [&](versioned_entry_t const &entry) noexcept {
                     auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
                     if (!maybe_identifier) status = maybe_identifier.status();
-                    else remember(std::move(*maybe_identifier), watch_t {entry.generation, entry.presence});
+                    else remember(std::move(*maybe_identifier), watch_shape_of(&entry));
                 },
                 [&]() noexcept {
                     auto maybe_identifier = copy_safely<identifier_t>(identifier);
                     if (!maybe_identifier) status = maybe_identifier.status();
-                    else remember(std::move(*maybe_identifier), missing_watch());
+                    else remember(std::move(*maybe_identifier), watch_shape_of(nullptr));
                 });
             return status;
         }
@@ -505,9 +523,7 @@ class reference_store {
         [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
             if (!maybe_identifier) return maybe_identifier.status();
-            return invoke_safely([&] {
-                watches_.push_back({std::move(*maybe_identifier), watch_t {entry.generation, entry.presence}});
-            });
+            return invoke_safely([&] { watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&entry)}); });
         }
 
         /**
@@ -885,8 +901,8 @@ class reference_store {
      *
      *  A version nobody has committed carries no stamp, so it cannot answer here - which is what lets
      *  a transaction validate through another's staging window instead of being turned away by a
-     *  write that may yet be rolled back. A committed tombstone resolves to missing, matching the
-     *  shape @c watch records for a key that is not there.
+     *  write that may yet be rolled back. A committed tombstone is handed over as it stands, and
+     *  @c watch_shape_of is what turns it into the shape a watch is compared against.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
@@ -905,7 +921,7 @@ class reference_store {
         }
 
         // Invoke whichever callback matches the outcome.
-        if (committed == range.second || committed->presence == presence_t::erased_k) callback_missing();
+        if (committed == range.second) callback_missing();
         else callback_found(*committed);
     }
 

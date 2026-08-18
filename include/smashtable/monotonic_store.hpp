@@ -107,6 +107,20 @@ class monotonic_store {
     using versioned_t = typename versioning_t::versioned_t;
     using versioned_entry_t = versioned_t;
 
+    /**
+     *  @brief The one shape a watch records, whatever the read that produced it looked like.
+     *
+     *  A committed tombstone is handed out as found - the public @c find has to see it in order to
+     *  hide it - so a watch on one has to record the same shape a watch on an absent key records, or
+     *  it could never match itself. Validation re-derives the shape here too, so the two cannot drift.
+     *
+     *  @param[in] resolved The version a read resolved to, or null when the key resolves to nothing.
+     */
+    [[nodiscard]] static watch_t watch_shape_of(versioned_t const *resolved) noexcept {
+        if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
+        return watch_t {resolved->generation, resolved->presence};
+    }
+
   private:
     /** @brief One further version of a key, reached by pointer from that key's chain head. */
     struct version_node_t {
@@ -271,10 +285,13 @@ class monotonic_store {
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            return validate_watches(watches_,
-                                    [&](identifier_t const &identifier, auto &&on_found, auto &&on_missing) noexcept {
-                                        store.find_committed_entry_(identifier, on_found, on_missing);
-                                    });
+            for (watched_identifier_t const &watched : watches_) {
+                watch_t latest = missing_watch();
+                store.find_committed_entry_(
+                    watched.identifier, [&](versioned_t const &entry) noexcept { latest = watch_shape_of(&entry); });
+                if (latest != watched.watch) return status_t::consistency_k;
+            }
+            return success_k;
         }
 
         /**
@@ -424,15 +441,11 @@ class monotonic_store {
         [[nodiscard]] status_t watch(identifier_t identifier) noexcept {
             status_t result = success_k;
             auto found = [&](versioned_t const &versioned) noexcept {
-                // A committed tombstone is reported as found, since the public `find` has to see it
-                // to hide it. Validation resolves that same key to "missing", so a watch on it must
-                // record the missing shape or it could never match itself.
-                watch_t const observed = versioned.presence == presence_t::erased_k
-                                             ? missing_watch()
-                                             : watch_t {versioned.generation, versioned.presence};
-                result = watches_.push_back({std::move(identifier), observed});
+                result = watches_.push_back({std::move(identifier), watch_shape_of(&versioned)});
             };
-            auto missing = [&]() noexcept { result = watches_.push_back({std::move(identifier), missing_watch()}); };
+            auto missing = [&]() noexcept {
+                result = watches_.push_back({std::move(identifier), watch_shape_of(nullptr)});
+            };
             store_ref().find_visible_entry_(identifier, found, missing);
             return result;
         }
@@ -457,8 +470,7 @@ class monotonic_store {
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier_t {versioned.payload});
             if (!maybe_identifier) return out_of_memory_heap_k;
-            return watches_.push_back(
-                {std::move(*maybe_identifier), watch_t {versioned.generation, versioned.presence}});
+            return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&versioned)});
         }
 
         /**
@@ -1215,8 +1227,8 @@ class monotonic_store {
      *
      *  A version nobody has committed carries no stamp, so it cannot answer here - which is what lets
      *  a transaction validate through another's staging window instead of being turned away by a
-     *  write that may yet be rolled back. A committed tombstone resolves to missing, matching the
-     *  shape @c watch records for a key that is not there.
+     *  write that may yet be rolled back. A committed tombstone is handed over as it stands, and
+     *  @c watch_shape_of is what turns it into the shape a watch is compared against.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
@@ -1229,7 +1241,7 @@ class monotonic_store {
 
         auto found = entries_.find(std::forward<comparable_type_>(comparable));
         versioned_t const *committed = found != entries_.end() ? visible_version_(*found) : nullptr;
-        if (committed && committed->presence == presence_t::present_k) callback_found(*committed);
+        if (committed) callback_found(*committed);
         else callback_missing();
     }
 

@@ -11,7 +11,8 @@
 
 #include <cstddef> // `std::size_t`
 
-#include <algorithm> // `std::sort`
+#include <algorithm> // `std::sort`, `std::next_permutation`
+#include <optional>  // `std::optional`
 #include <random>    // `std::mt19937`
 #include <vector>    // `std::vector`
 
@@ -359,6 +360,28 @@ static void test_watch_records_absence() {
     st_verify_eq_(reader->stage(), status_t::consistency_k);
 }
 
+/** @brief Tests that a watch on an absent key refuses a commit that inserted and erased it since */
+template <typename store_type_>
+static void test_watch_spans_insert_then_erase() {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+
+    auto reader = store.transaction();
+    st_verify_(reader.has_value());
+    bool missed = false;
+    st_verify_(succeeded(
+        reader->find_and_watch(trivial_key_t {1}, [](auto const &) noexcept {}, [&]() noexcept { missed = true; })));
+    st_verify_(missed);
+    st_verify_(succeeded(reader->upsert(trivial_id_to_member<member_t>(2, 222))));
+
+    // The key is back to missing, and two commits the reader never saw sit between the two absences,
+    // so resolving to the same shape is not the key having stood still.
+    commit_write(store, 1, 111);
+    commit_erase(store, 1);
+    st_verify_eq_(mapped_or_absent(store, 1), -1);
+    st_verify_eq_(reader->stage(), status_t::consistency_k);
+}
+
 /** @brief Tests that rollback hands staged writes back and lets a retry commit them */
 template <typename store_type_>
 static void test_rollback_returns_writes() {
@@ -558,6 +581,121 @@ static void test_bulk_sweep_keeps_every_reader_whole() {
     st_verify_eq_(store.vacuum(), keys_k * 3);
     st_verify_eq_(store.versions_count(), keys_k);
     st_verify_eq_(store.size(), keys_k);
+}
+
+/** @brief The oldest snapshot any open reader answers at, which is what retention may not pass. */
+template <typename store_type_>
+static generation_t oldest_open_snapshot(
+    store_type_ const &store, std::vector<std::optional<typename store_type_::transaction_t>> const &readers) {
+    generation_t oldest = store.published_stamp();
+    bool anybody = false;
+    for (auto const &reader : readers) {
+        if (!reader) continue;
+        if (!anybody || reader->snapshot() < oldest) oldest = reader->snapshot();
+        anybody = true;
+    }
+    return oldest;
+}
+
+/** @brief Tests that the mark equals the oldest open snapshot after every arrival and every departure */
+template <typename store_type_>
+static void test_low_water_mark_tracks_the_oldest_reader() {
+    using transaction_t = typename store_type_::transaction_t;
+    constexpr std::size_t readers_k = 4;
+
+    std::vector<std::size_t> closing_order {0, 1, 2, 3};
+    do {
+        store_type_ store;
+        std::vector<std::optional<transaction_t>> readers(readers_k);
+
+        for (std::size_t index = 0; index != readers_k; ++index) {
+            commit_write(store, 1, static_cast<int>(index));
+            auto opened = store.transaction();
+            st_verify_(opened.has_value());
+            readers[index].emplace(std::move(*opened));
+            st_verify_eq_(store.open_snapshots(), index + 1);
+            st_verify_eq_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+        }
+
+        for (std::size_t position = 0; position != readers_k; ++position) {
+            readers[closing_order[position]].reset();
+            st_verify_eq_(store.open_snapshots(), readers_k - position - 1);
+            st_verify_eq_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            commit_write(store, 2, static_cast<int>(position));
+            st_verify_eq_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+        }
+
+        st_verify_eq_(store.open_snapshots(), 0);
+        st_verify_eq_(store.low_water_mark(), store.published_stamp());
+    } while (std::next_permutation(closing_order.begin(), closing_order.end()));
+}
+
+/** @brief Tests that a census that never empties still lets the mark follow its oldest reader */
+template <typename store_type_>
+static void test_rolling_readers_keep_reclamation_moving() {
+    using transaction_t = typename store_type_::transaction_t;
+    store_type_ store;
+    commit_write(store, 1, 0);
+
+    std::optional<transaction_t> holding;
+    auto first = store.transaction();
+    st_verify_(first.has_value());
+    holding.emplace(std::move(*first));
+
+    for (int round = 1; round != 64; ++round) {
+        commit_write(store, 1, round);
+
+        // The next reader arrives before the one before it leaves, so the census is never empty -
+        // which is the shape a service with one perpetually open transaction has.
+        auto opened = store.transaction();
+        st_verify_(opened.has_value());
+        std::optional<transaction_t> next;
+        next.emplace(std::move(*opened));
+        st_verify_eq_(store.open_snapshots(), 2);
+        holding = std::move(next);
+
+        st_verify_eq_(store.open_snapshots(), 1);
+        st_verify_eq_(store.low_water_mark(), holding->snapshot());
+        st_verify_(store.versions_count(trivial_key_t {1}) <= 3);
+    }
+
+    holding.reset();
+    st_verify_eq_(store.open_snapshots(), 0);
+    st_verify_eq_(mapped_or_absent(store, 1), 63);
+}
+
+/** @brief Tests that a reader that stays holds retention at its own snapshot once older ones leave */
+template <typename store_type_>
+static void test_long_lived_reader_holds_its_own_snapshot() {
+    using transaction_t = typename store_type_::transaction_t;
+    store_type_ store;
+    commit_write(store, 1, 0);
+
+    std::optional<transaction_t> early;
+    auto opened_early = store.transaction();
+    st_verify_(opened_early.has_value());
+    early.emplace(std::move(*opened_early));
+
+    commit_write(store, 1, 1);
+    auto keeper = store.transaction();
+    st_verify_(keeper.has_value());
+    st_verify_(early->snapshot() < keeper->snapshot());
+
+    early.reset();
+    st_verify_eq_(store.low_water_mark(), keeper->snapshot());
+
+    for (int round = 2; round != 16; ++round) {
+        commit_write(store, 1, round);
+        {
+            auto churning = store.transaction();
+            st_verify_(churning.has_value());
+            st_verify_eq_(store.open_snapshots(), 2);
+            st_verify_eq_(store.low_water_mark(), keeper->snapshot());
+        }
+        st_verify_eq_(store.open_snapshots(), 1);
+        st_verify_eq_(store.low_water_mark(), keeper->snapshot());
+        st_verify_eq_(mapped_or_absent(*keeper, 1), 1);
+    }
 }
 
 #pragma endregion Reclamation Tests
@@ -1739,6 +1877,10 @@ int main(int, char **) {
     failures += run_test(filter, "conflict.watch_records_absence.avl", test_watch_records_absence<snapshot_avl_map_t>);
     failures +=
         run_test(filter, "conflict.watch_records_absence.hash", test_watch_records_absence<snapshot_hash_map_t>);
+    failures += run_test(filter, "conflict.watch_spans_insert_then_erase.avl",
+                         test_watch_spans_insert_then_erase<snapshot_avl_map_t>);
+    failures += run_test(filter, "conflict.watch_spans_insert_then_erase.hash",
+                         test_watch_spans_insert_then_erase<snapshot_hash_map_t>);
     failures +=
         run_test(filter, "conflict.rollback_returns_writes.avl", test_rollback_returns_writes<snapshot_avl_map_t>);
     failures +=
@@ -1782,6 +1924,19 @@ int main(int, char **) {
                          test_bulk_sweep_keeps_every_reader_whole<snapshot_wb_map_t>);
     failures += run_test(filter, "reclamation.bulk_sweep_keeps_every_reader_whole.hash",
                          test_bulk_sweep_keeps_every_reader_whole<snapshot_hash_map_t>);
+
+    failures += run_test(filter, "reclamation.low_water_mark_tracks_the_oldest_reader.avl",
+                         test_low_water_mark_tracks_the_oldest_reader<snapshot_avl_map_t>);
+    failures += run_test(filter, "reclamation.low_water_mark_tracks_the_oldest_reader.hash",
+                         test_low_water_mark_tracks_the_oldest_reader<snapshot_hash_map_t>);
+    failures += run_test(filter, "reclamation.rolling_readers_keep_reclamation_moving.avl",
+                         test_rolling_readers_keep_reclamation_moving<snapshot_avl_map_t>);
+    failures += run_test(filter, "reclamation.rolling_readers_keep_reclamation_moving.hash",
+                         test_rolling_readers_keep_reclamation_moving<snapshot_hash_map_t>);
+    failures += run_test(filter, "reclamation.long_lived_reader_holds_its_own_snapshot.avl",
+                         test_long_lived_reader_holds_its_own_snapshot<snapshot_avl_map_t>);
+    failures += run_test(filter, "reclamation.long_lived_reader_holds_its_own_snapshot.hash",
+                         test_long_lived_reader_holds_its_own_snapshot<snapshot_hash_map_t>);
 
     failures += run_test(filter, "point.insert_strategies.avl", test_point_insert_strategies<snapshot_avl_map_t>);
     failures += run_test(filter, "point.insert_strategies.hash", test_point_insert_strategies<snapshot_hash_map_t>);

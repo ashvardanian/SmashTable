@@ -1335,6 +1335,30 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 
 #pragma endregion Store Tiers
 
+#pragma region Shared Clock
+
+/**
+ *  @brief What a store keeping no stamps contributes to a shard set, which is nothing at all.
+ *    Named so a wrapper declares its clock and its reader's claim unconditionally, and pays nothing
+ *    for either where there is no clock to share.
+ */
+struct no_clock_t {
+    /** @brief The claim a reader of such a store never takes. */
+    using snapshot_lease_t = no_clock_t;
+};
+
+/** @brief The clock a store shares with its siblings, or @c no_clock_t when it keeps no stamps. */
+template <typename store_type_, typename = void>
+struct shared_clock_of {
+    using type = no_clock_t;
+};
+template <typename store_type_>
+struct shared_clock_of<store_type_, std::void_t<typename store_type_::clock_t>> {
+    using type = typename store_type_::clock_t;
+};
+
+#pragma endregion Shared Clock
+
 #pragma region Storage Shape
 
 /**
@@ -1551,12 +1575,21 @@ struct storage_node_of<collection_type_, std::void_t<typename collection_type_::
  *
  *  @c reserve is deliberately absent: it is a capacity hint over the watch list, not part of the
  *  contract, and a sharded store has no single list to size.
+ *
+ *  A transaction must move, must move-assign, and must not copy. The middle requirement is what
+ *  catches a defaulted move assignment the compiler quietly deleted - a reference or const member is
+ *  enough to do it - which leaves a transaction that can be built into a container but never
+ *  rearranged inside one. Movable-and-not-move-assignable is almost never intended, and it fails at
+ *  the call site rather than at the declaration, so it is asserted here instead.
  */
 template <typename store_type_>
 concept optimistically_concurrent_store =
     requires(store_type_ &store, typename store_type_::transaction_t &transaction) {
         typename store_type_::transaction_t;
         requires store_type_::is_transactional::value;
+        requires std::is_nothrow_move_constructible_v<typename store_type_::transaction_t>;
+        requires std::is_move_assignable_v<typename store_type_::transaction_t>;
+        requires !std::is_copy_constructible_v<typename store_type_::transaction_t>;
         requires at_least(store_type_::isolation_k, isolation_t::read_committed_k);
         { store.transaction() } noexcept -> std::same_as<expected<typename store_type_::transaction_t>>;
         { transaction.watch(std::declval<typename store_type_::identifier_t>()) } noexcept -> std::same_as<status_t>;

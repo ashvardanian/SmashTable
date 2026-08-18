@@ -436,8 +436,8 @@ inline void test_locked_store_forwards_construction_and_writes() {
     st_verify_((!inserted && existing) && "an occupied key must report the incumbent, not a fresh insert");
 
     bool found = false, missing = false;
-    st_verify_(
-        succeeded(store.erase(1, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; })));
+    st_verify_(succeeded(store.erase(
+        std::uint64_t {1}, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; })));
     st_verify_((found && !missing) && "erase must report presence without a second probe");
     st_verify_eq_(store.size(), 0u);
 }

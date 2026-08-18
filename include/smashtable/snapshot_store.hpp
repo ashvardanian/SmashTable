@@ -93,15 +93,16 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *
  *  @section snapshot_clock_census Census
  *
- *  Readers are counted rather than listed, and the earliest snapshot among them is remembered while
- *  the count leaves zero. That mark is what reclamation prunes to, and being global is the point: a
- *  partition that pruned to its own readers would free a version a reader of another partition is
- *  still entitled to name.
+ *  Readers are listed, not counted: every open snapshot is one node on an intrusive list ordered by
+ *  the snapshot it reads at, exactly as commits in flight are ordered by their stamp. A snapshot is
+ *  drawn at the watermark, which never moves backwards, so a fresh reader joins at the newest end
+ *  and the oldest reader is the head - the minimum comes for free rather than from a remembered mark.
  *
- *  The mark only moves when the census empties, so a process that always has some transaction open
- *  never advances it and reclaims nothing: every version of every key written while that is true is
- *  kept. A long-lived service that holds a reader permanently should expect its memory to grow with
- *  the number of writes rather than with the number of keys.
+ *  That minimum is what reclamation prunes to, and being global is the point: a partition that pruned
+ *  to its own readers would free a version a reader of another partition is still entitled to name.
+ *  With the list empty the mark is the watermark itself, which is what a reader arriving now would
+ *  open on. A reader that outlives every other one therefore holds retention at its own snapshot and
+ *  no lower, and its departure releases everything at once.
  *
  *  @section snapshot_clock_ordering Ordering
  *
@@ -149,25 +150,38 @@ class snapshot_clock_t {
 
     /**
      *  @brief One reader's claim on a snapshot, which holds the low-water mark at or below it.
-     *    Moves with the transaction that owns it, and gives the claim back once, whenever it goes away.
+     *
+     *  While the claim is held the lease is a node on the clock's census list, so it is the reader
+     *  itself that pins retention and no separate mark has to be kept in step with it. Moving a lease
+     *  splices the new object into the old one's place under the clock's lock, which is what lets a
+     *  transaction holding one be moved. The claim is given back once, whenever the lease goes away.
      */
     class snapshot_lease_t {
         friend class snapshot_clock_t;
 
         /** @brief The clock the claim is registered with, null once it has been given back. */
         snapshot_clock_t *clock_ {nullptr};
+        /** @brief The reader on an older snapshot, or null when this is the oldest one open. */
+        snapshot_lease_t *older_ {nullptr};
+        /** @brief The reader on a newer snapshot, or null when this is the newest one open. */
+        snapshot_lease_t *newer_ {nullptr};
         /** @brief The stamp every read under this claim is answered at. */
         generation_t snapshot_ {0};
 
+        /** @brief Takes @p other's place on the census list, leaving @p other holding nothing. */
+        void adopt_(snapshot_lease_t &other) noexcept {
+            snapshot_ = other.snapshot_;
+            clock_ = other.clock_;
+            if (clock_) clock_->relink_lease_(other, *this);
+        }
+
       public:
         constexpr snapshot_lease_t() noexcept = default;
-        snapshot_lease_t(snapshot_lease_t &&other) noexcept
-            : clock_(std::exchange(other.clock_, nullptr)), snapshot_(other.snapshot_) {}
+        snapshot_lease_t(snapshot_lease_t &&other) noexcept { adopt_(other); }
         snapshot_lease_t &operator=(snapshot_lease_t &&other) noexcept {
             if (this == &other) return *this;
             retire();
-            clock_ = std::exchange(other.clock_, nullptr);
-            snapshot_ = other.snapshot_;
+            adopt_(other);
             return *this;
         }
         ~snapshot_lease_t() noexcept { retire(); }
@@ -183,7 +197,7 @@ class snapshot_clock_t {
         /** @brief Gives the claim back, letting the low-water mark move past it. Idempotent. */
         void retire() noexcept {
             if (!clock_) return;
-            clock_->retire_snapshot_();
+            clock_->retire_snapshot_(*this);
             clock_ = nullptr;
         }
     };
@@ -201,16 +215,52 @@ class snapshot_clock_t {
     commit_in_flight_t *oldest_in_flight_ {nullptr};
     /** @brief Where a freshly drawn stamp joins the list, keeping it ordered by stamp. */
     commit_in_flight_t *newest_in_flight_ {nullptr};
-    /** @brief How many readers currently hold a snapshot. */
-    alignas(atomic_alignment<std::size_t>) std::size_t open_snapshots_ {0};
-    /** @brief The snapshot the earliest of them opened on, meaningless while none are open. */
-    alignas(atomic_alignment<generation_t>) generation_t oldest_open_snapshot_ {0};
+    /** @brief The reader on the smallest snapshot, which is what retention is pinned to. */
+    snapshot_lease_t *oldest_lease_ {nullptr};
+    /** @brief Where a freshly drawn snapshot joins the census, keeping it ordered by snapshot. */
+    snapshot_lease_t *newest_lease_ {nullptr};
+    /** @brief What the census currently answers, republished under the lock whenever it changes. */
+    alignas(atomic_alignment<generation_t>) generation_t low_water_mark_ {0};
+
+    /** @brief Files @p lease at the newest end of the census, where its snapshot belongs. */
+    void link_newest_(snapshot_lease_t &lease) noexcept {
+        lease.older_ = newest_lease_;
+        lease.newer_ = nullptr;
+        (newest_lease_ ? newest_lease_->newer_ : oldest_lease_) = &lease;
+        newest_lease_ = &lease;
+    }
+
+    /** @brief Takes @p lease off the census, leaving it linked to nothing. */
+    void unlink_(snapshot_lease_t &lease) noexcept {
+        (lease.older_ ? lease.older_->newer_ : oldest_lease_) = lease.newer_;
+        (lease.newer_ ? lease.newer_->older_ : newest_lease_) = lease.older_;
+        lease.older_ = nullptr;
+        lease.newer_ = nullptr;
+    }
+
+    /** @brief Republishes the mark from the census head, which is the answer whenever it changes. */
+    void republish_mark_() noexcept {
+        atomic_store<generation_t>(low_water_mark_,
+                                   oldest_lease_ ? oldest_lease_->snapshot_ : atomic_load(published_stamp_));
+    }
+
+    /** @brief Puts @p replacement in @p held 's place, for a lease that is being moved. */
+    void relink_lease_(snapshot_lease_t &held, snapshot_lease_t &replacement) noexcept {
+        unique_lock<spin_shared_mutex> _ {mutex_};
+        replacement.older_ = held.older_;
+        replacement.newer_ = held.newer_;
+        (held.older_ ? held.older_->newer_ : oldest_lease_) = &replacement;
+        (held.newer_ ? held.newer_->older_ : newest_lease_) = &replacement;
+        held.older_ = nullptr;
+        held.newer_ = nullptr;
+        held.clock_ = nullptr;
+    }
 
     /** @brief Gives one reader's claim back, which only @c snapshot_lease_t is allowed to do. */
-    void retire_snapshot_() noexcept {
+    void retire_snapshot_(snapshot_lease_t &lease) noexcept {
         unique_lock<spin_shared_mutex> _ {mutex_};
-        assert(open_snapshots_ != 0 && "every retirement answers a registration");
-        atomic_store<std::size_t>(open_snapshots_, open_snapshots_ - 1);
+        unlink_(lease);
+        republish_mark_();
     }
 
   public:
@@ -230,17 +280,14 @@ class snapshot_clock_t {
      */
     generation_t take_snapshot(snapshot_lease_t &lease) noexcept {
         unique_lock<spin_shared_mutex> _ {mutex_};
-        if (lease.clock_) {
-            assert(open_snapshots_ != 0 && "every retirement answers a registration");
-            atomic_store<std::size_t>(open_snapshots_, open_snapshots_ - 1);
-        }
+        if (lease.clock_) unlink_(lease);
         generation_t const snapshot = atomic_load(published_stamp_);
-        // The earliest snapshot is written before the census stops being empty, so a lock-free reader
-        // of the pair never sees a count claiming somebody is below a mark nobody is below.
-        if (open_snapshots_ == 0) atomic_store<generation_t>(oldest_open_snapshot_, snapshot);
-        atomic_store<std::size_t>(open_snapshots_, open_snapshots_ + 1);
         lease.clock_ = this;
         lease.snapshot_ = snapshot;
+        // The watermark never moves backwards, so the snapshot just drawn is at least as new as every
+        // one already on the census and the newest end is where it belongs.
+        link_newest_(lease);
+        republish_mark_();
         return snapshot;
     }
 
@@ -267,6 +314,8 @@ class snapshot_clock_t {
         node.newer_ = nullptr;
         generation_t const whole = oldest_in_flight_ ? oldest_in_flight_->stamp_ - 1 : commits_;
         atomic_store<generation_t>(published_stamp_, whole);
+        // With nobody reading, the mark is the watermark, so publishing one moves the other.
+        republish_mark_();
     }
 
     /**
@@ -279,30 +328,34 @@ class snapshot_clock_t {
     }
 
     /**
-     *  @brief The newest snapshot no reader can be sitting below, so everything older is unreachable.
-     *    Only the departure of the last reader moves it, which is what makes it conservative: an
-     *    early reader that leaves while a later one is still open keeps the mark where it was.
+     *  @brief The oldest snapshot any reader can still name, so everything older is unreachable.
+     *    Every arrival and departure republishes it from the census head, so an early reader leaving
+     *    while a later one stays open moves it up to that later one rather than leaving it behind.
      */
     [[nodiscard]] generation_t low_water_mark() const noexcept {
-        // Read without the lock, because reclamation asks this on every direct write and the answer
-        // is safe however the two fields interleave. An empty census answers with the watermark,
-        // which is exactly what a reader arriving right now would open on. A census read as non-empty
-        // answers with the earliest snapshot it holds, and that field is only ever rewritten by a
-        // reader arriving into an empty census - so a newer value means every older reader has left.
-        if (atomic_load(open_snapshots_) == 0) return atomic_load(published_stamp_);
-        return atomic_load(oldest_open_snapshot_);
+        // Read without the lock, because reclamation asks this on every direct write. The mark is
+        // only ever written under the lock and only ever to the census minimum of that moment, and
+        // that minimum never falls: a snapshot is drawn at the watermark, so an arriving reader is
+        // never older than one already there. A stale read is therefore an older mark, which keeps
+        // versions nobody needs rather than freeing one somebody still names.
+        return atomic_load(low_water_mark_);
     }
 
-    /** @brief How many readers currently hold a snapshot. */
-    [[nodiscard]] std::size_t open_snapshots() const noexcept { return atomic_load(open_snapshots_); }
+    /** @brief How many readers currently hold a snapshot, counted off the census. */
+    [[nodiscard]] std::size_t open_snapshots() const noexcept {
+        shared_lock<spin_shared_mutex> _ {mutex_};
+        std::size_t counted = 0;
+        for (snapshot_lease_t const *lease = oldest_lease_; lease; lease = lease->newer_) ++counted;
+        return counted;
+    }
 
-    /** @brief Takes over @p other's counters, for a store that is being moved and has nothing open. */
+    /** @brief Takes over @p other's stamps, for a store that is being moved and has nothing open. */
     void adopt(snapshot_clock_t const &other) noexcept {
+        assert(!oldest_lease_ && !other.oldest_lease_ && "a lease names the clock it was drawn from");
         generation_ = atomic_load(other.generation_);
         commits_ = other.commits_;
         atomic_store<generation_t>(published_stamp_, atomic_load(other.published_stamp_));
-        open_snapshots_ = atomic_load(other.open_snapshots_);
-        oldest_open_snapshot_ = atomic_load(other.oldest_open_snapshot_);
+        atomic_store<generation_t>(low_water_mark_, atomic_load(other.low_water_mark_));
     }
 };
 
@@ -342,9 +395,9 @@ class snapshot_clock_t {
  *
  *  Versions are pruned on write against a low-water mark, and an explicit @c vacuum sweeps the rest.
  *  There is no background thread, no epoch registry and no hidden global state: registering and
- *  retiring a snapshot is arithmetic that cannot fail, so a destructor may do it. The mark only
- *  advances once the last open transaction leaves, which makes it conservative by construction and
- *  unable to pass a snapshot somebody still holds. With nothing open the mark equals the published
+ *  retiring a snapshot is linking a node the caller already owns, so a destructor may do it. The mark
+ *  is the oldest snapshot on the clock's census, which cannot pass a snapshot somebody still holds and
+ *  follows the oldest reader up as readers leave. With nothing open the mark equals the published
  *  stamp, so a key falls back to a single entry on the next commit that touches it.
  *
  *  @section snapshot_store_ranking Ranking
@@ -405,6 +458,21 @@ class snapshot_store {
     using versioned_t = std::conditional_t<ranked_core_k, live_tagged<typename versioning_t::versioned_t>,
                                            typename versioning_t::versioned_t>;
     using versioned_entry_t = versioned_t;
+
+    /**
+     *  @brief The one shape a watch records, whatever the read that produced it looked like.
+     *
+     *  A committed tombstone is handed out as found - the public @c find has to see it in order to
+     *  hide it - while every path that resolves a key for validation calls a key with only a
+     *  tombstone missing. Recording that same shape here is what keeps a watch on an erased version
+     *  from being a watch nothing can ever match, and there is one place to read it off.
+     *
+     *  @param[in] resolved The version a read resolved to, or null when the key resolves to nothing.
+     */
+    [[nodiscard]] static watch_t watch_shape_of(versioned_t const *resolved) noexcept {
+        if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
+        return watch_t {resolved->generation, resolved->presence};
+    }
 
   private:
     /** @brief Names one stored version without owning its key, so a probe costs no copy. */
@@ -587,16 +655,20 @@ class snapshot_store {
         }
 
         /**
-         *  @brief Whether every watched key still resolves to the version this transaction's snapshot saw.
+         *  @brief Whether every watched key is untouched since this transaction's snapshot.
          *    Asked twice - once when staging, once when publishing - because a commit landing in between
          *    is the only thing that can invalidate a read after it was validated.
+         *
+         *  Dated against the snapshot rather than matched against the version the read saw, and the same
+         *  predicate a written key is checked with. Comparing versions would let a key be inserted and
+         *  erased again under a watch on its absence: both ends resolve to missing, so the two watches
+         *  match while two commits the transaction never saw sit between them.
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            return validate_watches(watches_,
-                                    [&](identifier_t const &identifier, auto &&on_found, auto &&on_missing) noexcept {
-                                        store.find_committed_entry_(identifier, on_found, on_missing);
-                                    });
+            for (watched_identifier_t const &watched : watches_)
+                if (store.key_changed_since_(watched.identifier, snapshot_)) return status_t::consistency_k;
+            return success_k;
         }
 
         /**
@@ -760,20 +832,14 @@ class snapshot_store {
         [[nodiscard]] status_t watch(identifier_t identifier) noexcept {
             auto const &store = store_ref();
             versioned_t const *seen = store.visible_version_(identifier, snapshot_);
-            // A committed tombstone resolves to "missing" during validation, so a watch on one must
-            // record that same shape or it could never match itself.
-            watch_t const observed = seen && seen->presence == presence_t::present_k
-                                         ? watch_t {seen->generation, seen->presence}
-                                         : missing_watch();
-            return watches_.push_back({std::move(identifier), observed});
+            return watches_.push_back({std::move(identifier), watch_shape_of(seen)});
         }
 
         /** @brief Records @p versioned as the version this transaction read of its own key. */
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier_t {versioned.payload});
             if (!maybe_identifier) return out_of_memory_heap_k;
-            return watches_.push_back(
-                {std::move(*maybe_identifier), watch_t {versioned.generation, versioned.presence}});
+            return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&versioned)});
         }
 
         /**
@@ -1490,19 +1556,6 @@ class snapshot_store {
             if (!visible_at(version.committed, snapshot)) changed = true;
         });
         return changed;
-    }
-
-    /**
-     *  @brief The version a watch is validated against: the newest anybody has committed.
-     *    A committed tombstone resolves to missing, matching the shape @c watch records for a key
-     *    that is not there.
-     */
-    template <typename comparable_type_, typename callback_found_type_, typename callback_missing_type_>
-    void find_committed_entry_(comparable_type_ const &comparable, callback_found_type_ &&callback_found,
-                               callback_missing_type_ &&callback_missing) const noexcept {
-        versioned_t const *latest = readable_version_(comparable, latest_snapshot_k);
-        if (latest) callback_found(*latest);
-        else callback_missing();
     }
 
     /** @brief Hands @p callback the value @p snapshot reads for @p comparable, or reports absence. */
