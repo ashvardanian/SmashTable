@@ -83,6 +83,7 @@ enum class status_t : int {
     invalid_argument_k = EINVAL,
     operation_not_permitted_k = EPERM,
     operation_would_block_k = EWOULDBLOCK, // For a bounded retry that gives up
+    capacity_exhausted_k = ENOSPC,         // Probe sequence with no slot left; a rehash, not more memory
 
     key_already_exists_k = EEXIST, // For a strict `insert` onto an occupied key
     key_not_found_k = ENOENT,      // For `update` operations on missing keys
@@ -1147,6 +1148,16 @@ constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
     return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(memory_order_relaxed_k);
 }
 
+/**
+ *  @brief Relaxed atomic write of a counter other threads may be reading.
+ *    The mirror of @c atomic_load, and just as unordered: a caller needing the data a counter
+ *    describes to be visible alongside it must order that itself.
+ */
+template <typename integral_type_>
+constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexcept {
+    atomic_ref<integral_type_>(counter).store(value, memory_order_relaxed_k);
+}
+
 /** @brief Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
 template <typename integral_type_>
 constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahend) noexcept {
@@ -1728,6 +1739,15 @@ template <optimistically_concurrent_store... store_types_>
 
 #pragma region Shared Mutex
 
+/** @brief Hints the core that the caller is spinning, so a sibling thread gets the pipeline. */
+inline void pause_briefly() noexcept {
+#if defined(__x86_64__) || defined(__i386__)
+    __builtin_ia32_pause();
+#elif defined(__aarch64__)
+    __asm__ __volatile__("yield" ::: "memory");
+#endif
+}
+
 /**
  *  @brief A reader-writer lock that spins briefly, then parks on @c std::atomic::wait.
  *
@@ -1756,14 +1776,6 @@ class spin_shared_mutex {
     static constexpr int spins_before_parking_k = 64;
 
     std::atomic<std::uint32_t> state_ {0};
-
-    static void pause_briefly() noexcept {
-#if defined(__x86_64__) || defined(__i386__)
-        __builtin_ia32_pause();
-#elif defined(__aarch64__)
-        __asm__ __volatile__("yield" ::: "memory");
-#endif
-    }
 
   public:
     constexpr spin_shared_mutex() noexcept = default;

@@ -36,7 +36,7 @@
 #include <concepts>    // `std::convertible_to`
 #include <memory>      // `std::allocator`
 #include <type_traits> // `std::conditional_t`, `std::is_same_v`
-#include <utility>     // `std::pair`, `std::exchange`
+#include <utility>     // `std::exchange`, `std::move`
 
 #include "shared.hpp"
 
@@ -1087,25 +1087,6 @@ class basic_wb_tree {
 #pragma region Modifiers
 
     /**
-     *  @brief Inserts an element if key doesn't exist.
-     *  @param[in] fruit Entry to insert (moved into the tree).
-     *  @return Pair of pointer to node and bool indicating success.
-     *    Returns {node, true} if inserted successfully.
-     *    Returns {node, false} if key already exists.
-     *    Returns {nullptr, false} if allocation failed.
-     */
-    std::pair<node_t *, bool> insert(value_t &&fruit) noexcept {
-        // Probing first keeps @p fruit intact when the key is already present - the rebalancing
-        // descent below only moves it once the allocation has succeeded.
-        if (node_t *existing = node_t::find(root_, fruit, comparator_)) return {existing, false};
-        auto result =
-            node_t::upsert(root_, std::move(fruit), comparator_, [&]() noexcept { return allocator_.allocate(1); });
-        root_ = result.root;
-        size_ += result.placement == node_t::node_placement_t::made_k;
-        return {result.match, result.placement == node_t::node_placement_t::made_k};
-    }
-
-    /**
      *  @brief The node an upsert settled on, and how it got there.
      *    Assigning to the result overwrites that node's entry, which is what makes it usable as a
      *    handle rather than a report.
@@ -1122,6 +1103,23 @@ class basic_wb_tree {
             return *this;
         }
     };
+
+    /**
+     *  @brief Inserts an element only when its key is absent, leaving any incumbent alone.
+     *  @param[in] fruit Entry to insert, moved into the tree only when a node is made for it.
+     *  @return The node the key lives in, and whether it was made, matched, or refused.
+     */
+    upserted_node_t insert(value_t &&fruit) noexcept {
+        // Probing first keeps @p fruit intact when the key is already present - the rebalancing
+        // descent below only moves it once the allocation has succeeded.
+        if (node_t *existing = node_t::find(root_, fruit, comparator_))
+            return {existing, node_t::node_placement_t::matched_k};
+        auto result =
+            node_t::upsert(root_, std::move(fruit), comparator_, [&]() noexcept { return allocator_.allocate(1); });
+        root_ = result.root;
+        size_ += result.placement == node_t::node_placement_t::made_k;
+        return {result.match, result.placement};
+    }
 
     /**
      *  @brief Atomically inserts or updates an fruit. Always succeeds (unless OOM).
@@ -1567,12 +1565,27 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
+    /**
+     *  @brief Where an insertion settled, and how it got there.
+     *    Names the same three outcomes as @c upserted_node_t, one level up from the nodes.
+     */
+    struct inserted_iterator_t {
+        /** @brief The element's position, which is @c end() when nothing was stored. */
+        iterator position;
+        /** @brief Whether the entry was made, matched an incumbent, or refused for want of memory. */
+        typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
+
+        /** @brief Whether nothing was stored, which is the only way an insertion fails. */
+        bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
+        explicit operator bool() const noexcept { return !failed(); }
+    };
+
     /** @brief Inserts one element only when its key is absent, leaving any existing element alone. */
     template <typename comparable_type_>
-    std::pair<iterator, bool> insert_if_missing(comparable_type_ &&comparable) noexcept {
-        if (auto existing = find(comparable); existing != end()) return {existing, false};
+    inserted_iterator_t insert_if_missing(comparable_type_ &&comparable) noexcept {
+        if (auto existing = find(comparable); existing != end()) return {existing, node_t::node_placement_t::matched_k};
         auto result = upsert(std::forward<comparable_type_>(comparable));
-        return {iterator {this, result.node}, result.node != nullptr};
+        return {iterator {this, result.node}, result.placement};
     }
 
     /** @brief Inserts a range, skipping keys that are already present. */

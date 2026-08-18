@@ -184,6 +184,19 @@ static void unordered_ops_insert_reports_refusal() {
     test_unordered_insert_reports_refusal<capped_map_t>();
 }
 
+/** @brief Tests that overwriting a key the table already holds never consults the allocator */
+static void unordered_ops_present_key_needs_no_room() {
+    test_unordered_present_key_needs_no_room<capped_set_t>();
+    test_unordered_present_key_needs_no_room<capped_map_t>();
+}
+
+/** @brief Tests that a pinned table of tombstones blames the probe rather than the heap */
+static void unordered_ops_pinned_tombstone_saturation() {
+    test_unordered_pinned_tombstone_saturation<trivial_map_t>();
+    test_unordered_pinned_tombstone_saturation<guarded_map_t>();
+    test_unordered_pinned_tombstone_saturation<string_map_t>();
+}
+
 /** @brief Tests that the pinned table reports a missing key as a status and through a callback */
 static void unordered_ops_pinned_reports_status() {
     test_unordered_pinned_reports_status<trivial_map_t>();
@@ -291,7 +304,10 @@ int main() {
     failures += run_test(filter, "unordered_ops.insert_reports_outcome", unordered_ops_insert_reports_outcome);
     failures += run_test(filter, "unordered_ops.insert_reports_refusal", unordered_ops_insert_reports_refusal);
     failures += run_test(filter, "unordered_ops.full_table_refusals", unordered_ops_full_table_refusals);
+    failures += run_test(filter, "unordered_ops.present_key_needs_no_room", unordered_ops_present_key_needs_no_room);
     failures += run_test(filter, "unordered_ops.pinned_saturation", unordered_ops_pinned_saturation);
+    failures +=
+        run_test(filter, "unordered_ops.pinned_tombstone_saturation", unordered_ops_pinned_tombstone_saturation);
     failures += run_test(filter, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
     failures += run_test(filter, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
     failures += run_test(filter, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);

@@ -87,6 +87,20 @@ void unordered_emplace_valued(container_type_ &container, std::size_t identifier
     container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(value_identifier), tags...);
 }
 
+/** @brief Files the element of @p identifier carrying @p value_identifier through @c upsert. */
+template <typename container_type_>
+[[nodiscard]] status_t unordered_upsert(container_type_ &container, std::size_t identifier,
+                                        [[maybe_unused]] std::size_t value_identifier) noexcept {
+    using key_t = typename container_type_::key_type;
+    using owned_t = typename container_type_::owned_value_type;
+    if constexpr (unordered_has_values_k<container_type_>) {
+        using mapped_t = typename container_type_::mapped_type;
+        return container.upsert(
+            owned_t {unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(value_identifier)});
+    }
+    else return container.upsert(owned_t {unordered_key_from<key_t>(identifier)});
+}
+
 /** @brief Checks that @p identifier is present and, on maps, that it still carries @p value_identifier. */
 template <typename container_type_>
 void unordered_verify_present(container_type_ &container, std::size_t identifier,
@@ -661,6 +675,67 @@ void test_unordered_insert_reports_refusal() {
 }
 
 /**
+ *  @brief Tests that filing a key the table already holds never reaches the allocator.
+ *    A table sitting exactly on its growth threshold has no headroom left, and asking for some
+ *    before the probe has established the key is new turns a plain overwrite - which needs no slot
+ *    of its own - into a refusal the caller cannot do anything about.
+ */
+template <typename container_type_>
+void test_unordered_present_key_needs_no_room() {
+
+    using container_t = container_type_;
+    using upsert_result_t = typename container_t::upsert_result_t;
+
+    // The table is sized so that its load factor leaves no headroom once it is filled below.
+    allocation_ledger_t ledger;
+    auto allocated = container_t::make(std::size_t {24}, {}, {}, stateful_allocator<std::byte> {ledger});
+    st_verify_((allocated) && "the first allocation must succeed");
+    container_t container = *std::move(allocated);
+    std::size_t const threshold = container.capacity();
+    st_verify_((threshold) > (0u));
+
+    for (std::size_t identifier = 0; identifier < threshold; ++identifier) unordered_emplace(container, identifier);
+    st_verify_eq_(container.size(), threshold);
+    std::size_t const slots_before = container.slots_count().raw;
+    std::size_t const granted_before = ledger.granted_count;
+
+    // From here the allocator answers nothing, so anything asking it for a slot fails.
+    ledger.refuse_everything();
+
+    for (std::size_t identifier = 0; identifier < threshold; ++identifier) {
+        status_t const overwritten = unordered_upsert(container, identifier, identifier + threshold);
+        st_verify_((overwritten == success_k) && "an overwrite needs no room and must not report a refusal");
+    }
+    st_verify_eq_(ledger.granted_count, granted_before);
+    st_verify_eq_(ledger.refused_count, std::size_t {0});
+    st_verify_eq_(container.slots_count().raw, slots_before);
+    st_verify_eq_(container.size(), threshold);
+    for (std::size_t identifier = 0; identifier < threshold; ++identifier)
+        unordered_verify_present(container, identifier, identifier + threshold);
+
+    // The reporting insertion answers the same question, and an update is not a failure.
+    auto const duplicate = unordered_emplace_reporting(container, 0);
+    st_verify_((duplicate.outcome == upsert_result_t::updated_k) && "a key already there is an update, not a refusal");
+    st_verify_(!(duplicate.failed()) && "an overwrite the allocator never saw cannot have failed");
+    st_verify_((duplicate.position != container.end()) && "an update must name the slot the key sits in");
+    st_verify_eq_(ledger.refused_count, std::size_t {0});
+
+    // A genuinely new key does need a slot, and that refusal is the one the heap is to blame for.
+    status_t const refused = unordered_upsert(container, threshold, threshold);
+    st_verify_((refused == out_of_memory_heap_k) &&
+               "a new key the table cannot make room for is an allocation failure");
+    st_verify_eq_(container.size(), threshold);
+    st_verify_eq_(container.slots_count().raw, slots_before);
+
+    auto const refused_report = unordered_emplace_reporting(container, threshold + 1);
+    st_verify_((refused_report.outcome == upsert_result_t::no_memory_k) &&
+               "a refused growth must not be reported as an exhausted probe");
+    st_verify_((refused_report.failed()) && "nothing was stored, so the insertion failed");
+    st_verify_((refused_report.position == container.end()) && "a refusal names no slot");
+    st_verify_eq_(container.size(), threshold);
+}
+
+/**
  *  @brief Tests that a table with every slot taken refuses further keys, terminates while doing so,
  *    and does not count a store that never happened.
  */
@@ -863,7 +938,8 @@ void test_unordered_pinned_saturation() {
     for (std::size_t identifier = slots; identifier < slots + 8; ++identifier) {
         status_t const refused =
             container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
-        st_verify_((refused == out_of_memory_heap_k) && "a full pinned table must report the refusal");
+        st_verify_((refused == capacity_exhausted_k) && "a full pinned table must report the refusal");
+        st_verify_((refused != out_of_memory_heap_k) && "no allocation was attempted, so none can have failed");
     }
     st_verify_eq_(container.size(), slots);
 
@@ -884,6 +960,48 @@ void test_unordered_pinned_saturation() {
         });
         st_verify_((reached) && "an overwritten key must still be present");
     }
+}
+
+/**
+ *  @brief Tests that a pinned table left holding nothing but tombstones names a cause a caller can act on.
+ *    The probe walks past a tombstone rather than reclaiming it, so such a table refuses every new
+ *    key; reporting that as an allocation failure sends the caller to free memory that was never
+ *    the problem, when the remedy is a rehash into fresh storage.
+ */
+template <typename container_type_>
+void test_unordered_pinned_tombstone_saturation() {
+
+    using container_t = container_type_;
+    using key_t = typename container_t::key_type;
+    using mapped_t = typename container_t::mapped_type;
+    static_assert(unordered_has_values_k<container_t>, "The pinned suites are written for maps");
+
+    auto allocated = container_t::make(std::size_t {64});
+    st_verify_((allocated) && "the growable table must build");
+    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    std::size_t const slots = container.slots_count();
+    st_verify_((slots) > (0u));
+
+    for (std::size_t identifier = 0; identifier < slots; ++identifier) {
+        status_t const stored =
+            container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
+        st_verify_((stored == success_k) && "every slot of an empty pinned table must be available");
+    }
+    for (std::size_t identifier = 0; identifier < slots; ++identifier) {
+        status_t const erased = container.erase(unordered_key_from<key_t>(identifier));
+        st_verify_((erased == success_k) && "every key stored must be erasable");
+    }
+    st_verify_eq_(container.size(), 0u);
+
+    // Every slot is a tombstone now, so the table is empty and still has nowhere to put a key.
+    for (std::size_t identifier = slots; identifier < slots + 4; ++identifier) {
+        status_t const refused =
+            container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
+        st_verify_((refused == capacity_exhausted_k) && "an exhausted probe must name the exhausted probe");
+        st_verify_((refused != out_of_memory_heap_k) &&
+                   "a table of tombstones is not short of memory, and freeing some would not help");
+    }
+    st_verify_eq_(container.size(), 0u);
 }
 
 /**

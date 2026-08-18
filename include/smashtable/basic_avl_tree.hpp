@@ -1361,35 +1361,40 @@ class basic_avl_tree {
      *  @brief Merges another tree into this one with upsert semantics.
      *    Inserts new keys and updates existing keys. Always empties the other tree.
      *
+     *  Every node travels across by relinking, so nothing is allocated and nothing can be refused -
+     *  which is what lets the callers promise all-or-nothing once their staging tree is built.
+     *
      *  @param[inout] other Tree to merge from. Will be empty after merge.
-     *  @return @c success_k, or the first failure met while upserting - the rest of @p other still lands.
      *
      *  @note Unlike @c merge(), this UPDATES nodes with duplicate keys instead of skipping them.
      *  @note Complexity: O(m log n) where m = other.size(), n = this.size().
      */
-    status_t merge_with_upsert(basic_avl_tree &other) noexcept {
-        if (other.empty()) return success_k;
+    void merge_with_upsert(basic_avl_tree &other) noexcept {
+        if (other.empty()) return;
         if (empty()) {
             // Move other into this
             root_ = other.root_;
             size_ = other.size_;
             other.root_ = nullptr;
             other.size_ = 0;
-            return success_k;
+            return;
         }
 
-        // The other tree's nodes are freed either way, as the entry is moved out rather than relinked.
-        status_t first_failure = success_k;
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
-            auto const result = upsert(std::move(node->fruit));
-            if (result.failed() && first_failure == success_k) first_failure = status_t::out_of_memory_heap_k;
-            node->fruit.~value_t();
-            other.allocator_.deallocate(node, 1);
+            auto result = node_t::insert(root_, node, comparator_);
+            root_ = result.root;
+            if (root_) root_->parent = nullptr;
+            size_ += result.placement == node_t::node_placement_t::made_k;
+            // A key already here keeps its own node and takes the entry, so the traveller goes back.
+            if (result.placement == node_t::node_placement_t::matched_k) {
+                result.match->fruit = std::move(node->fruit);
+                node->fruit.~value_t();
+                other.allocator_.deallocate(node, 1);
+            }
         });
 
         other.root_ = nullptr;
         other.size_ = 0;
-        return first_failure;
     }
 
     /**
@@ -1932,24 +1937,36 @@ class basic_avl_tree {
     };
 
     /**
+     *  @brief Where an insertion settled, and how it got there.
+     *    Names the same three outcomes as @c upserted_node_t, one level up from the nodes.
+     */
+    struct inserted_iterator_t {
+        /** @brief The element's position, which is @c end() when nothing was stored. */
+        iterator position;
+        /** @brief Whether the entry was made, matched an incumbent, or refused for want of memory. */
+        typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
+
+        /** @brief Whether nothing was stored, which is the only way an insertion fails. */
+        bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
+        explicit operator bool() const noexcept { return !failed(); }
+    };
+
+    /**
      *  @brief Inserts an entry only if the key doesn't exist. Matches @c std::set::insert() semantics.
-     *    Fails if key already exists (does not overwrite).
+     *    Leaves any incumbent alone, and leaves @p comparable alone unless a node was made for it.
      *
-     *  @param[in] entry Entry to insert (moved into the tree).
-     *  @return Pair of iterator to inserted/existing element and bool indicating success.
-     *    Returns {iterator, true} if inserted successfully.
-     *    Returns {iterator, false} if key already exists (iterator points to existing).
-     *    Returns {end(), false} if allocation failed.
+     *  @param[in] comparable Entry to insert (moved into the tree).
+     *  @return The position the key lives at, and whether it was made, matched, or refused.
      */
     template <typename comparable_type_>
-    std::pair<iterator, bool> insert_if_missing(comparable_type_ &&comparable) noexcept {
+    inserted_iterator_t insert_if_missing(comparable_type_ &&comparable) noexcept {
         // First, try to find the key without allocating memory.
         auto existing = find(comparable);
-        if (existing != end()) return {existing, false};
+        if (existing != end()) return {existing, node_t::node_placement_t::matched_k};
 
         // If not found, allocate a new node and then insert it.
         node_t *new_node = allocator_.allocate(1);
-        if (!new_node) return {end(), false};
+        if (!new_node) return {end(), node_t::node_placement_t::refused_k};
 
         new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
         auto result = node_t::insert(root_, new_node, comparator_);
@@ -1961,26 +1978,31 @@ class basic_avl_tree {
             // Insertion failed, deallocate the node.
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
-            return {end(), false};
+            return {end(), node_t::node_placement_t::refused_k};
         }
 
-        return {iterator(this, result.match), result.placement == node_t::node_placement_t::made_k};
+        return {iterator(this, result.match), result.placement};
     }
 
     /**
      *  @brief Atomically inserts an entry only if the key doesn't exist. Fails with error if key exists.
      *    This is strict insert semantics - ensures key is new.
      *
-     *  @param[in] entry Entry to insert (moved into the tree).
-     *  @return Iterator to inserted/existing element and status.
-     *    Returns {iterator, success_k} if inserted successfully.
-     *    Returns {iterator, key_already_exists_k} if key already exists (iterator points to existing).
-     *    Returns {end(), out_of_memory_heap_k} if allocation failed.
+     *  A refusal carries only its reason: @c key_already_exists_k when an incumbent holds the key,
+     *  @c out_of_memory_heap_k when no node was available. Callers that want the incumbent's
+     *  position ask @c insert_if_missing() instead, which hands back both.
+     *
+     *  @param[in] comparable Entry to insert, moved into the tree only when a node is made for it.
+     *  @return Iterator to the new element, or the reason there is none.
      */
     template <typename comparable_type_>
-    std::pair<iterator, status_t> insert(comparable_type_ &&comparable) noexcept {
+    expected<iterator> insert(comparable_type_ &&comparable) noexcept {
+        // Probing first keeps @p comparable intact when the key is already present, and keeps an
+        // allocation that was never needed from reporting an out-of-memory that never happened.
+        if (find(comparable) != end()) return status_t::key_already_exists_k;
+
         node_t *new_node = allocator_.allocate(1);
-        if (!new_node) return {end(), status_t::out_of_memory_heap_k};
+        if (!new_node) return status_t::out_of_memory_heap_k;
 
         new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
 
@@ -1993,16 +2015,18 @@ class basic_avl_tree {
         if (result.failed()) {
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
-            return {end(), status_t::out_of_memory_heap_k};
+            return status_t::out_of_memory_heap_k;
         }
 
-        if (result.placement == node_t::node_placement_t::matched_k) { // Key already existed
+        // Only an inconsistent comparator can disagree with the probe above, and the node it
+        // refused to take still has to be given back.
+        if (result.placement == node_t::node_placement_t::matched_k) {
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
-            return {iterator(this, result.match), status_t::key_already_exists_k};
+            return status_t::key_already_exists_k;
         }
 
-        return {iterator(this, result.match), success_k};
+        return iterator(this, result.match);
     }
 
     /**
@@ -2045,10 +2069,14 @@ class basic_avl_tree {
      *  @tparam args_types_ Types of arguments to forward to value_t constructor.
      *  @param[in] args Arguments to forward to value_t constructor.
      *  @return Pair of iterator to inserted/existing element and bool indicating success.
+     *
+     *  @note The STL shape collapses a refused allocation and a matched incumbent into the same
+     *    @c false, so @c insert_if_missing() is the call that tells them apart.
      */
     template <typename... args_types_>
     std::pair<iterator, bool> emplace(args_types_ &&...args) noexcept {
-        return insert_if_missing(value_t(std::forward<args_types_>(args)...));
+        auto result = insert_if_missing(value_t(std::forward<args_types_>(args)...));
+        return {result.position, result.placement == node_t::node_placement_t::made_k};
     }
 
     /**
@@ -2120,10 +2148,8 @@ class basic_avl_tree {
         }
         // O(n log n): Build tree from unsorted range
         else {
-            for (; first != last; ++first) {
-                auto result = temp_tree.insert_if_missing(value_t(*first));
-                if (result.first == temp_tree.end() && !result.second) return status_t::out_of_memory_heap_k;
-            }
+            for (; first != last; ++first)
+                if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
         }
 
         // TRANSACTIONAL VALIDATION: Check if ANY key already exists - O(m+n)
@@ -2168,8 +2194,9 @@ class basic_avl_tree {
      *    - Without @c assume_unique_t : O(m log n) upsert merge (updates duplicates)
      *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
      *  @note With @c assume_unique_t : Range must have no duplicate keys with existing tree (UB if violated).
-     *  @note Atomicity: On failure during temp tree construction, this tree is unchanged.
-     *    During merge, duplicate keys are UPDATED (not skipped).
+     *  @note Atomicity: every failure happens while the staging tree is built, leaving this tree
+     *    unchanged; the merge itself only relinks nodes, so it cannot fail part-way.
+     *    Duplicate keys are UPDATED during the merge, not skipped.
      */
     template <typename input_iterator_type_, typename... tags_types_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
@@ -2196,10 +2223,8 @@ class basic_avl_tree {
         }
         // O(n log n): Build tree from unsorted range
         else {
-            for (; first != last; ++first) {
-                auto result = temp_tree.insert_if_missing(value_t(*first));
-                if (result.first == temp_tree.end() && !result.second) return status_t::out_of_memory_heap_k;
-            }
+            for (; first != last; ++first)
+                if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
         }
 
         // Choose merge strategy based on uniqueness guarantee
@@ -2209,7 +2234,7 @@ class basic_avl_tree {
         }
         else {
             // Upsert merge: O(m log n), updates duplicates instead of skipping
-            return merge_with_upsert(temp_tree);
+            merge_with_upsert(temp_tree);
         }
 
         return success_k;
@@ -2271,17 +2296,16 @@ class basic_avl_tree {
         }
         // O(n log n): Build tree from unsorted range
         else {
-            for (; first != last; ++first) {
-                auto result = temp_tree.insert_if_missing(value_t(*first));
-                if (result.first == temp_tree.end() && !result.second) return status_t::out_of_memory_heap_k;
-            }
+            for (; first != last; ++first)
+                if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
         }
 
         // TRANSACTIONAL VALIDATION: Check if ALL keys exist - O(m+n)
         if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
 
         // All keys exist - safe to upsert (will only update, never insert)
-        return merge_with_upsert(temp_tree);
+        merge_with_upsert(temp_tree);
+        return success_k;
     }
 
     /**

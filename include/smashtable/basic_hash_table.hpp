@@ -235,22 +235,27 @@ class basic_hash_table {
         inserted_k,
         /** @brief An equal key was already there, and the callback saw it. */
         updated_k,
-        /** @brief Every slot was taken by a different key, so nothing was stored. */
+        /** @brief Every slot along the probe sequence was taken by a different key. */
         no_slot_k,
+        /** @brief A new key needed a larger table, and the allocator refused to supply one. */
+        no_memory_k,
     };
 
     /**
      *  @brief A return type for the insert function, similar to @c insert_return_type in STL.
      *  @c position names the stored or the conflicting element, and the end when nothing was stored.
-     *  @c outcome says which of the three happened, so a key already taken is distinguishable from an
-     *  allocation the table could not make, without comparing the iterator against @c end().
+     *  @c outcome says which of the four happened, so a key already taken, a probe with no slot left
+     *  and an allocation the table could not make are all distinguishable from one another, without
+     *  comparing the iterator against @c end().
      */
     struct insert_result_t {
         iterator_t position;
         upsert_result_t outcome = upsert_result_t::no_slot_k;
 
         /** @brief Whether nothing was stored, which is the only way an insertion fails. */
-        bool failed() const noexcept { return outcome == upsert_result_t::no_slot_k; }
+        bool failed() const noexcept {
+            return outcome != upsert_result_t::inserted_k && outcome != upsert_result_t::updated_k;
+        }
     };
 
     /** @brief What a growth attempt did to the table. */
@@ -314,12 +319,35 @@ class basic_hash_table {
         : storage_(storage_t::make(slots, std::move(allocator))), hasher_(std::move(hasher)),
           equals_(std::move(equals)) {}
 
-    /** @brief What an insertion that stored nothing reports: the end position, and @c no_slot_k. */
-    insert_result_t missed_position_() noexcept {
+    /** @brief What an insertion that stored nothing reports: the end position, and why it stored nothing. */
+    insert_result_t missed_position_(upsert_result_t outcome) noexcept {
         insert_result_t result;
         unsafe_retarget(result.position, storage_.slots_count);
         result.position.slots_remaining = 0;
+        result.outcome = outcome;
         return result;
+    }
+
+    /**
+     *  @brief Makes room for one more key, unless @p wanted is already stored and needs no room.
+     *    An element the table already holds is overwritten in place, so asking the allocator for a
+     *    slot before the probe has established the key is absent turns a plain overwrite into an
+     *    allocation failure the caller has no way to satisfy.
+     *  @param[in] tags Markers for special acceleration: @c assume_unique_t has already answered
+     *    the question the presence probe would ask, so the growth is decided without one.
+     *  @return @c unchanged_k when nothing had to move, @c reallocated_k after a growth, and
+     *    @c failed_k when a growth the table genuinely needed was refused.
+     */
+    template <typename comparable_key_type_, typename... tags_types_>
+    reserve_result_t reserve_for_absent_key_(comparable_key_type_ const &wanted, tags_types_...) noexcept {
+        offset_t const planned_elements = 1 + storage_.populated_count + storage_.deleted_count;
+        if (planned_elements <= storage_.growth_threshold) return reserve_result_t::unchanged_k;
+        if constexpr (!contains_type<assume_unique_t, tags_types_...>()) {
+            bool key_is_present = false;
+            probe_to_find(wanted, [&](auto const &) noexcept { key_is_present = true; });
+            if (key_is_present) return reserve_result_t::unchanged_k;
+        }
+        return reserve(planned_elements);
     }
 
   public:
@@ -912,10 +940,12 @@ class basic_hash_table {
         convertible_key_type_ &&key, convertible_value_type_ &&value, tags_types_... tags) noexcept {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
-        // fills it to the last slot and then has nowhere left to go.
+        // fills it to the last slot and then has nowhere left to go. A key already present takes no
+        // slot, so the allocator is only consulted once the probe has shown this one is new.
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
-            if (reserve_more(1) == reserve_result_t::failed_k) {
-                if constexpr (report_ == emplace_report_t::insert_result_k) return missed_position_();
+            if (reserve_for_absent_key_(key, tags...) == reserve_result_t::failed_k) {
+                if constexpr (report_ == emplace_report_t::insert_result_k)
+                    return missed_position_(upsert_result_t::no_memory_k);
                 else return;
             }
 
@@ -968,10 +998,12 @@ class basic_hash_table {
         convertible_key_type_ &&key, tags_types_... tags) noexcept {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
-        // fills it to the last slot and then has nowhere left to go.
+        // fills it to the last slot and then has nowhere left to go. A key already present takes no
+        // slot, so the allocator is only consulted once the probe has shown this one is new.
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
-            if (reserve_more(1) == reserve_result_t::failed_k) {
-                if constexpr (report_ == emplace_report_t::insert_result_k) return missed_position_();
+            if (reserve_for_absent_key_(key, tags...) == reserve_result_t::failed_k) {
+                if constexpr (report_ == emplace_report_t::insert_result_k)
+                    return missed_position_(upsert_result_t::no_memory_k);
                 else return;
             }
 
@@ -1038,11 +1070,19 @@ class basic_hash_table {
      *    which is what a store layering its own versioning on top of the table needs.
      *
      *  @param[in] element Element to file, moved into the table.
-     *  @return @c out_of_memory_heap_k when the table had no room for a new key and could not grow.
+     *  @return @c out_of_memory_heap_k when a @b new key needed a larger table and the allocator
+     *    refused, @c capacity_exhausted_k when the bounded probe found no slot for it and only a
+     *    rehash can make one, and @c success_k otherwise - including the overwrite of a key already
+     *    stored, which needs no room and therefore never asks the allocator for any.
      */
     template <typename convertible_element_type_>
     [[nodiscard]] status_t upsert(convertible_element_type_ &&element) noexcept {
-        if (reserve_more(1) == reserve_result_t::failed_k) return out_of_memory_heap_k;
+        // The probe below overwrites an equal key in place, taking no slot of its own, so the
+        // allocator is only consulted once the probe has shown this key is not already stored.
+        reserve_result_t reserved = reserve_result_t::unchanged_k;
+        if constexpr (has_values_k) reserved = reserve_for_absent_key_(element.key);
+        else reserved = reserve_for_absent_key_(element);
+        if (reserved == reserve_result_t::failed_k) return out_of_memory_heap_k;
 
         upsert_result_t stored = upsert_result_t::no_slot_k;
         if constexpr (has_values_k)
@@ -1060,7 +1100,7 @@ class basic_hash_table {
                 [&](slot_ref_t &unused_slot) noexcept { new (&unused_slot.key_ref()) key_t(std::move(element)); },
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.key_ref() = std::move(element); },
                 assume_reserved_t {});
-        return stored == upsert_result_t::no_slot_k ? out_of_memory_heap_k : success_k;
+        return stored == upsert_result_t::no_slot_k ? capacity_exhausted_k : success_k;
     }
 
     /**
@@ -1185,6 +1225,9 @@ class basic_hash_table {
     /**
      *  @brief Brings the memory consumption of the container to the minimum.
      *  @see https://en.cppreference.com/w/cpp/container/vector/shrink_to_fit
+     *  @note Best-effort, matching the @c void shape of the standard containers: a refused
+     *    allocation leaves the table exactly as it was, with every element still reachable.
+     *    Call @c force_resize when the outcome has to be known.
      */
     void shrink_to_fit() noexcept {
         hash_slots_count_t const new_capacity {size()};

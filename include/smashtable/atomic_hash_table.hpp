@@ -222,8 +222,8 @@ class atomic_hash_table {
 
     /**
      *  @brief Inserts, or overwrites the value when the key is already present.
-     *  @return @c success_k, or @c out_of_memory_heap_k when every slot is taken.
-     *  @note A pinned table can genuinely fill up, so this reports rather than asserts.
+     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence
+     *    was free. A pinned table can genuinely fill up, so this reports rather than asserts.
      */
     template <typename convertible_key_type_, typename convertible_value_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
@@ -241,7 +241,8 @@ class atomic_hash_table {
 
     /**
      *  @brief Inserts the key, doing nothing when an equal one is already present.
-     *  @return @c success_k, or @c out_of_memory_heap_k when every slot is taken.
+     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence
+     *    was free.
      */
     template <typename convertible_key_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
@@ -341,7 +342,10 @@ class atomic_hash_table {
 
     /**
      *  @brief Walks the probe sequence of @p wanted, building an element or overwriting the equal one.
-     *  @return @c success_k, or @c out_of_memory_heap_k when no slot along the sequence was free.
+     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the sequence was free.
+     *    The heap is never touched here, so the refusal names the exhausted probe rather than an
+     *    allocation: a table saturated with tombstones needs a rehash, and no amount of free memory
+     *    changes its answer.
      *
      *  Exactly one slot is locked at a time. A tombstone is walked past rather than held: probe order
      *  is monotone only modulo the slot count, so a thread carrying a lock across the wrap would meet
@@ -354,7 +358,7 @@ class atomic_hash_table {
                                         callback_equal_type_ &&call_equal) noexcept {
 
         if (!storage_.slots_count) [[unlikely]]
-            return out_of_memory_heap_k;
+            return capacity_exhausted_k;
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t offset = hasher_(wanted) & offset_mask;
@@ -391,7 +395,7 @@ class atomic_hash_table {
             offset = (offset + 1) & offset_mask;
         }
 
-        return out_of_memory_heap_k;
+        return capacity_exhausted_k;
     }
 
 #pragma endregion Probes

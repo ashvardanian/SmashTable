@@ -782,24 +782,29 @@ static void test_node_equal_range() {
     st_verify_(!absent.lower_bound && !absent.upper_bound);
 }
 
-/** @brief A bulk upsert that runs out of memory mid-merge must say so rather than report success. */
-static void test_bulk_upsert_reports_allocation_failure() {
+/** @brief A bulk upsert pays for its nodes while staging them, and the merge that follows cannot fail. */
+static void test_bulk_upsert_pays_only_while_staging() {
     using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
     allocation_ledger_t ledger;
     ledger.allow(64);
     budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
     for (trivial_id_t identifier : {1u, 2u}) st_verify_(succeeded(tree.upsert(trivial_key_t(identifier))));
 
-    // Exactly enough to build the three-node temporary, nothing left for the one new key it carries.
-    ledger.reset();
-    ledger.allow(3);
+    // Too little for the three-node temporary, so the whole batch fails and this tree is untouched.
     std::vector<trivial_key_t> const members = {trivial_key_t(1), trivial_key_t(2), trivial_key_t(99)};
+    ledger.reset();
+    ledger.allow(2);
     st_verify_eq_(tree.upsert(members.begin(), members.end()), status_t::out_of_memory_heap_k);
     st_verify_(!tree.contains(trivial_key_t(99)));
+    st_verify_eq_(tree.size(), 2u);
 
-    // The ledger says what was actually asked for.
+    // Exactly enough for the temporary, and the merge relinks its nodes rather than asking for more.
+    ledger.reset();
+    ledger.allow(3);
+    st_verify_(succeeded(tree.upsert(members.begin(), members.end())));
+    st_verify_(tree.contains(trivial_key_t(99)));
     st_verify_eq_(ledger.granted_count, std::size_t {3});
-    st_verify_((ledger.refused_count > 0) && "the merge must have asked for one more node than it could have");
+    st_verify_eq_(ledger.refused_count, std::size_t {0});
     verify_invariants(tree);
 }
 
@@ -990,6 +995,55 @@ static void fixture_coverage_container_honours_over_alignment() {
     test_container_honours_over_alignment<overaligned_set_t>();
 }
 
+#pragma region Allocation Failure
+
+/** @brief A key that rewrites itself when moved from, so a consumed argument is visible to the oracle. */
+struct traced_key_t {
+    int value = 0;
+    bool moved_from = false;
+
+    traced_key_t() = default;
+    explicit traced_key_t(int initial) noexcept : value(initial) {}
+    traced_key_t(traced_key_t const &) = default;
+    traced_key_t &operator=(traced_key_t const &) = default;
+    traced_key_t(traced_key_t &&other) noexcept : value(other.value) { other.moved_from = true; }
+    traced_key_t &operator=(traced_key_t &&other) noexcept {
+        value = other.value;
+        other.moved_from = true;
+        return *this;
+    }
+};
+
+struct traced_less_t {
+    bool operator()(traced_key_t const &first, traced_key_t const &second) const noexcept {
+        return first.value < second.value;
+    }
+};
+
+using traced_set_t = avl_set<traced_key_t, traced_less_t, stateful_allocator<void>>;
+
+/** @brief A key already there costs no node, so it must report presence rather than exhaustion. */
+static void allocation_failure_insert_probes_before_allocating() {
+    allocation_ledger_t ledger;
+    ledger.allow(1);
+    {
+        traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+        st_verify_(bool(tree.insert(traced_key_t(1))));
+
+        // The budget is spent, and a duplicate must not go looking for memory it does not need.
+        ledger.refuse_everything();
+        traced_key_t duplicate(1);
+        auto const matched = tree.insert(std::move(duplicate));
+        st_verify_((matched.status() == status_t::key_already_exists_k) && "presence is not exhaustion");
+        st_verify_(!duplicate.moved_from && "a refused entry stays with its caller");
+        st_verify_eq_(ledger.refused_count, std::size_t {0});
+        st_verify_eq_(tree.size(), 1u);
+    }
+    ledger.verify_balanced();
+}
+
+#pragma endregion Allocation Failure
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
@@ -1074,8 +1128,8 @@ int main() {
                          structure_random_mutations_preserve_invariants);
     failures += run_test(filter, "structure.iterator_post_decrement", structure_iterator_post_decrement);
     failures += run_test(filter, "structure.node_equal_range", structure_node_equal_range);
-    failures += run_test(filter, "structure.bulk_upsert_reports_allocation_failure",
-                         test_bulk_upsert_reports_allocation_failure);
+    failures +=
+        run_test(filter, "structure.bulk_upsert_pays_only_while_staging", test_bulk_upsert_pays_only_while_staging);
     failures += run_test(filter, "structure.move_only_upsert_assignment", test_move_only_upsert_assignment);
     failures += run_test(filter, "structure.upsert_reports_placement", test_upsert_reports_placement);
 
@@ -1126,6 +1180,8 @@ int main() {
                          fixture_coverage_rollback_balances_counted_keys);
 
     failures += run_test(filter, "structure.erase_const_iterator", structure_erase_const_iterator);
+    failures += run_test(filter, "allocation_failure.insert_probes_before_allocating",
+                         allocation_failure_insert_probes_before_allocating);
 
     failures += run_test(filter, "fixture_coverage.container_honours_over_alignment",
                          fixture_coverage_container_honours_over_alignment);

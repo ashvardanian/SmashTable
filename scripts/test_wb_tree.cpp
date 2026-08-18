@@ -611,12 +611,13 @@ static void weight_balance_insert_rebalances() {
     }
 
     // A rejected duplicate leaves the tree untouched and reports the incumbent.
+    using placement_t = ordered_set_t::node_t::node_placement_t;
     ordered_set_t tree;
     [[maybe_unused]] auto const first = tree.insert(7);
-    auto const [incumbent, added] = tree.insert(7);
-    st_verify_(!added);
-    st_verify_ne_(incumbent, nullptr);
-    st_verify_eq_(incumbent->fruit, 7);
+    auto const duplicate = tree.insert(7);
+    st_verify_(duplicate.placement == placement_t::matched_k);
+    st_verify_ne_(duplicate.node, nullptr);
+    st_verify_eq_(duplicate.node->fruit, 7);
     st_verify_eq_(tree.size(), 1u);
 }
 
@@ -727,6 +728,7 @@ static void weight_balance_erase_if_rebalances() {
 
 /** @brief A long randomized mutation sequence, re-checking every invariant after each step. */
 static void weight_balance_randomized_mutations() {
+    using placement_t = ordered_set_t::node_t::node_placement_t;
     std::mt19937 generator(20260817);
     ordered_set_t tree;
     std::set<int> oracle;
@@ -734,9 +736,9 @@ static void weight_balance_randomized_mutations() {
         int const element = int(generator() % 800);
         switch (generator() % 4) {
         case 0: {
-            auto const [node, added] = tree.insert(int(element));
-            st_verify_ne_(node, nullptr);
-            st_verify_eq_(added, oracle.insert(element).second);
+            auto const result = tree.insert(int(element));
+            st_verify_ne_(result.node, nullptr);
+            st_verify_eq_(result.placement == placement_t::made_k, oracle.insert(element).second);
             break;
         }
         case 1: {
@@ -829,6 +831,7 @@ static void verify_augmented_against_oracle(augmented_map_t &tree, std::map<int,
  *    newer version supersedes an older one, and it must cost a path repair rather than a rescan.
  */
 static void augmented_randomized_mutations() {
+    using placement_t = augmented_map_t::node_t::node_placement_t;
     std::mt19937 generator(20260818);
     augmented_map_t tree;
     std::map<int, int> oracle;
@@ -837,9 +840,9 @@ static void augmented_randomized_mutations() {
         switch (generator() % 7) {
         case 0: {
             int const mapped = int(generator() % 2);
-            auto const [node, added] = tree.insert(mapping<int, int> {key, mapped});
-            st_verify_ne_(node, nullptr);
-            st_verify_eq_(added, oracle.emplace(key, mapped).second);
+            auto const result = tree.insert(mapping<int, int> {key, mapped});
+            st_verify_ne_(result.node, nullptr);
+            st_verify_eq_(result.placement == placement_t::made_k, oracle.emplace(key, mapped).second);
             break;
         }
         case 1: {
@@ -1011,29 +1014,30 @@ using traced_set_t = wb_set<traced_key_t, traced_less_t, stateful_allocator<void
 
 /** @brief Neither a duplicate key nor an exhausted allocator may consume the caller's entry. */
 static void allocation_failure_preserves_the_argument() {
+    using placement_t = traced_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(3);
     traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
     for (int element = 0; element < 3; ++element) {
         traced_key_t key(element);
-        auto const [node, added] = tree.insert(std::move(key));
-        st_verify_(added);
-        st_verify_ne_(node, nullptr);
+        auto const made = tree.insert(std::move(key));
+        st_verify_(made.placement == placement_t::made_k);
+        st_verify_ne_(made.node, nullptr);
     }
 
     // Budget exhausted - the rejected entry must come back untouched.
     traced_key_t rejected(99);
-    auto const [no_node, not_added] = tree.insert(std::move(rejected));
-    st_verify_eq_(no_node, nullptr);
-    st_verify_(!not_added);
+    auto const refused = tree.insert(std::move(rejected));
+    st_verify_eq_(refused.node, nullptr);
+    st_verify_(refused.placement == placement_t::refused_k);
     st_verify_(!rejected.moved_from);
 
     // A duplicate key must likewise leave the argument alone and report the incumbent.
     ledger.allow(10);
     traced_key_t duplicate(1);
-    auto const [incumbent, replaced] = tree.insert(std::move(duplicate));
-    st_verify_ne_(incumbent, nullptr);
-    st_verify_(!replaced);
+    auto const matched = tree.insert(std::move(duplicate));
+    st_verify_ne_(matched.node, nullptr);
+    st_verify_(matched.placement == placement_t::matched_k);
     st_verify_(!duplicate.moved_from);
     st_verify_eq_(tree.size(), 3u);
 }
@@ -1071,24 +1075,25 @@ static void upsert_reports_placement() {
 
 /** @brief @c insert_if_missing must separate "already there" from "out of memory". */
 static void allocation_failure_is_distinct_from_presence() {
+    using placement_t = traced_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(2);
     traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
     {
         traced_key_t key(1);
-        auto const [node, added] = tree.insert(std::move(key));
-        st_verify_(added);
-        st_verify_ne_(node, nullptr);
+        auto const made = tree.insert(std::move(key));
+        st_verify_(made.placement == placement_t::made_k);
+        st_verify_ne_(made.node, nullptr);
     }
 
     auto const on_present = tree.insert_if_missing(traced_key_t(1));
-    st_verify_ne_(on_present.first, tree.end());
-    st_verify_(!on_present.second);
+    st_verify_((on_present.placement == placement_t::matched_k) && "an incumbent is not a refusal");
+    st_verify_ne_(on_present.position, tree.end());
 
     ledger.refuse_everything();
     auto const on_exhausted = tree.insert_if_missing(traced_key_t(2));
-    st_verify_eq_(on_exhausted.first, tree.end());
-    st_verify_(!on_exhausted.second);
+    st_verify_((on_exhausted.placement == placement_t::refused_k) && "no node means no insertion");
+    st_verify_eq_(on_exhausted.position, tree.end());
     st_verify_eq_(tree.size(), 1u);
 }
 
