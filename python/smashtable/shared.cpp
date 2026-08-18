@@ -499,7 +499,8 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
 
     auto *walk = PyObject_GC_New(cursor_object_t, state->cursor_type);
     if (!walk) return nullptr;
-    Py_INCREF(state->cursor_type);
+    // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in
+    // dealloc gives back exactly one. Taking a second immortalises the type in practice.
 
     // Placement-new the owned members, since `PyObject_GC_New` only hands back raw storage.
     new (&walk->lock) object_lock_t {};
@@ -555,11 +556,19 @@ static PyObject *mapping_view_iter(PyObject *self) noexcept {
     auto *view = object_as<mapping_view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
+    // `tp_clear` nulls the owner when the collector breaks a cycle through this object. Every
+    // consumer has to expect that, because a finalizer running in the same collection pass can
+    // reach an object that has already been cleared.
+    if (!view->owner) {
+        PyErr_SetString(state->state_error, "this view's container has been collected");
+        return nullptr;
+    }
     return cursor_new(state, view->owner, view->yields, nullptr, nullptr, -1);
 }
 
 static Py_ssize_t mapping_view_length(PyObject *self) noexcept {
     auto *view = object_as<mapping_view_object_t>(self);
+    if (!view->owner) return 0; // Cleared by the collector; nothing left to count
     auto const *header = object_as<container_object_t>(view->owner);
     std::size_t size = 0;
     Py_BEGIN_ALLOW_THREADS;
@@ -570,6 +579,7 @@ static Py_ssize_t mapping_view_length(PyObject *self) noexcept {
 
 static PyObject *mapping_view_mapping(PyObject *self, void *) noexcept {
     auto *view = object_as<mapping_view_object_t>(self);
+    if (!view->owner) Py_RETURN_NONE; // Cleared by the collector; there is no container to name
     return Py_NewRef(view->owner);
 }
 
@@ -596,7 +606,8 @@ PyType_Spec mapping_view_spec = {"smashtable._View", sizeof(mapping_view_object_
 PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yields_t yields) noexcept {
     auto *view = PyObject_GC_New(mapping_view_object_t, state->mapping_view_type);
     if (!view) return nullptr;
-    Py_INCREF(state->mapping_view_type);
+    // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in
+    // dealloc gives back exactly one. Taking a second immortalises the type in practice.
     view->owner = Py_NewRef(container);
     view->yields = yields;
     PyObject_GC_Track(view);

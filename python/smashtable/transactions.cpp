@@ -41,9 +41,23 @@ static value_mode_t group_mode(transaction_object_t const *group) noexcept {
  *  Whether the group is still open is not, so only the immutable parts - @c ops, @c mode and which
  *  alternative is engaged - may be read from it outside @c run_over_participant.
  */
+/** @brief The participant this view speaks for, or null once the collector has cleared its owner. */
 static participant_t *part_of(view_object_t *view) noexcept {
+    if (!view->owner) return nullptr;
     auto *group = object_as<transaction_object_t>(view->owner);
     return &group->parts[view->index];
+}
+
+/**
+ *  @brief The same, raising rather than answering null.
+ *
+ *  Every method here reaches its participant before the state gate in @c run_over_participant, so
+ *  the cleared case has to be refused here or not at all.
+ */
+static participant_t *part_of_or_raise(view_object_t *view, module_state_t *state) noexcept {
+    participant_t *part = part_of(view);
+    if (!part) PyErr_SetString(state->state_error, "this view's transaction has been collected");
+    return part;
 }
 
 /**
@@ -55,6 +69,12 @@ static participant_t *part_of(view_object_t *view) noexcept {
  */
 template <typename operation_type_>
 static int run_over_participant(view_object_t *view, module_state_t *state, operation_type_ &&operation) noexcept {
+    // Guarded here as well as at each caller's `part_of_or_raise`, because this is the one point
+    // every participant operation passes through and the cost is a null test.
+    if (!view->owner) {
+        PyErr_SetString(state->state_error, "this view's transaction has been collected");
+        return -1;
+    }
     auto *group = object_as<transaction_object_t>(view->owner);
     participant_t &part = group->parts[view->index];
     bool finished = false;
@@ -92,7 +112,8 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    participant_t *part = part_of(view);
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return nullptr;
     if (!part->is_associative()) {
         PyErr_SetString(PyExc_TypeError, "this participant is a set, which has no values to read");
         return nullptr;
@@ -118,7 +139,8 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return -1;
-    participant_t *part = part_of(view);
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return -1;
 
     key_variant_t stored_key;
     if (!key_from_python(key, part->ops, stored_key)) return -1;
@@ -151,7 +173,8 @@ static int View_contains(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return -1;
-    participant_t *part = part_of(view);
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return -1;
 
     key_variant_t needle;
     if (!key_from_python(key, part->ops, needle)) {
@@ -230,7 +253,8 @@ static PyObject *View_add(PyObject *self, PyObject *member) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    participant_t *part = part_of(view);
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return nullptr;
     if (part->is_associative()) {
         PyErr_SetString(PyExc_TypeError, "this participant is a map; assign a value rather than calling add()");
         return nullptr;
@@ -269,7 +293,8 @@ static PyObject *View_erase(PyObject *self, PyObject *const *args, Py_ssize_t co
         PyErr_SetString(PyExc_TypeError, "erase() takes exactly one argument");
         return nullptr;
     }
-    participant_t *part = part_of(view);
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return nullptr;
 
     key_variant_t stored;
     if (!key_from_python(args[0], part->ops, stored)) return nullptr;
@@ -312,7 +337,8 @@ static PyObject *View_watch(PyObject *self, PyObject *const *args, Py_ssize_t co
         PyErr_SetString(PyExc_TypeError, "watch() takes exactly one argument");
         return nullptr;
     }
-    participant_t *part = part_of(view);
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return nullptr;
 
     key_variant_t stored;
     if (!key_from_python(args[0], part->ops, stored)) return nullptr;
@@ -485,6 +511,10 @@ static PyObject *Transaction_begin(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
+    if (!group->views) {
+        PyErr_SetString(state->state_error, "this transaction has been collected");
+        return nullptr;
+    }
     // Read without the lock, deliberately: taking it would drop the GIL between opening the group and
     // the first watch, and this test guards nothing - every operation the views offer re-tests the
     // state under the lock before it touches a participant.
@@ -551,7 +581,11 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
             status = participant.commit();
             if (failed(status)) break;
         }
-        group->state = group_state_t::finished_k;
+        // A refusal part-way leaves the participants before it published and those after it still
+        // staged. Calling that finished would seal a torn group: `rollback` and `reset` both refuse
+        // a finished one, so the staged remainder could only be dropped by the destructor. It stays
+        // staged instead, which is the one state from which the caller can still unwind it.
+        if (succeeded(status)) group->state = group_state_t::finished_k;
     });
 
     if (unstaged) {
@@ -607,7 +641,26 @@ static char const doc_reset[] =                                                 
     "This is what a retry loop calls after catching ConflictError.\n";                //
 
 static PyObject *Transaction_reset(PyObject *self, PyObject *) noexcept {
-    transaction_reset_all(object_as<transaction_object_t>(self), group_state_t::open_k);
+    auto *group = object_as<transaction_object_t>(self);
+    module_state_t *state = state_of_type(self);
+    if (!state) return nullptr;
+
+    // A finished group has published or discarded everything it held, and its participants are
+    // back to pending. Resetting it would hand every view a second turn at a transaction that is
+    // already over, and the writes would land in the store as if they were a fresh one.
+    bool finished = false;
+    run_over_values(group_mode(group), group->lock, [&]() noexcept {
+        finished = group->state == group_state_t::finished_k;
+        if (finished) return;
+        for (auto &participant : group->parts) [[maybe_unused]]
+            auto status = participant.reset();
+        group->state = group_state_t::open_k;
+    });
+
+    if (finished) {
+        PyErr_SetString(state->state_error, "reset() requires a transaction that has not finished");
+        return nullptr;
+    }
     Py_RETURN_NONE;
 }
 
@@ -723,7 +776,8 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
 
     auto *group = PyObject_GC_New(transaction_object_t, state->transaction_type);
     if (!group) return nullptr;
-    Py_INCREF(state->transaction_type);
+    // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in
+    // dealloc gives back exactly one. Taking a second immortalises the type in practice.
     // Constructed before anything can fail, so an early `Py_DECREF` always meets a live vector.
     new (&group->parts) basic_vector<participant_t> {};
     new (&group->lock) object_lock_t {};
@@ -765,7 +819,6 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
             Py_DECREF(group);
             return nullptr;
         }
-        Py_INCREF(state->view_type);
         view->owner = Py_NewRef(reinterpret_cast<PyObject *>(group));
         view->index = static_cast<std::size_t>(position);
         PyObject_GC_Track(view);

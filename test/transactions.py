@@ -174,6 +174,49 @@ def test_a_finished_group_refuses_more_work(container, keygen):
         view[key] = "again"
 
 
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_finished_transaction_cannot_be_reset(key_type, keygen):
+    """A committed transaction is over, and `reset` must not hand its views a second turn.
+
+    Regression: reset wrote the open state unconditionally, so a finished group could be reopened
+    and committed again, applying a fresh set of writes through a transaction that had ended.
+    """
+    container = make(st.SortedMap, key_type)
+    keys = keygen(2)
+
+    group = st.atomic(container)
+    (view,) = group.begin()
+    view[keys[0]] = "first"
+    group.stage()
+    group.commit()
+    assert dict(container) == {keys[0]: "first"}
+
+    with pytest.raises(st.StateError):
+        group.reset()
+    with pytest.raises(st.StateError):
+        group.begin()
+    assert dict(container) == {keys[0]: "first"}, "a finished transaction wrote again"
+
+
+@pytest.mark.parametrize("key_type", key_types)
+def test_reset_is_allowed_before_the_transaction_finishes(key_type, keygen):
+    """The state gate must not break what reset is for: retrying after a conflict."""
+    container = make(st.SortedMap, key_type)
+    key = keygen(1)[0]
+
+    group = st.atomic(container)
+    (view,) = group.begin()
+    view[key] = "pending"
+    group.reset()  # open, not staged
+    assert key not in container
+
+    (view,) = group.begin()
+    view[key] = "staged"
+    group.stage()
+    group.reset()  # staged, not yet committed
+    assert key not in container
+
+
 # endregion Explicit phases
 
 # region Cross container

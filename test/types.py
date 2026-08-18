@@ -15,7 +15,16 @@ import pytest
 
 import smashtable as st
 
-from .base import all_class_names, key_types, make, map_class_names, value_modes, value_types, wrong_type_key
+from .base import (
+    all_class_names,
+    enumerable_map_names,
+    key_types,
+    make,
+    map_class_names,
+    value_modes,
+    value_types,
+    wrong_type_key,
+)
 
 # region Key typing
 
@@ -162,6 +171,38 @@ def test_string_edges_round_trip(container, key):
 
 
 # endregion Key boundaries
+
+# region Object lifetimes
+
+
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_internal_types_do_not_leak_a_type_reference(container):
+    """Creating a cursor, a view or a transaction must not immortalise its own type.
+
+    `PyObject_GC_New` already takes a reference to a heap type, so taking a second leaves one
+    behind per instance: the type never dies, and a sub-interpreter leaks its whole type set on
+    teardown. Collected first, because a transaction and its views hold each other.
+    """
+    container[1] = 1
+    for label, make_one in (
+        ("iterator", lambda: iter(container)),
+        ("view", lambda: container.keys()),
+        ("transaction", lambda: st.atomic(container)),
+    ):
+        probe = make_one()
+        internal_type = type(probe)
+        del probe
+        gc.collect()
+
+        base = sys.getrefcount(internal_type)
+        for _ in range(50):
+            make_one()
+        gc.collect()
+        assert sys.getrefcount(internal_type) == base, f"{label} leaked a reference to its type"
+
+
+# endregion Object lifetimes
 
 # region Value typing
 
