@@ -201,6 +201,42 @@ def test_a_refused_stage_applied_nothing(isolation, sharing):
     assert 12345 not in {container[key] for key in keys}, "a refused transaction published its writes"
 
 
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_refused_stage_keeps_the_pending_writes(key_type, keygen):
+    """A refused stage unwinds what it staged, not what the caller wrote.
+
+    Two stores, with the conflict on the one that stages second, so the first has already staged
+    when the refusal arrives and has to be unwound. Rolling it back returns its staged writes to the
+    transaction, where they are still pending; resetting would discard the caller's writes with
+    them, and a later commit would silently drop work the caller believed it had done.
+
+    The watch stays recorded and stays stale, so re-staging refuses again - that is correct, and it
+    is why the documented retry loop opens a fresh transaction. What is asserted here is the writes.
+
+    Regression: the binding reset every participant where `transaction_group::stage` rolls back only
+    the prefix that took.
+    """
+    keys = keygen(3)
+    # Participants stage in creation order, so the conflict has to be in the store made second.
+    staged_first = make(st.SortedMap, key_type)
+    refuses = make(st.SortedMap, key_type)
+    refuses[keys[0]] = "original"
+
+    group = st.transaction(staged_first, refuses)
+    (early, late) = group.begin()
+    early[keys[1]] = "the caller's own write"
+    late.watch(keys[0])
+    late[keys[2]] = "and this one"
+
+    refuses[keys[0]] = "an outsider got there first"
+    with pytest.raises(st.ConflictError):
+        group.stage()
+
+    assert early[keys[1]] == "the caller's own write", "the unwound participant lost a pending write"
+    assert late[keys[2]] == "and this one"
+    assert keys[1] not in staged_first, "a refused stage must publish nothing"
+
+
 @pytest.mark.slow
 @pytest.mark.thread_unsafe(reason="it runs its own threads and asserts on their interleaving")
 @pytest.mark.parametrize("sharing", ["locked", "partitioned"])

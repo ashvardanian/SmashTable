@@ -37,7 +37,6 @@
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
 #include <utility>  // `std::exchange`, `std::swap`
-#include <vector>   // `std::vector`
 #include <variant>  // `std::variant`
 
 #include <smashtable/basic_vector.hpp>
@@ -80,7 +79,7 @@ struct bytes_t {
  */
 namespace deferred {
 
-inline thread_local std::vector<PyObject *> pending {};
+inline thread_local basic_vector<PyObject *> pending {};
 inline thread_local std::size_t depth {0};
 
 /** @brief Whether a store call is in flight on this thread, so a drop has to wait for it. */
@@ -94,8 +93,10 @@ inline bool armed() noexcept { return depth != 0; }
  */
 inline void release_recorded() noexcept {
     while (!pending.empty()) {
-        std::vector<PyObject *> draining;
-        draining.swap(pending);
+        // Moved aside first, because releasing one reference can run a finalizer that enters the
+        // store and records more, and a vector being appended to while walked is a dangling read.
+        basic_vector<PyObject *> draining {std::move(pending)};
+        pending.clear();
         for (PyObject *object : draining) Py_DECREF(object);
     }
 }
@@ -111,14 +112,10 @@ inline void release_recorded() noexcept {
  */
 inline void release_reference(PyObject *object) noexcept {
     if (!object) return;
-    if (deferred::armed()) {
-        try {
-            deferred::pending.push_back(object);
-            return;
-        }
-        catch (...) {
-        }
-    }
+    // `basic_vector` reports exhaustion rather than throwing, which is what a `noexcept` destructor
+    // needs. Where it cannot record, the reference is released here and the deadlock is back on the
+    // table - the better of two answers, since a hang cannot be recovered from.
+    if (deferred::armed() && succeeded(deferred::pending.push_back(std::move(object)))) return;
     Py_DECREF(object);
 }
 
@@ -441,10 +438,8 @@ struct key_variant_hash_t {
         return std::visit(
             [](auto const &held) noexcept -> std::size_t {
                 using held_t = std::decay_t<decltype(held)>;
-                if constexpr (std::is_same_v<held_t, utf8_t>)
-                    return std::hash<std::string> {}(held.text);
-                else if constexpr (std::is_same_v<held_t, bytes_t>)
-                    return std::hash<std::string> {}(held.data);
+                if constexpr (std::is_same_v<held_t, utf8_t>) return std::hash<std::string> {}(held.text);
+                else if constexpr (std::is_same_v<held_t, bytes_t>) return std::hash<std::string> {}(held.data);
                 else return std::hash<held_t> {}(held);
             },
             key.value);
@@ -662,8 +657,8 @@ bool is_container(module_state_t *state, PyObject *object) noexcept;
  *  @param[in] mode Whether values may be arbitrary objects.
  *  @return A new reference, or @c nullptr with an exception set.
  */
-PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t const *ops,
-                       store_ops_t const *store_ops, value_mode_t mode) noexcept;
+PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t const *ops, store_ops_t const *store_ops,
+                       value_mode_t mode) noexcept;
 
 #pragma endregion Object Layouts
 
@@ -821,8 +816,8 @@ struct participant_t {
     participant_t(participant_t const &) = delete;
     participant_t &operator=(participant_t const &) = delete;
     participant_t(participant_t &&other) noexcept
-        : table(other.table), transaction(std::exchange(other.transaction, nullptr)), ops(other.ops),
-          mode(other.mode) {}
+        : table(other.table), transaction(std::exchange(other.transaction, nullptr)), ops(other.ops), mode(other.mode) {
+    }
     participant_t &operator=(participant_t &&other) noexcept {
         std::swap(table, other.table);
         std::swap(transaction, other.transaction);

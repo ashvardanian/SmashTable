@@ -70,6 +70,24 @@ check_boolean_parameters() {
         "$file takes a bool parameter that selects behaviour - name the states in an enum:"
 }
 
+# The Python binding forwards what the C++ layer already does; it does not build its own containers
+# or its own synchronization. An STL container appearing there is almost never about the STL - it is
+# a buffer invented to work around something the store does not expose yet, and the fix belongs one
+# layer down. Where the binding genuinely needs to hold a sequence, `basic_vector` is the one the
+# rest of the project uses, so allocation failure is a status rather than an exception.
+check_binding_owns_no_containers() {
+    local invented
+    invented=$(printf '%s\n' "$added" |
+        grep -vE '^\+[[:space:]]*(\*|//)' |
+        grep -E 'std::(vector|map|set|unordered_map|unordered_set|deque|list|pair|tuple|array|shared_mutex|mutex|condition_variable|atomic|thread|lock_guard|unique_lock)\b' || true)
+    [ -z "$invented" ] || fail "$invented" \
+        "$file is in the Python binding and reaches for an STL container or synchronization" \
+        "primitive. The binding forwards and repackages what the C++ layer does - it invents no" \
+        "logic and no locking of its own. A buffer here usually means the store is missing a" \
+        "surface: ask for it in include/ instead. For a sequence the binding genuinely owns, use" \
+        "basic_vector, whose failures are statuses:"
+}
+
 # Comments describe what the code is, never what it was. Git holds the history.
 check_backward_references() {
     local history
@@ -296,6 +314,9 @@ while IFS= read -r -d '' file; do
     added=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' || true)
     [ -n "$added" ] || continue
     case "$file" in
+    python/smashtable/*)
+        check_binding_owns_no_containers
+        ;;&
     *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh)
         check_ascii_arrows
         check_memcpy

@@ -640,7 +640,7 @@ PyType_Spec items_view_spec = {"smashtable.ItemsView", sizeof(mapping_view_objec
                                mapping_view_slots};
 
 PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yields_t yields) noexcept {
-    PyTypeObject *type = yields == cursor_yields_t::keys_k    ? state->keys_view_type
+    PyTypeObject *type = yields == cursor_yields_t::keys_k     ? state->keys_view_type
                          : yields == cursor_yields_t::values_k ? state->values_view_type
                                                                : state->items_view_type;
     auto *view = PyObject_GC_New(mapping_view_object_t, type);

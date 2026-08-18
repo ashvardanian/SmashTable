@@ -31,7 +31,7 @@ module_state_t *state_of_type(PyObject *self) noexcept {
 #pragma region Entry Points
 
 static char const doc_transaction[] =                                                  //
-    "transaction(*stores)\n"                                                            //
+    "transaction(*stores)\n"                                                           //
     "\n"                                                                               //
     "Open one transaction spanning every given store.\n"                               //
     "\n"                                                                               //
@@ -139,11 +139,9 @@ static int module_exec(PyObject *module) noexcept {
     state->sorted_set_type =
         reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &sorted_set_spec, nullptr));
     if (!state->sorted_set_type) return -1;
-    state->hash_map_type =
-        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &hash_map_spec, nullptr));
+    state->hash_map_type = reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &hash_map_spec, nullptr));
     if (!state->hash_map_type) return -1;
-    state->hash_set_type =
-        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &hash_set_spec, nullptr));
+    state->hash_set_type = reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &hash_set_spec, nullptr));
     if (!state->hash_set_type) return -1;
     state->transaction_type =
         reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &transaction_spec, nullptr));

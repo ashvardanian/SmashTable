@@ -36,7 +36,8 @@ using shared_by_partition_t = partitioned_store<store_type_, key_hash_t>;
  *  combination that does not exist cannot be named, and so each table is a distinct symbol a debugger
  *  and a profiler can tell apart.
  */
-constexpr store_ops_t sorted_map_monotonic_locked = store_bridge<shared_by_lock_t<sorted_monotonic_t<entry_t>>>::table();
+constexpr store_ops_t sorted_map_monotonic_locked =
+    store_bridge<shared_by_lock_t<sorted_monotonic_t<entry_t>>>::table();
 constexpr store_ops_t sorted_map_monotonic_partitioned =
     store_bridge<shared_by_partition_t<sorted_monotonic_t<entry_t>>>::table();
 constexpr store_ops_t sorted_map_snapshot_locked = store_bridge<shared_by_lock_t<sorted_snapshot_t<entry_t>>>::table();

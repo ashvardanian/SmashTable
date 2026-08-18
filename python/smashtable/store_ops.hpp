@@ -47,9 +47,8 @@ struct store_bridge {
     static constexpr bool enumerable_k = requires(store_t const &store) { store.for_each(no_op_t {}); };
 
     /** @brief Whether the core orders its keys, which is what the ordered slots rest on. */
-    static constexpr bool ordered_k = requires(store_t &store, key_variant_t const &key) {
-        store.lower_bound(key, no_op_t {}, no_op_t {});
-    };
+    static constexpr bool ordered_k =
+        requires(store_t &store, key_variant_t const &key) { store.lower_bound(key, no_op_t {}, no_op_t {}); };
 
     static store_t &store_of(void *store) noexcept { return *static_cast<store_t *>(store); }
     static transaction_t &transaction_of(void *transaction) noexcept {
@@ -166,8 +165,7 @@ struct store_bridge {
             if (value) *value = element.mapped;
     }
 
-    static bool lower_bound(void *store, key_variant_t const &from, key_variant_t &key,
-                            value_variant_t *value) noexcept
+    static bool lower_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept
         requires ordered_k
     {
         deferring_store_call_t deferral;
@@ -177,8 +175,7 @@ struct store_bridge {
         return found;
     }
 
-    static bool upper_bound(void *store, key_variant_t const &from, key_variant_t &key,
-                            value_variant_t *value) noexcept
+    static bool upper_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept
         requires ordered_k
     {
         deferring_store_call_t deferral;
@@ -233,8 +230,7 @@ struct store_bridge {
         bool found = false;
         if constexpr (associative_k)
             transaction_of(transaction)
-                .find(
-                    key, [&](value_t const &entry) noexcept { value = entry.mapped, found = true; }, no_op_t {});
+                .find(key, [&](value_t const &entry) noexcept { value = entry.mapped, found = true; }, no_op_t {});
         return found;
     }
 

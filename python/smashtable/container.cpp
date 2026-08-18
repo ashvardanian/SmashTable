@@ -74,11 +74,11 @@ static bool isolation_from_python(PyObject *specification, isolation_choice_t &c
         choice = isolation_choice_t::snapshot_k;
         return true;
     }
-    // A store reports the level it delivers, which for a sharded one can be weaker than any level
-    // that can be asked for. Naming that here is what stops `isolation=m.isolation` looking broken.
-    PyErr_Format(PyExc_ValueError,
-                 "isolation must be 'monotonic_atomic_view' or 'snapshot', not %R; a weaker level "
-                 "such as 'read_committed' is delivered by sharding rather than requested",
+    // A sharded store reports a level weaker than any that can be asked for, so a caller feeding
+    // `isolation` back in deserves to be told why rather than shown its own string again.
+    PyErr_Format(PyExc_ValueError,                                                                  //
+                 "isolation must be 'monotonic_atomic_view' or 'snapshot', not %R; a weaker level " //
+                 "such as 'read_committed' is delivered by sharding rather than requested",         //
                  specification);
     return false;
 }
@@ -98,7 +98,11 @@ static bool sharing_from_python(PyObject *specification, sharing_choice_t &choic
         choice = sharing_choice_t::partitioned_k;
         return true;
     }
-    PyErr_Format(PyExc_ValueError, "sharing must be 'locked' or 'partitioned', not %R", specification);
+    PyErr_Format(PyExc_ValueError,                                                            //
+                 "isolation must be 'monotonic_atomic_view' or 'snapshot', not %R; a weaker " //
+                 "level such as 'read_committed' is delivered by sharding rather than "       //
+                 "requested",                                                                 //
+                 specification);
     return false;
 }
 
@@ -261,9 +265,8 @@ static PyObject *Map_subscript(PyObject *self, PyObject *key) noexcept {
 
     value_variant_t found;
     bool present = false;
-    run_over_values(container->mode, [&]() noexcept {
-        present = container->store_ops->find(container->store, needle, found);
-    });
+    run_over_values(container->mode,
+                    [&]() noexcept { present = container->store_ops->find(container->store, needle, found); });
 
     if (!present) {
         PyErr_SetObject(PyExc_KeyError, key);
@@ -272,12 +275,12 @@ static PyObject *Map_subscript(PyObject *self, PyObject *key) noexcept {
     return value_to_python(found);
 }
 
-static char const doc_get[] =                                     //
-    "get(key, default=None, /)\n"                                 //
-    "\n"                                                          //
-    "Value for a key, or default when the key is absent.\n"       //
-    "\n"                                                          //
-    "Raises:\n"                                                   //
+static char const doc_get[] =                                 //
+    "get(key, default=None, /)\n"                             //
+    "\n"                                                      //
+    "Value for a key, or default when the key is absent.\n"   //
+    "\n"                                                      //
+    "Raises:\n"                                               //
     "  TypeError: If key is not of this store's key type.\n"; //
 
 static PyObject *Map_get(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
@@ -346,8 +349,7 @@ static int Map_assign_subscript(PyObject *self, PyObject *key, PyObject *value) 
     // never filled.
     if (PySlice_Check(key)) {
         if (!container->store_ops->erase_range) {
-            PyErr_Format(PyExc_TypeError, "%s has no ordering, so it cannot be sliced",
-                         class_name_of(self));
+            PyErr_Format(PyExc_TypeError, "%s has no ordering, so it cannot be sliced", class_name_of(self));
             return -1;
         }
         if (value) {
@@ -365,9 +367,8 @@ static int Map_assign_subscript(PyObject *self, PyObject *key, PyObject *value) 
         // there, so absence needs no separate probe and two threads racing on the same key cannot
         // both believe they removed it.
         status_t status = success_k;
-        run_over_values(container->mode, [&]() noexcept {
-            status = container->store_ops->erase(container->store, stored_key);
-        });
+        run_over_values(container->mode,
+                        [&]() noexcept { status = container->store_ops->erase(container->store, stored_key); });
         return raise_for(state, status, key);
     }
 
@@ -442,15 +443,15 @@ static PyObject *Map_pop(PyObject *self, PyObject *const *args, Py_ssize_t count
 
 static char const doc_popmin[] =                                                   //
     "popmin()\n"                                                                   //
-    "\n"                                                                            //
-    "Remove and return the smallest (key, value) pair.\n"                           //
-    "\n"                                                                            //
-    "Named for what it does rather than borrowing dict's popitem, which removes\n"  //
-    "the most recently inserted pair. The store steps forward only, so the\n"       //
-    "largest key would cost a full walk while the smallest costs one lookup.\n"     //
-    "\n"                                                                            //
-    "Raises:\n"                                                                     //
-    "  KeyError: If the store is empty.\n";                                     //
+    "\n"                                                                           //
+    "Remove and return the smallest (key, value) pair.\n"                          //
+    "\n"                                                                           //
+    "Named for what it does rather than borrowing dict's popitem, which removes\n" //
+    "the most recently inserted pair. The store steps forward only, so the\n"      //
+    "largest key would cost a full walk while the smallest costs one lookup.\n"    //
+    "\n"                                                                           //
+    "Raises:\n"                                                                    //
+    "  KeyError: If the store is empty.\n";                                        //
 
 static PyObject *Map_popmin(PyObject *self, PyObject *) noexcept {
     auto *container = object_as<container_object_t>(self);
@@ -515,8 +516,7 @@ static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_
     run_over_values(container->mode, [&]() noexcept {
         // One strict insert that leaves the winner readable. A key arriving concurrently keeps its own
         // value, and what comes back is that winner rather than what we tried to store.
-        status = container->store_ops->insert_if_missing(container->store, stored_key, std::move(stored_value),
-                                                         winner);
+        status = container->store_ops->insert_if_missing(container->store, stored_key, std::move(stored_value), winner);
     });
 
     if (raise_for(state, status, args[0]) != 0) return nullptr;
@@ -657,7 +657,7 @@ static PyObject *Set_remove(PyObject *self, PyObject *member) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_set_popmin[] =                                 //
+static char const doc_set_popmin[] =                              //
     "popmin()\n"                                                  //
     "\n"                                                          //
     "Remove and return the smallest member.\n"                    //
@@ -1033,7 +1033,7 @@ static char const doc_scan[] =                                                  
     "container itself when the whole range does not need to exist at once.\n"             //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
-    "  TypeError: If a bound is not of this store's key type.\n";                     //
+    "  TypeError: If a bound is not of this store's key type.\n";                         //
 
 /** @brief Drives the shared cursor into a list, so there is one traversal in the binding. */
 static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
@@ -1094,8 +1094,8 @@ static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_
     if (has_start && !key_from_python(start_object, container->ops, start_key)) return nullptr;
     if (has_stop && !key_from_python(stop_object, container->ops, stop_key)) return nullptr;
 
-    PyObject *cursor = cursor_new(state, self, yields, has_start ? &start_key : nullptr,
-                                  has_stop ? &stop_key : nullptr, limit);
+    PyObject *cursor =
+        cursor_new(state, self, yields, has_start ? &start_key : nullptr, has_stop ? &stop_key : nullptr, limit);
     if (!cursor) return nullptr;
     PyObject *collected = PySequence_List(cursor);
     Py_DECREF(cursor);
@@ -1106,16 +1106,16 @@ static PyObject *Map_scan(PyObject *self, PyObject *const *args, Py_ssize_t coun
     return container_scan(self, args, count, keywords, cursor_yields_t::items_k);
 }
 
-static char const doc_set_scan[] =                                                //
-    "scan(start=None, stop=None, *, limit=None)\n"                                //
-    "\n"                                                                          //
-    "List of members in order, over the half-open window [start, stop).\n"        //
-    "\n"                                                                          //
-    "Bounds need not be present members. Materialized rather than lazy: iterate\n"//
-    "the set itself when the whole range does not need to exist at once.\n"       //
-    "\n"                                                                          //
-    "Raises:\n"                                                                   //
-    "  TypeError: If a bound is not of this set's key type.\n";                   //
+static char const doc_set_scan[] =                                                 //
+    "scan(start=None, stop=None, *, limit=None)\n"                                 //
+    "\n"                                                                           //
+    "List of members in order, over the half-open window [start, stop).\n"         //
+    "\n"                                                                           //
+    "Bounds need not be present members. Materialized rather than lazy: iterate\n" //
+    "the set itself when the whole range does not need to exist at once.\n"        //
+    "\n"                                                                           //
+    "Raises:\n"                                                                    //
+    "  TypeError: If a bound is not of this set's key type.\n";                    //
 
 static PyObject *Set_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
     return container_scan(self, args, count, keywords, cursor_yields_t::keys_k);
@@ -1157,10 +1157,10 @@ static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept
     }
     PyObject *element = nullptr;
     while ((element = PyIter_Next(cursor)) != nullptr) {
-        PyObject *rendered = yields == cursor_yields_t::items_k
-                                 ? PyUnicode_FromFormat("%R: %R", PyTuple_GET_ITEM(element, 0),
-                                                        PyTuple_GET_ITEM(element, 1))
-                                 : PyUnicode_FromFormat("%R", element);
+        PyObject *rendered =
+            yields == cursor_yields_t::items_k
+                ? PyUnicode_FromFormat("%R: %R", PyTuple_GET_ITEM(element, 0), PyTuple_GET_ITEM(element, 1))
+                : PyUnicode_FromFormat("%R", element);
         Py_DECREF(element);
         if (!rendered || PyList_Append(parts, rendered) != 0) {
             Py_XDECREF(rendered);
@@ -1184,8 +1184,8 @@ static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept
 
     PyObject *result =
         total > repr_limit_k
-            ? PyUnicode_FromFormat("%s(key='%s', {%U, ... +%zd more})", class_name_of(self), container->ops->name,
-                                   body, total - repr_limit_k)
+            ? PyUnicode_FromFormat("%s(key='%s', {%U, ... +%zd more})", class_name_of(self), container->ops->name, body,
+                                   total - repr_limit_k)
             : PyUnicode_FromFormat("%s(key='%s', {%U})", class_name_of(self), container->ops->name, body);
     Py_DECREF(body);
     return result;
@@ -1236,8 +1236,7 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
 
     // Two maps of different key layouts can hold no key in common, so the sizes matching already
     // settles it unless both are empty.
-    if (equal && other_is_map && object_as<container_object_t>(other)->ops != container->ops)
-        equal = their_size == 0;
+    if (equal && other_is_map && object_as<container_object_t>(other)->ops != container->ops) equal = their_size == 0;
 
     if (equal) {
         auto *twin = other_is_map ? object_as<container_object_t>(other) : nullptr;
@@ -1380,21 +1379,21 @@ static PyObject *container_sharing(PyObject *self, void *) noexcept {
     return PyUnicode_FromString(object_as<container_object_t>(self)->store_ops->sharing_name);
 }
 
-static char const doc_key_type[] =
-    "The key layout this store was built around: 'int', 'uint', 'str' or 'bytes'.";
+static char const doc_key_type[] = "The key layout this store was built around: 'int', 'uint', 'str' or 'bytes'.";
 static char const doc_value_mode[] = "'scalar' when values must be scalars, 'object' when any object is stored.";
-static char const doc_sharing[] =
-    "How this store is shared between threads: 'locked' or 'partitioned'.\n"
-    "\n"
-    "What was asked for, unlike isolation, which reports what is delivered.";
+static char const doc_sharing[] =                                             //
+    "How this store is shared between threads: 'locked' or 'partitioned'.\n"  //
+    "\n"                                                                      //
+    "What was asked for, unlike isolation, which reports what is delivered."; //
 
-static char const doc_isolation[] =
-    "What this store actually promises a reader, as Jepsen names it.\n"
-    "\n"
-    "The effective level rather than the one asked for. A snapshot store keeps\n"
-    "its level across partitions, since visibility there is a stamp comparison. A\n"
-    "monotonic one sharded across partitions reports 'read_committed', because a\n"
-    "reader holding no stamp can catch a commit half-applied.";
+static char const doc_isolation[] =                                                     //
+    "What this store actually promises a reader, as Jepsen names it.\n"                 //
+    "\n"                                                                                //
+    "The effective level rather than the one asked for. A snapshot store keeps its\n"   //
+    "level across partitions, since visibility there is a comparison against a stamp\n" //
+    "rather than a lock somebody holds. A monotonic one sharded across partitions\n"    //
+    "reports 'read_committed', because a reader holding no stamp can catch a commit\n"  //
+    "half-applied.";                                                                    //
 
 static PyGetSetDef map_getset[] = {
     {"value_mode", container_value_mode, nullptr, const_cast<char *>(doc_value_mode), nullptr},
@@ -1415,37 +1414,37 @@ static PyGetSetDef set_getset[] = {
 
 #pragma region Type Definitions
 
-static char const doc_SortedMap[] =                                                        //
-    "SortedMap(*, key, value='scalar', isolation='monotonic', sharing='locked')\n"          //
-    "\n"                                                                                    //
-    "An ordered mapping whose writes can be grouped into transactions.\n"                   //
-    "\n"                                                                                    //
-    "Keys are homogeneous and their type is fixed at construction, which is what lets\n"    //
-    "every comparison skip type dispatch. Floats and booleans may be values but never\n"    //
-    "keys.\n"                                                                               //
-    "\n"                                                                                    //
-    "Args:\n"                                                                               //
-    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"      //
-    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"        //
-    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"           //
-    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n"                 //
-    "\n"                                                                                    //
-    "Raises:\n"                                                                             //
-    "  TypeError: If key is missing, or names float or bool.\n"                             //
-    "  ValueError: If key, value, isolation or sharing names an unknown choice.\n";          //
+static char const doc_SortedMap[] =                                                      //
+    "SortedMap(*, key, value='scalar', isolation='monotonic', sharing='locked')\n"       //
+    "\n"                                                                                 //
+    "An ordered mapping whose writes can be grouped into transactions.\n"                //
+    "\n"                                                                                 //
+    "Keys are homogeneous and their type is fixed at construction, which is what lets\n" //
+    "every comparison skip type dispatch. Floats and booleans may be values but never\n" //
+    "keys.\n"                                                                            //
+    "\n"                                                                                 //
+    "Args:\n"                                                                            //
+    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"   //
+    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"     //
+    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"        //
+    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n"              //
+    "\n"                                                                                 //
+    "Raises:\n"                                                                          //
+    "  TypeError: If key is missing, or names float or bool.\n"                          //
+    "  ValueError: If key, value, isolation or sharing names an unknown choice.\n";      //
 
-static char const doc_SortedSet[] =                                                        //
-    "SortedSet(*, key, isolation='monotonic', sharing='locked')\n"                          //
-    "\n"                                                                                    //
-    "An ordered set whose writes can be grouped into transactions.\n"                       //
-    "\n"                                                                                    //
-    "Members are homogeneous and their type is fixed at construction. Floats and\n"         //
-    "booleans are not valid members, for the same reason they are not valid keys.\n"        //
-    "\n"                                                                                    //
-    "Args:\n"                                                                               //
-    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"      //
-    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"           //
-    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";                //
+static char const doc_SortedSet[] =                                                    //
+    "SortedSet(*, key, isolation='monotonic', sharing='locked')\n"                     //
+    "\n"                                                                               //
+    "An ordered set whose writes can be grouped into transactions.\n"                  //
+    "\n"                                                                               //
+    "Members are homogeneous and their type is fixed at construction. Floats and\n"    //
+    "booleans are not valid members, for the same reason they are not valid keys.\n"   //
+    "\n"                                                                               //
+    "Args:\n"                                                                          //
+    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n" //
+    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"      //
+    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";           //
 
 static PyMethodDef SortedMap_methods[] = {
     {"get", as_pycfunction(Map_get), METH_FASTCALL, doc_get},
@@ -1471,8 +1470,7 @@ static PyMethodDef SortedSet_methods[] = {
     {"union", as_pycfunction(Set_union), METH_FASTCALL, "Members of either side, as a new set."},
     {"intersection", as_pycfunction(Set_intersection), METH_FASTCALL, "Members of both sides."},
     {"difference", as_pycfunction(Set_difference), METH_FASTCALL, "Members of this side only."},
-    {"symmetric_difference", as_pycfunction(Set_symmetric_difference), METH_FASTCALL,
-     "Members of exactly one side."},
+    {"symmetric_difference", as_pycfunction(Set_symmetric_difference), METH_FASTCALL, "Members of exactly one side."},
     {"scan", as_pycfunction(Set_scan), ST_METHOD_FLAGS_, doc_set_scan},
     {"isdisjoint", as_pycfunction(Set_isdisjoint), METH_FASTCALL, "Whether the two sides share no member."},
     {nullptr, nullptr, 0, nullptr},
@@ -1527,26 +1525,26 @@ static PyType_Slot sorted_set_slots[] = {
 };
 
 static char const doc_HashMap[] =                                                          //
-    "HashMap(*, key, value='scalar', isolation='monotonic', sharing='locked')\n"             //
-    "\n"                                                                                     //
-    "An unordered mapping whose writes can be grouped into transactions.\n"                  //
-    "\n"                                                                                     //
-    "Point access only. The open-addressed core supplies no ordering, so this class has\n"   //
-    "no iteration, no keys/values/items, no scan and no range erase - reaching for one\n"    //
-    "is an AttributeError rather than an empty result. Use SortedMap when order or\n"        //
-    "enumeration matters.\n"                                                                 //
-    "\n"                                                                                     //
-    "Args:\n"                                                                                //
-    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"       //
-    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"         //
-    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"            //
-    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";                 //
+    "HashMap(*, key, value='scalar', isolation='monotonic', sharing='locked')\n"           //
+    "\n"                                                                                   //
+    "An unordered mapping whose writes can be grouped into transactions.\n"                //
+    "\n"                                                                                   //
+    "Point access only. The open-addressed core supplies no ordering, so this class has\n" //
+    "no iteration, no keys/values/items, no scan and no range erase - reaching for one\n"  //
+    "is an AttributeError rather than an empty result. Use SortedMap when order or\n"      //
+    "enumeration matters.\n"                                                               //
+    "\n"                                                                                   //
+    "Args:\n"                                                                              //
+    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"     //
+    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"       //
+    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"          //
+    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";               //
 
-static char const doc_HashSet[] =                                                          //
-    "HashSet(*, key, isolation='monotonic', sharing='locked')\n"                             //
-    "\n"                                                                                     //
+static char const doc_HashSet[] =                                                           //
+    "HashSet(*, key, isolation='monotonic', sharing='locked')\n"                            //
+    "\n"                                                                                    //
     "An unordered set whose writes can be grouped into transactions.\n"                     //
-    "\n"                                                                                     //
+    "\n"                                                                                    //
     "Membership and mutation only. The core supplies no ordering, so this class has no\n"   //
     "iteration, no scan, no pop and none of the set algebra, each of which would have to\n" //
     "walk at least one side. Use SortedSet when any of those matter.\n";                    //
