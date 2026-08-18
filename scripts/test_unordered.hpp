@@ -30,6 +30,7 @@
 
 #include <atomic>        // `std::atomic`
 #include <limits>        // `std::numeric_limits`
+#include <new>           // `std::nothrow`
 #include <set>           // `std::set`
 #include <string>        // `std::string`
 #include <string_view>   // `std::string_view`
@@ -550,6 +551,153 @@ void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
 
 #pragma endregion Heterogeneous Lookup
 
+#pragma region Saturation and Refusal
+
+/**
+ *  @brief Tests that a table whose allocator stops supplying memory stops storing, rather than
+ *    filling to the last slot and then probing a table with no free slot forever.
+ *
+ *  @note The hang this pins only exists where @c assert is compiled out, so the suite must be run
+ *    from a release build to be worth anything.
+ */
+template <typename container_type_>
+void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) {
+
+    using container_t = container_type_;
+
+    // Exactly one allocation is granted, so the table gets its first buffer and can never grow again.
+    allocation_ledger_t ledger;
+    ledger.allow(1);
+    auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
+    st_verify_((allocated) && "the one permitted allocation must succeed");
+    container_t container = *std::move(allocated);
+    std::size_t const slots = container.slots_count().raw;
+    st_verify_((slots) > (0u));
+
+    std::unordered_map<std::size_t, std::size_t> oracle;
+    for (std::size_t identifier = 0; identifier < attempts; ++identifier) {
+        std::size_t const size_before = container.size();
+        unordered_emplace(container, identifier);
+        if (container.size() != size_before) oracle[identifier] = identifier;
+        // Neither the counters nor the layout may run past the single buffer that was handed out.
+        st_verify_((container.size() + container.deleted_count()) <= (slots));
+        st_verify_eq_(container.slots_count().raw, slots);
+    }
+
+    st_verify_((container.size()) < (attempts) && "a table that cannot grow must refuse most of the range");
+    st_verify_eq_(container.size(), oracle.size());
+    for (auto const &entry : oracle) unordered_verify_present(container, entry.first, entry.second);
+}
+
+/**
+ *  @brief Tests that a table with every slot taken refuses further keys, terminates while doing so,
+ *    and does not count a store that never happened.
+ */
+template <typename container_type_>
+void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
+
+    using container_t = container_type_;
+
+    auto allocated = container_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    container_t container = *std::move(allocated);
+    std::size_t const slots = container.slots_count().raw;
+
+    // Promising the reservation is what lets the table run past its own load factor, right up to
+    // the last slot, which is the state both probe loops have to survive.
+    for (std::size_t identifier = 0; identifier < slots; ++identifier)
+        unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
+    st_verify_eq_(container.size(), slots);
+    st_verify_eq_(container.slots_count().raw, slots);
+
+    // The unique-key probe has nowhere to store, and must say so by leaving the size alone.
+    for (std::size_t identifier = slots; identifier < slots + extra_attempts; ++identifier) {
+        unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
+        st_verify_eq_(container.size(), slots);
+    }
+
+    // The upsert probe has to terminate on the same table, and leave the size alone too.
+    for (std::size_t identifier = slots; identifier < slots + extra_attempts; ++identifier) {
+        unordered_emplace(container, identifier, assume_reserved_t {});
+        st_verify_eq_(container.size(), slots);
+    }
+
+    // Everything that did fit is still reachable, and an overwrite of a present key still lands.
+    for (std::size_t identifier = 0; identifier < slots; ++identifier)
+        unordered_verify_present(container, identifier, identifier);
+    if constexpr (unordered_has_values_k<container_t>) {
+        unordered_emplace_valued(container, 0, 7, assume_reserved_t {});
+        st_verify_eq_(container.size(), slots);
+        unordered_verify_present(container, 0, 7);
+    }
+}
+
+/**
+ *  @brief Tests that a rehash asking for nothing compacts the table instead of emptying it into a
+ *    layout with no slots at all.
+ */
+template <typename container_type_>
+void test_unordered_rehash_to_nothing(std::size_t size = 300) {
+
+    using container_t = container_type_;
+    using key_t = typename container_t::key_type;
+    using reserve_result_t = typename container_t::reserve_result_t;
+
+    container_t container;
+    std::unordered_map<std::size_t, std::size_t> oracle;
+    for (std::size_t identifier = 0; identifier < size; ++identifier) {
+        unordered_emplace(container, identifier);
+        oracle[identifier] = identifier;
+    }
+
+    // Tombstones make the smallest layout that still fits smaller than the current one.
+    for (std::size_t identifier = 0; identifier < size; identifier += 2) {
+        st_verify_(container.erase(unordered_key_from<key_t>(identifier)));
+        oracle.erase(identifier);
+    }
+
+    st_verify_((container.rehash(0) != reserve_result_t::failed_k) && "a rehash to nothing must still succeed");
+    st_verify_((container.bucket_count()) > (0u) && "the survivors need slots to live in");
+    st_verify_eq_(container.deleted_count(), 0u);
+    unordered_verify_against_oracle(container, oracle, size);
+
+    // On a table holding nothing the same call may genuinely give the memory back.
+    container.clear();
+    st_verify_((container.rehash(0) != reserve_result_t::failed_k));
+    st_verify_(container.empty());
+    unordered_verify_absent(container, 0);
+}
+
+/**
+ *  @brief Tests that an element count no power of two can cover fails instead of quietly yielding
+ *    the smallest possible table.
+ */
+template <typename container_type_>
+void test_unordered_unrepresentable_capacity() {
+
+    using container_t = container_type_;
+    using reserve_result_t = typename container_t::reserve_result_t;
+
+    // The middle one is the nastiest: the load-factor multiplication wraps to exactly zero, which
+    // the power-of-two rounding then reads as a request for the smallest table there is.
+    constexpr std::size_t past_the_load_factor_k = std::numeric_limits<std::size_t>::max() / 2;
+    constexpr std::size_t wrapping_to_nothing_k = std::size_t {1} << 62;
+    constexpr std::size_t past_every_power_of_two_k = std::numeric_limits<std::size_t>::max();
+
+    for (std::size_t elements : {past_the_load_factor_k, wrapping_to_nothing_k, past_every_power_of_two_k}) {
+        auto allocated = container_t::make(elements);
+        st_verify_(!(allocated) && "an unrepresentable element count must not report success");
+
+        container_t container;
+        st_verify_((container.reserve(elements) == reserve_result_t::failed_k) &&
+                   "an unrepresentable reservation must fail rather than allocate one bucket");
+        st_verify_eq_(container.bucket_count(), 0u);
+        st_verify_(container.empty());
+    }
+}
+
+#pragma endregion Saturation and Refusal
+
 #pragma region Concurrency
 
 /** @brief The thread count the concurrent suites use, fixed so a failure reproduces. */
@@ -567,6 +715,56 @@ struct unordered_pinned_of<basic_hash_table<element_type_, hasher_type_, equals_
 /** @brief The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */
 template <typename container_type_>
 using unordered_pinned_t = typename unordered_pinned_of<container_type_>::type;
+
+/**
+ *  @brief Tests that a pinned table with no free slot reports the refusal instead of probing forever.
+ */
+template <typename container_type_>
+void test_unordered_pinned_saturation() {
+
+    using container_t = container_type_;
+    using key_t = typename container_t::key_type;
+    using mapped_t = typename container_t::mapped_type;
+    static_assert(unordered_has_values_k<container_t>, "The pinned suites are written for maps");
+
+    auto allocated = container_t::make(std::size_t {64});
+    st_verify_((allocated) && "the growable table must build");
+    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    std::size_t const slots = container.slots_count();
+    st_verify_((slots) > (0u));
+
+    // A pinned table has no load factor to respect, so every slot can be taken.
+    for (std::size_t identifier = 0; identifier < slots; ++identifier) {
+        status_t const stored =
+            container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
+        st_verify_((stored == success_k) && "every slot of an empty pinned table must be available");
+    }
+    st_verify_eq_(container.size(), slots);
+
+    // A new key has nowhere to go, and the probe must come back rather than wrap forever.
+    for (std::size_t identifier = slots; identifier < slots + 8; ++identifier) {
+        status_t const refused =
+            container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier));
+        st_verify_((refused == out_of_memory_heap_k) && "a full pinned table must report the refusal");
+    }
+    st_verify_eq_(container.size(), slots);
+
+    // Keys that are already there stay reachable and overwritable even with no free slot left.
+    for (std::size_t identifier = 0; identifier < slots; ++identifier) {
+        st_verify_((container.contains(unordered_key_from<key_t>(identifier))) &&
+                   "a saturated table must still find what it holds");
+        status_t const updated = container.emplace(unordered_key_from<key_t>(identifier),
+                                                   unordered_value_from<mapped_t>(identifier + slots));
+        st_verify_((updated == success_k) && "an overwrite needs no free slot");
+    }
+    for (std::size_t identifier = 0; identifier < slots; ++identifier) {
+        bool const reached = container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
+            st_verify_((slot.value() == unordered_value_from<mapped_t>(identifier + slots)) &&
+                       "the overwrite must be the value that survives");
+        });
+        st_verify_((reached) && "an overwritten key must still be present");
+    }
+}
 
 /**
  *  @brief Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen
@@ -722,5 +920,190 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 }
 
 #pragma endregion Concurrency
+
+#pragma region Multi Match Probe Walks
+
+/** @brief A key filed once per generation, so several versions of one identifier coexist. */
+struct versioned_key_t {
+    std::size_t bare = 0;
+    std::size_t generation = 0;
+};
+
+/** @brief The bare half of a @c versioned_key_t, equal to every generation of it. */
+struct bare_key_t {
+    std::size_t bare = 0;
+};
+
+/** @brief Peels both key shapes to the bare identifier, so every version shares one home slot. */
+struct versioned_hash_t {
+    std::size_t operator()(versioned_key_t const &key) const noexcept { return key.bare; }
+    std::size_t operator()(bare_key_t const &key) const noexcept { return key.bare; }
+};
+
+/** @brief Separates generations of one identifier, unless the probe asks for the bare key. */
+struct versioned_equals_t {
+    using is_transparent = void;
+    bool operator()(versioned_key_t const &first, versioned_key_t const &second) const noexcept {
+        return first.bare == second.bare && first.generation == second.generation;
+    }
+    bool operator()(versioned_key_t const &first, bare_key_t const &second) const noexcept {
+        return first.bare == second.bare;
+    }
+    bool operator()(bare_key_t const &first, versioned_key_t const &second) const noexcept {
+        return first.bare == second.bare;
+    }
+};
+
+using versioned_set_t = hash_set<versioned_key_t, versioned_hash_t, versioned_equals_t>;
+
+/** @brief Collects the generations @c search_to_visit reaches for @p bare, in probe order. */
+inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t const &container,
+                                                            std::size_t bare) noexcept {
+    std::vector<std::size_t> generations;
+    container.search_to_visit(bare_key_t {bare}, [&](auto const &slot) noexcept {
+        generations.push_back(slot.key().generation);
+        return probe_t::resume_k;
+    });
+    return generations;
+}
+
+/**
+ *  @brief Tests that @c search_to_visit reaches every version of one key sharing a probe run, and
+ *    none of the foreign keys sharing it.
+ */
+inline void test_unordered_visit_every_match(std::size_t versions = 5) {
+
+    auto allocated = versioned_set_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    versioned_set_t container = *std::move(allocated);
+    std::size_t const slots = container.slots_count().raw;
+
+    // Two identifiers a slot count apart hash to the same home slot, so their versions interleave
+    // inside a single probe run - exactly the layout that makes "the first match" the wrong answer.
+    for (std::size_t generation = 0; generation < versions; ++generation) {
+        container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
+        container.emplace(versioned_key_t {1 + slots, generation}, assume_reserved_t {}, assume_unique_t {});
+    }
+    st_verify_eq_(container.size(), versions * 2);
+
+    std::vector<std::size_t> const wanted = unordered_visit_generations(container, 1);
+    st_verify_eq_(wanted.size(), versions);
+    for (std::size_t generation = 0; generation < versions; ++generation) st_verify_eq_(wanted[generation], generation);
+
+    std::vector<std::size_t> const foreign = unordered_visit_generations(container, 1 + slots);
+    st_verify_eq_(foreign.size(), versions);
+
+    // A key that never entered the run must cost zero visits, and so must one whose home slot is free.
+    st_verify_eq_(unordered_visit_generations(container, 2).size(), 0u);
+    st_verify_eq_(unordered_visit_generations(container, 1 + slots * 2).size(), 0u);
+}
+
+/** @brief Tests that a @c halt_k reply stops the walk before the next slot is even read. */
+inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
+
+    auto allocated = versioned_set_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    versioned_set_t container = *std::move(allocated);
+    for (std::size_t generation = 0; generation < versions; ++generation)
+        container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
+
+    for (std::size_t stop_after = 1; stop_after <= versions; ++stop_after) {
+        std::size_t visits = 0;
+        container.search_to_visit(bare_key_t {1}, [&](auto const &) noexcept {
+            ++visits;
+            return visits == stop_after ? probe_t::halt_k : probe_t::resume_k;
+        });
+        st_verify_eq_(visits, stop_after);
+    }
+}
+
+/** @brief Tests that a tombstone between two matches does not truncate the walk. */
+inline void test_unordered_visit_across_tombstones(std::size_t versions = 6) {
+
+    auto allocated = versioned_set_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    versioned_set_t container = *std::move(allocated);
+    for (std::size_t generation = 0; generation < versions; ++generation)
+        container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
+
+    // Erasing every other generation leaves tombstones interleaved with the survivors.
+    for (std::size_t generation = 0; generation < versions; generation += 2)
+        st_verify_(container.erase(versioned_key_t {1, generation}));
+    st_verify_eq_(container.deleted_count(), (versions + 1) / 2);
+
+    std::vector<std::size_t> const survivors = unordered_visit_generations(container, 1);
+    st_verify_eq_(survivors.size(), versions / 2);
+    for (std::size_t index = 0; index < survivors.size(); ++index) st_verify_eq_(survivors[index], index * 2 + 1);
+}
+
+/** @brief Tests that an empty table, and one holding no allocation at all, cost zero visits. */
+inline void test_unordered_visit_empty_table() {
+
+    versioned_set_t unallocated;
+    st_verify_eq_(unordered_visit_generations(unallocated, 1).size(), 0u);
+
+    auto allocated = versioned_set_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    versioned_set_t container = *std::move(allocated);
+    st_verify_eq_(unordered_visit_generations(container, 1).size(), 0u);
+
+    // A table emptied back out by erasures must behave like one that never held anything.
+    container.emplace(versioned_key_t {1, 0}, assume_reserved_t {}, assume_unique_t {});
+    st_verify_(container.erase(versioned_key_t {1, 0}));
+    st_verify_eq_(unordered_visit_generations(container, 1).size(), 0u);
+}
+
+/** @brief Tests that a run starting in the last slot wraps to the front instead of ending there. */
+inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
+
+    auto allocated = versioned_set_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    versioned_set_t container = *std::move(allocated);
+    std::size_t const slots = container.slots_count().raw;
+
+    std::size_t const last = slots - 1;
+    for (std::size_t generation = 0; generation < versions; ++generation)
+        container.emplace(versioned_key_t {last, generation}, assume_reserved_t {}, assume_unique_t {});
+
+    std::vector<std::size_t> const generations = unordered_visit_generations(container, last);
+    st_verify_eq_(generations.size(), versions);
+    for (std::size_t generation = 0; generation < versions; ++generation)
+        st_verify_eq_(generations[generation], generation);
+}
+
+/**
+ *  @brief Tests that a table with no free slot left terminates the walk instead of circling forever.
+ *  @note The bound must hold in a build where assertions are gone, which is why the harness runs
+ *    this suite under a timeout in a release configuration too.
+ */
+inline void test_unordered_visit_full_table() {
+
+    auto allocated = versioned_set_t::make(std::size_t {64});
+    st_verify_((allocated) && "the table must build");
+    versioned_set_t container = *std::move(allocated);
+    std::size_t const slots = container.slots_count().raw;
+
+    // Every slot taken by one identifier, so the run has neither a free slot nor a foreign key to end on.
+    for (std::size_t generation = 0; generation < slots; ++generation)
+        container.emplace(versioned_key_t {1, generation}, assume_reserved_t {}, assume_unique_t {});
+    st_verify_eq_(container.size(), slots);
+
+    st_verify_eq_(unordered_visit_generations(container, 1).size(), slots);
+
+    // A key absent from a table with nowhere to stop still has to walk exactly once around.
+    std::size_t visits = 0;
+    container.search_to_visit(bare_key_t {2}, [&](auto const &) noexcept {
+        ++visits;
+        return probe_t::resume_k;
+    });
+    st_verify_eq_(visits, 0u);
+
+    // Tombstones must not resurrect the loop either.
+    for (std::size_t generation = 0; generation < slots; generation += 2)
+        st_verify_(container.erase(versioned_key_t {1, generation}));
+    st_verify_eq_(unordered_visit_generations(container, 1).size(), slots / 2);
+}
+
+#pragma endregion Multi Match Probe Walks
 
 } // namespace ashvardanian::smashtable::scripts

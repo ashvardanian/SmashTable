@@ -11,6 +11,7 @@
 #include <smashtable/concurrent_hash_table.hpp>
 
 #include "test.hpp"
+#include "test_fixture_coverage.hpp"
 #include "test_unordered.hpp"
 
 using namespace ashvardanian::smashtable;
@@ -53,6 +54,18 @@ using string_set_t = hash_set<std::string>;
  *  Tests: Dual-heap lifetimes, heterogeneous lookup, atomics over non-trivial elements
  */
 using string_map_t = hash_map<std::string, std::string>;
+
+/**
+ *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: ✗
+ *  Tests: Insertion into a table whose allocator refuses to let it grow
+ */
+using capped_set_t = hash_set<std::size_t, default_hash_t, equal_to_t, stateful_allocator<std::byte>>;
+
+/**
+ *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: @c std::size_t
+ *  Tests: The same refusal path with a mapped value to place alongside the key
+ */
+using capped_map_t = hash_map<std::size_t, std::size_t, default_hash_t, equal_to_t, stateful_allocator<std::byte>>;
 
 #pragma endregion Type Aliases
 
@@ -147,6 +160,72 @@ static void unordered_ops_heterogeneous_lookups() {
 
 #pragma endregion Basic Operations Tests
 
+#pragma region Saturation and Refusal Tests
+
+/** @brief Tests that a table whose allocator stops supplying memory stops storing instead of spinning */
+static void unordered_ops_exhausted_allocator_insertions() {
+    test_unordered_exhausted_allocator_insertions<capped_set_t>();
+    test_unordered_exhausted_allocator_insertions<capped_map_t>();
+}
+
+/** @brief Tests that a table with every slot taken refuses further keys without inflating its size */
+static void unordered_ops_full_table_refusals() {
+    test_unordered_full_table_refusals<trivial_set_t>();
+    test_unordered_full_table_refusals<strong_set_t>();
+    test_unordered_full_table_refusals<trivial_map_t>();
+    test_unordered_full_table_refusals<guarded_map_t>();
+    test_unordered_full_table_refusals<string_set_t>();
+    test_unordered_full_table_refusals<string_map_t>();
+}
+
+/** @brief Tests that a pinned table with no free slot reports the refusal instead of probing forever */
+static void unordered_ops_pinned_saturation() {
+    test_unordered_pinned_saturation<trivial_map_t>();
+    test_unordered_pinned_saturation<guarded_map_t>();
+    test_unordered_pinned_saturation<string_map_t>();
+}
+
+/** @brief Tests that a rehash asking for nothing compacts rather than dropping every slot */
+static void unordered_ops_rehash_to_nothing() {
+    test_unordered_rehash_to_nothing<trivial_set_t>();
+    test_unordered_rehash_to_nothing<strong_set_t>();
+    test_unordered_rehash_to_nothing<trivial_map_t>();
+    test_unordered_rehash_to_nothing<guarded_map_t>();
+    test_unordered_rehash_to_nothing<string_set_t>();
+    test_unordered_rehash_to_nothing<string_map_t>();
+}
+
+/** @brief Tests that an element count no power of two can cover fails instead of yielding one bucket */
+static void unordered_ops_unrepresentable_capacity() {
+    test_unordered_unrepresentable_capacity<trivial_set_t>();
+    test_unordered_unrepresentable_capacity<trivial_map_t>();
+    test_unordered_unrepresentable_capacity<string_map_t>();
+}
+
+#pragma endregion Saturation and Refusal Tests
+
+#pragma region Multi Match Probe Walk Tests
+
+/** @brief Tests that the walk reaches every version of one key in a shared run, and no foreign key */
+static void unordered_visit_every_match() { test_unordered_visit_every_match(); }
+
+/** @brief Tests that a halting callback stops the walk immediately */
+static void unordered_visit_early_exit() { test_unordered_visit_early_exit(); }
+
+/** @brief Tests that tombstones between matches don't truncate the walk */
+static void unordered_visit_across_tombstones() { test_unordered_visit_across_tombstones(); }
+
+/** @brief Tests that an empty table and an absent key cost zero visits */
+static void unordered_visit_empty_table() { test_unordered_visit_empty_table(); }
+
+/** @brief Tests that a run homed in the last slot wraps to the front */
+static void unordered_visit_wraparound() { test_unordered_visit_wraparound(); }
+
+/** @brief Tests that a table with no free slot terminates the walk instead of circling forever */
+static void unordered_visit_full_table() { test_unordered_visit_full_table(); }
+
+#pragma endregion Multi Match Probe Walk Tests
+
 #pragma region Concurrency Tests
 
 /** @brief Tests concurrent emplace on a pinned table, then concurrent find and contains */
@@ -165,6 +244,10 @@ static void unordered_concurrency_update_and_erase() {
 
 #pragma endregion Concurrency Tests
 
+using counting_set_t = hash_set<trivial_key_t, counting_hash_t, counting_equals_t>;
+
+static void fixture_coverage_hash_lookup_cost_is_bounded() { test_hash_lookup_cost_is_bounded<counting_set_t>(); }
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
@@ -180,8 +263,25 @@ int main() {
     failures += run_test(filter, "unordered_ops.load_factor_consistency", unordered_ops_load_factor_consistency);
     failures += run_test(filter, "unordered_ops.heterogeneous_lookups", unordered_ops_heterogeneous_lookups);
 
+    failures +=
+        run_test(filter, "unordered_ops.exhausted_allocator_insertions", unordered_ops_exhausted_allocator_insertions);
+    failures += run_test(filter, "unordered_ops.full_table_refusals", unordered_ops_full_table_refusals);
+    failures += run_test(filter, "unordered_ops.pinned_saturation", unordered_ops_pinned_saturation);
+    failures += run_test(filter, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
+    failures += run_test(filter, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
+
+    failures += run_test(filter, "unordered_visit.every_match", unordered_visit_every_match);
+    failures += run_test(filter, "unordered_visit.early_exit", unordered_visit_early_exit);
+    failures += run_test(filter, "unordered_visit.across_tombstones", unordered_visit_across_tombstones);
+    failures += run_test(filter, "unordered_visit.empty_table", unordered_visit_empty_table);
+    failures += run_test(filter, "unordered_visit.wraparound", unordered_visit_wraparound);
+    failures += run_test(filter, "unordered_visit.full_table", unordered_visit_full_table);
+
     failures += run_test(filter, "unordered_concurrency.emplace_and_find", unordered_concurrency_emplace_and_find);
     failures += run_test(filter, "unordered_concurrency.update_and_erase", unordered_concurrency_update_and_erase);
+
+    failures +=
+        run_test(filter, "fixture_coverage.hash_lookup_cost_is_bounded", fixture_coverage_hash_lookup_cost_is_bounded);
 
     return report_test_failures(failures);
 }

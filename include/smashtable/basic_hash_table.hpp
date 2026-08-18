@@ -74,6 +74,7 @@
 #include <cassert> // `assert`
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::uint8_t`
+#include <cstdlib> // `std::abort`
 #include <cstring> // `std::memcpy`
 
 #include <limits>      // `std::numeric_limits`
@@ -167,6 +168,14 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
 
 #pragma endregion Iterators
 
+/** @brief Whether a probe walk keeps going or has seen enough. */
+enum class probe_t : std::uint8_t {
+    /** @brief The callback wants the remaining matches of the same probe run. */
+    resume_k,
+    /** @brief The callback is done, and the walk stops before the next slot. */
+    halt_k,
+};
+
 /**
  *  @brief Growable hash table with linear probing and Structure-of-Arrays layout.
  *    Compatible with @c std::unordered_set interface. See file header for detailed design rationale.
@@ -240,6 +249,16 @@ class basic_hash_table {
         failed_k,
     };
 
+    /** @brief What a probe that may store an element managed to do. */
+    enum class upsert_result_t : std::uint8_t {
+        /** @brief A free or tombstoned slot took the new element. */
+        inserted_k,
+        /** @brief An equal key was already there, and the callback saw it. */
+        updated_k,
+        /** @brief Every slot was taken by a different key, so nothing was stored. */
+        no_slot_k,
+    };
+
     /*  STL-compatibility definitions, identical to that of `std::unordered_map`:
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map
      */
@@ -290,6 +309,14 @@ class basic_hash_table {
     basic_hash_table(hash_slots_count_t slots, hasher_t hasher, equals_t equals, allocator_t allocator) noexcept
         : storage_(storage_t::make(slots, std::move(allocator))), hasher_(std::move(hasher)),
           equals_(std::move(equals)) {}
+
+    /** @brief What an insertion that stored nothing reports: the end position, and no insertion. */
+    insert_result_t missed_position_() noexcept {
+        insert_result_t result;
+        unsafe_retarget(result.position, storage_.slots_count);
+        result.position.slots_remaining = 0;
+        return result;
+    }
 
   public:
 #pragma region Constructors
@@ -451,7 +478,57 @@ class basic_hash_table {
                 if (offset == initial_offset) break;
             }
             else {
-                // A "free" slot ends the probe sequence.
+                // A "free" slot ends the probe sequence, and a locked one would truncate it, so
+                // the state is checked rather than inferred from "not populated, not deleted".
+                assert(slot.is_free() && "A growable table is single-threaded, so no slot can be locked");
+                break;
+            }
+        }
+    }
+
+    /**
+     *  @brief Visits @b every populated slot matching @p wanted, not just the first.
+     *    A table whose equality separates versions of one key files them all in one probe run, because
+     *    the hasher still peels to the bare key. Finding one of them is not finding the newest one.
+     *
+     *  @param[in] wanted Hashable and comparable with key object.
+     *  @param[in] call Receives each @c const_slot_ref_t and returns @c probe_t. Must be @c noexcept.
+     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     */
+    template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
+    void search_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
+
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
+            if (!storage_.populated_count) [[unlikely]]
+                return;
+
+        offset_t const offset_mask = storage_.slots_count - 1;
+        offset_t const initial_offset = hasher_(wanted) & offset_mask;
+        offset_t offset = initial_offset;
+        const_slot_ref_t slot;
+
+        while (true) {
+            unsafe_retarget(slot, offset);
+
+            // Checking for equality isn't safe, if we operate on uninitialized
+            // memory and call some complex comparison operators on them.
+            // So instead of one runtime `if`, we have two nested `if`s.
+            if (slot.is_populated()) {
+                if (equals_(slot.key(), wanted))
+                    if (call(slot) == probe_t::halt_k) break;
+                offset = (offset + 1) & offset_mask;
+                if (offset == initial_offset) break;
+            }
+            else if (slot.is_deleted()) {
+                // A tombstone only interrupts the run for a reader that stops at the first match,
+                // and this walk wants the ones behind it.
+                offset = (offset + 1) & offset_mask;
+                if (offset == initial_offset) break;
+            }
+            else {
+                // A "free" slot ends the probe sequence, and a locked one would truncate it, so
+                // the state is checked rather than inferred from "not populated, not deleted".
+                assert(slot.is_free() && "A growable table is single-threaded, so no slot can be locked");
                 break;
             }
         }
@@ -492,7 +569,10 @@ class basic_hash_table {
                 offset = (offset + 1) & offset_mask;
                 if (offset == initial_offset) break;
             }
-            else { break; }
+            else {
+                assert(slot.is_free() && "A growable table is single-threaded, so no slot can be locked");
+                break;
+            }
         }
     }
 
@@ -504,11 +584,10 @@ class basic_hash_table {
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call A callback receiving a @c slot_ref_t to UN-initialized memory, where an
      *    element should be built.
+     *  @return Whether a slot took the element; the counters only move when one did.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void search_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
-
-        ++storage_.populated_count;
+    upsert_result_t search_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t offset = hasher_(wanted) & offset_mask;
@@ -516,25 +595,24 @@ class basic_hash_table {
 
         // Bounded by the table itself. A caller promising @c assume_reserved_t promises a free slot
         // exists, and probing forever is the wrong way to discover the promise was false - it hangs
-        // with nothing to show, in a build where the assertion below is gone.
-        bool stored = false;
-        for (offset_t probes = 0; probes != storage_.slots_count && !stored; ++probes) {
+        // with nothing to show, in a build where an assertion would be gone.
+        for (offset_t probes = 0; probes != storage_.slots_count; ++probes) {
             unsafe_retarget(slot, offset);
 
             if (slot.is_free() || slot.is_deleted()) {
+                bool const reused_tombstone = slot.is_deleted();
                 call(slot);
-                bool const did_find_deleted = slot.is_deleted();
                 slot.mark_populated();
-                storage_.deleted_count -= did_find_deleted;
-                stored = true;
-                continue;
+                ++storage_.populated_count;
+                if (reused_tombstone) --storage_.deleted_count;
+                return upsert_result_t::inserted_k;
             }
 
             // A slot is "populated", definitely with a different key!
             offset = (offset + 1) & offset_mask;
         }
 
-        assert(stored && "Reserve before inserting: every slot was taken, so nothing was stored");
+        return upsert_result_t::no_slot_k;
     }
 
     /**
@@ -545,31 +623,33 @@ class basic_hash_table {
      *  @param[in] call_unused A callback receiving a @c slot_ref_t to UN-initialized memory, where
      *    an element should be built.
      *  @param[in] call_equal A callback receiving a @c slot_ref_t to an initialized matching object.
+     *  @return What the probe managed to do; @c no_slot_k when every slot holds a different key.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_,
               typename... tags_types_>
-    void search_to_upsert(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
-                          callback_equal_type_ &&call_equal, tags_types_...) noexcept {
+    upsert_result_t search_to_upsert(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
+                                     callback_equal_type_ &&call_equal, tags_types_...) noexcept {
 
         offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t const initial_offset = hasher_(wanted) & offset_mask;
-        offset_t offset = initial_offset;
+        offset_t offset = hasher_(wanted) & offset_mask;
 
         // The slot currently under inspection, and the first observed "deleted" slot.
         slot_ref_t current, reusable;
         bool did_find_deleted = false;
 
-        while (true) {
+        // Bounded by the table itself: a table with no free slot left has nothing to end the probe
+        // sequence on, and spinning is the wrong way to discover that - it hangs with nothing to
+        // show, in a build where an assertion would be gone.
+        for (offset_t probes = 0; probes != storage_.slots_count; ++probes) {
             unsafe_retarget(current, offset);
 
             if (current.is_populated()) {
                 // We have found a filled slot and must check for match.
                 if (equals_(current.key(), wanted)) {
                     call_equal(current);
-                    return;
+                    return upsert_result_t::updated_k;
                 }
                 offset = (offset + 1) & offset_mask;
-                assert(offset != initial_offset && "Poor hash table usage!");
                 continue;
             }
 
@@ -580,21 +660,30 @@ class basic_hash_table {
                     did_find_deleted = true;
                 }
                 offset = (offset + 1) & offset_mask;
-                assert(offset != initial_offset && "Poor hash table usage!");
                 continue;
             }
 
             // In case of a "free" slot:
             // > If a deleted slot was seen earlier in this probe: reuse it, drop the free one.
             // > Otherwise: take the free slot itself.
+            assert(current.is_free() && "A growable table is single-threaded, so no slot can be locked");
             slot_ref_t &chosen = did_find_deleted ? reusable : current;
             call_unused(chosen);
             chosen.mark_populated();
 
             ++storage_.populated_count;
-            storage_.deleted_count -= did_find_deleted;
-            return;
+            if (did_find_deleted) --storage_.deleted_count;
+            return upsert_result_t::inserted_k;
         }
+
+        // The walk came back to where it started without meeting a free slot. A tombstone seen along
+        // the way is still ours to take; without one there is nowhere left to store.
+        if (!did_find_deleted) return upsert_result_t::no_slot_k;
+        call_unused(reusable);
+        reusable.mark_populated();
+        ++storage_.populated_count;
+        --storage_.deleted_count;
+        return upsert_result_t::inserted_k;
     }
 
     /**
@@ -659,30 +748,42 @@ class basic_hash_table {
     /**
      *  @brief Returns a reference to the mapped value of the element with the given key.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/at
+     *  @warning A missing key has no value to name and this library does not throw, so the call
+     *    aborts rather than hand back a reference one past the values region.
      */
     template <typename comparable_key_type_ = key_t const &>
     value_storage_t &at(comparable_key_type_ &&key) noexcept {
         static_assert(has_values_k, "at() is only available for maps, not sets");
         slot_ref_t result;
-        unsafe_retarget(result, storage_.slots_count);
-        search_to_find(std::forward<comparable_key_type_>(key),
-                       [&result](slot_ref_t const &slot) noexcept { result.slot_ = slot.slot_; });
-        assert(result.slot_ != storage_.slots_count && "The object must be already present");
+        unsafe_retarget(result, 0);
+        bool found = false;
+        search_to_find(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
+            result.slot_ = slot.slot_;
+            found = true;
+        });
+        assert(found && "The object must be already present");
+        if (!found) std::abort();
         return result.value_ref();
     }
 
     /**
      *  @brief Returns a const reference to the mapped value of the element with the given key.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/at
+     *  @warning A missing key has no value to name and this library does not throw, so the call
+     *    aborts rather than hand back a reference one past the values region.
      */
     template <typename comparable_key_type_ = key_t const &>
     value_storage_t const &at(comparable_key_type_ &&key) const noexcept {
         static_assert(has_values_k, "at() is only available for maps, not sets");
         const_slot_ref_t result;
-        unsafe_retarget(result, storage_.slots_count);
-        search_to_find(std::forward<comparable_key_type_>(key),
-                       [&result](const_slot_ref_t const &slot) noexcept { result.slot_ = slot.slot_; });
-        assert(result.slot_ != storage_.slots_count && "The object must be already present");
+        unsafe_retarget(result, 0);
+        bool found = false;
+        search_to_find(std::forward<comparable_key_type_>(key), [&](const_slot_ref_t const &slot) noexcept {
+            result.slot_ = slot.slot_;
+            found = true;
+        });
+        assert(found && "The object must be already present");
+        if (!found) std::abort();
         return result.value_ref();
     }
 
@@ -806,9 +907,13 @@ class basic_hash_table {
     std::conditional_t<report_ == emplace_report_t::position_k, insert_result_t, void> emplace(
         convertible_key_type_ &&key, convertible_value_type_ &&value, tags_types_... tags) noexcept {
 
-        if constexpr (!contains_type<assume_reserved_t, tags_types_...>()) {
-            [[maybe_unused]] reserve_result_t const grown = reserve_more(1);
-        }
+        // A refused allocation must stop the insertion here: probing a table that could not grow
+        // fills it to the last slot and then has nowhere left to go.
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
+            if (reserve_more(1) == reserve_result_t::failed_k) {
+                if constexpr (report_ == emplace_report_t::position_k) return missed_position_();
+                else return;
+            }
 
         constexpr bool return_k = report_ == emplace_report_t::position_k;
         using result_t = std::conditional_t<return_k, insert_result_t, placeholder_t>;
@@ -859,9 +964,13 @@ class basic_hash_table {
     std::conditional_t<report_ == emplace_report_t::position_k, insert_result_t, void> emplace(
         convertible_key_type_ &&key, tags_types_... tags) noexcept {
 
-        if constexpr (!contains_type<assume_reserved_t, tags_types_...>()) {
-            [[maybe_unused]] reserve_result_t const grown = reserve_more(1);
-        }
+        // A refused allocation must stop the insertion here: probing a table that could not grow
+        // fills it to the last slot and then has nowhere left to go.
+        if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
+            if (reserve_more(1) == reserve_result_t::failed_k) {
+                if constexpr (report_ == emplace_report_t::position_k) return missed_position_();
+                else return;
+            }
 
         constexpr bool return_k = report_ == emplace_report_t::position_k;
         using result_t = std::conditional_t<return_k, insert_result_t, placeholder_t>;
@@ -933,8 +1042,9 @@ class basic_hash_table {
     [[nodiscard]] status_t upsert(convertible_element_type_ &&element) noexcept {
         if (reserve_more(1) == reserve_result_t::failed_k) return out_of_memory_heap_k;
 
+        upsert_result_t stored = upsert_result_t::no_slot_k;
         if constexpr (has_values_k)
-            search_to_upsert(
+            stored = search_to_upsert(
                 element.key,
                 [&](slot_ref_t &unused_slot) noexcept {
                     new (&unused_slot.key_ref()) key_t(std::move(element.key));
@@ -943,12 +1053,12 @@ class basic_hash_table {
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.value_ref() = std::move(element.mapped); },
                 assume_reserved_t {});
         else
-            search_to_upsert(
+            stored = search_to_upsert(
                 element,
                 [&](slot_ref_t &unused_slot) noexcept { new (&unused_slot.key_ref()) key_t(std::move(element)); },
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.key_ref() = std::move(element); },
                 assume_reserved_t {});
-        return success_k;
+        return stored == upsert_result_t::no_slot_k ? out_of_memory_heap_k : success_k;
     }
 
     /**
@@ -1043,10 +1153,11 @@ class basic_hash_table {
     /**
      *  @brief Exports the data into a fresh table of the requested size and swaps the contents.
      *    Also used to clean the tombstones left behind by deletions.
-     *  @return @c failed_k when the new buffer could not be allocated, leaving this table untouched.
-     *  @warning The new capacity can't be less than @c size().
+     *  @return @c failed_k when the request cannot hold what is stored, or the new buffer could not
+     *    be allocated, leaving this table untouched either way.
      */
     reserve_result_t force_resize(hash_slots_count_t slots_count) noexcept {
+        if (slots_count.raw < size()) return reserve_result_t::failed_k;
         basic_hash_table resized = move_to_new(slots_count);
         if (slots_count.raw && !resized.storage_.is_allocated()) return reserve_result_t::failed_k;
         swap(resized);
@@ -1089,10 +1200,14 @@ class basic_hash_table {
     /**
      *  @brief Sets the number of buckets to the desired value, rehashing in the process.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/rehash
+     *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
+     *  @note A request too small for what is stored is raised to what the current size needs, so
+     *    @c rehash(0) compacts rather than emptying the table into a layout with no slots at all.
      */
-    void rehash(offset_t count_buckets) noexcept {
-        [[maybe_unused]] reserve_result_t const resized =
-            force_resize(hash_slots_count_t::from_slots(count_buckets * hash_bucket_capacity_k));
+    reserve_result_t rehash(offset_t count_buckets) noexcept {
+        hash_slots_count_t const wanted = hash_slots_count_t::from_slots(count_buckets * hash_bucket_capacity_k);
+        hash_slots_count_t const needed {size()};
+        return force_resize(wanted.raw >= needed.raw ? wanted : needed);
     }
 
 #pragma endregion Memory Management
@@ -1102,13 +1217,16 @@ class basic_hash_table {
     /**
      *  @brief Creates a new buffer of the requested capacity and rehashes the present data into it.
      *    Move-constructors are used, avoiding copies, and this table is left deallocated.
-     *  @return An unallocated table when the allocator refused, leaving this one untouched.
+     *  @return An unallocated table when the allocator refused or nothing was asked for, leaving
+     *    this one untouched.
      *  @warning The new capacity can't be less than the current @c size().
      */
     basic_hash_table move_to_new(hash_slots_count_t slots_count) noexcept {
 
+        // A zero-slot request allocates nothing, and emplacing into an unallocated table would walk
+        // a null headers region, so it leaves through the same door an allocation failure does.
         basic_hash_table target(slots_count, hasher_, equals_, get_allocator());
-        if (slots_count.raw && !target.storage_.is_allocated()) return target;
+        if (!target.storage_.is_allocated()) return target;
         assert(target.capacity() >= size() && "Not enough space in the new Hash-Table!");
 
         for_each([&target](slot_ref_t const &source_slot) noexcept {

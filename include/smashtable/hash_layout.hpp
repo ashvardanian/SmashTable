@@ -42,6 +42,7 @@
 
 #include <atomic>      // `std::atomic_ref`
 #include <bit>         // `std::popcount`, `std::countr_zero`
+#include <limits>      // `std::numeric_limits`
 #include <type_traits> // `std::is_same`, `std::conditional_t`
 #include <utility>     // `std::declval`, `std::move`
 
@@ -140,24 +141,37 @@ constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t ma
  *  count and applies the load factor, while @c from_slots takes the slot count directly, for callers
  *  that already sized the storage. @c is_addressable reports whether the probe masks can address the
  *  count, which requires a power of two.
+ *
+ *  A request too large to round up to a power of two keeps @c unrepresentable_k, which is not a power
+ *  of two and therefore not addressable, so the factories refuse it instead of silently handing back
+ *  the smallest possible table.
  */
 struct hash_slots_count_t {
+    /** @brief A count that no power of two covers, and which @c is_addressable therefore rejects. */
+    inline static constexpr std::size_t unrepresentable_k = std::numeric_limits<std::size_t>::max();
+
     std::size_t raw = 0;
 
     operator std::size_t() const noexcept { return raw; }
     explicit constexpr hash_slots_count_t() noexcept {}
     explicit constexpr hash_slots_count_t(std::size_t elements) noexcept {
         if (elements == 0) return;
-        std::size_t needed_slots = (elements * 4ul) / 3ul;
+        // The load-factor budget wraps before the rounding even gets a chance to.
+        if (elements > unrepresentable_k / 4ul) {
+            raw = unrepresentable_k;
+            return;
+        }
+        std::size_t const needed_slots = (elements * 4ul) / 3ul;
         // We calculate the bucket index with AND masks, so it must be a power of two.
-        raw = roundup_to_pow2(needed_slots);
-        raw = larger_of(raw, hash_bucket_capacity_k);
+        std::size_t const rounded_slots = roundup_to_pow2(needed_slots);
+        raw = rounded_slots ? larger_of(rounded_slots, hash_bucket_capacity_k) : unrepresentable_k;
     }
 
     static constexpr hash_slots_count_t from_slots(std::size_t slots) noexcept {
         hash_slots_count_t result;
         if (slots == 0) return result;
-        result.raw = larger_of(roundup_to_pow2(slots), hash_bucket_capacity_k);
+        std::size_t const rounded_slots = roundup_to_pow2(slots);
+        result.raw = rounded_slots ? larger_of(rounded_slots, hash_bucket_capacity_k) : unrepresentable_k;
         return result;
     }
 
@@ -196,6 +210,11 @@ struct hash_layout_for {
     using hasher_t = hasher_type_;
     using offset_t = decltype(hasher_type_ {}(std::declval<key_t>()));
 
+    // The region offsets are cache-line multiples, but the base is only as aligned as the allocator
+    // makes it, so anything over-aligned would land off its own boundary.
+    static_assert(alignof(key_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "An over-aligned key is not accommodated by the single default-aligned allocation");
+
     inline static constexpr bool has_values_k = false;
     inline static constexpr std::size_t bytes_for_keys_k =
         roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(key_t) * hash_bucket_capacity_k);
@@ -218,6 +237,13 @@ struct hash_layout_for<mapping<key_type_, value_type_>, hasher_type_> {
     using element_copy_t = mapping<key_t, value_t>;
     using hasher_t = hasher_type_;
     using offset_t = decltype(hasher_type_ {}(std::declval<key_t>()));
+
+    // The region offsets are cache-line multiples, but the base is only as aligned as the allocator
+    // makes it, so anything over-aligned would land off its own boundary.
+    static_assert(alignof(key_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "An over-aligned key is not accommodated by the single default-aligned allocation");
+    static_assert(alignof(value_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+                  "An over-aligned value is not accommodated by the single default-aligned allocation");
 
     inline static constexpr bool has_values_k = true;
     inline static constexpr std::size_t bytes_for_keys_k =
@@ -470,6 +496,8 @@ void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, c
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
 
     hash_bucket_head_t const &head = slot.header_ref();
+    assert(!(head.u32s.populations & head.u32s.deletions) &&
+           "A locked slot would be skipped: this walk is only sound on a table nobody is probing");
     hash_bucket_mask_t populations_left = head.u32s.populations & ~head.u32s.deletions;
     while (populations_left) {
         offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
@@ -496,6 +524,8 @@ bool find_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, predi
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
 
     hash_bucket_head_t const &head = slot.header_ref();
+    assert(!(head.u32s.populations & head.u32s.deletions) &&
+           "A locked slot would be skipped: this walk is only sound on a table nobody is probing");
     hash_bucket_mask_t populations_left = head.u32s.populations & ~head.u32s.deletions;
     while (populations_left) {
         offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
@@ -577,7 +607,8 @@ struct hash_storage {
 
     /**
      *  @brief Allocates and zeroes the buffer for @p slots, keeping @p allocator for its release.
-     *  @return An empty storage when the allocation fails, which @c is_allocated reports.
+     *  @return An empty storage when the request is unrepresentable or the allocation fails, which
+     *    @c is_allocated reports.
      */
     [[nodiscard]] static hash_storage make(hash_slots_count_t slots, allocator_t allocator_state) noexcept {
 
@@ -585,7 +616,12 @@ struct hash_storage {
 
         // Every probe masks with `slots_count - 1`, so a count that is not a power of two turns
         // the probe sequence into an endless walk rather than a wrong answer.
-        assert(slots.is_addressable() && "Slot count must be a power of two of at least one bucket");
+        if (!slots.is_addressable()) return result;
+
+        // The byte count is the second place a huge request wraps, and a wrapped one would allocate
+        // a fraction of what the regions then address.
+        std::size_t const buckets = slots.raw / hash_bucket_capacity_k;
+        if (buckets > std::numeric_limits<std::size_t>::max() / bytes_in_bucket_k) return result;
 
         std::size_t const needed_bytes = memory_usage(slots);
         if (!needed_bytes) return result;

@@ -41,7 +41,6 @@
  *  serializes through @c lock, and without it the spin livelocks the warp.
  */
 #pragma once
-#include <cassert> // `assert`
 #include <cstddef> // `std::byte`, `std::size_t`
 
 #include <type_traits> // `std::is_trivially_destructible`
@@ -210,8 +209,7 @@ class concurrent_hash_table {
     template <typename convertible_key_type_, typename convertible_value_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
         static_assert(has_values_k, "A two-argument emplace is only available for maps");
-        if (size() + deleted_count() >= slots_count()) return out_of_memory_heap_k;
-        probe_to_upsert_(
+        return probe_to_upsert_(
             key,
             [&](slot_ref_t &unused_slot) noexcept {
                 new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
@@ -220,7 +218,6 @@ class concurrent_hash_table {
             [&](slot_ref_t &equal_slot) noexcept {
                 equal_slot.value_ref() = std::forward<convertible_value_type_>(value);
             });
-        return success_k;
     }
 
     /**
@@ -230,14 +227,12 @@ class concurrent_hash_table {
     template <typename convertible_key_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
         static_assert(!has_values_k, "A one-argument emplace is only available for sets");
-        if (size() + deleted_count() >= slots_count()) return out_of_memory_heap_k;
-        probe_to_upsert_(
+        return probe_to_upsert_(
             key,
             [&](slot_ref_t &unused_slot) noexcept {
                 new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
             },
             no_op_fn_t {});
-        return success_k;
     }
 
     /**
@@ -323,72 +318,57 @@ class concurrent_hash_table {
 
     /**
      *  @brief Walks the probe sequence of @p wanted, building an element or overwriting the equal one.
-     *    The first tombstone met is kept locked until the sequence commits, so no other thread can
-     *    claim the slot this one intends to reuse.
+     *  @return @c success_k, or @c out_of_memory_heap_k when no slot along the sequence was free.
+     *
+     *  Exactly one slot is locked at a time. A tombstone is walked past rather than held: probe order
+     *  is monotone only modulo the slot count, so a thread carrying a lock across the wrap would meet
+     *  its own bit and spin on itself, and two writers holding one tombstone each would deadlock on
+     *  the other's. Tombstones are therefore reclaimed only by a rehash, which is what pinning
+     *  already asks a caller to hand the storage back for.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_>
-    constexpr void probe_to_upsert_(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
-                                    callback_equal_type_ &&call_equal) noexcept {
+    constexpr status_t probe_to_upsert_(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
+                                        callback_equal_type_ &&call_equal) noexcept {
+
+        if (!storage_.slots_count) [[unlikely]]
+            return out_of_memory_heap_k;
 
         offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t const initial_offset = hasher_(wanted) & offset_mask;
-        offset_t offset = initial_offset;
+        offset_t offset = hasher_(wanted) & offset_mask;
+        slot_ref_t current;
 
-        // The slot currently under inspection, and the first observed "deleted" slot.
-        // The latter stays locked from the moment it is remembered until we commit.
-        slot_ref_t current, reusable;
-        bool did_find_deleted = false;
-
-        while (true) {
+        // Bounded by the table itself: a pinned table genuinely fills up, and spinning is the wrong
+        // way to discover that - it hangs a thread, or a whole warp, with nothing to show.
+        for (offset_t probes = 0; probes != storage_.slots_count; ++probes) {
             storage_.retarget_slot(current, offset);
             current.lock();
 
             if (current.is_populated()) {
-                // We have found a filled slot and must check for match:
-                // > If matches: unlock the remembered slot, call back, unlock current, exit.
-                // > If not: unlock current and jump forward.
+                // We have found a filled slot and must check for match.
                 if (equals_(current.key(), wanted)) {
-                    if (did_find_deleted) reusable.unlock();
                     call_equal(current);
                     current.unlock();
-                    return;
+                    return success_k;
                 }
                 current.unlock();
-                offset = (offset + 1) & offset_mask;
-                assert(offset != initial_offset && "Poor hash table usage!");
-                continue;
+            }
+            else if (current.is_deleted()) { current.unlock(); }
+            else {
+                call_unused(current);
+                current.mark_populated();
+                current.unlock();
+
+                // Change this counter afterwards - in a relaxed manner.
+                // Somebody else might be already searching for this slot,
+                // we don't want them to wait :)
+                atomic_add_fetch<offset_t>(storage_.populated_count, 1);
+                return success_k;
             }
 
-            if (current.is_deleted()) {
-                // Found a deleted slot:
-                // > If it is the first one: keep it locked for later, jump forward.
-                // > If we already saw one: unlock current, just jump forward.
-                if (!did_find_deleted) {
-                    reusable = current;
-                    did_find_deleted = true;
-                }
-                else { current.unlock(); }
-                offset = (offset + 1) & offset_mask;
-                assert(offset != initial_offset && "Poor hash table usage!");
-                continue;
-            }
-
-            // In case of a "free" slot:
-            // > If a deleted slot was seen earlier in this probe: reuse it, drop the free one.
-            // > Otherwise: take the free slot itself.
-            if (did_find_deleted) current.unlock();
-            slot_ref_t &chosen = did_find_deleted ? reusable : current;
-            call_unused(chosen);
-            chosen.mark_populated();
-            chosen.unlock();
-
-            // Change these counters afterwards - in a relaxed manner.
-            // Somebody else might be already searching for this slot,
-            // we don't want them to wait :)
-            atomic_add_fetch<offset_t>(storage_.populated_count, 1);
-            if (did_find_deleted) atomic_sub_fetch<offset_t>(storage_.deleted_count, 1);
-            return;
+            offset = (offset + 1) & offset_mask;
         }
+
+        return out_of_memory_heap_k;
     }
 
 #pragma endregion Probes
