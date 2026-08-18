@@ -32,7 +32,7 @@ void api() {
     container.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
     container.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
     container.range(identifier_t {}, identifier_t {}, [](value_t const &) noexcept {});
-    container.erase_range(identifier_t {}, identifier_t {}, [](value_t const &) noexcept {});
+    _ = container.erase_range(identifier_t {}, identifier_t {}, [](value_t const &) noexcept {});
     _ = container.clear();
     _ = container.size();
 
@@ -51,12 +51,12 @@ void api() {
     // Machine Learning
     std::random_device random_device;
     std::mt19937 random_generator(random_device());
-    container.sample_range( //
+    container.sample_one( //
         identifier_t {}, identifier_t {}, random_generator, [](value_t const &) noexcept {});
 
     std::size_t count_seen = 0;
     std::array<value_t, 16> reservoir;
-    container.sample_range( //
+    container.sample_reservoir( //
         identifier_t {}, identifier_t {}, random_generator, count_seen, reservoir.size(), reservoir.data());
 
     // Exports

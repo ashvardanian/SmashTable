@@ -12,7 +12,9 @@
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
+#include "test_std_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -294,22 +296,22 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_non_repeatable_reads_are_allowed() {
-    test_non_repeatable_reads_are_allowed<transactional_trivial_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_tracking_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_composite_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_read_matches_isolation() {
+    test_repeated_read_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_read_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_read_matches_isolation<transactional_composite_map_t>();
+    test_repeated_read_matches_isolation<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_phantom_reads_are_allowed() {
-    test_phantom_reads_are_allowed<transactional_trivial_set_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_set_t>();
-    test_phantom_reads_are_allowed<transactional_composite_set_t>();
-    test_phantom_reads_are_allowed<transactional_heavy_set_t>();
-    test_phantom_reads_are_allowed<transactional_trivial_map_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_map_t>();
-    test_phantom_reads_are_allowed<transactional_composite_map_t>();
-    test_phantom_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_range_matches_isolation() {
+    test_repeated_range_matches_isolation<transactional_trivial_set_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_set_t>();
+    test_repeated_range_matches_isolation<transactional_composite_set_t>();
+    test_repeated_range_matches_isolation<transactional_heavy_set_t>();
+    test_repeated_range_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_range_matches_isolation<transactional_composite_map_t>();
+    test_repeated_range_matches_isolation<transactional_heavy_map_t>();
 }
 
 static void transactional_consistency_delete_visibility() {
@@ -330,6 +332,120 @@ static void transactional_consistency_reset_clears_transaction_state() {
 
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
+}
+
+#pragma region Std Store Defects
+
+static void std_store_defects_committed_tombstones_are_reclaimable() {
+    test_committed_tombstones_are_reclaimable<transactional_trivial_map_t>();
+    test_committed_tombstones_are_reclaimable<transactional_composite_map_t>();
+    test_committed_tombstones_are_reclaimable<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_vacuum_respects_its_window() {
+    test_vacuum_respects_its_window<transactional_trivial_map_t>();
+    test_vacuum_respects_its_window<transactional_composite_map_t>();
+    test_vacuum_respects_its_window<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_erase_reports_and_reclaims_tombstone() {
+    test_erase_reports_and_reclaims_tombstone<transactional_trivial_map_t>();
+    test_erase_reports_and_reclaims_tombstone<transactional_composite_map_t>();
+    test_erase_reports_and_reclaims_tombstone<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_erase_range_skips_tombstones() {
+    test_erase_range_skips_tombstones<transactional_trivial_map_t>();
+    test_erase_range_skips_tombstones<transactional_composite_map_t>();
+    test_erase_range_skips_tombstones<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_vacuum_leaves_staged_entries() {
+    test_vacuum_leaves_staged_entries<transactional_trivial_map_t>();
+    test_vacuum_leaves_staged_entries<transactional_composite_map_t>();
+    test_vacuum_leaves_staged_entries<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_commit_reports_lost_versions() {
+    test_commit_reports_lost_versions<transactional_trivial_map_t>();
+    test_commit_reports_lost_versions<transactional_composite_map_t>();
+    test_commit_reports_lost_versions<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_commit_reports_success_when_published() {
+    test_commit_reports_success_when_published<transactional_trivial_map_t>();
+    test_commit_reports_success_when_published<transactional_composite_map_t>();
+    test_commit_reports_success_when_published<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_staged_entries_keep_one_generation() {
+    test_staged_entries_keep_one_generation<transactional_trivial_map_t>();
+    test_staged_entries_keep_one_generation<transactional_composite_map_t>();
+    test_staged_entries_keep_one_generation<transactional_heavy_map_t>();
+}
+
+#pragma endregion Std Store Defects
+
+#pragma region Commit Stamp
+
+static void commit_stamp_rolled_back_stage_does_not_abort_a_peer() {
+    test_rolled_back_stage_does_not_abort_a_peer<transactional_trivial_map_t>();
+}
+
+static void commit_stamp_lost_update_is_refused() { test_lost_update_is_refused<transactional_trivial_map_t>(); }
+
+static void commit_stamp_find_and_watch_records_absence() {
+    test_find_and_watch_records_absence<transactional_trivial_map_t>();
+}
+
+#pragma endregion Commit Stamp
+
+static void transactional_consistency_find_does_not_watch() {
+    test_find_does_not_watch<transactional_trivial_map_t>();
+    test_find_does_not_watch<transactional_composite_map_t>();
+    test_find_does_not_watch<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_clear_keeps_generations_running() {
+    test_clear_keeps_generations_running<transactional_trivial_map_t>();
+    test_clear_keeps_generations_running<transactional_composite_map_t>();
+    test_clear_keeps_generations_running<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_insert_refuses_with_key_already_exists() {
+    test_insert_refuses_with_key_already_exists<transactional_trivial_map_t>();
+    test_insert_refuses_with_key_already_exists<transactional_composite_map_t>();
+    test_insert_refuses_with_key_already_exists<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_insert_reports_the_stored_element() {
+    test_insert_reports_the_stored_element<transactional_trivial_map_t>();
+    test_insert_reports_the_stored_element<transactional_composite_map_t>();
+    test_insert_reports_the_stored_element<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_insert_after_local_erase_succeeds() {
+    test_insert_after_local_erase_succeeds<transactional_trivial_map_t>();
+    test_insert_after_local_erase_succeeds<transactional_composite_map_t>();
+    test_insert_after_local_erase_succeeds<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_stage_refuses_when_already_staged() {
+    test_stage_refuses_when_already_staged<transactional_trivial_map_t>();
+    test_stage_refuses_when_already_staged<transactional_composite_map_t>();
+    test_stage_refuses_when_already_staged<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_rollback_reports_lost_versions() {
+    test_rollback_reports_lost_versions<transactional_trivial_map_t>();
+    test_rollback_reports_lost_versions<transactional_composite_map_t>();
+    test_rollback_reports_lost_versions<transactional_heavy_map_t>();
+}
+
+static void std_store_defects_transaction_bounds_skip_locally_erased() {
+    test_transaction_bounds_skip_locally_erased<transactional_trivial_map_t>();
+    test_transaction_bounds_skip_locally_erased<transactional_composite_map_t>();
+    test_transaction_bounds_skip_locally_erased<transactional_heavy_map_t>();
 }
 
 int main() {
@@ -391,10 +507,10 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
-    failures += run_test(filter, "transactional_consistency.non_repeatable_reads_are_allowed",
-                         transactional_consistency_non_repeatable_reads_are_allowed);
-    failures += run_test(filter, "transactional_consistency.phantom_reads_are_allowed",
-                         transactional_consistency_phantom_reads_are_allowed);
+    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
+                         transactional_consistency_repeated_read_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",
+                         transactional_consistency_repeated_range_matches_isolation);
     failures +=
         run_test(filter, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
@@ -402,6 +518,47 @@ int main() {
 
     failures += run_test(filter, "transactional_consistency.stateful_comparator_is_consulted",
                          transactional_consistency_stateful_comparator_is_consulted);
+
+    failures += run_test(filter, "std_store_defects.committed_tombstones_are_reclaimable",
+                         std_store_defects_committed_tombstones_are_reclaimable);
+    failures +=
+        run_test(filter, "std_store_defects.vacuum_respects_its_window", std_store_defects_vacuum_respects_its_window);
+    failures += run_test(filter, "std_store_defects.erase_reports_and_reclaims_tombstone",
+                         std_store_defects_erase_reports_and_reclaims_tombstone);
+    failures += run_test(filter, "std_store_defects.erase_range_skips_tombstones",
+                         std_store_defects_erase_range_skips_tombstones);
+    failures += run_test(filter, "std_store_defects.vacuum_leaves_staged_entries",
+                         std_store_defects_vacuum_leaves_staged_entries);
+    failures += run_test(filter, "std_store_defects.commit_reports_lost_versions",
+                         std_store_defects_commit_reports_lost_versions);
+    failures += run_test(filter, "std_store_defects.commit_reports_success_when_published",
+                         std_store_defects_commit_reports_success_when_published);
+    failures += run_test(filter, "std_store_defects.staged_entries_keep_one_generation",
+                         std_store_defects_staged_entries_keep_one_generation);
+
+    failures += run_test(filter, "commit_stamp.rolled_back_stage_does_not_abort_a_peer",
+                         commit_stamp_rolled_back_stage_does_not_abort_a_peer);
+    failures += run_test(filter, "commit_stamp.lost_update_is_refused", commit_stamp_lost_update_is_refused);
+    failures +=
+        run_test(filter, "commit_stamp.find_and_watch_records_absence", commit_stamp_find_and_watch_records_absence);
+
+    failures += run_test(filter, "transactional_consistency.find_does_not_watch",
+                         transactional_consistency_find_does_not_watch);
+
+    failures += run_test(filter, "std_store_defects.clear_keeps_generations_running",
+                         std_store_defects_clear_keeps_generations_running);
+    failures += run_test(filter, "std_store_defects.insert_refuses_with_key_already_exists",
+                         std_store_defects_insert_refuses_with_key_already_exists);
+    failures += run_test(filter, "std_store_defects.insert_reports_the_stored_element",
+                         std_store_defects_insert_reports_the_stored_element);
+    failures += run_test(filter, "std_store_defects.insert_after_local_erase_succeeds",
+                         std_store_defects_insert_after_local_erase_succeeds);
+    failures += run_test(filter, "std_store_defects.stage_refuses_when_already_staged",
+                         std_store_defects_stage_refuses_when_already_staged);
+    failures += run_test(filter, "std_store_defects.rollback_reports_lost_versions",
+                         std_store_defects_rollback_reports_lost_versions);
+    failures += run_test(filter, "std_store_defects.transaction_bounds_skip_locally_erased",
+                         std_store_defects_transaction_bounds_skip_locally_erased);
 
     return report_test_failures(failures);
 }

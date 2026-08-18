@@ -7,6 +7,9 @@
  *  @date October 12, 2022
  */
 #pragma once
+#include <cassert> // `assert`
+#include <cstdint> // `std::uint8_t`
+
 #include <memory>      // `std::allocator` as default
 #include <set>         // `std::set` for inner versioned entries
 #include <stdexcept>   // `std::length_error`, which MSVC does not reach through `<set>`
@@ -72,11 +75,11 @@ template <typename callable_type_>
  *
  *  Three distinct insert strategies with different failure handling:
  *
- *  | Method               | Key Exists?     | Returns       | Use Case                                      |
- *  |----------------------|-----------------|---------------|-----------------------------------------------|
- *  | insert()             | Fails (error)   | invalid_arg_k | Strict: ensure key is new                     |
- *  | insert_if_missing()  | Skips (success) | success_k     | Lenient: insert only if absent, else no-op    |
- *  | insert_or_assign()   | Overwrites      | success_k     | Upsert: always update regardless of existence |
+ *  | Method               | Key Exists?     | Returns               | Use Case                              |
+ *  |----------------------|-----------------|-----------------------|---------------------------------------|
+ *  | insert()             | Fails (error)   | key_already_exists_k  | Strict: ensure key is new             |
+ *  | insert_if_missing()  | Skips (success) | success_k             | Lenient: insert only if absent        |
+ *  | insert_or_assign()   | Overwrites      | success_k             | Upsert: always update                 |
  *
  *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming convention.
  *  The @c try_emplace is deleted in favor of the more explicit @c insert_if_missing.
@@ -140,12 +143,18 @@ class transactional_std_store {
     using watches_allocator_t =
         typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_array_t = std::vector<watched_identifier_t, watches_allocator_t>;
-    using watch_iterator_t = typename watches_array_t::iterator;
 
     using changed_ids_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
     using changed_ids_vector_t = std::vector<identifier_t, changed_ids_allocator_t>;
 
     using store_t = transactional_std_store;
+
+    /** @brief What a commit found when it went looking for the version it was asked to publish. */
+    enum class unmask_outcome_t : std::uint8_t {
+        unmasked_k,          //< The staged version was there and is now visible.
+        already_published_k, //< This commit had published that version on an earlier pass.
+        version_missing_k,   //< No entry carries that generation, so nothing became visible.
+    };
 
   public:
     class transaction_t {
@@ -161,11 +170,123 @@ class transactional_std_store {
         // The local change set must order exactly as the store does, so it borrows the store's comparator
         // rather than default-constructing one - otherwise a stateful comparator would sort the two apart.
         transaction_t(store_t &set) noexcept(false)
-            : store_(&set), changes_(set.entries_.key_comp()), generation_(set.new_generation_()) {}
-        /** @brief What this transaction saw when it looked at a key that was not there. */
-        static watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
+            : store_(&set), changes_(set.entries_.key_comp()), generation_(set.new_generation_()) {
+            // A stamp of `absent_generation_k` would make a staged entry indistinguishable from the
+            // watch that stands for a key which is not there.
+            assert(generation_ != absent_generation_k);
+        }
+
+        /**
+         *  @brief Files @p element under this transaction's generation, replacing whatever it staged before.
+         *
+         *  The generation is part of the set's key, so it is stamped onto the entry @b before insertion
+         *  and never touched afterwards. Every entry in one change set carries the same generation, so an
+         *  existing entry for this key already carries the right one and only its payload is rewritten.
+         *
+         *  @param[in] callback_staged Invoked with the filed element once it is in the change set,
+         *    so a caller can report what it wrote without copying it. Must be @c noexcept.
+         */
+        template <typename callback_staged_type_ = no_op_fn_t>
+        [[nodiscard]] status_t stage_change_(value_t &&element, presence_t presence, identifier_t &&id,
+                                             callback_staged_type_ &&callback_staged = {}) noexcept {
+            return invoke_safely([&]() {
+                changed_ids_.reserve(changed_ids_.size() + 1);
+                auto iterator = changes_.lower_bound(element);
+                if (iterator != changes_.end() && changes_.key_comp().same(iterator->unversioned, element)) {
+                    assert(iterator->generation == generation_);
+                    const_cast<value_t &>(iterator->unversioned) = std::move(element);
+                    const_cast<presence_t &>(iterator->presence) = presence;
+                }
+                else {
+                    auto stamped = versioned_entry_t {std::move(element)};
+                    stamped.generation = generation_;
+                    stamped.presence = presence;
+                    iterator = changes_.emplace_hint(iterator, std::move(stamped));
+                }
+                changed_ids_.push_back(std::move(id));
+                callback_staged(iterator->unversioned);
+            });
+        }
+
+        /**
+         *  @brief Reports whether this transaction can see @p id, handing the element to @p callback_present.
+         *  @note A key this transaction erased reads as absent, exactly as its own @c find sees it.
+         */
+        template <typename callback_present_type_>
+        [[nodiscard]] bool sees_(identifier_t const &id, callback_present_type_ &&callback_present) const noexcept {
+            bool present = false;
+            find(
+                id,
+                [&](value_t const &element) noexcept {
+                    present = true;
+                    callback_present(element);
+                },
+                []() noexcept {});
+            return present;
+        }
+
+        /**
+         *  @brief Reports the first element of the merged order, staged writes taking precedence.
+         *
+         *  @param[in] internal_iterator Where this transaction's own bound landed in the change set.
+         *  @param[in] probe_store Invoked as @c probe_store(previous,on_found,on_missing) , with a null
+         *    @p previous asking for the caller's own bound in the store and a non-null one asking for the
+         *    first element strictly after it. Must be @c noexcept.
+         *  @note A store element this transaction erased is not skipped by re-asking for the same bound -
+         *    that returns the same element forever - but by asking for the one after it.
+         */
+        template <typename probe_type_, typename callback_found_type_, typename callback_missing_type_>
+        void merge_with_store_(entry_iterator_t internal_iterator, probe_type_ &&probe_store,
+                               callback_found_type_ &&callback_found,
+                               callback_missing_type_ &&callback_missing) const noexcept {
+
+            while (internal_iterator != changes_.end() && internal_iterator->presence == presence_t::erased_k)
+                ++internal_iterator;
+
+            // The element handed to the callback lives in the store's ordered core, which nothing here
+            // mutates, so pointing at it across a restart is cheaper than copying an identifier out -
+            // and works for identifiers that cannot be copied at all.
+            value_t const *external_previous = nullptr;
+            bool faced_deleted_entry = false;
+            auto on_external_found = [&](value_t const &external_element) noexcept {
+                if (internal_iterator == changes_.end()) return callback_found(external_element);
+
+                value_t const &internal_element = internal_iterator->unversioned;
+                if (!changes_.key_comp().less(external_element, internal_element))
+                    return callback_found(internal_element);
+
+                auto const staged = changes_.find(external_element);
+                if (staged != changes_.end() && staged->presence == presence_t::erased_k) {
+                    faced_deleted_entry = true;
+                    external_previous = &external_element;
+                }
+                else callback_found(external_element);
+            };
+            auto on_external_missing = [&]() noexcept {
+                if (internal_iterator == changes_.end()) callback_missing();
+                else callback_found(internal_iterator->unversioned);
+            };
+
+            do {
+                faced_deleted_entry = false;
+                probe_store(external_previous, on_external_found, on_external_missing);
+            } while (faced_deleted_entry);
+        }
+
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
+
+        /**
+         *  @brief Whether every watched key still carries the version this transaction read.
+         *    Asked twice - once when staging, once when publishing - because a commit landing in
+         *    between is the only thing that can invalidate a read after it was validated.
+         */
+        [[nodiscard]] status_t validate_watches_() const noexcept {
+            auto const &store = store_ref();
+            return validate_watches(watches_, [&](identifier_t const &id, auto &&on_found, auto &&on_missing) noexcept {
+                store.find_committed_entry_(id, on_found, on_missing);
+            });
+        }
 
         /** @brief Erases every entry this transaction staged under its own generation. */
         void unstage_() noexcept {
@@ -241,165 +362,79 @@ class transactional_std_store {
         std::size_t changes_count() const noexcept { return changes_.size(); }
 
         /**
-         *  @brief Stages an insert operation only if the key doesn't exist. Fails if key exists.
-         *    Checks both transaction changes and main store for existence.
+         *  @brief Stages an insert, refusing the key that is already there.
          *
          *  @param[in] element Element to insert (moved into the transaction).
-         *  @param[in] callback_inserted Callback invoked if element will be inserted.
-         *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
-         *  @return Success, or @c invalid_argument_k if key exists, or OOM error.
+         *  @param[in] callback_inserted Invoked with the staged element. Must be @c noexcept.
+         *  @param[in] callback_existing Invoked with the element already under the key, which keeps its value.
+         *    Must be @c noexcept.
+         *  @return Success, @c key_already_exists_k when the key is taken, or an allocation failure.
          */
-        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_exists_type_ = no_op_fn_t,
-                  typename... tags_types_>
+        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_existing_type_ = no_op_fn_t>
         [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                      callback_exists_type_ &&callback_exists = {}, tags_types_...) noexcept {
+                                      callback_existing_type_ &&callback_existing = {}) noexcept {
 
-            static_assert(is_safe_callback_for<callback_exists_type_, value_t const &>,
-                          "callback_exists must be noexcept invocable with value_t const &");
-            static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
+            static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                          "callback_existing must be noexcept invocable with value_t const &");
+            static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                          "callback_inserted must be noexcept invocable with value_t const &");
 
-            // Check local changes first
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(element));
             if (!maybe_id) return maybe_id.status();
-            auto const &id = *maybe_id;
-            auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && local_it->presence == presence_t::present_k) {
-                callback_exists(local_it->unversioned);
-                return invalid_argument_k;
-            }
-
-            // Check main store if not in local changes or was deleted locally
-            bool exists_in_store = false;
-            store_ref().find(
-                id,
-                [&](value_t const &value) noexcept {
-                    exists_in_store = true;
-                    callback_exists(value);
-                },
-                []() noexcept {});
-
-            if (exists_in_store) return invalid_argument_k;
-
-            // Key doesn't exist anywhere, proceed with insertion
-            auto status = invoke_safely([&]() {
-                changed_ids_.reserve(changed_ids_.size() + 1);
-                auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, element))
-                    iterator = changes_.emplace_hint(iterator, std::move(element));
-                else const_cast<value_t &>(iterator->unversioned) = std::move(element);
-                const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
-                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
-                changed_ids_.push_back(std::move(*maybe_id));
-            });
-
-            if (succeeded(status)) callback_inserted();
-            return status;
+            if (sees_(*maybe_id, callback_existing)) return key_already_exists_k;
+            return stage_change_(std::move(element), presence_t::present_k, std::move(*maybe_id), callback_inserted);
         }
 
         /**
-         *  @brief Stages an insert operation only if key is missing. Silently skips if key exists (no error).
-         *    Checks both transaction changes and main store for existence.
+         *  @brief Stages an insert, leaving the key that is already there untouched.
          *
          *  @param[in] element Element to insert (moved into the transaction).
-         *  @param[in] callback_inserted Callback invoked if element will be inserted (key doesn't exist).
-         *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
-         *  @return Always succeeds (unless OOM). Success returned even if key exists.
+         *  @param[in] callback_inserted Invoked with the staged element. Must be @c noexcept.
+         *  @param[in] callback_existing Invoked with the element already under the key, which keeps its value.
+         *    Must be @c noexcept.
+         *  @return Success even when nothing was staged, or an allocation failure.
          */
-        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_skipped_type_ = no_op_fn_t,
-                  typename... tags_types_>
+        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_existing_type_ = no_op_fn_t>
         [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                                 callback_skipped_type_ &&callback_skipped = {},
-                                                 tags_types_...) noexcept {
+                                                 callback_existing_type_ &&callback_existing = {}) noexcept {
 
-            static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
-            static_assert(is_safe_callback_for<callback_skipped_type_, value_t const &>,
-                          "callback_skipped must be noexcept invocable with value_t const &");
+            static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                          "callback_existing must be noexcept invocable with value_t const &");
+            static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                          "callback_inserted must be noexcept invocable with value_t const &");
 
-            // Check local changes first
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(element));
             if (!maybe_id) return maybe_id.status();
-            auto const &id = *maybe_id;
-            auto local_it = changes_.find(id);
-            if (local_it != changes_.end() && local_it->presence == presence_t::present_k) {
-                callback_skipped(local_it->unversioned);
-                return success_k; // Success, just didn't insert
-            }
-
-            // Check main store if not in local changes or was deleted locally
-            bool exists_in_store = false;
-            store_ref().find(
-                id,
-                [&](value_t const &value) noexcept {
-                    exists_in_store = true;
-                    callback_skipped(value);
-                },
-                []() noexcept {});
-
-            if (exists_in_store) return success_k; // Success, just didn't insert
-
-            // Key doesn't exist anywhere, proceed with insertion
-            auto status = invoke_safely([&]() {
-                changed_ids_.reserve(changed_ids_.size() + 1);
-                auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, element))
-                    iterator = changes_.emplace_hint(iterator, std::move(element));
-                else const_cast<value_t &>(iterator->unversioned) = std::move(element);
-                const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
-                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
-                changed_ids_.push_back(std::move(*maybe_id));
-            });
-
-            if (succeeded(status)) callback_inserted();
-            return status;
+            if (sees_(*maybe_id, callback_existing)) return success_k;
+            return stage_change_(std::move(element), presence_t::present_k, std::move(*maybe_id), callback_inserted);
         }
 
         /**
-         *  @brief Stages an insert or assign operation for the given element. Always succeeds.
-         *    Overwrites existing element if key exists. Changes visible after @c stage() and @c commit().
+         *  @brief Stages a write that takes the key whether or not it was there.
          *
          *  @param[in] element Element to insert or assign (moved into the transaction).
-         *  @param[in] callback_inserted Callback invoked if element will be inserted (key doesn't exist).
-         *  @param[in] callback_assigned Callback invoked if element will be assigned (key exists, value updated).
-         *  @return Success or error code (e.g., out of memory).
+         *  @param[in] callback_inserted Invoked with the staged element when the key was free. Must be @c noexcept.
+         *  @param[in] callback_existing Invoked with the element about to be replaced. Must be @c noexcept.
+         *  @return Success or an allocation failure.
          */
-        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_assigned_type_ = no_op_fn_t,
-                  typename... tags_types_>
+        template <typename callback_inserted_type_ = no_op_fn_t, typename callback_existing_type_ = no_op_fn_t>
         [[nodiscard]] status_t insert_or_assign_(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                                 callback_assigned_type_ &&callback_assigned = {},
-                                                 tags_types_...) noexcept {
+                                                 callback_existing_type_ &&callback_existing = {}) noexcept {
 
-            static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
-            static_assert(is_safe_callback<callback_assigned_type_>, "callback_assigned must be noexcept invocable");
+            static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                          "callback_existing must be noexcept invocable with value_t const &");
+            static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                          "callback_inserted must be noexcept invocable with value_t const &");
 
-            // Check if key exists in local changes or store
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself(element));
             if (!maybe_id) return maybe_id.status();
-            auto const &id = *maybe_id;
-            auto local_it = changes_.find(id);
-            bool key_exists = (local_it != changes_.end() && local_it->presence == presence_t::present_k);
-
-            // Check in main store
-            if (!key_exists) key_exists = store_ref().contains(id);
-
-            auto status = invoke_safely([&]() {
-                changed_ids_.reserve(changed_ids_.size() + 1);
-                auto iterator = changes_.lower_bound(element);
-                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, element))
-                    iterator = changes_.emplace_hint(iterator, std::move(element));
-                else const_cast<value_t &>(iterator->unversioned) = std::move(element);
-                const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
-                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
-                changed_ids_.push_back(std::move(*maybe_id));
-            });
-
-            if (failed(status)) return status;
-
-            if (key_exists) callback_assigned();
-            else callback_inserted();
-            return status;
+            // The element being replaced is reported before the write, which is the last moment it
+            // is still there to report - staging overwrites this transaction's own version in place.
+            bool const replacing = sees_(*maybe_id, callback_existing);
+            return stage_change_(std::move(element), presence_t::present_k, std::move(*maybe_id),
+                                 [&](value_t const &staged) noexcept {
+                                     if (!replacing) callback_inserted(staged);
+                                 });
         }
 
         /**
@@ -423,17 +458,7 @@ class transactional_std_store {
             if (!maybe_id) return maybe_id.status();
             auto maybe_tombstone = copy_safely<identifier_t>(id);
             if (!maybe_tombstone) return maybe_tombstone.status();
-            return invoke_safely([&]() {
-                changed_ids_.reserve(changed_ids_.size() + 1);
-                auto iterator = changes_.lower_bound(id);
-                if (iterator == changes_.end() || !changes_.key_comp().same(iterator->unversioned, id))
-                    iterator = changes_.emplace_hint(iterator, value_t {std::move(*maybe_tombstone)});
-                else const_cast<value_t &>(iterator->unversioned) = value_t {std::move(*maybe_tombstone)};
-                const_cast<generation_t &>(iterator->generation) = generation_;
-                const_cast<presence_t &>(iterator->presence) = presence_t::erased_k;
-                const_cast<publication_t &>(iterator->publication) = publication_t::staged_k;
-                changed_ids_.push_back(std::move(*maybe_id));
-            });
+            return stage_change_(value_t {std::move(*maybe_tombstone)}, presence_t::erased_k, std::move(*maybe_id));
         }
 
         /**
@@ -517,6 +542,23 @@ class transactional_std_store {
         }
 
         /**
+         *  @brief Finds a member equal to @p comparable and records what it saw into the read set.
+         *    The watching counterpart to @c find: this one can fail, because a read set is memory.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
+        [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                              callback_missing_type_ &&callback_missing = {}) noexcept {
+            auto maybe_id = copy_safely<identifier_t>(comparable);
+            if (!maybe_id) return maybe_id.status();
+            status_t const recorded = watch(*maybe_id);
+            if (failed(recorded)) return recorded;
+            find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
+                 std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
+        }
+
+        /**
          *  @brief Copies out the member equal to @p comparable, including this transaction's own writes.
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
@@ -565,44 +607,15 @@ class transactional_std_store {
                           "callback_found must be noexcept invocable with value_t const &");
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-            auto external_previous_id = identifier_t(comparable);
-            auto internal_iterator = changes_.lower_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->presence == presence_t::erased_k)
-                ++internal_iterator;
-
-            // Once picking the next smallest element from the global store,
-            // we might face an entry, that was already deleted from here,
-            // so this might become a multi-step process.
-            auto faced_deleted_entry = false;
-            auto callback_external_found = [&](value_t const &external_element) noexcept {
-                // The simplest case is when we have an external object.
-                if (internal_iterator == changes_.end()) return callback_found(external_element);
-
-                value_t const &internal_element = internal_iterator->unversioned;
-                auto const &ordering = changes_.key_comp();
-                if (!ordering.less(external_element, internal_element)) return callback_found(internal_element);
-
-                // Check if this entry was deleted and we should try again.
-                auto external_id = identifier_t(external_element);
-                auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() &&
-                    external_element_internal_state->presence == presence_t::erased_k) {
-                    faced_deleted_entry = true;
-                    external_previous_id = external_id;
-                }
-                else callback_found(external_element);
-            };
-            auto callback_external_missing = [&]() noexcept {
-                if (internal_iterator == changes_.end()) callback_missing();
-                else callback_found(internal_iterator->unversioned);
-            };
-
-            // Iterate until we find the a non-deleted external value
             auto &store = store_ref();
-            do {
-                faced_deleted_entry = false;
-                store.lower_bound(external_previous_id, callback_external_found, callback_external_missing);
-            } while (faced_deleted_entry);
+            merge_with_store_(
+                changes_.lower_bound(comparable),
+                [&](value_t const *previous, auto &&on_found, auto &&on_missing) noexcept {
+                    if (previous) store.upper_bound(mapping_key_or_itself(*previous), on_found, on_missing);
+                    else store.lower_bound(comparable, on_found, on_missing);
+                },
+                std::forward<callback_found_type_>(callback_found),
+                std::forward<callback_missing_type_>(callback_missing));
         }
 
         /**
@@ -623,44 +636,15 @@ class transactional_std_store {
                           "callback_found must be noexcept invocable with value_t const &");
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-            auto external_previous_id = identifier_t(comparable);
-            auto internal_iterator = changes_.upper_bound(std::forward<comparable_type_>(comparable));
-            while (internal_iterator != changes_.end() && internal_iterator->presence == presence_t::erased_k)
-                ++internal_iterator;
-
-            // Once picking the next smallest element from the global store,
-            // we might face an entry, that was already deleted from here,
-            // so this might become a multi-step process.
-            auto faced_deleted_entry = false;
-            auto callback_external_found = [&](value_t const &external_element) noexcept {
-                // The simplest case is when we have an external object.
-                if (internal_iterator == changes_.end()) return callback_found(external_element);
-
-                value_t const &internal_element = internal_iterator->unversioned;
-                auto const &ordering = changes_.key_comp();
-                if (!ordering.less(external_element, internal_element)) return callback_found(internal_element);
-
-                // Check if this entry was deleted and we should try again.
-                auto external_id = identifier_t(external_element);
-                auto external_element_internal_state = changes_.find(external_element);
-                if (external_element_internal_state != changes_.end() &&
-                    external_element_internal_state->presence == presence_t::erased_k) {
-                    faced_deleted_entry = true;
-                    external_previous_id = external_id;
-                }
-                else callback_found(external_element);
-            };
-            auto callback_external_missing = [&]() noexcept {
-                if (internal_iterator == changes_.end()) callback_missing();
-                else callback_found(internal_iterator->unversioned);
-            };
-
-            // Iterate until we find the a non-deleted external value
             auto &store = store_ref();
-            do {
-                faced_deleted_entry = false;
-                store.upper_bound(external_previous_id, callback_external_found, callback_external_missing);
-            } while (faced_deleted_entry);
+            merge_with_store_(
+                changes_.upper_bound(comparable),
+                [&](value_t const *previous, auto &&on_found, auto &&on_missing) noexcept {
+                    if (previous) store.upper_bound(mapping_key_or_itself(*previous), on_found, on_missing);
+                    else store.upper_bound(comparable, on_found, on_missing);
+                },
+                std::forward<callback_found_type_>(callback_found),
+                std::forward<callback_missing_type_>(callback_missing));
         }
 
         /**
@@ -695,22 +679,15 @@ class transactional_std_store {
          *  @brief Validates watches and stages all changes to the main store, making them visible but uncommitted.
          *    Fails with @c status_t::consistency_k if any watched elements changed.
          *
-         *  @return Success, or consistency error if watches failed validation.
+         *  @return Success, @c operation_not_permitted_k if the transaction is already staged, or a
+         *    consistency error if a watch fails to match.
          */
         [[nodiscard]] status_t stage() noexcept {
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+
             // First, check if we have any collisions by validating watches.
             auto &store = store_ref();
-            auto entry_missing = missing_watch();
-            for (auto const &id_and_watch : watches_) {
-                auto consistency_violated = false;
-                store.find_latest_entry_(
-                    id_and_watch.id,
-                    [&](versioned_entry_t const &entry) noexcept {
-                        consistency_violated = entry != id_and_watch.watch;
-                    },
-                    [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
-                if (consistency_violated) return status_t::consistency_k;
-            }
+            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
 
             // Merge our current nodes into the store.
             // The visibility will be updated later in the `commit`.
@@ -721,7 +698,7 @@ class transactional_std_store {
 
         /**
          *  @brief Resets the transaction to a clean state, discarding all changes and watches.
-         *    If transaction was staged, all staged changes are removed from the main store.
+         *    A staged transaction has its staged changes taken back out of the main store.
          *    A new generation is assigned for reuse of this transaction.
          *
          *  @return Always succeeds.
@@ -745,7 +722,8 @@ class transactional_std_store {
          *    Can only be called on staged transactions. Watches are preserved (read concerns persist across rollback),
          *    allowing retry patterns. New generation is assigned.
          *
-         *  @return Success, or @c operation_not_permitted_k if transaction is not staged.
+         *  @return Success, @c operation_not_permitted_k if transaction is not staged, or
+         *    @c consistency_k if a staged version was destroyed before the rollback reached it.
          */
         [[nodiscard]] status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -758,49 +736,69 @@ class transactional_std_store {
             // identifiers are deliberately kept: these keys are still going to be written, and commit
             // walks that list to find what to publish.
             generation_t const resumed = store.new_generation_();
+            status_t result = success_k;
             for (auto const &id : changed_ids_) {
                 dated_identifier<identifier_t const &> dated {id, generation_};
                 auto source = store.entries_.find(dated);
-                // Touching one key twice lists it twice, so the second pass finds nothing to pull back.
-                if (source == store.entries_.end()) continue;
+                // A version that is absent cannot be handed back, and the pending write it
+                // carried is gone, so the rollback reports that rather than quietly dropping it.
+                if (source == store.entries_.end()) {
+                    // Touching one key twice lists it twice, and the second pass finds the version
+                    // already pulled back into the change set rather than a loss.
+                    if (changes_.find(dated_identifier<identifier_t const &> {id, resumed}) == changes_.end())
+                        result = status_t::consistency_k;
+                    continue;
+                }
                 auto detached = store.entries_.extract(source);
                 detached.value().generation = resumed;
-                detached.value().publication = publication_t::staged_k;
                 changes_.insert(std::move(detached));
             }
 
             // Preserve watches_ for future stage operations (read watches persist across rollback)
             staging_ = staging_t::pending_k;
             generation_ = resumed;
-            return success_k;
+            return result;
         }
 
         /**
          *  @brief Commits a previously staged transaction, making all changes permanently visible.
          *    Can only be called on staged transactions. Removes older versions of modified entries.
          *
-         *  @return Success, or @c operation_not_permitted_k if transaction is not staged.
+         *  @return Success, @c operation_not_permitted_k if the transaction is not staged, or
+         *    @c consistency_k if a staged key vanished before the commit reached it.
+         *  @note Every key that is still there is published even when another one is gone, so the
+         *    status reports the loss rather than deciding what to do about it.
          */
         [[nodiscard]] status_t commit() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
+            // A watch is re-checked here as well as at staging: another transaction may have
+            // committed over a watched key while this one sat staged, and publishing on top of it
+            // would be the lost update the watch was taken to prevent.
+            auto &store = store_ref();
+            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
+
             // Once we make an entry visible,
             // if there are more than one with the same key,
             // the older generation must die.
-            auto &store = store_ref();
+            commit_stamp_t const stamp = store.new_commit_stamp_();
+            status_t result = success_k;
             for (auto const &id : changed_ids_) {
                 auto range = store.entries_.equal_range(id);
-                store.unmask_and_compact_(range.first, range.second, generation_);
+                auto const outcome = store.unmask_and_compact_(range.first, range.second, generation_, stamp);
+                if (outcome == unmask_outcome_t::version_missing_k) result = status_t::consistency_k;
             }
 
+            changed_ids_.clear();
             staging_ = staging_t::pending_k;
-            return success_k;
+            return result;
         }
     };
 
   private:
     entry_set_t entries_ {};
     alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
+    alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
     std::size_t visible_count_ {0};
     std::size_t visible_deleted_count_ {0};
 
@@ -813,11 +811,28 @@ class transactional_std_store {
      *  needs; a stamp is compared by value - @c > when walking a chain, @c == when validating a watch -
      *  and never used to order memory. Publishing what a generation tags is the partition lock's job.
      */
-    generation_t new_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
+    generation_t new_generation_() noexcept {
+        generation_t const stamp = atomic_add_fetch<generation_t>(generation_, 1);
+        // Every entry is stamped from here, so this is the one place that can promise no stored
+        // entry carries `absent_generation_k` - the value a watch on a missing key is anchored to.
+        assert(stamp != absent_generation_k);
+        return stamp;
+    }
+
+    /**
+     *  @brief Hands out the stamp a write becomes visible under, which is the store's only ordering.
+     *
+     *  Drawn once per commit rather than once per write, so every key one transaction touched becomes
+     *  visible under the same number and a reader can never see half of it. Counted apart from
+     *  @c generation_, which dates a transaction's opening and says nothing about what is current.
+     */
+    commit_stamp_t new_commit_stamp_() noexcept {
+        return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
+    }
 
     /**
      *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_entry_t const &.
-     *    Used by internal methods that need access to generation, presence and publication fields.
+     *    Used by internal methods that need access to the generation, presence and commit stamp.
      *    Only considers VISIBLE entries (committed/staged).
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
@@ -836,21 +851,19 @@ class transactional_std_store {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
-        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
+        while (range.first != range.second && !visible_now(range.first->committed)) ++range.first;
 
         if (range.first != range.second && range.first->presence == presence_t::present_k) callback_found(*range.first);
         else callback_missing();
     }
 
     /**
-     *  @brief The version a watch is validated against, staged ones included.
+     *  @brief The version a watch is validated against: the one carrying the newest commit stamp.
      *
-     *  A staged write is invisible to readers but binding on the next committer, so this deliberately
-     *  looks past visibility. A staged revision outranks every published one regardless of
-     *  generation: generations are handed out when a transaction opens, so one that opens early and
-     *  stages late carries a number below a revision another transaction has already published.
-     *  Ranking by generation would look straight past that staged write and let both transactions
-     *  commit from the same base. Publication decides here, as it already does at commit.
+     *  A version nobody has committed carries no stamp, so it cannot answer here - which is what lets
+     *  a transaction validate through another's staging window instead of being turned away by a
+     *  write that may yet be rolled back. A committed tombstone resolves to missing, matching the
+     *  shape @c watch records for a key that is not there.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be @c noexcept.
@@ -858,30 +871,32 @@ class transactional_std_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
-    void find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                            callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find_committed_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                               callback_missing_type_ &&callback_missing = {}) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
-        entry_iterator_t latest = range.second;
+        entry_iterator_t committed = range.second;
         for (auto it = range.first; it != range.second; ++it) {
-            if (it->publication == publication_t::staged_k) {
-                latest = it;
-                break;
-            }
-            if (latest == range.second || it->generation > latest->generation) latest = it;
+            if (!visible_now(it->committed)) continue;
+            if (committed == range.second || it->committed > committed->committed) committed = it;
         }
 
         // Invoke whichever callback matches the outcome.
-        if (latest == range.second || latest->presence == presence_t::erased_k) callback_missing();
-        else callback_found(*latest);
+        if (committed == range.second || committed->presence == presence_t::erased_k) callback_missing();
+        else callback_found(*committed);
     }
 
+    /**
+     *  @brief Drops every published entry in [ @p begin, @p end), leaving other transactions' staged ones.
+     *  @note Only entries a reader could have seen reach @p callback: a published tombstone is erased
+     *    silently, since reporting it would hand the caller a key it just told them was gone.
+     */
     template <typename callback_type_ = no_op_fn_t>
     void erase_visible_(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
         entry_iterator_t current = begin;
         while (current != end)
-            if (current->publication == publication_t::published_k) {
-                callback(current->unversioned);
+            if (visible_now(current->committed)) {
+                if (current->presence == presence_t::present_k) callback(current->unversioned);
                 --visible_count_;
                 visible_deleted_count_ -= current->presence == presence_t::erased_k;
                 current = entries_.erase(current);
@@ -889,30 +904,98 @@ class transactional_std_store {
             else ++current;
     }
 
-    void unmask_and_compact_(entry_iterator_t begin, entry_iterator_t end, generation_t generation_to_unmask) noexcept {
+    /**
+     *  @brief Erases the committed tombstones in [ @p begin, @p end), which nothing else reclaims.
+     *
+     *  A published tombstone answers every read as absence, yet a single-key @c erase declines to
+     *  touch it and only a later write to the same key overwrites it. Staged entries belong to
+     *  transactions still running and are left alone. The ordered core erases in place, so no
+     *  intermediate buffer of doomed keys is needed.
+     */
+    [[nodiscard]] std::size_t vacuum_between_(entry_iterator_t begin, entry_iterator_t end) noexcept {
+        std::size_t reclaimed = 0;
+        entry_iterator_t current = begin;
+        while (current != end)
+            if (visible_now(current->committed) && current->presence == presence_t::erased_k) {
+                --visible_count_;
+                --visible_deleted_count_;
+                current = entries_.erase(current);
+                ++reclaimed;
+            }
+            else ++current;
+        return reclaimed;
+    }
+
+    /**
+     *  @brief Publishes the version stamped @p generation_to_unmask and drops every other visible one.
+     *  @return Whether that version was there to publish, which a commit reports to its caller.
+     */
+    unmask_outcome_t unmask_and_compact_(entry_iterator_t begin, entry_iterator_t end,
+                                         generation_t generation_to_unmask, commit_stamp_t stamp) noexcept {
         // The entry being unmasked is the one that survives, wherever it sits in the set's order.
         // Keeping whichever came last instead would erase it again the moment a revision with a
         // higher generation is already published, which happens whenever a transaction opens early
         // and commits late. Every other published revision gives way; other transactions' staged
         // ones are untouched, since they are not this commit's to decide.
+        auto outcome = unmask_outcome_t::version_missing_k;
         entry_iterator_t current = begin;
         while (current != end) {
             entry_iterator_t next = current;
             ++next;
             if (current->generation == generation_to_unmask) {
-                if (current->publication == publication_t::staged_k) {
+                if (!visible_now(current->committed)) {
                     ++visible_count_;
                     visible_deleted_count_ += current->presence == presence_t::erased_k;
-                    const_cast<publication_t &>(current->publication) = publication_t::published_k;
+                    const_cast<commit_stamp_t &>(current->committed) = stamp;
+                    outcome = unmask_outcome_t::unmasked_k;
                 }
+                // Listing one key twice makes the second pass find a version this commit already
+                // published, which is settled rather than missing.
+                else outcome = unmask_outcome_t::already_published_k;
             }
-            else if (current->publication == publication_t::published_k) {
+            else if (visible_now(current->committed)) {
                 --visible_count_;
                 visible_deleted_count_ -= current->presence == presence_t::erased_k;
                 entries_.erase(current);
             }
             current = next;
         }
+        return outcome;
+    }
+
+    /** @brief The visible element under @p comparable, or @c entries_.end() when the key is not there. */
+    template <typename comparable_type_ = identifier_t>
+    [[nodiscard]] entry_iterator_t find_visible_present_(comparable_type_ &&comparable) noexcept {
+        auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
+        while (range.first != range.second && !visible_now(range.first->committed)) ++range.first;
+        if (range.first == range.second || range.first->presence != presence_t::present_k) return entries_.end();
+        return range.first;
+    }
+
+    /**
+     *  @brief Writes @p element as a commit of its own and drops the visible version it replaces.
+     *
+     *  @param[in] callback_stored Invoked with the stored element once it is visible. Must be @c noexcept.
+     *  @param[in] callback_replaced Invoked with the element it displaced, if a reader could see one.
+     *    Must be @c noexcept.
+     *  @return Success, or an allocation failure that left the store untouched.
+     */
+    template <typename callback_stored_type_ = no_op_fn_t, typename callback_replaced_type_ = no_op_fn_t>
+    [[nodiscard]] status_t publish_alone_(value_t &&element, callback_stored_type_ &&callback_stored = {},
+                                          callback_replaced_type_ &&callback_replaced = {}) noexcept {
+        generation_t const generation = new_generation_();
+        commit_stamp_t const stamp = new_commit_stamp_();
+        return invoke_safely([&]() {
+            auto entry = versioned_entry_t {std::move(element)};
+            entry.generation = generation;
+            entry.presence = presence_t::present_k;
+            entry.committed = stamp;
+            auto range_end = entries_.insert(std::move(entry)).first;
+            auto range_start = entries_.lower_bound(range_end->unversioned);
+            ++visible_count_;
+            erase_visible_(range_start, range_end, callback_replaced);
+            callback_stored(range_end->unversioned);
+        });
     }
 
     /**
@@ -935,10 +1018,9 @@ class transactional_std_store {
      */
     void insert_or_assign_(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
-            bool should_compact = source->publication == publication_t::published_k;
-            visible_count_ += source->publication == publication_t::published_k;
-            visible_deleted_count_ +=
-                source->publication == publication_t::published_k && source->presence == presence_t::erased_k;
+            bool const should_compact = visible_now(source->committed);
+            visible_count_ += should_compact;
+            visible_deleted_count_ += should_compact && source->presence == presence_t::erased_k;
             auto source_node = sources.extract(source++);
             auto range_end = entries_.insert(std::move(source_node)).position;
             if (should_compact) {
@@ -991,7 +1073,7 @@ class transactional_std_store {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Skip invisible entries
-        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
+        while (range.first != range.second && !visible_now(range.first->committed)) ++range.first;
 
         // Return 1 if we found a visible, non-deleted entry, otherwise 0
         return (range.first != range.second && range.first->presence == presence_t::present_k) ? 1 : 0;
@@ -1043,138 +1125,84 @@ class transactional_std_store {
 #pragma region Modifiers
 
     /**
-     *  @brief Atomically inserts an element only if the key doesn't exist. Fails if key exists.
-     *    This is the strict insert semantics matching @c std::map::insert().
+     *  @brief Atomically inserts an element, refusing the key that is already there.
      *
      *  @param[in] element Element to insert (moved into the container).
-     *  @param[in] callback_inserted Callback invoked if element was inserted.
-     *  @param[in] callback_exists Callback invoked if key already exists (insertion failed).
-     *  @return Success, or @c invalid_argument_k if key exists, or OOM error.
+     *  @param[in] callback_inserted Invoked with the stored element. Must be @c noexcept.
+     *  @param[in] callback_existing Invoked with the element already under the key, which keeps its value.
+     *    Must be @c noexcept.
+     *  @return Success, @c key_already_exists_k when the key is taken, or an allocation failure.
      */
-    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_exists_type_ = no_op_fn_t>
+    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_existing_type_ = no_op_fn_t>
     [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                  callback_exists_type_ &&callback_exists = {}) noexcept {
+                                  callback_existing_type_ &&callback_existing = {}) noexcept {
 
-        static_assert(is_safe_callback_for<callback_exists_type_, value_t const &>,
-                      "callback_exists must be noexcept invocable with value_t const &");
-        static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
+        static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                      "callback_existing must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                      "callback_inserted must be noexcept invocable with value_t const &");
 
-        // First check if key already exists
-        auto const &id = mapping_key_or_itself(element);
-        auto range = entries_.equal_range(id);
-
-        // Skip invisible entries
-        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
-
-        // If we found a visible, non-deleted entry, key exists - fail
-        if (range.first != range.second && range.first->presence == presence_t::present_k) {
-            callback_exists(range.first->unversioned);
-            return invalid_argument_k;
+        if (auto const existing = find_visible_present_(mapping_key_or_itself(element)); existing != entries_.end()) {
+            callback_existing(existing->unversioned);
+            return key_already_exists_k;
         }
-
-        // Key doesn't exist, proceed with insertion
-        generation_t generation = new_generation_();
-        auto status = invoke_safely([&]() {
-            auto entry = versioned_entry_t {std::move(element)};
-            entry.generation = generation;
-            entry.presence = presence_t::present_k;
-            entry.publication = publication_t::published_k;
-            auto range_end = entries_.insert(std::move(entry)).first;
-            auto range_start = entries_.lower_bound(range_end->unversioned);
-            ++visible_count_;
-            erase_visible_(range_start, range_end);
-        });
-
-        if (succeeded(status)) callback_inserted();
-        return status;
+        return publish_alone_(std::move(element), callback_inserted);
     }
 
     /**
-     *  @brief Atomically inserts an element only if missing. Silently skips if key exists (no error).
-     *    This is the "silent no-op" insert semantics.
+     *  @brief Atomically inserts an element, leaving the key that is already there untouched.
      *
      *  @param[in] element Element to insert (moved into the container).
-     *  @param[in] callback_inserted Callback invoked if element was inserted (key didn't exist).
-     *  @param[in] callback_skipped Callback invoked if key already exists (insertion skipped).
-     *  @return Always succeeds (unless OOM). Success returned even if key exists.
+     *  @param[in] callback_inserted Invoked with the stored element. Must be @c noexcept.
+     *  @param[in] callback_existing Invoked with the element already under the key, which keeps its value.
+     *    Must be @c noexcept.
+     *  @return Success even when nothing was stored, or an allocation failure.
      */
-    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_skipped_type_ = no_op_fn_t>
+    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_existing_type_ = no_op_fn_t>
     [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                             callback_skipped_type_ &&callback_skipped = {}) noexcept {
+                                             callback_existing_type_ &&callback_existing = {}) noexcept {
 
-        static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
-        static_assert(is_safe_callback_for<callback_skipped_type_, value_t const &>,
-                      "callback_skipped must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                      "callback_existing must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                      "callback_inserted must be noexcept invocable with value_t const &");
 
-        // Check if key already exists
-        auto const &id = mapping_key_or_itself(element);
-        auto range = entries_.equal_range(id);
-
-        // Skip invisible entries
-        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
-
-        // If we found a visible, non-deleted entry, key exists - skip silently
-        if (range.first != range.second && range.first->presence == presence_t::present_k) {
-            callback_skipped(range.first->unversioned);
-            return success_k; // Success, just didn't insert
+        if (auto const existing = find_visible_present_(mapping_key_or_itself(element)); existing != entries_.end()) {
+            callback_existing(existing->unversioned);
+            return success_k;
         }
-
-        // Key doesn't exist, proceed with insertion
-        generation_t generation = new_generation_();
-        auto status = invoke_safely([&]() {
-            auto entry = versioned_entry_t {std::move(element)};
-            entry.generation = generation;
-            entry.presence = presence_t::present_k;
-            entry.publication = publication_t::published_k;
-            auto range_end = entries_.insert(std::move(entry)).first;
-            auto range_start = entries_.lower_bound(range_end->unversioned);
-            ++visible_count_;
-            erase_visible_(range_start, range_end);
-        });
-
-        if (succeeded(status)) callback_inserted();
-        return status;
+        return publish_alone_(std::move(element), callback_inserted);
     }
 
     /**
-     *  @brief Atomically inserts or updates an element. Always succeeds (unless OOM).
-     *    Overwrites existing element if key exists. Matches @c std::map::insert_or_assign() semantics.
+     *  @brief Atomically writes an element, taking the key whether or not it was there.
      *
      *  @param[in] element Element to insert or assign (moved into the container).
-     *  @param[in] callback_inserted Callback invoked if element was inserted (key didn't exist).
-     *  @param[in] callback_assigned Callback invoked if element was assigned (key existed, value updated).
-     *  @return Success or error code (e.g., out of memory).
+     *  @param[in] callback_inserted Invoked with the stored element when the key was free. Must be @c noexcept.
+     *  @param[in] callback_existing Invoked with the element that was replaced. Must be @c noexcept.
+     *  @return Success or an allocation failure.
      */
-    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_assigned_type_ = no_op_fn_t>
+    template <typename callback_inserted_type_ = no_op_fn_t, typename callback_existing_type_ = no_op_fn_t>
     [[nodiscard]] status_t insert_or_assign(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                            callback_assigned_type_ &&callback_assigned = {}) noexcept {
+                                            callback_existing_type_ &&callback_existing = {}) noexcept {
 
-        static_assert(is_safe_callback<callback_inserted_type_>, "callback_inserted must be noexcept invocable");
-        static_assert(is_safe_callback<callback_assigned_type_>, "callback_assigned must be noexcept invocable");
+        static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                      "callback_existing must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                      "callback_inserted must be noexcept invocable with value_t const &");
 
-        // Check if key exists
-        auto const &id = mapping_key_or_itself(element);
-        auto range = entries_.equal_range(id);
-        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
-        bool key_exists = (range.first != range.second && range.first->presence == presence_t::present_k);
-
-        generation_t generation = new_generation_();
-        auto status = invoke_safely([&]() {
-            auto entry = versioned_entry_t {std::move(element)};
-            entry.generation = generation;
-            entry.presence = presence_t::present_k;
-            entry.publication = publication_t::published_k;
-            auto range_end = entries_.insert(std::move(entry)).first;
-            auto range_start = entries_.lower_bound(range_end->unversioned);
-            ++visible_count_;
-            erase_visible_(range_start, range_end);
-        });
-
-        if (failed(status)) return status;
-
-        if (key_exists) callback_assigned();
-        else callback_inserted();
-        return status;
+        // The element that gives way is reported by the compaction itself, which is also what decides
+        // whether there was one - so nothing has to probe for the key before the write.
+        bool replaced = false;
+        return publish_alone_(
+            std::move(element),
+            [&](value_t const &stored) noexcept {
+                if (!replaced) callback_inserted(stored);
+            },
+            [&](value_t const &previous) noexcept {
+                replaced = true;
+                callback_existing(previous);
+            });
     }
 
     /**
@@ -1205,7 +1233,8 @@ class transactional_std_store {
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
-        generation_t generation = new_generation_();
+        generation_t const generation = new_generation_();
+        commit_stamp_t const stamp = new_commit_stamp_();
 
         // Staging and importing share one guarded scope, so the batch never has to outlive it and
         // never has to be handed to `expected`, whose values must move without throwing - something
@@ -1215,7 +1244,7 @@ class transactional_std_store {
             for (; begin != end; ++begin) {
                 auto iterator = batch.emplace(*begin).first;
                 const_cast<generation_t &>(iterator->generation) = generation;
-                const_cast<publication_t &>(iterator->publication) = publication_t::published_k;
+                const_cast<commit_stamp_t &>(iterator->committed) = stamp;
                 const_cast<presence_t &>(iterator->presence) = presence_t::present_k;
             }
             insert_or_assign_(batch);
@@ -1327,7 +1356,7 @@ class transactional_std_store {
 
         // Skip all the invisible entries
         while (iterator != entries_.end() &&
-               (iterator->publication == publication_t::staged_k || iterator->presence == presence_t::erased_k))
+               (!visible_now(iterator->committed) || iterator->presence == presence_t::erased_k))
             ++iterator;
 
         iterator != entries_.end() ? callback_found(iterator->unversioned) : callback_missing();
@@ -1353,7 +1382,7 @@ class transactional_std_store {
 
         // Skip all the invisible entries
         while (iterator != entries_.end() &&
-               (iterator->publication == publication_t::staged_k || iterator->presence == presence_t::erased_k))
+               (!visible_now(iterator->committed) || iterator->presence == presence_t::erased_k))
             ++iterator;
 
         iterator != entries_.end() ? callback_found(iterator->unversioned) : callback_missing();
@@ -1392,8 +1421,7 @@ class transactional_std_store {
 
         // Iterate through all entries with this key (should be at most one visible)
         for (auto it = range.first; it != range.second; ++it)
-            if (it->publication == publication_t::published_k && it->presence == presence_t::present_k)
-                callback(it->unversioned);
+            if (visible_now(it->committed) && it->presence == presence_t::present_k) callback(it->unversioned);
     }
 
 #pragma endregion Lookup
@@ -1414,8 +1442,7 @@ class transactional_std_store {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (lower_iterator->publication == publication_t::published_k &&
-                lower_iterator->presence == presence_t::present_k)
+            if (visible_now(lower_iterator->committed) && lower_iterator->presence == presence_t::present_k)
                 callback(lower_iterator->unversioned);
     }
 
@@ -1437,13 +1464,11 @@ class transactional_std_store {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator) {
-            if (lower_iterator->publication == publication_t::staged_k ||
-                lower_iterator->presence == presence_t::erased_k)
-                continue;
+            if (!visible_now(lower_iterator->committed) || lower_iterator->presence == presence_t::erased_k) continue;
             // ! STL's `std::set::iterator` dereferencing operator returns immutable references
             // ! to isolate keys from possible modifications, corrupting the ordered layout.
             auto &entry = const_cast<versioned_entry_t &>(*lower_iterator);
-            callback(entry.unversioned.key, entry.unversioned.value);
+            callback(entry.unversioned.key, entry.unversioned.mapped);
             entry.generation = generation;
         }
     }
@@ -1454,7 +1479,10 @@ class transactional_std_store {
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive the erased @c value_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return Always succeeds.
+     *  @return @c key_not_found_k if no visible entry matched, otherwise success.
+     *  @note A committed tombstone is not a match, but it is still reclaimed here - nothing else
+     *    would ever reach it, and leaving it behind is how a key that was erased twice keeps its
+     *    memory forever.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
@@ -1464,12 +1492,17 @@ class transactional_std_store {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Skip all the invisible entries
-        while (range.first != range.second && range.first->publication == publication_t::staged_k) ++range.first;
+        while (range.first != range.second && !visible_now(range.first->committed)) ++range.first;
 
         // Check if there are no visible entries at all
         if (range.first == range.second || range.first->presence == presence_t::erased_k) {
+            if (range.first != range.second) {
+                --visible_count_;
+                --visible_deleted_count_;
+                entries_.erase(range.first);
+            }
             callback_missing();
-            return success_k;
+            return status_t::key_not_found_k;
         }
 
         // Invoke callback before erasing
@@ -1492,7 +1525,8 @@ class transactional_std_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
-    status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
+    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
+                                       callback_type_ &&callback = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
@@ -1504,13 +1538,14 @@ class transactional_std_store {
     }
 
     /**
-     *  @brief Removes all elements from the container and resets generation counter.
+     *  @brief Removes all elements from the container.
      *
      *  @return Always succeeds.
+     *  @note The generation and stamp counters keep running. Rewinding either would hand a future
+     *    transaction a number an open one already carries, and both are compared by value.
      */
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
-        generation_ = 0;
         visible_count_ = 0;
         visible_deleted_count_ = 0;
         return success_k;
@@ -1528,6 +1563,24 @@ class transactional_std_store {
 
 #pragma endregion Range Operations
 
+#pragma region Vacuuming
+
+    /** @brief Frees every entry no reader can reach. Returns how many were reclaimed. */
+    [[nodiscard]] expected<std::size_t> vacuum() noexcept { return vacuum_between_(entries_.begin(), entries_.end()); }
+
+    /**
+     *  @brief Frees the unreachable entries ordered in [ @p lower, @p upper), so a caller can step through
+     *    the keyspace instead of paying for one pass over all of it.
+     *  @return How many entries were reclaimed.
+     */
+    template <typename lower_type_, typename upper_type_>
+    [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept {
+        return vacuum_between_(entries_.lower_bound(std::forward<lower_type_>(lower)),
+                               entries_.lower_bound(std::forward<upper_type_>(upper)));
+    }
+
+#pragma endregion Vacuuming
+
 #pragma region Sampling
 
     /**
@@ -1543,8 +1596,8 @@ class transactional_std_store {
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_,
               typename callback_type_ = no_op_fn_t>
-    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                      callback_type_ &&callback) const noexcept {
+    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                    callback_type_ &&callback) const noexcept {
 
         std::size_t count = 0;
         range(lower, upper, [&](value_t const &) noexcept { ++count; });
@@ -1570,8 +1623,8 @@ class transactional_std_store {
      *  @param[out] reservoir Random access iterator to output buffer.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
+    void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
 
         using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
@@ -1589,23 +1642,9 @@ class transactional_std_store {
         };
         range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), sampler);
     }
-};
 
-/**
- *  @brief Unlike @c std::set<>::merge, this function overwrites existing values.
- *
- *  @see https://en.cppreference.com/w/cpp/container/set#Member_types
- *  @see https://en.cppreference.com/w/cpp/container/set/insert
- */
-template <typename keys_type_, typename compare_type_, typename allocator_type_>
-void merge_overwrite(std::set<keys_type_, compare_type_, allocator_type_> &target,
-                     std::set<keys_type_, compare_type_, allocator_type_> &source) noexcept {
-    for (auto source_it = source.begin(); source_it != source.end();) {
-        auto node = source.extract(source_it++);
-        auto result = target.insert(std::move(node));
-        if (!result.inserted) std::swap(*result.position, result.*node);
-    }
-}
+#pragma endregion Sampling
+};
 
 template < //
     typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>>
@@ -1616,7 +1655,5 @@ template < //
     typename allocator_type_ = std::allocator<std::uint8_t>>
 using transactional_std_map =
     transactional_std_store<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>;
-
-#pragma endregion Sampling
 
 } // namespace ashvardanian::smashtable

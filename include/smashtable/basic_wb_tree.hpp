@@ -20,6 +20,10 @@
  *
  *  Use cases: pagination (OFFSET/LIMIT), percentiles, window functions, quantile estimation.
  *
+ *  A wrapper that answers for only some of the stored entries supplies an augmentation policy, and the tree
+ *  keeps a second subtree count over that predicate - @c select_augmented and @c rank_augmented descend on it
+ *  in O(log n). An unaugmented tree keeps neither the field nor the work.
+ *
  *  @section basic_wb_tree_performance Performance
  *
  *  - Expected depth: ~1.88 log₂(n) vs AVL's 1.44 log₂(n)
@@ -29,12 +33,37 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <memory>  // `std::allocator`
-#include <utility> // `std::pair`, `std::exchange`
+#include <concepts>    // `std::convertible_to`
+#include <memory>      // `std::allocator`
+#include <type_traits> // `std::conditional_t`, `std::is_same_v`
+#include <utility>     // `std::pair`, `std::exchange`
 
 #include "shared.hpp"
 
 namespace ashvardanian::smashtable {
+
+#pragma region Augmentation Policies
+
+/**
+ *  @brief Marks a tree that keeps only @c size, leaving nodes byte-identical to an unaugmented build.
+ */
+struct no_augmentation_t {};
+
+/**
+ *  @brief Contract a wrapper satisfies to keep a second subtree count beside @c size.
+ *    @c augmented_count reads the entry and returns 0 or 1. The tree recomputes it from the entry alone on
+ *    every rotation, join, and split, so a predicate that depends on anything else - a sibling entry, a
+ *    global stamp - has to be materialized into the entry by the wrapper before the tree can aggregate it.
+ */
+template <typename augmentation_type_, typename value_type_>
+concept wb_augmentation = requires(value_type_ const &fruit) {
+    { augmentation_type_::augmented_count(fruit) } -> std::convertible_to<std::size_t>;
+};
+
+/** @brief Stand-in for the augmented counter in an unaugmented tree, occupying no bytes. */
+struct no_augmented_count_t {};
+
+#pragma endregion Augmentation Policies
 
 /**
  *  @brief Node for weight-balanced binary search tree.
@@ -55,14 +84,35 @@ namespace ashvardanian::smashtable {
  *  Layout: @c fruit is the stored entry, @c left and @c right the links, and @c size the number of nodes
  *  in the subtree rooted here - invariant @c size @c = @c 1 @c + @c size(left) @c + @c size(right), which
  *  is what makes @c select and @c rank logarithmic.
+ *
+ *  @tparam augmentation_type_ Policy carrying a second per-subtree count, kept over a predicate of the
+ *    wrapper's choosing. The default @c no_augmentation_t adds no field and no work.
+ *
+ *  @section basic_wb_tree_augmentation Augmentation
+ *
+ *  An augmented tree keeps @c augmented_size next to @c size, holding the number of entries in the
+ *  subtree for which @c augmentation_type_::augmented_count returns 1. Because that count is read off the
+ *  entry, every rotation, join, and split restores it from the moved node's own entry and its two children.
+ *  An entry whose count flips while it sits in the tree is repaired by @c refresh_augmentation, which
+ *  rewalks only the root-to-entry path and may be called any number of times per write - one wrapper
+ *  operation is free to retag several entries.
  */
-template <typename value_type_, typename comparator_type_>
+template <typename value_type_, typename comparator_type_, typename augmentation_type_ = no_augmentation_t>
 class basic_wb_node {
   public:
     using value_t = value_type_;
     using comparator_t = comparator_type_;
+    using augmentation_t = augmentation_type_;
     using size_t = std::size_t;
     using node_t = basic_wb_node;
+
+    /** @brief True when a second count is maintained, which is what gates every augmented code path. */
+    static constexpr bool is_augmented_k = !std::is_same_v<augmentation_t, no_augmentation_t>;
+    static_assert(!is_augmented_k || wb_augmentation<augmentation_t, value_t>,
+                  "An augmentation policy must expose `static std::size_t augmented_count(value_t const &)`");
+
+    /** @brief The augmented counter, degenerating to an empty type when no augmentation is asked for. */
+    using augmented_count_t = std::conditional_t<is_augmented_k, std::size_t, no_augmented_count_t>;
 
     value_t fruit;
     node_t *left = nullptr;
@@ -70,10 +120,24 @@ class basic_wb_node {
 
     size_t size = 1;
 
+    ST_NO_UNIQUE_ADDRESS_ augmented_count_t augmented_size {};
+
     static constexpr size_t delta_k = 3;
     static constexpr size_t gamma_k = 2;
 
     static size_t get_size(node_t *node) noexcept { return node ? node->size : 0; }
+
+    /** @brief Number of entries in the subtree rooted at @p node that the policy counts. */
+    static size_t get_augmented_size(node_t *node) noexcept {
+        if constexpr (is_augmented_k) return node ? node->augmented_size : 0;
+        else return 0;
+    }
+
+    /** @brief The entry's own contribution to the augmented count, 0 or 1. */
+    static size_t get_own_augmented_count(node_t *node) noexcept {
+        if constexpr (is_augmented_k) return augmentation_t::augmented_count(node->fruit);
+        else return 0;
+    }
 
 #pragma region Traversal and Search
 
@@ -259,6 +323,77 @@ class basic_wb_node {
     }
 
     /**
+     *  @brief Select the k-th smallest entry among those the augmentation policy counts.
+     *  @param[in] node Root of subtree.
+     *  @param[in] k Index among counted entries, 0 for the smallest.
+     *  @return Pointer to the k-th counted node, or nullptr when fewer than k+1 are counted.
+     *
+     *  @par Complexity
+     *  O(log n), following one root-to-node path and reading only the stored counts.
+     */
+    static node_t *select_augmented(node_t *node, size_t k) noexcept {
+        while (node) {
+            size_t const left_count = get_augmented_size(node->left);
+            if (k < left_count) {
+                node = node->left;
+                continue;
+            }
+            k -= left_count;
+            size_t const own_count = get_own_augmented_count(node);
+            if (own_count && k == 0) return node;
+            k -= own_count;
+            node = node->right;
+        }
+        return nullptr;
+    }
+
+    /**
+     *  @brief Number of counted entries ordered before @p comparable.
+     *  @param[in] node Root of subtree.
+     *  @param[in] comparable Key to find the augmented rank of.
+     *  @param[in] comparator Comparator instance.
+     *
+     *  @par Complexity
+     *  O(log n).
+     */
+    template <typename comparable_type_>
+    static size_t rank_augmented(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
+        size_t counted = 0;
+        while (node) {
+            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) node = node->left;
+            else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable))) {
+                counted += get_augmented_size(node->left) + get_own_augmented_count(node);
+                node = node->right;
+            }
+            else return counted + get_augmented_size(node->left);
+        }
+        return counted;
+    }
+
+    /**
+     *  @brief Repairs the augmented counts on the path to @p comparable after its predicate flipped.
+     *  @return True when the entry was found, which is when anything was repaired.
+     *
+     *  @par Complexity
+     *  O(log n), touching only the ancestors whose counts could have moved.
+     */
+    template <typename comparable_type_>
+    static bool refresh_augmentation(node_t *node, comparable_type_ &&comparable,
+                                     comparator_t const &comparator) noexcept {
+        if (!node) return false;
+
+        bool found;
+        if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit)))
+            found = refresh_augmentation(node->left, comparable, comparator);
+        else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable)))
+            found = refresh_augmentation(node->right, comparable, comparator);
+        else found = true;
+
+        if (found) update_augmented_size(node);
+        return found;
+    }
+
+    /**
      *  @brief In-order traversal (left-root-right) with callback.
      *    Visits nodes in sorted order according to comparator.
      *
@@ -283,12 +418,12 @@ class basic_wb_node {
     };
 
     /**
-     *  @brief Finds all nodes in the range [low, high] and invokes callback for each.
+     *  @brief Finds all nodes in the half-open range [low, high) and invokes callback for each.
      *    Recursively traverses the tree, visiting only nodes within the specified range.
      *
      *  @param[in] node Root of subtree to search.
      *  @param[in] low Lower bound of range (inclusive).
-     *  @param[in] high Upper bound of range (inclusive).
+     *  @param[in] high Upper bound of range (exclusive).
      *  @param[in] comparator Comparator for element comparison.
      *  @param[in] callback Callback to invoke for each node in range. Must be @c noexcept.
      *  @return Interval containing lower bound, upper bound, and lowest common ancestor.
@@ -303,10 +438,10 @@ class basic_wb_node {
         // If this node fits into the interval - analyze its children.
         // The first call to reach this branch in the call-stack
         // will be by definition the Lowest Common Ancestor.
-        if (!comparator(mapping_key_or_itself(high), mapping_key_or_itself(node->fruit)) &&
+        if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(high)) &&
             !comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(low))) {
-            callback(node);
             auto left_sub_interval = range(node->left, low, high, comparator, callback);
+            callback(node);
             auto right_sub_interval = range(node->right, low, high, comparator, callback);
 
             auto result = node_interval_t {};
@@ -322,16 +457,6 @@ class basic_wb_node {
         return range(node->left, low, high, comparator, callback);
     }
 
-    /**
-     *  @brief Finds equal range for a given key.
-     */
-    template <typename comparable_type_>
-    static node_interval_t equal_range(node_t *node, comparable_type_ &&comparable,
-                                       comparator_t const &comparator) noexcept {
-        auto no_op = [](node_t *) noexcept {};
-        return range(node, comparable, comparable, comparator, no_op);
-    }
-
 #pragma endregion Order Statistics
 
 #pragma region Rotations and Rebalancing
@@ -341,7 +466,27 @@ class basic_wb_node {
      *    Must be called after any operation that modifies children.
      */
     static void update_size(node_t *node) noexcept {
-        if (node) node->size = 1 + get_size(node->left) + get_size(node->right);
+        if (!node) return;
+        node->size = 1 + get_size(node->left) + get_size(node->right);
+        update_augmented_size(node);
+    }
+
+    /**
+     *  @brief Recomputes only the augmented count, for a node whose shape is already correct.
+     *    Used where an entry's own predicate changed but no link moved.
+     */
+    static void update_augmented_size(node_t *node) noexcept {
+        if constexpr (is_augmented_k) {
+            if (!node) return;
+            node->augmented_size =
+                get_own_augmented_count(node) + get_augmented_size(node->left) + get_augmented_size(node->right);
+        }
+    }
+
+    /** @brief Restores a node whose links were just cleared, so both counts describe it alone. */
+    static void reset_to_leaf(node_t *node) noexcept {
+        node->size = 1;
+        update_augmented_size(node);
     }
 
     /**
@@ -481,10 +626,12 @@ class basic_wb_node {
             midpoint = downstream.extracted.release();
             midpoint->left = node->left;
             midpoint->right = downstream.root;
-            update_size(midpoint);
+            // The right branch shrank by one under the promoted midpoint, so it may now be the
+            // lighter side by more than Δ allows; only the midpoint itself can be out of balance.
+            midpoint = rebalance_after_extract(midpoint);
             // Detach the `node` from the descendants.
             node->left = node->right = nullptr;
-            node->size = 1;
+            reset_to_leaf(node);
             return {midpoint, std::unique_ptr<node_t> {node}};
         }
         // Just one child is present, so it is the natural successor.
@@ -492,14 +639,14 @@ class basic_wb_node {
             node_t *replacement = node->left ? node->left : node->right;
             // Detach the `node` from the descendants.
             node->left = node->right = nullptr;
-            node->size = 1;
+            reset_to_leaf(node);
             return {replacement, std::unique_ptr<node_t> {node}};
         }
         // No children are present.
         else {
             // Detach the `node` from the descendants.
             node->left = node->right = nullptr;
-            node->size = 1;
+            reset_to_leaf(node);
             return {nullptr, std::unique_ptr<node_t> {node}};
         }
     }
@@ -604,7 +751,7 @@ class basic_wb_node {
             new (&new_node->fruit) value_type_(std::move(fruit));
             new_node->left = nullptr;
             new_node->right = nullptr;
-            new_node->size = 1;
+            reset_to_leaf(new_node);
             return {new_node, new_node, true};
         }
 
@@ -616,6 +763,8 @@ class basic_wb_node {
                 update_size(node);
                 node = rebalance(node);
             }
+            // Overwriting an existing entry leaves the shape alone but may flip its augmented count.
+            else update_augmented_size(node);
             return {node, result.match, result.inserted};
         }
         else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(fruit))) {
@@ -625,11 +774,13 @@ class basic_wb_node {
                 update_size(node);
                 node = rebalance(node);
             }
+            else update_augmented_size(node);
             return {node, result.match, result.inserted};
         }
         else {
             // Key already exists - update the fruit
             node->fruit = std::move(fruit);
+            update_augmented_size(node);
             return {node, node, false};
         }
     }
@@ -648,7 +799,11 @@ class basic_wb_node {
         std::size_t count = 0;
     };
 
-    /** @brief Drops every node satisfying @p predicate, returning the new root and surviving count. */
+    /**
+     *  @brief Drops every node satisfying @p predicate, returning the new root and surviving count.
+     *    Both halves may shed any number of nodes, so the two survivors are re-joined rather than
+     *    stitched back in place - rotating once could not close a gap of many weight classes.
+     */
     template <typename predicate_type_, typename node_deallocator_type_>
     static remove_if_result_t remove_if(node_t *node, predicate_type_ &&predicate,
                                         node_deallocator_type_ &&node_deallocator,
@@ -656,18 +811,16 @@ class basic_wb_node {
         if (!node) return {nullptr, 0};
 
         auto left_result = remove_if(node->left, predicate, node_deallocator, comparator);
-        node->left = left_result.root;
         auto right_result = remove_if(node->right, predicate, node_deallocator, comparator);
-        node->right = right_result.root;
+        node->left = node->right = nullptr;
+        reset_to_leaf(node);
 
         std::size_t const surviving = left_result.count + right_result.count;
         if (predicate(node->fruit)) {
-            auto extracted = extract(node, comparator);
-            node_deallocator(extracted.extracted.release());
-            return {extracted.root, surviving};
+            node_deallocator(node);
+            return {join(left_result.root, right_result.root, comparator), surviving};
         }
-        update_size(node);
-        return {node, surviving + 1};
+        return {join_with_root(left_result.root, node, right_result.root), surviving + 1};
     }
 
     /** @brief Uniformly samples one node whose key lies in [lower, upper), or nullptr when empty. */
@@ -704,7 +857,7 @@ class basic_wb_node {
 
     /**
      *  @brief Joins two trees with a root node between them.
-     *    Precondition: all(left) < root < all(right)
+     *    Precondition: @p root is non-null and all(left) < root < all(right).
      *
      *  @param[in] left Left subtree (all elements < root).
      *  @param[in] root Middle node to join with.
@@ -713,17 +866,34 @@ class basic_wb_node {
      *
      *  @par Complexity
      *  O(log n) expected, where n is size of larger tree.
+     *
+     *  The two sides may sit many weight classes apart, so hanging @p root between them and
+     *  rotating once is not enough. Walking down the heavier side's inner spine until the two
+     *  pieces are within Δ of each other, then rebalancing on the way back up, is what keeps the
+     *  invariant - this is what makes @c split and @c erase_range produce balanced trees.
      */
     static node_t *join_with_root(node_t *left, node_t *root, node_t *right) noexcept {
-        if (!root) {
-            // If no root, we can't join - this shouldn't happen
-            return left ? left : right;
+        assert(root && "Joining without a middle node loses one of the sides");
+
+        // Left is heavy enough that `root` belongs somewhere down its right spine.
+        // The comparison itself proves `left` is non-null: its weight exceeds Δ ≥ 1.
+        if (get_weight(left) > delta_k * get_weight(right)) {
+            left->right = join_with_root(left->right, root, right);
+            update_size(left);
+            return rebalance(left);
+        }
+
+        // Right is heavy, mirrored.
+        if (get_weight(right) > delta_k * get_weight(left)) {
+            right->left = join_with_root(left, root, right->left);
+            update_size(right);
+            return rebalance(right);
         }
 
         root->left = left;
         root->right = right;
         update_size(root);
-        return rebalance(root);
+        return root;
     }
 
     /**
@@ -803,14 +973,16 @@ class basic_wb_node {
  *  Use cases: pagination, percentiles, quantiles, window functions.
  */
 template <typename value_type_, typename comparator_type_ = less_t,
-          typename node_allocator_type_ = std::allocator<basic_wb_node<value_type_, comparator_type_>>>
+          typename node_allocator_type_ = std::allocator<basic_wb_node<value_type_, comparator_type_>>,
+          typename augmentation_type_ = no_augmentation_t>
 class basic_wb_tree {
   public:
     using value_t = value_type_;
     using value_type = value_t; // ? STL compatibility
     using comparator_t = comparator_type_;
     using comparator_type = comparator_t; // ? STL compatibility
-    using node_t = basic_wb_node<value_t, comparator_t>;
+    using augmentation_t = augmentation_type_;
+    using node_t = basic_wb_node<value_t, comparator_t, augmentation_t>;
     using node_type = node_t;
     using node_allocator_t = node_allocator_type_;
     using wb_tree_t = basic_wb_tree;
@@ -841,7 +1013,8 @@ class basic_wb_tree {
     template <typename other_value_type_, typename other_comparator_>
     using rebind = basic_wb_tree<other_value_type_, other_comparator_,
                                  typename std::allocator_traits<node_allocator_type_>::template rebind_alloc<
-                                     basic_wb_node<other_value_type_, other_comparator_>>>;
+                                     basic_wb_node<other_value_type_, other_comparator_, augmentation_type_>>,
+                                 augmentation_type_>;
 
   private:
     node_t *root_ = nullptr;
@@ -915,53 +1088,14 @@ class basic_wb_tree {
      *    Returns {nullptr, false} if allocation failed.
      */
     std::pair<node_t *, bool> insert(value_t &&fruit) noexcept {
-        // For now, simple implementation - just allocate and track size
-        node_t *new_node = allocator_.allocate(1);
-        if (!new_node) return {nullptr, false};
-
-        new (&new_node->fruit) value_t(std::move(fruit));
-        new_node->left = nullptr;
-        new_node->right = nullptr;
-        new_node->size = 1;
-
-        if (!root_) {
-            root_ = new_node;
-            size_ = 1;
-            return {new_node, true};
-        }
-
-        // Simple BST insert (TODO: add rebalancing)
-        node_t *current = root_;
-        node_t *parent = nullptr;
-
-        while (current) {
-            parent = current;
-            if (comparator_(mapping_key_or_itself(new_node->fruit), mapping_key_or_itself(current->fruit))) {
-                current = current->left;
-            }
-            else if (comparator_(mapping_key_or_itself(current->fruit), mapping_key_or_itself(new_node->fruit))) {
-                current = current->right;
-            }
-            else {
-                // Key already exists
-                new_node->fruit.~value_t();
-                allocator_.deallocate(new_node, 1);
-                return {current, false};
-            }
-        }
-
-        // Insert as child of parent
-        if (comparator_(mapping_key_or_itself(new_node->fruit), mapping_key_or_itself(parent->fruit))) {
-            parent->left = new_node;
-        }
-        else { parent->right = new_node; }
-
-        ++size_;
-
-        // Update sizes upward (simplified - should update from insertion point up)
-        update_sizes_from_root();
-
-        return {new_node, true};
+        // Probing first keeps @p fruit intact when the key is already present - the rebalancing
+        // descent below only moves it once the allocation has succeeded.
+        if (node_t *existing = node_t::find(root_, fruit, comparator_)) return {existing, false};
+        auto result =
+            node_t::upsert(root_, std::move(fruit), comparator_, [&]() noexcept { return allocator_.allocate(1); });
+        root_ = result.root;
+        size_ += result.inserted;
+        return {result.match, result.inserted};
     }
 
     /**
@@ -1077,6 +1211,40 @@ class basic_wb_tree {
      *  @endcode
      */
     size_t rank(value_t const &fruit) const noexcept { return node_t::rank(root_, fruit, comparator_); }
+
+    /**
+     *  @brief Number of entries the augmentation policy counts across the whole tree.
+     *    Exact for the counts as they stand now. One scalar per node cannot encode a function of a
+     *    parameter, so a reader whose predicate differs from the one currently materialized in the entries
+     *    - an older snapshot, say - gets no answer from this count and none of the descents built on it.
+     */
+    [[nodiscard]] size_t augmented_size() const noexcept { return node_t::get_augmented_size(root_); }
+
+    /**
+     *  @brief Select the k-th smallest entry among those the augmentation policy counts, in O(log n).
+     *  @return Pointer to the node, or nullptr when @c augmented_size() is at most @p k.
+     */
+    node_t *select_augmented(size_t k) noexcept { return node_t::select_augmented(root_, k); }
+
+    /** @brief Select over the augmented count, const version. */
+    node_t const *select_augmented(size_t k) const noexcept { return node_t::select_augmented(root_, k); }
+
+    /** @brief Number of counted entries ordered before @p comparable, in O(log n). */
+    template <typename comparable_type_>
+    size_t rank_augmented(comparable_type_ &&comparable) const noexcept {
+        return node_t::rank_augmented(root_, std::forward<comparable_type_>(comparable), comparator_);
+    }
+
+    /**
+     *  @brief Tells the tree that the entry matching @p comparable changed its augmented count.
+     *    Repairs the root-to-entry path in O(log n) rather than rescanning. A wrapper calls this once per
+     *    retagged entry, which may be several per write when one publish supersedes another entry.
+     *  @return True when the entry was found.
+     */
+    template <typename comparable_type_>
+    bool refresh_augmentation(comparable_type_ &&comparable) noexcept {
+        return node_t::refresh_augmentation(root_, std::forward<comparable_type_>(comparable), comparator_);
+    }
 
     /**
      *  @brief Iterates over all entries in sorted order.
@@ -1692,7 +1860,7 @@ class basic_wb_tree {
     erase_result_t erase(iterator first, iterator last) noexcept {
         while (first != last) {
             auto result = erase(first);
-            if (!result.status) return result;
+            if (failed(result.status)) return result;
             first = result.next;
         }
         return {last, {success_k}};
@@ -1737,17 +1905,14 @@ class basic_wb_tree {
     split_result_t split(comparable_type_ &&comparable) noexcept {
         auto result = node_t::split(root_, std::forward<comparable_type_>(comparable), comparator_);
 
-        // Create left tree
-        wb_tree_t left_tree;
+        // Both halves inherit this tree's allocator, since they own nodes it allocated.
+        wb_tree_t left_tree(comparator_, allocator_);
         left_tree.root_ = result.left;
-        left_tree.comparator_ = comparator_;
-        left_tree.update_sizes_from_root();
+        left_tree.size_ = node_t::get_size(result.left);
 
-        // Create right tree
-        wb_tree_t right_tree;
+        wb_tree_t right_tree(comparator_, allocator_);
         right_tree.root_ = result.right;
-        right_tree.comparator_ = comparator_;
-        right_tree.update_sizes_from_root();
+        right_tree.size_ = node_t::get_size(result.right);
 
         // This tree is now empty
         root_ = nullptr;
@@ -1785,7 +1950,7 @@ class basic_wb_tree {
         }
 
         root_ = node_t::join(root_, other.root_, comparator_);
-        update_sizes_from_root();
+        size_ += other.size_;
 
         other.root_ = nullptr;
         other.size_ = 0;
@@ -1823,27 +1988,21 @@ class basic_wb_tree {
         node->fruit.~value_t();
         allocator_.deallocate(node, 1);
     }
-
-    void update_sizes_from_root() noexcept { update_sizes_recursive(root_); }
-
-    void update_sizes_recursive(node_t *node) noexcept {
-        if (!node) return;
-        update_sizes_recursive(node->left);
-        update_sizes_recursive(node->right);
-        node_t::update_size(node);
-    }
 };
 
-template <typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<void>>
+template <typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<void>,
+          typename augmentation_type_ = no_augmentation_t>
 using wb_set = basic_wb_tree<value_type_, comparator_type_,
                              typename std::allocator_traits<allocator_type_>::template rebind_alloc<
-                                 basic_wb_node<value_type_, comparator_type_>>>;
+                                 basic_wb_node<value_type_, comparator_type_, augmentation_type_>>,
+                             augmentation_type_>;
 
 template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<void>>
+          typename allocator_type_ = std::allocator<void>, typename augmentation_type_ = no_augmentation_t>
 using wb_map = basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_,
                              typename std::allocator_traits<allocator_type_>::template rebind_alloc<
-                                 basic_wb_node<mapping<key_type_, value_type_>, comparator_type_>>>;
+                                 basic_wb_node<mapping<key_type_, value_type_>, comparator_type_, augmentation_type_>>,
+                             augmentation_type_>;
 
 #pragma endregion Observers
 

@@ -316,8 +316,8 @@ class basic_avl_node {
     /**
      *  @brief Iterates over a range of entries.
      *  @param[in] node The root of the subtree to search.
-     *  @param[in] low The lower bound of the range.
-     *  @param[in] high The upper bound of the range.
+     *  @param[in] low The lower bound of the range, included.
+     *  @param[in] high The upper bound of the range, excluded.
      *  @param[in] comparator The comparator instance (may be stateful).
      *  @param[in] callback The function to call for each node in the range.
      */
@@ -325,17 +325,21 @@ class basic_avl_node {
     static void range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
                       callback_type_ &&callback) noexcept {
         node_t *current = lower_bound(node, low, comparator);
-        while (current && !comparator(mapping_key_or_itself(high), mapping_key_or_itself(current->fruit))) {
+        while (current && comparator(mapping_key_or_itself(current->fruit), mapping_key_or_itself(high))) {
             callback(current);
             current = find_successor(current);
         }
     }
 
+    /**
+     *  @brief Locates the nodes bounding all entries equal to @p comparable.
+     *  @return Half-open bounds plus the lowest ancestor covering them, all @c nullptr on an empty tree.
+     */
     template <typename comparable_type_>
     static node_interval_t equal_range(node_t *node, comparable_type_ &&comparable,
                                        comparator_t const &comparator) noexcept {
-        auto no_op = [](node_t *) noexcept {};
-        return range(node, comparable, comparable, comparator, no_op);
+        return {lower_bound(node, comparable, comparator), upper_bound(node, comparable, comparator),
+                lowest_common_ancestor(node, comparable, comparable, comparator)};
     }
 
 #pragma endregion Traversal and Search
@@ -579,6 +583,8 @@ class basic_avl_node {
         node_t *root = alloc();
         if (!root) return nullptr;
         new (&root->fruit) value_t(*mid_iter);
+        // Raw memory, so the link to the parent is only correct once the caller overwrites it.
+        root->parent = nullptr;
 
         // Build left subtree from [first, mid)
         root->left = build_from_sorted(first, mid, alloc);
@@ -655,7 +661,9 @@ class basic_avl_node {
             // Detach the `node` from the descendants.
             node->left = node->right = node->parent = nullptr;
             node->height = 1;
-            return {successor, std::unique_ptr<node_t> {node}};
+            // The promoted node inherits the shrunk right branch, so it may itself be off balance,
+            // and no ancestor rebalances it when the extracted node was the root.
+            return {rebalance_after_extract(successor), std::unique_ptr<node_t> {node}};
         }
         // Just one child is present, so it is the natural successor.
         else if (node->left || node->right) {
@@ -764,36 +772,40 @@ class basic_avl_node {
     static node_t *join_with_root(node_t *left, node_t *root_node, node_t *right,
                                   comparator_t const &comparator) noexcept {
         if (!root_node) return join(left, right, comparator);
+        node_t *const joined = join_with_root_(left, root_node, right, comparator);
+        joined->parent = nullptr;
+        return joined;
+    }
+
+    /**
+     *  @brief Descends the right spine of the taller left tree - or the left spine of the taller right
+     *    tree - until both sides match in height, hangs @p root_node there, and rebalances on the way out.
+     *    The returned root keeps whatever parent the recursion frame above it will overwrite.
+     */
+    static node_t *join_with_root_(node_t *left, node_t *root_node, node_t *right,
+                                   comparator_t const &comparator) noexcept {
+        height_t const left_height = get_height(left);
+        height_t const right_height = get_height(right);
+
+        if (left_height > right_height + 1) {
+            left->right = join_with_root_(left->right, root_node, right, comparator);
+            left->right->parent = left;
+            left->height = 1 + larger_of(get_height(left->left), get_height(left->right));
+            return rebalance_after_extract(left);
+        }
+
+        if (right_height > left_height + 1) {
+            right->left = join_with_root_(left, root_node, right->left, comparator);
+            right->left->parent = right;
+            right->height = 1 + larger_of(get_height(right->left), get_height(right->right));
+            return rebalance_after_extract(right);
+        }
 
         root_node->left = left;
         if (left) left->parent = root_node;
         root_node->right = right;
         if (right) right->parent = root_node;
-        root_node->height = 1 + larger_of(get_height(left), get_height(right));
-
-        // Rebalance if necessary
-        auto balance = get_balance(root_node);
-
-        // Left Left Case
-        if (balance > 1 && get_balance(root_node->left) >= 0) return rotate_right(root_node);
-
-        // Left Right Case
-        else if (balance > 1 && get_balance(root_node->left) < 0) {
-            root_node->left = rotate_left(root_node->left);
-            if (root_node->left) root_node->left->parent = root_node;
-            return rotate_right(root_node);
-        }
-
-        // Right Right Case
-        else if (balance < -1 && get_balance(root_node->right) <= 0) return rotate_left(root_node);
-
-        // Right Left Case
-        else if (balance < -1 && get_balance(root_node->right) > 0) {
-            root_node->right = rotate_right(root_node->right);
-            if (root_node->right) root_node->right->parent = root_node;
-            return rotate_left(root_node);
-        }
-
+        root_node->height = 1 + larger_of(left_height, right_height);
         return root_node;
     }
 
@@ -1213,9 +1225,9 @@ class basic_avl_tree {
             return *this;
         }
 
-        iterator operator-(int) noexcept {
+        iterator operator--(int) noexcept {
             iterator tmp = *this;
-            -(*this);
+            --(*this);
             return tmp;
         }
 
@@ -1267,9 +1279,9 @@ class basic_avl_tree {
             return *this;
         }
 
-        const_iterator operator-(int) noexcept {
+        const_iterator operator--(int) noexcept {
             const_iterator tmp = *this;
-            -(*this);
+            --(*this);
             return tmp;
         }
 
@@ -1339,30 +1351,34 @@ class basic_avl_tree {
      *    Inserts new keys and updates existing keys. Always empties the other tree.
      *
      *  @param[inout] other Tree to merge from. Will be empty after merge.
+     *  @return @c success_k, or the first failure met while upserting - the rest of @p other still lands.
      *
      *  @note Unlike @c merge(), this UPDATES nodes with duplicate keys instead of skipping them.
      *  @note Complexity: O(m log n) where m = other.size(), n = this.size().
      */
-    void merge_with_upsert(basic_avl_tree &other) noexcept {
-        if (other.empty()) return;
+    status_t merge_with_upsert(basic_avl_tree &other) noexcept {
+        if (other.empty()) return success_k;
         if (empty()) {
             // Move other into this
             root_ = other.root_;
             size_ = other.size_;
             other.root_ = nullptr;
             other.size_ = 0;
-            return;
+            return success_k;
         }
 
         // The other tree's nodes are freed either way, as the entry is moved out rather than relinked.
+        status_t first_failure = success_k;
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
-            upsert(std::move(node->fruit));
+            auto const result = upsert(std::move(node->fruit));
+            if (result.failed() && first_failure == success_k) first_failure = status_t::out_of_memory_heap_k;
             node->fruit.~value_t();
-            allocator_.deallocate(node, 1);
+            other.allocator_.deallocate(node, 1);
         });
 
         other.root_ = nullptr;
         other.size_ = 0;
+        return first_failure;
     }
 
     /**
@@ -1422,10 +1438,11 @@ class basic_avl_tree {
             return nullptr;
         }
 
-        // Initialize node structure
+        // Initialize node structure. Nodes come from raw memory, so every link needs an explicit value.
         new_node->height = source->height;
         new_node->left = nullptr;
         new_node->right = nullptr;
+        new_node->parent = nullptr;
 
         // Use RAII guard to ensure cleanup on failure
         subtree_guard_t guard(&allocator, new_node);
@@ -1433,10 +1450,12 @@ class basic_avl_tree {
         // Recursively copy left subtree
         new_node->left = copy_subtree_(source->left, allocator);
         if (source->left && !new_node->left) return nullptr;
+        if (new_node->left) new_node->left->parent = new_node;
 
         // Recursively copy right subtree
         new_node->right = copy_subtree_(source->right, allocator);
         if (source->right && !new_node->right) return nullptr;
+        if (new_node->right) new_node->right->parent = new_node;
 
         // Success - release guard and return
         return guard.release();
@@ -1893,7 +1912,7 @@ class basic_avl_tree {
         bool failed() const noexcept { return !inserted && !node; }
         explicit operator bool() const noexcept { return !failed(); }
         upsert_result_t &operator=(value_t &&fruit) noexcept {
-            node->fruit = fruit;
+            node->fruit = std::move(fruit);
             return *this;
         }
     };
@@ -2177,7 +2196,7 @@ class basic_avl_tree {
         }
         else {
             // Upsert merge: O(m log n), updates duplicates instead of skipping
-            merge_with_upsert(temp_tree);
+            return merge_with_upsert(temp_tree);
         }
 
         return success_k;
@@ -2249,8 +2268,7 @@ class basic_avl_tree {
         if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
 
         // All keys exist - safe to upsert (will only update, never insert)
-        merge_with_upsert(temp_tree);
-        return success_k;
+        return merge_with_upsert(temp_tree);
     }
 
     /**
@@ -2415,7 +2433,10 @@ class basic_avl_tree {
      *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
      *    If erase fails (e.g., tree corruption), returns {end(), error}.
      */
-    erase_result_t erase(const_iterator pos) noexcept { return erase(iterator(this, pos.node_)); }
+    erase_result_t erase(const_iterator pos) noexcept {
+        // Erasing through a const iterator is the STL contract: the position is const, this tree is not.
+        return erase(iterator(this, const_cast<node_t *>(pos.node_)));
+    }
 
     /**
      *  @brief Erases all elements in the range [first, last).

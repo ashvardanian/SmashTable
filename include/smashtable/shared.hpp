@@ -34,10 +34,12 @@
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::int64_t`
 
-#include <atomic>      // `std::atomic_ref`
 #include <array>       // `std::array`
+#include <atomic>      // `std::atomic_ref`
 #include <bit>         // `std::countl_zero`
+#include <compare>     // `std::compare_three_way`, for the total order over unrelated pointers
 #include <concepts>    // `std::convertible_to`, `std::same_as`
+#include <limits>      // `std::numeric_limits`
 #include <new>         // `::operator new`, `std::align_val_t`, `std::nothrow`
 #include <tuple>       // `std::tuple`
 #include <type_traits> // `std::is_nothrow_invocable_v`
@@ -62,18 +64,6 @@
 
 namespace ashvardanian::smashtable {
 
-/** @brief Generation type for versioned elements. */
-using generation_t = std::int64_t;
-
-/**
- *  @brief The generation no stored entry can carry, standing for a key that is not there.
- *
- *  Generations are handed out pre-incremented, so the first is 1 and zero is free to mean absence.
- *  A watch on an absent key must be anchored to this rather than to the watching transaction's own
- *  generation, which @c rollback reassigns - otherwise the watch stops matching itself.
- */
-inline constexpr generation_t absent_generation_k = 0;
-
 /**
  *  @brief Whether an operation succeeded, and why it did not. The library's only result code.
  *
@@ -94,7 +84,7 @@ enum class status_t : int {
     operation_not_permitted_k = EPERM,
     operation_would_block_k = EWOULDBLOCK, // For a bounded retry that gives up
 
-    key_already_exists_k = EEXIST, // For `insert_if_missing` conflicts
+    key_already_exists_k = EEXIST, // For a strict `insert` onto an occupied key
     key_not_found_k = ENOENT,      // For `update` operations on missing keys
 };
 
@@ -225,6 +215,8 @@ struct default_allocator {
     constexpr default_allocator(default_allocator<other_type_> const &) noexcept {}
 
     [[nodiscard]] value_type_ *allocate(std::size_t count) noexcept {
+        // A request whose byte count wraps would otherwise hand back a small block that reads as valid.
+        if (count > SIZE_MAX / sizeof(value_type_)) return nullptr;
         std::size_t const bytes = count * sizeof(value_type_);
         if constexpr (alignof(value_type_) > __STDCPP_DEFAULT_NEW_ALIGNMENT__)
             return static_cast<value_type_ *>(
@@ -430,18 +422,28 @@ class expected {
 
   private:
     union {
-        value_t outcome_; // ? Alive only while `status_` says so
+        value_t outcome_; // ? Alive exactly while `succeeded(status_)`, which every constructor upholds
     };
     status_t status_ = unknown_k;
 
   public:
     constexpr expected() noexcept {}
-    constexpr expected(status_t status) noexcept : status_(status) {}
-    constexpr expected(value_t &&value, status_t status = status_t {}) noexcept
-        : outcome_(std::move(value)), status_(status) {}
-    constexpr expected(value_t const &value, status_t status = status_t {}) noexcept
-        requires(std::is_copy_constructible_v<value_t>)
-        : outcome_(value), status_(status) {}
+
+    /** @brief A reason with nothing behind it; a success has no value to report, so it reads as @c unknown_k. */
+    constexpr expected(status_t status) noexcept : status_(failed(status) ? status : unknown_k) {}
+
+    /**
+     *  @brief A value, kept only while @p status says there is one.
+     *    A failure carries its reason and nothing else, so the argument is left to its owner.
+     */
+    expected(value_t &&value, status_t status = success_k) noexcept : status_(status) {
+        if (succeeded(status_)) new (&outcome_) value_t(std::move(value));
+    }
+    expected(value_t const &value, status_t status = success_k) noexcept
+        requires(std::is_nothrow_copy_constructible_v<value_t>)
+        : status_(status) {
+        if (succeeded(status_)) new (&outcome_) value_t(value);
+    }
 
     expected(expected &&other) noexcept : status_(other.status_) {
         if (succeeded(status_)) new (&outcome_) value_t(std::move(other.outcome_));
@@ -490,7 +492,7 @@ class expected {
     }
 
     template <std::size_t index_>
-        requires(std::is_nothrow_default_constructible_v<value_t> && std::is_copy_constructible_v<value_t>)
+        requires(std::is_nothrow_default_constructible_v<value_t> && std::is_nothrow_copy_constructible_v<value_t>)
     constexpr auto get() const & noexcept {
         if constexpr (index_ == 0) return succeeded(status_) ? value_t {outcome_} : value_t {};
         else return status_;
@@ -644,7 +646,43 @@ struct comparable_particle_of<comparator_type_, comparable_type_, true> {
 
 #pragma endregion Key Extraction
 
-#pragma region Versioning Machinery
+#pragma region Optimistic Concurrency
+
+/** @brief Generation type for versioned elements. */
+using generation_t = std::int64_t;
+
+/**
+ *  @brief The generation no stored entry can carry, standing for a key that is not there.
+ *
+ *  Generations are handed out pre-incremented, so the first is 1 and zero is free to mean absence.
+ *  A watch on an absent key must be anchored to this rather than to the watching transaction's own
+ *  generation, which @c rollback reassigns - otherwise the watch stops matching itself.
+ */
+inline constexpr generation_t absent_generation_k = 0;
+
+/**
+ *  @brief When a version became visible, or that it never has.
+ *
+ *  The sentinel is the @b maximum rather than zero so that visibility is a single comparison against
+ *  a reader's snapshot: an uncommitted version is newer than every snapshot that will ever be taken,
+ *  and so falls out of @c visible_at without a second branch asking whether it is still staged.
+ *  Zero would have made "not yet visible" compare as "visible since the beginning of time".
+ */
+enum class commit_stamp_t : generation_t { uncommitted_k = std::numeric_limits<generation_t>::max() };
+
+/** @brief Whether a version stamped @p stamp is visible to a reader holding @p snapshot. */
+constexpr bool visible_at(commit_stamp_t stamp, generation_t snapshot) noexcept {
+    return static_cast<generation_t>(stamp) <= snapshot;
+}
+
+/**
+ *  @brief The snapshot a reader that takes none holds: every stamp a commit can ever draw is at or
+ *    below it, and only @c commit_stamp_t::uncommitted_k sits above.
+ */
+inline constexpr generation_t latest_snapshot_k = std::numeric_limits<generation_t>::max() - 1;
+
+/** @brief Whether @p stamp was drawn at all, which is what a reader taking no snapshot asks. */
+constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(stamp, latest_snapshot_k); }
 
 /**
  *  @brief What a reader is promised, named as Jepsen names it and ordered by strength.
@@ -658,6 +696,11 @@ enum class isolation_t : std::uint8_t {
     serializable_k = 4,
 };
 
+/** @brief Whether @p offered is at least as strong a promise as @p required. */
+constexpr bool at_least(isolation_t offered, isolation_t required) noexcept {
+    return static_cast<std::uint8_t>(offered) >= static_cast<std::uint8_t>(required);
+}
+
 /**
  *  @brief Whether a transaction's writes are sitting in the store, invisible, or not there yet.
  *
@@ -667,7 +710,7 @@ enum class isolation_t : std::uint8_t {
 enum class staging_t : bool {
     /** @brief Accepting writes; the store holds nothing of this transaction. */
     pending_k,
-    /** @brief The store has reserved every change, so @c commit cannot fail. */
+    /** @brief The store has reserved every change, so @c commit allocates nothing and only stamps. */
     staged_k,
 };
 
@@ -677,14 +720,6 @@ enum class presence_t : bool {
     present_k,
     /** @brief The key was erased. The stamp survives so a watch can date the erasure. */
     erased_k,
-};
-
-/** @brief Whether a reader may see an entry, or a live transaction still owns it. */
-enum class publication_t : bool {
-    /** @brief Written or reserved by a transaction that has not committed. No reader sees it. */
-    staged_k,
-    /** @brief Committed. This is what a reader reads. */
-    published_k,
 };
 
 /** @brief Watch metadata for versioned elements. */
@@ -699,6 +734,35 @@ struct watch_t {
         return watch.presence != presence || watch.generation != generation;
     }
 };
+
+/**
+ *  @brief What a watch on a key that is not there records, and what validation must match it with.
+ *
+ *  Absence is spelled as a tombstone at @c absent_generation_k rather than as a separate state: a
+ *  committed tombstone is reported as found - the public @c find has to see it in order to hide it -
+ *  while validation resolves that same key to missing, so the two paths only agree if a watch on an
+ *  absent key and a watch on an erased one record the very same shape.
+ */
+constexpr watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
+
+/**
+ *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
+ *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
+ *  @param[in] resolve_latest Invoked as @c resolve_latest(id,on_found,on_missing) . Must be noexcept.
+ *  @return @c success_k, or @c consistency_k for the first watch that fails to match.
+ */
+template <typename watches_type_, typename resolver_type_>
+[[nodiscard]] status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
+    watch_t const entry_missing = missing_watch();
+    for (auto const &id_and_watch : watches) {
+        bool drifted = false;
+        resolve_latest(
+            id_and_watch.id, [&](auto const &entry) noexcept { drifted = entry != id_and_watch.watch; },
+            [&]() noexcept { drifted = entry_missing != id_and_watch.watch; });
+        if (drifted) return status_t::consistency_k;
+    }
+    return success_k;
+}
 
 template <typename identifier_type_>
 struct dated_identifier {
@@ -744,6 +808,15 @@ concept carries_generation = requires(type_ const &value) {
  */
 template <typename type_>
 concept carries_versioned_payload = carries_generation<type_> && requires(type_ const &value) { value.unversioned; };
+
+/**
+ *  @brief Operands whose generation can break a tie, because a key can still be peeled out of them.
+ *    A bare @c watch_t is the counter-example: it dates an entry without naming one, so it is
+ *    compared against the entry it dates rather than fed to a comparator.
+ */
+template <typename type_>
+concept carries_dated_key =
+    carries_versioned_payload<type_> || (carries_generation<type_> && is_dating_identifier_v<type_>);
 
 /**
  *  @brief The identifier a version-decorated object is addressed by, with the metadata peeled off.
@@ -800,10 +873,14 @@ struct versioning_for {
                   "To make all the methods `noexcept`, the moves must be safe too.");
 
     struct versioned_t {
+        /** @brief The stored value, with none of the metadata around it. */
         value_t unversioned;
+        /** @brief Which transaction wrote this version, which is how its own writer finds it again. */
         generation_t generation {0};
+        /** @brief Whether this version says the key is there, or says it was taken away. */
         presence_t presence {presence_t::present_k};
-        publication_t publication {publication_t::published_k};
+        /** @brief When this version became visible, or @c uncommitted_k while it is only staged. */
+        commit_stamp_t committed {commit_stamp_t::uncommitted_k};
 
         versioned_t() = default;
         versioned_t(versioned_t &&) noexcept = default;
@@ -868,7 +945,9 @@ struct versioning_for {
         bool less(first_type_ const &a, second_type_ const &b) const noexcept {
             using first_t = std::remove_reference_t<first_type_>;
             using second_t = std::remove_reference_t<second_type_>;
-            if constexpr (carries_generation<first_t> && carries_generation<second_t>) return dated_compare(a, b);
+            static_assert(!std::is_same_v<first_t, watch_t> && !std::is_same_v<second_t, watch_t>,
+                          "A watch dates an entry without naming one, so it is compared with `==`, never ordered");
+            if constexpr (carries_dated_key<first_t> && carries_dated_key<second_t>) return dated_compare(a, b);
             else return native_compare(a, b);
         }
 
@@ -931,7 +1010,39 @@ struct versioned_equals {
     }
 };
 
-#pragma endregion Versioning Machinery
+/**
+ *  @brief Compares version-decorated objects by identifier @b and generation, so versions do not collapse.
+ *    A bare key matches every version of that key - which is what a visibility walk asks - while a
+ *    dated identifier matches exactly one, which is what a commit asks.
+ *
+ *  Paired with @c versioned_hasher, which keeps peeling to the bare key so every version of a key
+ *  shares one probe run; only equality widens. The ordered core needs no counterpart, since
+ *  @c versioned_comparator_t::less already routes to @c dated_compare when both operands date.
+ */
+template <typename equals_type_>
+struct dated_equals {
+    using is_transparent = void;
+
+    /** @brief The equality this wrapper was built with, consulted for every comparison. */
+    ST_NO_UNIQUE_ADDRESS_ equals_type_ equals;
+
+    dated_equals() noexcept
+        requires std::is_default_constructible_v<equals_type_>
+        : equals() {}
+    explicit dated_equals(equals_type_ const &other) noexcept : equals(other) {}
+
+    template <typename first_type_, typename second_type_>
+    bool operator()(first_type_ const &first, second_type_ const &second) const noexcept {
+        if (!equals(versioned_particle(first), versioned_particle(second))) return false;
+        using first_t = std::remove_reference_t<first_type_>;
+        using second_t = std::remove_reference_t<second_type_>;
+        if constexpr (carries_dated_key<first_t> && carries_dated_key<second_t>)
+            return first.generation == second.generation;
+        else return true;
+    }
+};
+
+#pragma endregion Optimistic Concurrency
 
 #pragma region Device Portability
 
@@ -1014,6 +1125,9 @@ constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type
 /**
  *  @brief Relaxed atomic read of a counter other threads may be incrementing.
  *    Needed wherever a plain read would race an @c atomic_add_fetch on the same field.
+ *  @warning The counter is read through a @c const path but must not be a @c const @b object -
+ *    an @c atomic_ref over one is undefined. Every caller reaches a mutable member of a mutable
+ *    container through a @c const member function, which is what makes the cast below sound.
  */
 template <typename integral_type_>
 constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
@@ -1221,6 +1335,13 @@ struct versioned_storage_for {
     template <typename element_type_>
     using rebind = typename collection_type_::template rebind<element_type_, addressing_t>;
 
+    /**
+     *  @brief The same storage keyed by identifier @b and generation, holding one entry per version.
+     *    Unchanged here, since the ordered comparator already breaks a tie on the generation.
+     */
+    template <typename element_type_>
+    using rebind_dated = rebind<element_type_>;
+
     /** @brief Builds an empty storage over @c element_type_, seeded from a bare comparator. */
     template <typename element_type_, typename allocator_type_>
     static rebind<element_type_> build(addressing_source_t const &source, allocator_type_ const &allocator) noexcept {
@@ -1290,6 +1411,16 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
 
     template <typename element_type_>
     using rebind = typename collection_type_::template rebind<element_type_, addressing_t, equality_t>;
+
+    /** @brief The equality that keeps one slot per version, rather than one per key. */
+    using dated_equality_t = dated_equals<typename collection_type_::key_equal>;
+
+    /**
+     *  @brief The same storage keyed by identifier @b and generation, holding one entry per version.
+     *    The hasher is untouched, so every version of a key shares one probe run.
+     */
+    template <typename element_type_>
+    using rebind_dated = typename collection_type_::template rebind<element_type_, addressing_t, dated_equality_t>;
 
     /** @brief Builds an empty storage over @c element_type_, seeded from a bare equality. */
     template <typename element_type_, typename allocator_type_>
@@ -1388,12 +1519,35 @@ struct storage_node_of<collection_type_, std::void_t<typename collection_type_::
 #pragma region Transaction Group
 
 /**
+ *  @brief A store whose transactions validate what they watched and stage before they commit.
+ *
+ *  The isolation floor is @c read_committed_k rather than the weakest level: a validated optimistic
+ *  transaction stages behind a flag no reader honours, so a store satisfying the rest cannot expose
+ *  an uncommitted write, and one claiming @c read_uncommitted_k is describing something else.
+ *
+ *  @c reserve is deliberately absent: it is a capacity hint over the watch list, not part of the
+ *  contract, and a sharded store has no single list to size.
+ */
+template <typename store_type_>
+concept optimistically_concurrent_store =
+    requires(store_type_ &store, typename store_type_::transaction_t &transaction) {
+        typename store_type_::transaction_t;
+        requires store_type_::is_transactional::value;
+        requires at_least(store_type_::isolation_k, isolation_t::read_committed_k);
+        { store.transaction() } noexcept -> std::same_as<expected<typename store_type_::transaction_t>>;
+        { transaction.watch(std::declval<typename store_type_::identifier_t>()) } noexcept -> std::same_as<status_t>;
+        { transaction.stage() } noexcept -> std::same_as<status_t>;
+        { transaction.commit() } noexcept -> std::same_as<status_t>;
+        { transaction.rollback() } noexcept -> std::same_as<status_t>;
+        { transaction.reset() } noexcept -> std::same_as<status_t>;
+    };
+
+/**
  *  @brief A two-phase commit over several stores at once.
  *
- *  @tparam store_types_ The stores taking part. Each must expose a nested @c transaction_t and a
- *    @c transaction() factory, which every transactional container in this library does.
+ *  @tparam store_types_ The stores taking part, each staging and committing on its own.
  */
-template <typename... store_types_>
+template <optimistically_concurrent_store... store_types_>
 class transaction_group {
   public:
     static constexpr std::size_t participants_k = sizeof...(store_types_);
@@ -1414,11 +1568,15 @@ class transaction_group {
         : transactions_(std::move(opened)) {
         for (std::size_t position = 0; position != participants_k; ++position) order_[position] = position;
         // Insertion sort: the participant count is a handful, and this keeps the header free of
-        // `<algorithm>` for a sort that will never see more than a few elements.
+        // `<algorithm>` for a sort that will never see more than a few elements. Builtin `>` over
+        // pointers into unrelated objects is unspecified, so the total order is asked for by name.
+        auto const after = [](void const *first, void const *second) noexcept {
+            return std::compare_three_way {}(first, second) > 0;
+        };
         for (std::size_t position = 1; position != participants_k; ++position) {
             std::size_t const carried = order_[position];
             std::size_t scan = position;
-            while (scan != 0 && stores[order_[scan - 1]] > stores[carried]) {
+            while (scan != 0 && after(stores[order_[scan - 1]], stores[carried])) {
                 order_[scan] = order_[scan - 1];
                 --scan;
             }
@@ -1504,7 +1662,11 @@ class transaction_group {
         return success_k;
     }
 
-    /** @brief Publishes every participant. Cannot fail once @c stage has succeeded. */
+    /**
+     *  @brief Publishes every participant, drawing each one's commit stamp.
+     *    Refuses with @c consistency_k when a participant's watch was overwritten by a commit that
+     *    landed while this group sat staged; nothing else can turn a staged group away.
+     */
     [[nodiscard]] status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         status_t result = success_k;
@@ -1521,7 +1683,9 @@ class transaction_group {
     [[nodiscard]] status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         status_t result = success_k;
-        for (std::size_t position = participants_k; position-- != 0;) {
+        // Ascending store address, as every other pass takes, so a participant holding a lock across
+        // the phases meets the same order here and cannot deadlock against another group.
+        for (std::size_t position = 0; position != participants_k; ++position) {
             status_t const one =
                 visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
             if (failed(one)) result = one;
@@ -1544,7 +1708,7 @@ class transaction_group {
 };
 
 /** @brief Deduces the store types, so a caller names the stores and not their spellings. */
-template <typename... store_types_>
+template <optimistically_concurrent_store... store_types_>
 [[nodiscard]] expected<transaction_group<store_types_...>> make_transaction_group(store_types_ &...stores) noexcept {
     return transaction_group<store_types_...>::make(stores...);
 }
@@ -1556,18 +1720,24 @@ template <typename... store_types_>
  *
  *  Locks here are held across user code - callbacks, comparators, allocators, a whole commit loop -
  *  so a pure spinner would burn a core while a holder walks a range, and pure parking would pay a
- *  syscall for the uncontended case that dominates. A waiting writer sets a bit that turns new
- *  readers away, so a steady read load cannot starve it indefinitely.
+ *  syscall for the uncontended case that dominates. Waiting writers are counted, and a non-zero count
+ *  turns new readers away, so a steady read load cannot starve any of them indefinitely.
  *
  *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
  *  timed acquisition, no upgrading. Both collection wrappers take the mutex as a template parameter,
  *  so this is the default rather than the only choice.
  */
 class shared_mutex_t {
+    /** @brief Set while one writer owns the lock; the reader count is zero for as long as it is. */
     static constexpr std::uint32_t writer_held_k = 1u << 31;
-    static constexpr std::uint32_t writer_waiting_k = 1u << 30;
-    static constexpr std::uint32_t readers_mask_k = writer_waiting_k - 1;
-    static constexpr std::uint32_t writer_bits_k = writer_held_k | writer_waiting_k;
+    /** @brief One unit of the waiting-writer tally, which occupies the fifteen bits below the held bit. */
+    static constexpr std::uint32_t one_writer_waiting_k = 1u << 16;
+    /** @brief Where the waiting-writer tally lives, capped at 32'767 writers parked at once. */
+    static constexpr std::uint32_t writers_waiting_mask_k = 0x7FFF0000u;
+    /** @brief Where the reader tally lives, capped at 65'535 readers holding at once. */
+    static constexpr std::uint32_t readers_mask_k = 0x0000FFFFu;
+    /** @brief What turns an arriving reader away: an owning writer, or any writer queued ahead of it. */
+    static constexpr std::uint32_t writer_bits_k = writer_held_k | writers_waiting_mask_k;
 
     /** @brief How long to spin before parking, which is about the cost of one uncontended handoff. */
     static constexpr int spins_before_parking_k = 64;
@@ -1609,12 +1779,14 @@ class shared_mutex_t {
             pause_briefly();
         }
 
-        // Announcing the intent is what stops a stream of readers from renewing the lock forever.
-        std::uint32_t observed = state_.fetch_or(writer_waiting_k, std::memory_order_relaxed) | writer_waiting_k;
+        // Joining the tally is what stops a stream of readers from renewing the lock forever. A tally
+        // rather than a flag, so one writer taking the lock cannot erase the intent of the others.
+        std::uint32_t observed =
+            state_.fetch_add(one_writer_waiting_k, std::memory_order_relaxed) + one_writer_waiting_k;
         while (true) {
             if ((observed & (writer_held_k | readers_mask_k)) == 0) {
-                if (state_.compare_exchange_weak(observed, writer_held_k, std::memory_order_acquire,
-                                                 std::memory_order_relaxed))
+                std::uint32_t const taken = (observed - one_writer_waiting_k) | writer_held_k;
+                if (state_.compare_exchange_weak(observed, taken, std::memory_order_acquire, std::memory_order_relaxed))
                     return;
                 continue; // ? The exchange refreshed `observed`
             }
@@ -1624,8 +1796,9 @@ class shared_mutex_t {
     }
 
     void unlock() noexcept {
-        // Any writer still waiting re-announces itself on waking, so clearing the bit loses nothing.
-        state_.store(0, std::memory_order_release);
+        // Only the held bit is ours to drop: the writers queued behind us keep their places, and
+        // keep new readers out while they wait.
+        state_.fetch_and(~writer_held_k, std::memory_order_release);
         state_.notify_all();
     }
 

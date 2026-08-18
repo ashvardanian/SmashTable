@@ -13,7 +13,10 @@
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
+#include "test_fixture_coverage.hpp"
+#include "test_transactional_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -49,8 +52,6 @@ using transactional_composite_map_t = transactional_hash_map<composite_key_t, gu
  *  Value: guarded_payload_t | Tests: Dual-heap staging and rollback
  */
 using transactional_heavy_map_t = transactional_hash_map<heavy_key_t, guarded_payload_t>;
-
-static_assert(transactional_trivial_set_t::isolation_k == isolation_t::monotonic_atomic_view_k);
 
 #pragma endregion Type Aliases
 
@@ -325,10 +326,10 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_non_repeatable_reads_are_allowed() {
-    test_non_repeatable_reads_are_allowed<transactional_trivial_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_composite_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_read_matches_isolation() {
+    test_repeated_read_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_read_matches_isolation<transactional_composite_map_t>();
+    test_repeated_read_matches_isolation<transactional_heavy_map_t>();
 }
 
 static void transactional_consistency_reset_clears_transaction_state() {
@@ -338,6 +339,128 @@ static void transactional_consistency_reset_clears_transaction_state() {
 }
 
 #pragma endregion Consistency and Transaction Tests
+
+#pragma region Transactional Store Defects
+
+static void transactional_defects_direct_write_spares_staged_version() {
+    test_direct_write_spares_staged_version<transactional_trivial_map_t>();
+    test_direct_write_spares_staged_version<transactional_composite_map_t>();
+    test_direct_write_spares_staged_version<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_direct_erase_spares_staged_version() {
+    test_direct_erase_spares_staged_version<transactional_trivial_map_t>();
+    test_direct_erase_spares_staged_version<transactional_composite_map_t>();
+    test_direct_erase_spares_staged_version<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_clear_keeps_generations_moving() {
+    test_clear_keeps_generations_moving<transactional_trivial_map_t>();
+    test_clear_keeps_generations_moving<transactional_composite_map_t>();
+    test_clear_keeps_generations_moving<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_point_reads() {
+    test_committed_erase_hidden_from_point_reads<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_point_reads<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_point_reads<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_vacuum_reclaims_committed_tombstones() {
+    test_vacuum_reclaims_committed_tombstones<transactional_trivial_map_t>();
+    test_vacuum_reclaims_committed_tombstones<transactional_composite_map_t>();
+    test_vacuum_reclaims_committed_tombstones<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_vacuum_spares_staged_versions() {
+    test_vacuum_spares_staged_versions<transactional_trivial_map_t>();
+    test_vacuum_spares_staged_versions<transactional_composite_map_t>();
+    test_vacuum_spares_staged_versions<transactional_heavy_map_t>();
+}
+
+static void transactional_consistency_group_commits_participants_together() {
+    test_group_commits_participants_together<transactional_trivial_map_t>();
+    test_group_commits_participants_together<transactional_composite_map_t>();
+    test_group_commits_participants_together<transactional_heavy_map_t>();
+}
+
+static void transactional_consistency_group_unwinds_every_participant_on_conflict() {
+    test_group_unwinds_every_participant_on_conflict<transactional_trivial_map_t>();
+    test_group_unwinds_every_participant_on_conflict<transactional_composite_map_t>();
+    test_group_unwinds_every_participant_on_conflict<transactional_heavy_map_t>();
+}
+
+#pragma endregion Transactional Store Defects
+
+#pragma region Commit Stamp
+
+static void commit_stamp_rolled_back_stage_does_not_abort_a_peer() {
+    test_rolled_back_stage_does_not_abort_a_peer<transactional_trivial_map_t>();
+}
+
+static void commit_stamp_lost_update_is_refused() { test_lost_update_is_refused<transactional_trivial_map_t>(); }
+
+static void commit_stamp_find_and_watch_records_absence() {
+    test_find_and_watch_records_absence<transactional_trivial_map_t>();
+}
+
+#pragma endregion Commit Stamp
+
+static void transactional_consistency_find_does_not_watch() {
+    test_find_does_not_watch<transactional_trivial_map_t>();
+    test_find_does_not_watch<transactional_composite_map_t>();
+    test_find_does_not_watch<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_transaction_equal_range_sees_staged_writes() {
+    test_transaction_equal_range_sees_staged_writes<transactional_trivial_map_t>();
+    test_transaction_equal_range_sees_staged_writes<transactional_composite_map_t>();
+    test_transaction_equal_range_sees_staged_writes<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_insert_reports_key_already_exists() {
+    test_insert_reports_key_already_exists<transactional_trivial_map_t>();
+    test_insert_reports_key_already_exists<transactional_composite_map_t>();
+    test_insert_reports_key_already_exists<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_find_copy_reports_key_not_found() {
+    test_find_copy_reports_key_not_found<transactional_trivial_map_t>();
+    test_find_copy_reports_key_not_found<transactional_composite_map_t>();
+    test_find_copy_reports_key_not_found<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_second_stage_is_rejected() {
+    test_second_stage_is_rejected<transactional_trivial_map_t>();
+    test_second_stage_is_rejected<transactional_composite_map_t>();
+    test_second_stage_is_rejected<transactional_heavy_map_t>();
+}
+
+#pragma region Fixture Coverage
+
+static void fixture_coverage_container_balances_counted_keys() {
+    test_container_balances_counted_keys<transactional_hash_map<counted_key_t, int>>();
+}
+
+static void fixture_coverage_rollback_balances_counted_keys() {
+    test_rollback_balances_counted_keys<transactional_hash_map<counted_key_t, int>>();
+}
+
+static void fixture_coverage_container_walks_collision_runs() {
+    test_container_walks_collision_runs<transactional_hash_map<colliding_key_t, int>>();
+}
+
+static void fixture_coverage_transaction_walks_collision_runs() {
+    test_transaction_walks_collision_runs<transactional_hash_map<colliding_key_t, int>>();
+}
+
+#pragma endregion Fixture Coverage
+
+using budgeted_transactional_set_t = transactional_hash_set<budgeted_key_t>;
+
+static void fixture_coverage_find_copy_reports_a_refused_copy() {
+    test_find_copy_reports_a_refused_copy<budgeted_transactional_set_t>();
+}
 
 int main() {
     install_test_signal_handlers();
@@ -390,10 +513,57 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
-    failures += run_test(filter, "transactional_consistency.non_repeatable_reads_are_allowed",
-                         transactional_consistency_non_repeatable_reads_are_allowed);
+    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
+                         transactional_consistency_repeated_read_matches_isolation);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
                          transactional_consistency_reset_clears_transaction_state);
+
+    failures += run_test(filter, "transactional_defects.direct_write_spares_staged_version",
+                         transactional_defects_direct_write_spares_staged_version);
+    failures += run_test(filter, "transactional_defects.direct_erase_spares_staged_version",
+                         transactional_defects_direct_erase_spares_staged_version);
+    failures += run_test(filter, "transactional_defects.clear_keeps_generations_moving",
+                         transactional_defects_clear_keeps_generations_moving);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_point_reads",
+                         transactional_defects_committed_erase_hidden_from_point_reads);
+    failures += run_test(filter, "transactional_defects.vacuum_reclaims_committed_tombstones",
+                         transactional_defects_vacuum_reclaims_committed_tombstones);
+    failures += run_test(filter, "transactional_defects.vacuum_spares_staged_versions",
+                         transactional_defects_vacuum_spares_staged_versions);
+    failures += run_test(filter, "transactional_consistency.group_commits_participants_together",
+                         transactional_consistency_group_commits_participants_together);
+    failures += run_test(filter, "transactional_consistency.group_unwinds_every_participant_on_conflict",
+                         transactional_consistency_group_unwinds_every_participant_on_conflict);
+
+    failures += run_test(filter, "commit_stamp.rolled_back_stage_does_not_abort_a_peer",
+                         commit_stamp_rolled_back_stage_does_not_abort_a_peer);
+    failures += run_test(filter, "commit_stamp.lost_update_is_refused", commit_stamp_lost_update_is_refused);
+    failures +=
+        run_test(filter, "commit_stamp.find_and_watch_records_absence", commit_stamp_find_and_watch_records_absence);
+
+    failures += run_test(filter, "transactional_consistency.find_does_not_watch",
+                         transactional_consistency_find_does_not_watch);
+
+    failures += run_test(filter, "transactional_defects.transaction_equal_range_sees_staged_writes",
+                         transactional_defects_transaction_equal_range_sees_staged_writes);
+    failures += run_test(filter, "transactional_defects.insert_reports_key_already_exists",
+                         transactional_defects_insert_reports_key_already_exists);
+    failures += run_test(filter, "transactional_defects.find_copy_reports_key_not_found",
+                         transactional_defects_find_copy_reports_key_not_found);
+    failures += run_test(filter, "transactional_defects.second_stage_is_rejected",
+                         transactional_defects_second_stage_is_rejected);
+
+    failures += run_test(filter, "fixture_coverage.container_balances_counted_keys",
+                         fixture_coverage_container_balances_counted_keys);
+    failures += run_test(filter, "fixture_coverage.rollback_balances_counted_keys",
+                         fixture_coverage_rollback_balances_counted_keys);
+    failures += run_test(filter, "fixture_coverage.container_walks_collision_runs",
+                         fixture_coverage_container_walks_collision_runs);
+    failures += run_test(filter, "fixture_coverage.transaction_walks_collision_runs",
+                         fixture_coverage_transaction_walks_collision_runs);
+
+    failures += run_test(filter, "fixture_coverage.find_copy_reports_a_refused_copy",
+                         fixture_coverage_find_copy_reports_a_refused_copy);
 
     return report_test_failures(failures);
 }

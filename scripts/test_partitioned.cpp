@@ -254,19 +254,19 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_composite_map_t>();
 }
 
-static void transactional_consistency_non_repeatable_reads_are_allowed() {
-    test_non_repeatable_reads_are_allowed<transactional_trivial_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_tracking_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_composite_map_t>();
+static void transactional_consistency_repeated_read_matches_isolation() {
+    test_repeated_read_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_read_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_read_matches_isolation<transactional_composite_map_t>();
 }
 
-static void transactional_consistency_phantom_reads_are_allowed() {
-    test_phantom_reads_are_allowed<transactional_trivial_set_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_set_t>();
-    test_phantom_reads_are_allowed<transactional_composite_set_t>();
-    test_phantom_reads_are_allowed<transactional_trivial_map_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_map_t>();
-    test_phantom_reads_are_allowed<transactional_composite_map_t>();
+static void transactional_consistency_repeated_range_matches_isolation() {
+    test_repeated_range_matches_isolation<transactional_trivial_set_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_set_t>();
+    test_repeated_range_matches_isolation<transactional_composite_set_t>();
+    test_repeated_range_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_range_matches_isolation<transactional_composite_map_t>();
 }
 
 static void transactional_consistency_delete_visibility() {
@@ -285,6 +285,21 @@ static void transactional_consistency_reset_clears_transaction_state() {
 
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<partitioned_tracking_set_t>();
+}
+
+static void transactional_consistency_group_commits_participants_together() {
+    test_group_commits_participants_together<transactional_trivial_map_t>();
+    test_group_commits_participants_together<transactional_composite_map_t>();
+}
+
+static void transactional_consistency_group_unwinds_every_participant_on_conflict() {
+    test_group_unwinds_every_participant_on_conflict<transactional_trivial_map_t>();
+    test_group_unwinds_every_participant_on_conflict<transactional_composite_map_t>();
+}
+
+static void transactional_consistency_find_does_not_watch() {
+    test_find_does_not_watch<transactional_trivial_map_t>();
+    test_find_does_not_watch<transactional_composite_map_t>();
 }
 
 int main() {
@@ -341,10 +356,10 @@ int main() {
                          transactional_consistency_watch_detects_staged_writes_of_older_generation);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
-    failures += run_test(filter, "transactional_consistency.non_repeatable_reads_are_allowed",
-                         transactional_consistency_non_repeatable_reads_are_allowed);
-    failures += run_test(filter, "transactional_consistency.phantom_reads_are_allowed",
-                         transactional_consistency_phantom_reads_are_allowed);
+    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
+                         transactional_consistency_repeated_read_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",
+                         transactional_consistency_repeated_range_matches_isolation);
     failures +=
         run_test(filter, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
@@ -352,6 +367,14 @@ int main() {
 
     failures += run_test(filter, "transactional_consistency.stateful_comparator_is_consulted",
                          transactional_consistency_stateful_comparator_is_consulted);
+
+    failures += run_test(filter, "transactional_consistency.group_commits_participants_together",
+                         transactional_consistency_group_commits_participants_together);
+    failures += run_test(filter, "transactional_consistency.group_unwinds_every_participant_on_conflict",
+                         transactional_consistency_group_unwinds_every_participant_on_conflict);
+
+    failures += run_test(filter, "transactional_consistency.find_does_not_watch",
+                         transactional_consistency_find_does_not_watch);
 
     return report_test_failures(failures);
 }

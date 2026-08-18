@@ -18,7 +18,17 @@ namespace ashvardanian::smashtable {
  *  that opened it, and its staged changes live outside the mutex entirely. Only the points where a
  *  transaction reaches the store - @c watch, @c stage, @c commit, @c rollback, @c find - take the lock.
  *
- *  One mutex spans the whole commit loop, which is what keeps the isolation level its parts promise.
+ *  @c stage and @c commit take the mutex separately and drop it in between, so the lock is not what
+ *  spans them. The store-side reservation is: staging claims every key the transaction wrote, and no
+ *  other transaction can take those keys until this one publishes or unwinds, which is what carries
+ *  the inner store's isolation level across the gap.
+ *
+ *  @warning Every callback runs with the mutex held, and it is not recursive, so a callback that calls
+ *    back into this collection - or into anything that eventually does - deadlocks against itself.
+ *    Copy out what a callback needs and do the rest after it returns.
+ *  @warning Moving a collection leaves every open transaction pointing at the husk, whose store is
+ *    empty and whose mutex guards nothing, so commits land nowhere and report success. Move only a
+ *    collection no transaction is open on and no other thread is touching.
  */
 template <typename collection_type_, typename shared_mutex_type_ = shared_mutex_t>
 class locked_collection {
@@ -106,6 +116,27 @@ class locked_collection {
             return result;
         }
 
+        /** @brief Whether @p comparable is there, including this transaction's own writes. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+            shared_lock _ {store_.mutex_};
+            return unlocked_.contains(std::forward<comparable_type_>(comparable));
+        }
+
+        /**
+         *  @brief Finds the member equal to @p comparable and records what it saw into the read set.
+         *    The watching counterpart to @c find, and the one that can fail, because a read set is memory.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
+        [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                              callback_missing_type_ &&callback_missing = {}) noexcept {
+            shared_lock _ {store_.mutex_};
+            return unlocked_.find_and_watch(std::forward<comparable_type_>(comparable),
+                                            std::forward<callback_found_type_>(callback_found),
+                                            std::forward<callback_missing_type_>(callback_missing));
+        }
+
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
                   typename callback_missing_type_ = no_op_fn_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -122,6 +153,7 @@ class locked_collection {
     unlocked_t unlocked_;
 
     locked_collection(unlocked_t &&unlocked) noexcept : unlocked_(std::move(unlocked)) {}
+    /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     locked_collection &operator=(locked_collection &&other) noexcept {
         unique_lock _ {mutex_};
         unlocked_ = std::move(other.unlocked_);
@@ -130,6 +162,7 @@ class locked_collection {
 
   public:
     locked_collection() noexcept = default;
+    /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     locked_collection(locked_collection &&other) noexcept : unlocked_(std::move(other.unlocked_)) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
@@ -259,18 +292,11 @@ class locked_collection {
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
+                                       callback_type_ &&callback = {}) noexcept {
         unique_lock _ {mutex_};
-        unlocked_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                        std::forward<callback_type_>(callback));
-    }
-
-    template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_fn_t>
-    void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
-        unique_lock _ {mutex_};
-        unlocked_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                              std::forward<callback_type_>(callback));
+        return unlocked_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                     std::forward<callback_type_>(callback));
     }
 
     [[nodiscard]] status_t clear() noexcept {
@@ -285,20 +311,20 @@ class locked_collection {
 
     template <typename lower_type_, typename upper_type_, typename generator_type_,
               typename callback_type_ = no_op_fn_t>
-    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                      callback_type_ &&callback) const noexcept {
+    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                    callback_type_ &&callback) const noexcept {
         shared_lock _ {mutex_};
-        unlocked_.sample_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                               std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
+        unlocked_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                             std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
+    void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
         shared_lock _ {mutex_};
-        unlocked_.sample_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                               std::forward<generator_type_>(generator), seen, reservoir_capacity,
-                               std::forward<output_iterator_type_>(reservoir));
+        unlocked_.sample_reservoir(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                   std::forward<generator_type_>(generator), seen, reservoir_capacity,
+                                   std::forward<output_iterator_type_>(reservoir));
     }
 };
 

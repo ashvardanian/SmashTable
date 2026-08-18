@@ -9,13 +9,22 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
+#include <algorithm> // `std::equal`
+#include <map>       // `std::map`
+#include <random>    // `std::mt19937`
+#include <set>       // `std::set`
+#include <vector>    // `std::vector`
+
 #include <smashtable/basic_wb_tree.hpp>
 #include <smashtable/transactional_store.hpp>
 #include <smashtable/transactional_std_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
+#include "test_fixture_coverage.hpp"
+#include "test_transactional_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -73,7 +82,7 @@ using heavy_map_t =
     wb_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 /**
- *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓ (MVCC)
+ *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
  *  Tests: Baseline transactional correctness, isolation levels
  */
 using transactional_trivial_set_t =
@@ -273,6 +282,70 @@ static void basic_ops_heterogeneous_lookups() {
 
 #pragma region Consistency and Transaction Tests for Sets
 
+#pragma region Transactional Store Defects
+
+static void transactional_defects_direct_write_spares_staged_version() {
+    test_direct_write_spares_staged_version<transactional_trivial_map_t>();
+    test_direct_write_spares_staged_version<transactional_composite_map_t>();
+    test_direct_write_spares_staged_version<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_direct_erase_spares_staged_version() {
+    test_direct_erase_spares_staged_version<transactional_trivial_map_t>();
+    test_direct_erase_spares_staged_version<transactional_composite_map_t>();
+    test_direct_erase_spares_staged_version<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_erase_range_spares_staged_versions() {
+    test_erase_range_spares_staged_versions<transactional_trivial_map_t>();
+    test_erase_range_spares_staged_versions<transactional_composite_map_t>();
+    test_erase_range_spares_staged_versions<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_clear_keeps_generations_moving() {
+    test_clear_keeps_generations_moving<transactional_trivial_map_t>();
+    test_clear_keeps_generations_moving<transactional_composite_map_t>();
+    test_clear_keeps_generations_moving<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_point_reads() {
+    test_committed_erase_hidden_from_point_reads<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_point_reads<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_point_reads<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_ordered_reads() {
+    test_committed_erase_hidden_from_ordered_reads<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_ordered_reads<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_ordered_reads<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_update_range() {
+    test_committed_erase_hidden_from_update_range<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_update_range<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_update_range<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_vacuum_reclaims_committed_tombstones() {
+    test_vacuum_reclaims_committed_tombstones<transactional_trivial_map_t>();
+    test_vacuum_reclaims_committed_tombstones<transactional_composite_map_t>();
+    test_vacuum_reclaims_committed_tombstones<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_vacuum_spares_staged_versions() {
+    test_vacuum_spares_staged_versions<transactional_trivial_map_t>();
+    test_vacuum_spares_staged_versions<transactional_composite_map_t>();
+    test_vacuum_spares_staged_versions<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_windowed_vacuum_reclaims_one_slice() {
+    test_windowed_vacuum_reclaims_one_slice<transactional_trivial_map_t>();
+    test_windowed_vacuum_reclaims_one_slice<transactional_composite_map_t>();
+    test_windowed_vacuum_reclaims_one_slice<transactional_heavy_map_t>();
+}
+
+#pragma endregion Transactional Store Defects
+
 static void transactional_consistency_empty_transaction_commit() {
     test_empty_transaction_commit<transactional_trivial_set_t>();
     test_empty_transaction_commit<transactional_tracking_set_t>();
@@ -432,22 +505,22 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_non_repeatable_reads_are_allowed() {
-    test_non_repeatable_reads_are_allowed<transactional_trivial_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_tracking_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_composite_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_read_matches_isolation() {
+    test_repeated_read_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_read_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_read_matches_isolation<transactional_composite_map_t>();
+    test_repeated_read_matches_isolation<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_phantom_reads_are_allowed() {
-    test_phantom_reads_are_allowed<transactional_trivial_set_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_set_t>();
-    test_phantom_reads_are_allowed<transactional_composite_set_t>();
-    test_phantom_reads_are_allowed<transactional_heavy_set_t>();
-    test_phantom_reads_are_allowed<transactional_trivial_map_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_map_t>();
-    test_phantom_reads_are_allowed<transactional_composite_map_t>();
-    test_phantom_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_range_matches_isolation() {
+    test_repeated_range_matches_isolation<transactional_trivial_set_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_set_t>();
+    test_repeated_range_matches_isolation<transactional_composite_set_t>();
+    test_repeated_range_matches_isolation<transactional_heavy_set_t>();
+    test_repeated_range_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_range_matches_isolation<transactional_composite_map_t>();
+    test_repeated_range_matches_isolation<transactional_heavy_map_t>();
 }
 
 static void transactional_consistency_delete_visibility() {
@@ -469,6 +542,589 @@ static void transactional_consistency_reset_clears_transaction_state() {
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
 }
+
+#pragma region Weight Balance Invariants
+
+/**
+ *  A bare @c int set, because the balance oracle below reaches for @c root() and walks raw nodes.
+ *  The keys carry no behaviour of their own, so a failure is always the tree's.
+ */
+using ordered_set_t = wb_set<int, std::less<int>, std::allocator<int>>;
+using ordered_node_t = ordered_set_t::node_t;
+
+/** @brief What one subtree contributes, so the oracle can compare both counts at once. */
+struct subtree_counts_t {
+    /** @brief Number of nodes in the subtree. */
+    std::size_t size = 0;
+    /** @brief Number of nodes the augmentation policy counts, zero for an unaugmented tree. */
+    std::size_t augmented_size = 0;
+};
+
+/**
+ *  @brief Recomputes one subtree's counts while checking every structural invariant.
+ *    Δ=3 over @c size+1 weights, @c size @c = @c 1 @c + @c size(left) @c + @c size(right), and - where the
+ *    tree carries an augmentation - the same recurrence over the policy's per-entry count.
+ */
+template <typename node_type_>
+static subtree_counts_t verify_invariants(node_type_ *node) noexcept {
+    if (!node) return {};
+    subtree_counts_t const left = verify_invariants(node->left);
+    subtree_counts_t const right = verify_invariants(node->right);
+    st_verify_eq_(node->size, 1 + left.size + right.size);
+
+    std::size_t const left_weight = left.size + 1, right_weight = right.size + 1;
+    st_verify_(left_weight <= node_type_::delta_k * right_weight);
+    st_verify_(right_weight <= node_type_::delta_k * left_weight);
+
+    subtree_counts_t counts;
+    counts.size = node->size;
+    if constexpr (node_type_::is_augmented_k) {
+        counts.augmented_size = node_type_::get_own_augmented_count(node) + left.augmented_size + right.augmented_size;
+        st_verify_eq_(node->augmented_size, counts.augmented_size);
+    }
+    return counts;
+}
+
+/** @brief Checks the tree against a @c std::set oracle: invariants, element count, and in-order contents. */
+static void verify_against_oracle(ordered_set_t &tree, std::set<int> const &oracle) noexcept {
+    st_verify_eq_(verify_invariants(tree.root()).size, oracle.size());
+    st_verify_eq_(tree.size(), oracle.size());
+
+    std::vector<int> walked;
+    tree.for_each([&](int const &element) noexcept { walked.push_back(element); });
+    st_verify_eq_(walked.size(), oracle.size());
+    st_verify_(std::equal(walked.begin(), walked.end(), oracle.begin()));
+}
+
+/** @brief Sequential keys must not degenerate into a spine - every entry point has to rebalance. */
+static void weight_balance_insert_rebalances() {
+    for (std::size_t count : {std::size_t(1), std::size_t(2), std::size_t(1000)}) {
+        ordered_set_t ascending, descending;
+        std::set<int> oracle;
+        for (std::size_t index = 0; index < count; ++index) {
+            [[maybe_unused]] auto const added = ascending.insert(int(index));
+            [[maybe_unused]] auto const subtracted = descending.insert(int(count - index));
+            oracle.insert(int(index));
+        }
+        verify_against_oracle(ascending, oracle);
+        [[maybe_unused]] subtree_counts_t const counted = verify_invariants(descending.root());
+        st_verify_eq_(descending.size(), count);
+    }
+
+    // A rejected duplicate leaves the tree untouched and reports the incumbent.
+    ordered_set_t tree;
+    [[maybe_unused]] auto const first = tree.insert(7);
+    auto const [incumbent, added] = tree.insert(7);
+    st_verify_(!added);
+    st_verify_ne_(incumbent, nullptr);
+    st_verify_eq_(incumbent->fruit, 7);
+    st_verify_eq_(tree.size(), 1u);
+}
+
+/** @brief Promoting the right subtree's minimum over a two-child erase must rebalance the promotion. */
+static void weight_balance_two_child_erase_rebalances() {
+    ordered_set_t tree;
+    std::set<int> oracle;
+    for (int element : {10, 5, 15, 3, 7}) {
+        [[maybe_unused]] auto const added = tree.insert(int(element));
+        oracle.insert(element);
+    }
+    verify_against_oracle(tree, oracle);
+
+    st_verify_(tree.erase(10));
+    oracle.erase(10);
+    verify_against_oracle(tree, oracle);
+}
+
+/** @brief Both halves of a split own their element counts, their allocator, and a balanced shape. */
+static void weight_balance_split_and_join_track_size() {
+    std::mt19937 generator(1337);
+    for (std::size_t trial = 0; trial < 200; ++trial) {
+        ordered_set_t tree;
+        std::set<int> oracle;
+        std::size_t const count = generator() % 400;
+        for (std::size_t index = 0; index < count; ++index) {
+            int const element = int(generator() % 1000);
+            [[maybe_unused]] auto const added = tree.insert(int(element));
+            oracle.insert(element);
+        }
+
+        int const pivot = int(generator() % 1000);
+        auto halves = tree.split(pivot);
+        std::set<int> below(oracle.begin(), oracle.lower_bound(pivot));
+        std::set<int> above(oracle.lower_bound(pivot), oracle.end());
+        st_verify_eq_(halves.left.empty(), below.empty());
+        verify_against_oracle(halves.left, below);
+        verify_against_oracle(halves.right, above);
+
+        halves.left.join(halves.right);
+        verify_against_oracle(halves.left, oracle);
+        st_verify_(halves.right.empty());
+    }
+}
+
+/** @brief Half-open @c [lower, @c upper) range walks, visited in sorted order. */
+static void weight_balance_range_is_half_open() {
+    ordered_set_t tree;
+    std::set<int> oracle;
+    for (int element = 0; element < 10; ++element) {
+        [[maybe_unused]] auto const added = tree.insert(int(element));
+        oracle.insert(element);
+    }
+
+    std::vector<int> visited;
+    tree.range(2, 5, [&](int const &element) noexcept { visited.push_back(element); });
+    std::vector<int> const expected {2, 3, 4};
+    st_verify_(visited == expected);
+
+    // An empty window yields nothing, rather than the single element at its edge.
+    visited.clear();
+    tree.range(4, 4, [&](int const &element) noexcept { visited.push_back(element); });
+    st_verify_(visited.empty());
+}
+
+/** @brief Erasing an iterator range compiles, reports success, and leaves a balanced tree. */
+static void weight_balance_erase_iterator_range() {
+    ordered_set_t tree;
+    std::set<int> oracle;
+    for (int element = 0; element < 200; ++element) {
+        [[maybe_unused]] auto const added = tree.insert(int(element));
+        oracle.insert(element);
+    }
+
+    auto const result = tree.erase(tree.lower_bound(40), tree.lower_bound(160));
+    oracle.erase(oracle.lower_bound(40), oracle.lower_bound(160));
+    st_verify_(succeeded(result.status));
+    verify_against_oracle(tree, oracle);
+
+    auto const empty_result = tree.erase(tree.begin(), tree.begin());
+    st_verify_(succeeded(empty_result.status));
+    verify_against_oracle(tree, oracle);
+}
+
+/** @brief Dropping an arbitrary subset must leave a balanced tree, not merely a correct one. */
+static void weight_balance_remove_if_rebalances() {
+    std::mt19937 generator(2026);
+    for (std::size_t trial = 0; trial < 200; ++trial) {
+        ordered_set_t tree;
+        std::set<int> oracle;
+        for (std::size_t index = 0; index < 300; ++index) {
+            int const element = int(generator() % 1000);
+            [[maybe_unused]] auto const added = tree.insert(int(element));
+            oracle.insert(element);
+        }
+
+        int const residue = int(generator() % 7);
+        std::size_t const dropped = tree.remove_if([&](int const &element) noexcept { return element % 7 == residue; });
+        std::size_t counted = 0;
+        for (auto position = oracle.begin(); position != oracle.end();) {
+            if (*position % 7 == residue) position = oracle.erase(position), ++counted;
+            else ++position;
+        }
+        st_verify_eq_(dropped, counted);
+        verify_against_oracle(tree, oracle);
+    }
+}
+
+/** @brief A long randomized mutation sequence, re-checking every invariant after each step. */
+static void weight_balance_randomized_mutations() {
+    std::mt19937 generator(20260817);
+    ordered_set_t tree;
+    std::set<int> oracle;
+    for (std::size_t step = 0; step < 20000; ++step) {
+        int const element = int(generator() % 800);
+        switch (generator() % 4) {
+        case 0: {
+            auto const [node, added] = tree.insert(int(element));
+            st_verify_ne_(node, nullptr);
+            st_verify_eq_(added, oracle.insert(element).second);
+            break;
+        }
+        case 1: {
+            auto const result = tree.upsert(int(element));
+            st_verify_(bool(result));
+            oracle.insert(element);
+            break;
+        }
+        case 2: st_verify_eq_(tree.erase(element), oracle.erase(element) != 0); break;
+        case 3: {
+            int const upper = element + int(generator() % 200);
+            std::size_t visited = 0;
+            tree.erase_range(element, upper, [&](int const &) noexcept { ++visited; });
+            std::size_t const expected =
+                std::size_t(std::distance(oracle.lower_bound(element), oracle.lower_bound(upper)));
+            st_verify_eq_(visited, expected);
+            oracle.erase(oracle.lower_bound(element), oracle.lower_bound(upper));
+            break;
+        }
+        }
+        verify_against_oracle(tree, oracle);
+    }
+}
+
+#pragma endregion Weight Balance Invariants
+
+#pragma region Augmented Order Statistics
+
+/**
+ *  @brief Counts only the entries whose mapped value is non-zero.
+ *    Stands in for a wrapper's "this entry is the answer for its key" predicate: a property of the entry,
+ *    decided outside the tree, and free to flip while the entry sits in place.
+ */
+struct live_augmentation_t {
+    static std::size_t augmented_count(mapping<int, int> const &entry) noexcept { return entry.mapped != 0 ? 1u : 0u; }
+};
+
+using augmented_map_t = wb_map<int, int, std::less<int>, std::allocator<mapping<int, int>>, live_augmentation_t>;
+using augmented_node_t = augmented_map_t::node_t;
+using plain_map_t = wb_map<int, int, std::less<int>, std::allocator<mapping<int, int>>>;
+
+/** @brief The layout an unaugmented node must match byte for byte, whatever the default policy costs. */
+struct unaugmented_reference_layout_t {
+    int fruit;
+    void *left;
+    void *right;
+    std::size_t size;
+};
+
+static_assert(std::is_empty_v<no_augmentation_t>, "The default policy must be an empty type");
+static_assert(sizeof(ordered_node_t) == sizeof(unaugmented_reference_layout_t),
+              "The default augmentation must not add a byte to the node");
+static_assert(alignof(ordered_node_t) == alignof(unaugmented_reference_layout_t),
+              "The default augmentation must not change the node's alignment");
+static_assert(sizeof(plain_map_t::node_t) == sizeof(unaugmented_reference_layout_t),
+              "A map node is the same shape once the default policy is elided");
+static_assert(sizeof(augmented_node_t) == sizeof(plain_map_t::node_t) + sizeof(std::size_t),
+              "An augmented node pays exactly one counter, and nothing else");
+
+/** @brief The keys the oracle considers counted, in sorted order. */
+static std::vector<int> counted_keys(std::map<int, int> const &oracle) noexcept {
+    std::vector<int> keys;
+    for (auto const &entry : oracle)
+        if (entry.second != 0) keys.push_back(entry.first);
+    return keys;
+}
+
+/** @brief Checks structure, the augmented total, and every augmented @c select and @c rank answer. */
+static void verify_augmented_against_oracle(augmented_map_t &tree, std::map<int, int> const &oracle) noexcept {
+    subtree_counts_t const counts = verify_invariants(tree.root());
+    st_verify_eq_(counts.size, oracle.size());
+    st_verify_eq_(tree.size(), oracle.size());
+
+    std::vector<int> const live = counted_keys(oracle);
+    st_verify_eq_(tree.augmented_size(), live.size());
+    st_verify_eq_(counts.augmented_size, live.size());
+
+    for (std::size_t index = 0; index < live.size(); ++index) {
+        augmented_node_t const *selected = tree.select_augmented(index);
+        st_verify_ne_(selected, nullptr);
+        st_verify_eq_(selected->fruit.key, live[index]);
+        st_verify_eq_(tree.rank_augmented(live[index]), index);
+    }
+    st_verify_eq_(tree.select_augmented(live.size()), nullptr);
+}
+
+/**
+ *  @brief The same mutation fuzz the plain tree runs, plus in-place predicate flips.
+ *    A flip changes an entry the tree already holds, which is the transition a version store makes when a
+ *    newer version supersedes an older one, and it must cost a path repair rather than a rescan.
+ */
+static void augmented_randomized_mutations() {
+    std::mt19937 generator(20260818);
+    augmented_map_t tree;
+    std::map<int, int> oracle;
+    for (std::size_t step = 0; step < 20000; ++step) {
+        int const key = int(generator() % 200);
+        switch (generator() % 7) {
+        case 0: {
+            int const mapped = int(generator() % 2);
+            auto const [node, added] = tree.insert(mapping<int, int> {key, mapped});
+            st_verify_ne_(node, nullptr);
+            st_verify_eq_(added, oracle.emplace(key, mapped).second);
+            break;
+        }
+        case 1: {
+            int const mapped = int(generator() % 2);
+            auto const result = tree.upsert(mapping<int, int> {key, mapped});
+            st_verify_(bool(result));
+            oracle[key] = mapped;
+            break;
+        }
+        case 2: st_verify_eq_(tree.erase(key), oracle.erase(key) != 0); break;
+        case 3: {
+            int const upper = key + int(generator() % 60);
+            std::size_t visited = 0;
+            tree.erase_range(key, upper, [&](mapping<int, int> const &) noexcept { ++visited; });
+            std::size_t const expected = std::size_t(std::distance(oracle.lower_bound(key), oracle.lower_bound(upper)));
+            st_verify_eq_(visited, expected);
+            oracle.erase(oracle.lower_bound(key), oracle.lower_bound(upper));
+            break;
+        }
+        case 4: {
+            // Flip the count under the tree's feet, as a publish site would - and flip the successor too,
+            // since one publish can supersede a neighbour, retagging two entries for a single write.
+            auto position = tree.find(key);
+            bool const present = position != tree.end();
+            st_verify_eq_(present, oracle.count(key) != 0);
+            if (!present) break;
+            position->mapped = position->mapped != 0 ? 0 : 1;
+            oracle[key] = position->mapped;
+            st_verify_(tree.refresh_augmentation(key));
+
+            auto successor = position;
+            if (++successor != tree.end()) {
+                int const successor_key = successor->key;
+                successor->mapped = successor->mapped != 0 ? 0 : 1;
+                oracle[successor_key] = successor->mapped;
+                st_verify_(tree.refresh_augmentation(successor_key));
+            }
+            break;
+        }
+        case 5: {
+            // `remove_if` rebuilds both halves through `join`, which has to carry the counts along.
+            int const residue = int(generator() % 5);
+            std::size_t const dropped =
+                tree.remove_if([&](mapping<int, int> const &entry) noexcept { return entry.key % 5 == residue; });
+            std::size_t counted = 0;
+            for (auto position = oracle.begin(); position != oracle.end();) {
+                if (position->first % 5 == residue) position = oracle.erase(position), ++counted;
+                else ++position;
+            }
+            st_verify_eq_(dropped, counted);
+            break;
+        }
+        case 6: {
+            // Splitting and re-joining walks `join_with_root` down both spines.
+            auto halves = tree.split(key);
+            verify_augmented_against_oracle(halves.left, std::map<int, int>(oracle.begin(), oracle.lower_bound(key)));
+            verify_augmented_against_oracle(halves.right, std::map<int, int>(oracle.lower_bound(key), oracle.end()));
+            halves.left.join(halves.right);
+            tree = std::move(halves.left);
+            break;
+        }
+        }
+        verify_augmented_against_oracle(tree, oracle);
+    }
+}
+
+using counted_map_t = wb_map<int, int, counting_comparator_t, std::allocator<mapping<int, int>>, live_augmentation_t>;
+
+/** @brief Depth of @p wanted below the root, which is exactly what a @c select_augmented descent walks. */
+static std::size_t depth_of(counted_map_t const &tree, int wanted) noexcept {
+    std::size_t depth = 0;
+    for (auto const *node = tree.root(); node; ++depth) {
+        if (wanted < node->fruit.key) node = node->left;
+        else if (node->fruit.key < wanted) node = node->right;
+        else return depth;
+    }
+    st_verify_(false && "The selected key must be reachable from the root");
+    return depth;
+}
+
+/** @brief Base-2 logarithm of @p count, rounded down, with @c log2(0) reported as 0. */
+static std::size_t floor_log2(std::size_t count) noexcept {
+    std::size_t bits = 0;
+    while (count > 1) count >>= 1, ++bits;
+    return bits;
+}
+
+/**
+ *  @brief Bounds augmented @c select and @c rank against @c log2(size) at two sizes.
+ *    Two sizes 64x apart, so a linear cost cannot pass as a logarithmic one: a linear descent would grow
+ *    with the same factor, while these bounds only allow the measured counts to grow with the height.
+ */
+static void augmented_select_is_logarithmic() {
+    std::size_t previous_select_steps = 0, previous_rank_comparisons = 0;
+    for (std::size_t element_count : {std::size_t(4096), std::size_t(262144)}) {
+        counted_map_t tree(counting_comparator_t {}, std::allocator<counted_map_t::node_t> {});
+
+        // Every third key counts, so the augmented descent cannot degenerate into the plain one.
+        std::mt19937 generator(4242);
+        std::vector<int> live;
+        for (std::size_t index = 0; index < element_count; ++index) {
+            int const key = int(index);
+            int const mapped = index % 3 == 0 ? 1 : 0;
+            [[maybe_unused]] auto const added = tree.upsert(mapping<int, int> {key, mapped});
+            if (mapped) live.push_back(key);
+        }
+        st_verify_eq_(tree.augmented_size(), live.size());
+
+        std::size_t const budget = floor_log2(element_count);
+        std::size_t worst_select_steps = 0, worst_rank_comparisons = 0;
+        for (std::size_t probe = 0; probe < 512; ++probe) {
+            std::size_t const index = generator() % live.size();
+
+            auto const *selected = tree.select_augmented(index);
+            st_verify_ne_(selected, nullptr);
+            st_verify_eq_(selected->fruit.key, live[index]);
+            // `select_augmented` follows one root-to-node path, so the node's depth is its exact step count.
+            std::size_t const steps = depth_of(tree, live[index]) + 1;
+            worst_select_steps = steps > worst_select_steps ? steps : worst_select_steps;
+
+            call_tally_t::reset();
+            st_verify_eq_(tree.rank_augmented(live[index]), index);
+            std::size_t const comparisons = call_tally_t::comparisons_count();
+            worst_rank_comparisons = comparisons > worst_rank_comparisons ? comparisons : worst_rank_comparisons;
+        }
+
+        // Δ=3 caps the height at log(n)/log(4/3) ≈ 2.41 log2(n), and `rank` spends two comparisons a level.
+        st_verify_(worst_select_steps <= 3 * budget + 4);
+        st_verify_(worst_rank_comparisons <= 6 * budget + 8);
+        st_verify_(worst_select_steps >= previous_select_steps);
+        st_verify_(worst_rank_comparisons >= previous_rank_comparisons);
+        previous_select_steps = worst_select_steps;
+        previous_rank_comparisons = worst_rank_comparisons;
+    }
+
+    // A linear scan of the larger tree would have cost tens of thousands of steps, not a few dozen.
+    st_verify_(previous_select_steps < 64);
+    st_verify_(previous_rank_comparisons < 128);
+}
+
+#pragma endregion Augmented Order Statistics
+
+#pragma region Allocation Failure
+
+/** @brief A key that rewrites itself when moved from, so a consumed argument is visible to the oracle. */
+struct traced_key_t {
+    int value = 0;
+    bool moved_from = false;
+
+    traced_key_t() = default;
+    explicit traced_key_t(int initial) noexcept : value(initial) {}
+    traced_key_t(traced_key_t const &) = default;
+    traced_key_t &operator=(traced_key_t const &) = default;
+    traced_key_t(traced_key_t &&other) noexcept : value(other.value) { other.moved_from = true; }
+    traced_key_t &operator=(traced_key_t &&other) noexcept {
+        value = other.value;
+        other.moved_from = true;
+        return *this;
+    }
+};
+
+struct traced_less_t {
+    bool operator()(traced_key_t const &first, traced_key_t const &second) const noexcept {
+        return first.value < second.value;
+    }
+};
+
+using traced_set_t = wb_set<traced_key_t, traced_less_t, stateful_allocator<void>>;
+
+/** @brief Neither a duplicate key nor an exhausted allocator may consume the caller's entry. */
+static void allocation_failure_preserves_the_argument() {
+    allocation_ledger_t ledger;
+    ledger.allow(3);
+    traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+    for (int element = 0; element < 3; ++element) {
+        traced_key_t key(element);
+        auto const [node, added] = tree.insert(std::move(key));
+        st_verify_(added);
+        st_verify_ne_(node, nullptr);
+    }
+
+    // Budget exhausted - the rejected entry must come back untouched.
+    traced_key_t rejected(99);
+    auto const [no_node, not_added] = tree.insert(std::move(rejected));
+    st_verify_eq_(no_node, nullptr);
+    st_verify_(!not_added);
+    st_verify_(!rejected.moved_from);
+
+    // A duplicate key must likewise leave the argument alone and report the incumbent.
+    ledger.allow(10);
+    traced_key_t duplicate(1);
+    auto const [incumbent, replaced] = tree.insert(std::move(duplicate));
+    st_verify_ne_(incumbent, nullptr);
+    st_verify_(!replaced);
+    st_verify_(!duplicate.moved_from);
+    st_verify_eq_(tree.size(), 3u);
+}
+
+/** @brief @c insert_if_missing must separate "already there" from "out of memory". */
+static void allocation_failure_is_distinct_from_presence() {
+    allocation_ledger_t ledger;
+    ledger.allow(2);
+    traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+    {
+        traced_key_t key(1);
+        auto const [node, added] = tree.insert(std::move(key));
+        st_verify_(added);
+        st_verify_ne_(node, nullptr);
+    }
+
+    auto const on_present = tree.insert_if_missing(traced_key_t(1));
+    st_verify_ne_(on_present.first, tree.end());
+    st_verify_(!on_present.second);
+
+    ledger.refuse_everything();
+    auto const on_exhausted = tree.insert_if_missing(traced_key_t(2));
+    st_verify_eq_(on_exhausted.first, tree.end());
+    st_verify_(!on_exhausted.second);
+    st_verify_eq_(tree.size(), 1u);
+}
+
+#pragma endregion Allocation Failure
+
+#pragma region Commit Stamp
+
+static void commit_stamp_rolled_back_stage_does_not_abort_a_peer() {
+    test_rolled_back_stage_does_not_abort_a_peer<transactional_trivial_map_t>();
+}
+
+static void commit_stamp_lost_update_is_refused() { test_lost_update_is_refused<transactional_trivial_map_t>(); }
+
+static void commit_stamp_find_and_watch_records_absence() {
+    test_find_and_watch_records_absence<transactional_trivial_map_t>();
+}
+
+#pragma endregion Commit Stamp
+
+static void transactional_consistency_find_does_not_watch() {
+    test_find_does_not_watch<transactional_trivial_map_t>();
+    test_find_does_not_watch<transactional_composite_map_t>();
+    test_find_does_not_watch<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_transaction_range_interleaves_staged_and_committed() {
+    test_transaction_range_interleaves_staged_and_committed<transactional_trivial_map_t>();
+    test_transaction_range_interleaves_staged_and_committed<transactional_composite_map_t>();
+    test_transaction_range_interleaves_staged_and_committed<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_transaction_equal_range_sees_staged_writes() {
+    test_transaction_equal_range_sees_staged_writes<transactional_trivial_map_t>();
+    test_transaction_equal_range_sees_staged_writes<transactional_composite_map_t>();
+    test_transaction_equal_range_sees_staged_writes<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_insert_reports_key_already_exists() {
+    test_insert_reports_key_already_exists<transactional_trivial_map_t>();
+    test_insert_reports_key_already_exists<transactional_composite_map_t>();
+    test_insert_reports_key_already_exists<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_find_copy_reports_key_not_found() {
+    test_find_copy_reports_key_not_found<transactional_trivial_map_t>();
+    test_find_copy_reports_key_not_found<transactional_composite_map_t>();
+    test_find_copy_reports_key_not_found<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_second_stage_is_rejected() {
+    test_second_stage_is_rejected<transactional_trivial_map_t>();
+    test_second_stage_is_rejected<transactional_composite_map_t>();
+    test_second_stage_is_rejected<transactional_heavy_map_t>();
+}
+
+#pragma region Fixture Coverage
+
+static void fixture_coverage_container_balances_counted_keys() {
+    test_container_balances_counted_keys<wb_map<counted_key_t, int>>();
+}
+
+static void fixture_coverage_rollback_balances_counted_keys() {
+    test_rollback_balances_counted_keys<transactional_wb_map<counted_key_t, int>>();
+}
+
+#pragma endregion Fixture Coverage
 
 int main() {
     install_test_signal_handlers();
@@ -529,10 +1185,10 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
-    failures += run_test(filter, "transactional_consistency.non_repeatable_reads_are_allowed",
-                         transactional_consistency_non_repeatable_reads_are_allowed);
-    failures += run_test(filter, "transactional_consistency.phantom_reads_are_allowed",
-                         transactional_consistency_phantom_reads_are_allowed);
+    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
+                         transactional_consistency_repeated_read_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",
+                         transactional_consistency_repeated_range_matches_isolation);
     failures +=
         run_test(filter, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
@@ -540,6 +1196,69 @@ int main() {
 
     failures += run_test(filter, "transactional_consistency.stateful_comparator_is_consulted",
                          transactional_consistency_stateful_comparator_is_consulted);
+
+    failures += run_test(filter, "weight_balance.insert_rebalances", weight_balance_insert_rebalances);
+    failures +=
+        run_test(filter, "weight_balance.two_child_erase_rebalances", weight_balance_two_child_erase_rebalances);
+    failures += run_test(filter, "weight_balance.split_and_join_track_size", weight_balance_split_and_join_track_size);
+    failures += run_test(filter, "weight_balance.range_is_half_open", weight_balance_range_is_half_open);
+    failures += run_test(filter, "weight_balance.erase_iterator_range", weight_balance_erase_iterator_range);
+    failures += run_test(filter, "weight_balance.remove_if_rebalances", weight_balance_remove_if_rebalances);
+    failures += run_test(filter, "weight_balance.randomized_mutations", weight_balance_randomized_mutations);
+
+    failures += run_test(filter, "augmented.randomized_mutations", augmented_randomized_mutations);
+    failures += run_test(filter, "augmented.select_is_logarithmic", augmented_select_is_logarithmic);
+
+    failures +=
+        run_test(filter, "allocation_failure.preserves_the_argument", allocation_failure_preserves_the_argument);
+    failures +=
+        run_test(filter, "allocation_failure.is_distinct_from_presence", allocation_failure_is_distinct_from_presence);
+
+    failures += run_test(filter, "transactional_defects.direct_write_spares_staged_version",
+                         transactional_defects_direct_write_spares_staged_version);
+    failures += run_test(filter, "transactional_defects.direct_erase_spares_staged_version",
+                         transactional_defects_direct_erase_spares_staged_version);
+    failures += run_test(filter, "transactional_defects.erase_range_spares_staged_versions",
+                         transactional_defects_erase_range_spares_staged_versions);
+    failures += run_test(filter, "transactional_defects.clear_keeps_generations_moving",
+                         transactional_defects_clear_keeps_generations_moving);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_point_reads",
+                         transactional_defects_committed_erase_hidden_from_point_reads);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_ordered_reads",
+                         transactional_defects_committed_erase_hidden_from_ordered_reads);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_update_range",
+                         transactional_defects_committed_erase_hidden_from_update_range);
+    failures += run_test(filter, "transactional_defects.vacuum_reclaims_committed_tombstones",
+                         transactional_defects_vacuum_reclaims_committed_tombstones);
+    failures += run_test(filter, "transactional_defects.vacuum_spares_staged_versions",
+                         transactional_defects_vacuum_spares_staged_versions);
+    failures += run_test(filter, "transactional_defects.windowed_vacuum_reclaims_one_slice",
+                         transactional_defects_windowed_vacuum_reclaims_one_slice);
+
+    failures += run_test(filter, "commit_stamp.rolled_back_stage_does_not_abort_a_peer",
+                         commit_stamp_rolled_back_stage_does_not_abort_a_peer);
+    failures += run_test(filter, "commit_stamp.lost_update_is_refused", commit_stamp_lost_update_is_refused);
+    failures +=
+        run_test(filter, "commit_stamp.find_and_watch_records_absence", commit_stamp_find_and_watch_records_absence);
+
+    failures += run_test(filter, "transactional_consistency.find_does_not_watch",
+                         transactional_consistency_find_does_not_watch);
+
+    failures += run_test(filter, "transactional_defects.transaction_range_interleaves_staged_and_committed",
+                         transactional_defects_transaction_range_interleaves_staged_and_committed);
+    failures += run_test(filter, "transactional_defects.transaction_equal_range_sees_staged_writes",
+                         transactional_defects_transaction_equal_range_sees_staged_writes);
+    failures += run_test(filter, "transactional_defects.insert_reports_key_already_exists",
+                         transactional_defects_insert_reports_key_already_exists);
+    failures += run_test(filter, "transactional_defects.find_copy_reports_key_not_found",
+                         transactional_defects_find_copy_reports_key_not_found);
+    failures += run_test(filter, "transactional_defects.second_stage_is_rejected",
+                         transactional_defects_second_stage_is_rejected);
+
+    failures += run_test(filter, "fixture_coverage.container_balances_counted_keys",
+                         fixture_coverage_container_balances_counted_keys);
+    failures += run_test(filter, "fixture_coverage.rollback_balances_counted_keys",
+                         fixture_coverage_rollback_balances_counted_keys);
 
     return report_test_failures(failures);
 }

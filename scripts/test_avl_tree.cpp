@@ -9,13 +9,24 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
+#include <cstddef> // `std::size_t`
+
+#include <iterator> // `std::bidirectional_iterator`
+#include <memory>   // `std::unique_ptr`
+#include <random>   // `std::mt19937`
+#include <set>      // `std::set`
+#include <vector>   // `std::vector`
+
 #include <smashtable/basic_avl_tree.hpp>
 #include <smashtable/transactional_store.hpp>
 #include <smashtable/transactional_std_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
+#include "test_fixture_coverage.hpp"
+#include "test_transactional_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -74,7 +85,7 @@ using heavy_map_t =
     avl_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 /**
- *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓ (MVCC)
+ *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
  *  Tests: Baseline transactional correctness, isolation levels
  */
 using transactional_trivial_set_t =
@@ -275,6 +286,70 @@ static void basic_ops_heterogeneous_lookups() {
 
 #pragma region Consistency and Transaction Tests for Sets
 
+#pragma region Transactional Store Defects
+
+static void transactional_defects_direct_write_spares_staged_version() {
+    test_direct_write_spares_staged_version<transactional_trivial_map_t>();
+    test_direct_write_spares_staged_version<transactional_composite_map_t>();
+    test_direct_write_spares_staged_version<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_direct_erase_spares_staged_version() {
+    test_direct_erase_spares_staged_version<transactional_trivial_map_t>();
+    test_direct_erase_spares_staged_version<transactional_composite_map_t>();
+    test_direct_erase_spares_staged_version<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_erase_range_spares_staged_versions() {
+    test_erase_range_spares_staged_versions<transactional_trivial_map_t>();
+    test_erase_range_spares_staged_versions<transactional_composite_map_t>();
+    test_erase_range_spares_staged_versions<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_clear_keeps_generations_moving() {
+    test_clear_keeps_generations_moving<transactional_trivial_map_t>();
+    test_clear_keeps_generations_moving<transactional_composite_map_t>();
+    test_clear_keeps_generations_moving<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_point_reads() {
+    test_committed_erase_hidden_from_point_reads<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_point_reads<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_point_reads<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_ordered_reads() {
+    test_committed_erase_hidden_from_ordered_reads<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_ordered_reads<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_ordered_reads<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_committed_erase_hidden_from_update_range() {
+    test_committed_erase_hidden_from_update_range<transactional_trivial_map_t>();
+    test_committed_erase_hidden_from_update_range<transactional_composite_map_t>();
+    test_committed_erase_hidden_from_update_range<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_vacuum_reclaims_committed_tombstones() {
+    test_vacuum_reclaims_committed_tombstones<transactional_trivial_map_t>();
+    test_vacuum_reclaims_committed_tombstones<transactional_composite_map_t>();
+    test_vacuum_reclaims_committed_tombstones<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_vacuum_spares_staged_versions() {
+    test_vacuum_spares_staged_versions<transactional_trivial_map_t>();
+    test_vacuum_spares_staged_versions<transactional_composite_map_t>();
+    test_vacuum_spares_staged_versions<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_windowed_vacuum_reclaims_one_slice() {
+    test_windowed_vacuum_reclaims_one_slice<transactional_trivial_map_t>();
+    test_windowed_vacuum_reclaims_one_slice<transactional_composite_map_t>();
+    test_windowed_vacuum_reclaims_one_slice<transactional_heavy_map_t>();
+}
+
+#pragma endregion Transactional Store Defects
+
 static void transactional_consistency_empty_transaction_commit() {
     test_empty_transaction_commit<transactional_trivial_set_t>();
     test_empty_transaction_commit<transactional_tracking_set_t>();
@@ -434,22 +509,22 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_non_repeatable_reads_are_allowed() {
-    test_non_repeatable_reads_are_allowed<transactional_trivial_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_tracking_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_composite_map_t>();
-    test_non_repeatable_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_read_matches_isolation() {
+    test_repeated_read_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_read_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_read_matches_isolation<transactional_composite_map_t>();
+    test_repeated_read_matches_isolation<transactional_heavy_map_t>();
 }
 
-static void transactional_consistency_phantom_reads_are_allowed() {
-    test_phantom_reads_are_allowed<transactional_trivial_set_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_set_t>();
-    test_phantom_reads_are_allowed<transactional_composite_set_t>();
-    test_phantom_reads_are_allowed<transactional_heavy_set_t>();
-    test_phantom_reads_are_allowed<transactional_trivial_map_t>();
-    test_phantom_reads_are_allowed<transactional_tracking_map_t>();
-    test_phantom_reads_are_allowed<transactional_composite_map_t>();
-    test_phantom_reads_are_allowed<transactional_heavy_map_t>();
+static void transactional_consistency_repeated_range_matches_isolation() {
+    test_repeated_range_matches_isolation<transactional_trivial_set_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_set_t>();
+    test_repeated_range_matches_isolation<transactional_composite_set_t>();
+    test_repeated_range_matches_isolation<transactional_heavy_set_t>();
+    test_repeated_range_matches_isolation<transactional_trivial_map_t>();
+    test_repeated_range_matches_isolation<transactional_tracking_map_t>();
+    test_repeated_range_matches_isolation<transactional_composite_map_t>();
+    test_repeated_range_matches_isolation<transactional_heavy_map_t>();
 }
 
 static void transactional_consistency_delete_visibility() {
@@ -470,6 +545,419 @@ static void transactional_consistency_reset_clears_transaction_state() {
 
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
+}
+
+#pragma region Structural Invariants
+
+/** @brief Node count and height of a walked subtree. */
+struct subtree_shape_t {
+    std::size_t count = 0;
+    std::ptrdiff_t height = 0;
+};
+
+/** @brief Recursively checks parent back-pointers, stored heights, AVL balance, and key order. */
+template <typename tree_type_>
+static subtree_shape_t verify_subtree(typename tree_type_::node_t const *node,
+                                      typename tree_type_::node_t const *parent,
+                                      typename tree_type_::comparator_t const &comparator) {
+    if (!node) return {};
+    st_verify_(node->parent == parent && "every node points back at its parent");
+
+    subtree_shape_t const left = verify_subtree<tree_type_>(node->left, node, comparator);
+    subtree_shape_t const right = verify_subtree<tree_type_>(node->right, node, comparator);
+    std::ptrdiff_t const height = 1 + (left.height > right.height ? left.height : right.height);
+    std::ptrdiff_t const balance = left.height - right.height;
+    st_verify_(node->height == height && "the stored height matches the walked one");
+    st_verify_(balance >= -1 && balance <= 1 && "AVL balance never exceeds one");
+
+    if (node->left)
+        st_verify_(comparator(mapping_key_or_itself(node->left->fruit), mapping_key_or_itself(node->fruit)) &&
+                   "the left child sorts before its parent");
+    if (node->right)
+        st_verify_(comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(node->right->fruit)) &&
+                   "the right child sorts after its parent");
+
+    return {left.count + right.count + 1, height};
+}
+
+/** @brief Walks the whole tree, checking its shape and that the node count agrees with @c size(). */
+template <typename tree_type_>
+static void verify_invariants(tree_type_ const &tree) {
+    auto const *root = tree.root();
+    st_verify_((!root || !root->parent) && "the root has no parent");
+    typename tree_type_::comparator_t const comparator = tree.key_comp();
+    subtree_shape_t const shape = verify_subtree<tree_type_>(root, nullptr, comparator);
+    st_verify_eq_(shape.count, tree.size());
+}
+
+/** @brief A copied tree must carry its own parent links, or the first @c ++it walks into garbage. */
+template <typename tree_type_>
+static void test_copy_preserves_parent_links() {
+    using member_t = typename tree_type_::value_type;
+    tree_type_ tree;
+    for (trivial_id_t identifier : {5u, 2u, 8u, 1u, 3u, 7u, 9u})
+        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    auto copied = tree.copy();
+    st_verify_(copied.has_value());
+    verify_invariants(*copied);
+
+    std::size_t walked = 0;
+    for ([[maybe_unused]] auto const &member : *copied) ++walked;
+    st_verify_eq_(walked, tree.size());
+}
+
+/** @brief The perfectly balanced tree built from a sorted range must be linked both ways. */
+template <typename tree_type_>
+static void test_bulk_sorted_insert_links_parents() {
+    using member_t = typename tree_type_::value_type;
+    for (std::size_t count = 1; count <= 64; ++count) {
+        tree_type_ tree;
+        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(1000))));
+
+        std::vector<member_t> sorted;
+        for (std::size_t index = 0; index < count; ++index) sorted.push_back(trivial_id_to_member<member_t>(index));
+
+        st_verify_(succeeded(tree.insert_if_missing(std::make_move_iterator(sorted.begin()),
+                                                    std::make_move_iterator(sorted.end()), assume_sorted_t {})));
+        verify_invariants(tree);
+        st_verify_eq_(tree.size(), count + 1);
+
+        std::size_t walked = 0;
+        for ([[maybe_unused]] auto const &member : tree) ++walked;
+        st_verify_eq_(walked, tree.size());
+    }
+}
+
+/** @brief Erasing a two-child root promotes its successor, which nobody above it can rebalance. */
+template <typename tree_type_>
+static void test_erase_root_rebalances_promoted_node() {
+    using member_t = typename tree_type_::value_type;
+    tree_type_ tree;
+    for (trivial_id_t identifier : {10u, 5u, 15u, 3u, 7u})
+        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+    verify_invariants(tree);
+
+    st_verify_(tree.erase(trivial_id_to_key<member_t>(10)));
+    verify_invariants(tree);
+    st_verify_eq_(tree.size(), 4);
+}
+
+/** @brief The callback range is @c [lower, upper), matching what @c erase_range removes. */
+template <typename tree_type_>
+static void test_range_excludes_upper_bound() {
+    using member_t = typename tree_type_::value_type;
+    tree_type_ tree;
+    for (trivial_id_t identifier = 1; identifier <= 5; ++identifier)
+        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    std::vector<trivial_id_t> seen;
+    tree.range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(4),
+               [&](auto const &member) noexcept { seen.push_back(mapping_key_or_itself(member).unique_id); });
+
+    st_verify_eq_(seen.size(), 2);
+    st_verify_eq_(seen[0], 2);
+    st_verify_eq_(seen[1], 3);
+}
+
+/** @brief Splitting rebuilds two trees whose sides can differ in height by far more than one. */
+template <typename tree_type_>
+static void test_split_and_erase_range_stay_balanced() {
+    using member_t = typename tree_type_::value_type;
+    for (std::size_t total = 1; total <= 128; ++total) {
+        tree_type_ tree;
+        for (std::size_t index = 0; index < total; ++index)
+            st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(index * 2))));
+
+        auto halves = tree.split(trivial_id_to_key<member_t>(total));
+        verify_invariants(halves.left);
+        verify_invariants(halves.right);
+        st_verify_eq_(halves.left.size() + halves.right.size(), total);
+
+        tree_type_ rebuilt;
+        for (std::size_t index = 0; index < total; ++index)
+            st_verify_(succeeded(rebuilt.upsert(trivial_id_to_member<member_t>(index))));
+        rebuilt.erase_range(trivial_id_to_key<member_t>(total / 4), trivial_id_to_key<member_t>(total / 2));
+        verify_invariants(rebuilt);
+
+        std::size_t walked = 0;
+        for ([[maybe_unused]] auto const &member : rebuilt) ++walked;
+        st_verify_eq_(walked, rebuilt.size());
+    }
+}
+
+/** @brief The split-based union of two interleaved trees must come out balanced and fully linked. */
+template <typename tree_type_>
+static void test_merge_unique_stays_balanced() {
+    using member_t = typename tree_type_::value_type;
+    for (std::size_t total = 1; total <= 128; ++total) {
+        tree_type_ evens, odds;
+        for (std::size_t index = 0; index < total; ++index) {
+            st_verify_(succeeded(evens.upsert(trivial_id_to_member<member_t>(index * 2))));
+            st_verify_(succeeded(odds.upsert(trivial_id_to_member<member_t>(index * 2 + 1))));
+        }
+
+        evens.merge(odds, assume_unique_t {});
+        verify_invariants(evens);
+        st_verify_eq_(evens.size(), total * 2);
+
+        std::size_t walked = 0;
+        for ([[maybe_unused]] auto const &member : evens) ++walked;
+        st_verify_eq_(walked, evens.size());
+
+        // Fully ordered inputs take the join fast path instead of the split-based one.
+        tree_type_ low, high;
+        for (std::size_t index = 0; index < total; ++index) {
+            st_verify_(succeeded(low.upsert(trivial_id_to_member<member_t>(index))));
+            st_verify_(succeeded(high.upsert(trivial_id_to_member<member_t>(index + total))));
+        }
+        low.merge(high, assume_unique_t {});
+        verify_invariants(low);
+        st_verify_eq_(low.size(), total * 2);
+    }
+}
+
+/** @brief Randomized insert and erase sequence, re-checking every invariant after each mutation. */
+template <typename tree_type_>
+static void test_random_mutations_preserve_invariants(std::size_t steps = 4000, unsigned int seed = 42) {
+    using member_t = typename tree_type_::value_type;
+    std::mt19937 generator(seed);
+    tree_type_ tree;
+    std::set<trivial_id_t> oracle;
+
+    for (std::size_t step = 0; step < steps; ++step) {
+        trivial_id_t const identifier = generator() % 300;
+        if (generator() % 2) {
+            st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+            oracle.insert(identifier);
+        }
+        else { st_verify_eq_(tree.erase(trivial_id_to_key<member_t>(identifier)), oracle.erase(identifier) == 1); }
+        verify_invariants(tree);
+        st_verify_eq_(tree.size(), oracle.size());
+    }
+
+    auto expected = oracle.begin();
+    for (auto const &member : tree) {
+        st_verify_eq_(mapping_key_or_itself(member).unique_id, *expected);
+        ++expected;
+    }
+    st_verify_(expected == oracle.end());
+}
+
+/** @brief Post-decrement must exist for the type to model @c std::bidirectional_iterator. */
+template <typename tree_type_>
+static void test_iterator_post_decrement() {
+    static_assert(std::bidirectional_iterator<typename tree_type_::iterator>, "iterator must be bidirectional");
+    static_assert(std::bidirectional_iterator<typename tree_type_::const_iterator>,
+                  "const_iterator must be bidirectional");
+
+    using member_t = typename tree_type_::value_type;
+    tree_type_ tree;
+    for (trivial_id_t identifier = 1; identifier <= 3; ++identifier)
+        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    auto position = tree.end();
+    auto const previous = position--;
+    st_verify_(previous == tree.end());
+    st_verify_eq_(mapping_key_or_itself(*position).unique_id, 3);
+    position--;
+    st_verify_eq_(mapping_key_or_itself(*position).unique_id, 2);
+}
+
+/** @brief The node-level @c equal_range reports the half-open bounds around a key. */
+template <typename tree_type_>
+static void test_node_equal_range() {
+    using member_t = typename tree_type_::value_type;
+    using node_t = typename tree_type_::node_t;
+    tree_type_ tree;
+    for (trivial_id_t identifier = 1; identifier <= 5; ++identifier)
+        st_verify_(succeeded(tree.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    typename tree_type_::comparator_t const comparator = tree.key_comp();
+    auto const present = node_t::equal_range(tree.root(), trivial_id_to_key<member_t>(3), comparator);
+    st_verify_(present.lower_bound && mapping_key_or_itself(present.lower_bound->fruit).unique_id == 3);
+    st_verify_(present.upper_bound && mapping_key_or_itself(present.upper_bound->fruit).unique_id == 4);
+    st_verify_(present.lowest_common_ancestor &&
+               mapping_key_or_itself(present.lowest_common_ancestor->fruit).unique_id == 3);
+
+    auto const absent = node_t::equal_range(tree.root(), trivial_id_to_key<member_t>(9), comparator);
+    st_verify_(!absent.lower_bound && !absent.upper_bound);
+}
+
+/** @brief A bulk upsert that runs out of memory mid-merge must say so rather than report success. */
+static void test_bulk_upsert_reports_allocation_failure() {
+    using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
+    allocation_ledger_t ledger;
+    ledger.allow(64);
+    budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
+    for (trivial_id_t identifier : {1u, 2u}) st_verify_(succeeded(tree.upsert(trivial_key_t(identifier))));
+
+    // Exactly enough to build the three-node temporary, nothing left for the one new key it carries.
+    ledger.reset();
+    ledger.allow(3);
+    std::vector<trivial_key_t> const members = {trivial_key_t(1), trivial_key_t(2), trivial_key_t(99)};
+    st_verify_eq_(tree.upsert(members.begin(), members.end()), status_t::out_of_memory_heap_k);
+    st_verify_(!tree.contains(trivial_key_t(99)));
+
+    // The ledger says what was actually asked for.
+    st_verify_eq_(ledger.granted_count, std::size_t {3});
+    st_verify_((ledger.refused_count > 0) && "the merge must have asked for one more node than it could have");
+    verify_invariants(tree);
+}
+
+/** @brief Move-only entries must survive the assignment operator of an upsert result. */
+static void test_move_only_upsert_assignment() {
+    struct move_only_key_t {
+        trivial_id_t unique_id = 0;
+        std::unique_ptr<int> payload;
+
+        move_only_key_t() noexcept = default;
+        explicit move_only_key_t(trivial_id_t identifier) noexcept : unique_id(identifier) {}
+        move_only_key_t(move_only_key_t &&) noexcept = default;
+        move_only_key_t &operator=(move_only_key_t &&) noexcept = default;
+
+        bool operator<(move_only_key_t const &other) const noexcept { return unique_id < other.unique_id; }
+    };
+
+    avl_set<move_only_key_t> tree;
+    auto result = tree.upsert(move_only_key_t(5));
+    st_verify_(static_cast<bool>(result));
+    result = move_only_key_t(5); // ! Instantiates `upsert_result_t::operator=`
+    st_verify_eq_(tree.size(), 1);
+}
+
+static void structure_copy_preserves_parent_links() {
+    test_copy_preserves_parent_links<trivial_set_t>();
+    test_copy_preserves_parent_links<tracking_set_t>();
+    test_copy_preserves_parent_links<trivial_map_t>();
+}
+
+static void structure_bulk_sorted_insert_links_parents() {
+    test_bulk_sorted_insert_links_parents<trivial_set_t>();
+    test_bulk_sorted_insert_links_parents<tracking_set_t>();
+    test_bulk_sorted_insert_links_parents<trivial_map_t>();
+}
+
+static void structure_erase_root_rebalances_promoted_node() {
+    test_erase_root_rebalances_promoted_node<trivial_set_t>();
+    test_erase_root_rebalances_promoted_node<tracking_set_t>();
+    test_erase_root_rebalances_promoted_node<trivial_map_t>();
+}
+
+static void structure_range_excludes_upper_bound() {
+    test_range_excludes_upper_bound<trivial_set_t>();
+    test_range_excludes_upper_bound<tracking_set_t>();
+    test_range_excludes_upper_bound<trivial_map_t>();
+}
+
+static void structure_split_and_erase_range_stay_balanced() {
+    test_split_and_erase_range_stay_balanced<trivial_set_t>();
+    test_split_and_erase_range_stay_balanced<trivial_map_t>();
+}
+
+static void structure_merge_unique_stays_balanced() {
+    test_merge_unique_stays_balanced<trivial_set_t>();
+    test_merge_unique_stays_balanced<trivial_map_t>();
+}
+
+static void structure_random_mutations_preserve_invariants() {
+    test_random_mutations_preserve_invariants<trivial_set_t>();
+    test_random_mutations_preserve_invariants<tracking_set_t>();
+    test_random_mutations_preserve_invariants<trivial_map_t>();
+}
+
+static void structure_iterator_post_decrement() {
+    test_iterator_post_decrement<trivial_set_t>();
+    test_iterator_post_decrement<trivial_map_t>();
+}
+
+static void structure_node_equal_range() {
+    test_node_equal_range<trivial_set_t>();
+    test_node_equal_range<trivial_map_t>();
+}
+
+#pragma endregion Structural Invariants
+
+#pragma region Commit Stamp
+
+static void commit_stamp_rolled_back_stage_does_not_abort_a_peer() {
+    test_rolled_back_stage_does_not_abort_a_peer<transactional_trivial_map_t>();
+}
+
+static void commit_stamp_lost_update_is_refused() { test_lost_update_is_refused<transactional_trivial_map_t>(); }
+
+static void commit_stamp_find_and_watch_records_absence() {
+    test_find_and_watch_records_absence<transactional_trivial_map_t>();
+}
+
+#pragma endregion Commit Stamp
+
+static void transactional_consistency_find_does_not_watch() {
+    test_find_does_not_watch<transactional_trivial_map_t>();
+    test_find_does_not_watch<transactional_composite_map_t>();
+    test_find_does_not_watch<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_transaction_range_interleaves_staged_and_committed() {
+    test_transaction_range_interleaves_staged_and_committed<transactional_trivial_map_t>();
+    test_transaction_range_interleaves_staged_and_committed<transactional_composite_map_t>();
+    test_transaction_range_interleaves_staged_and_committed<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_transaction_equal_range_sees_staged_writes() {
+    test_transaction_equal_range_sees_staged_writes<transactional_trivial_map_t>();
+    test_transaction_equal_range_sees_staged_writes<transactional_composite_map_t>();
+    test_transaction_equal_range_sees_staged_writes<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_insert_reports_key_already_exists() {
+    test_insert_reports_key_already_exists<transactional_trivial_map_t>();
+    test_insert_reports_key_already_exists<transactional_composite_map_t>();
+    test_insert_reports_key_already_exists<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_find_copy_reports_key_not_found() {
+    test_find_copy_reports_key_not_found<transactional_trivial_map_t>();
+    test_find_copy_reports_key_not_found<transactional_composite_map_t>();
+    test_find_copy_reports_key_not_found<transactional_heavy_map_t>();
+}
+
+static void transactional_defects_second_stage_is_rejected() {
+    test_second_stage_is_rejected<transactional_trivial_map_t>();
+    test_second_stage_is_rejected<transactional_composite_map_t>();
+    test_second_stage_is_rejected<transactional_heavy_map_t>();
+}
+
+#pragma region Fixture Coverage
+
+static void fixture_coverage_container_balances_counted_keys() {
+    test_container_balances_counted_keys<avl_map<counted_key_t, int>>();
+}
+
+static void fixture_coverage_rollback_balances_counted_keys() {
+    test_rollback_balances_counted_keys<transactional_avl_map<counted_key_t, int>>();
+}
+
+#pragma endregion Fixture Coverage
+
+/** @brief Erasing through a const iterator must instantiate; nothing in the tree called it before. */
+static void structure_erase_const_iterator() {
+    trivial_set_t tree;
+    for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(succeeded(tree.upsert(trivial_key_t(identifier))));
+
+    trivial_set_t::const_iterator const position = tree.find(trivial_key_t(2));
+    st_verify_(position != tree.end());
+    auto const erased = tree.erase(position);
+    st_verify_(succeeded(erased.status));
+    st_verify_(!tree.contains(trivial_key_t(2)));
+    st_verify_eq_(tree.size(), 2u);
+    verify_invariants(tree);
+}
+
+using overaligned_set_t = transactional_avl_set<overaligned_key_t>;
+
+static void fixture_coverage_container_honours_over_alignment() {
+    test_container_honours_over_alignment<overaligned_set_t>();
 }
 
 int main() {
@@ -531,10 +1019,10 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
-    failures += run_test(filter, "transactional_consistency.non_repeatable_reads_are_allowed",
-                         transactional_consistency_non_repeatable_reads_are_allowed);
-    failures += run_test(filter, "transactional_consistency.phantom_reads_are_allowed",
-                         transactional_consistency_phantom_reads_are_allowed);
+    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
+                         transactional_consistency_repeated_read_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",
+                         transactional_consistency_repeated_range_matches_isolation);
     failures +=
         run_test(filter, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
@@ -542,6 +1030,74 @@ int main() {
 
     failures += run_test(filter, "transactional_consistency.stateful_comparator_is_consulted",
                          transactional_consistency_stateful_comparator_is_consulted);
+
+    failures += run_test(filter, "structure.copy_preserves_parent_links", structure_copy_preserves_parent_links);
+    failures +=
+        run_test(filter, "structure.bulk_sorted_insert_links_parents", structure_bulk_sorted_insert_links_parents);
+    failures += run_test(filter, "structure.erase_root_rebalances_promoted_node",
+                         structure_erase_root_rebalances_promoted_node);
+    failures += run_test(filter, "structure.range_excludes_upper_bound", structure_range_excludes_upper_bound);
+    failures += run_test(filter, "structure.split_and_erase_range_stay_balanced",
+                         structure_split_and_erase_range_stay_balanced);
+    failures += run_test(filter, "structure.merge_unique_stays_balanced", structure_merge_unique_stays_balanced);
+    failures += run_test(filter, "structure.random_mutations_preserve_invariants",
+                         structure_random_mutations_preserve_invariants);
+    failures += run_test(filter, "structure.iterator_post_decrement", structure_iterator_post_decrement);
+    failures += run_test(filter, "structure.node_equal_range", structure_node_equal_range);
+    failures += run_test(filter, "structure.bulk_upsert_reports_allocation_failure",
+                         test_bulk_upsert_reports_allocation_failure);
+    failures += run_test(filter, "structure.move_only_upsert_assignment", test_move_only_upsert_assignment);
+
+    failures += run_test(filter, "transactional_defects.direct_write_spares_staged_version",
+                         transactional_defects_direct_write_spares_staged_version);
+    failures += run_test(filter, "transactional_defects.direct_erase_spares_staged_version",
+                         transactional_defects_direct_erase_spares_staged_version);
+    failures += run_test(filter, "transactional_defects.erase_range_spares_staged_versions",
+                         transactional_defects_erase_range_spares_staged_versions);
+    failures += run_test(filter, "transactional_defects.clear_keeps_generations_moving",
+                         transactional_defects_clear_keeps_generations_moving);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_point_reads",
+                         transactional_defects_committed_erase_hidden_from_point_reads);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_ordered_reads",
+                         transactional_defects_committed_erase_hidden_from_ordered_reads);
+    failures += run_test(filter, "transactional_defects.committed_erase_hidden_from_update_range",
+                         transactional_defects_committed_erase_hidden_from_update_range);
+    failures += run_test(filter, "transactional_defects.vacuum_reclaims_committed_tombstones",
+                         transactional_defects_vacuum_reclaims_committed_tombstones);
+    failures += run_test(filter, "transactional_defects.vacuum_spares_staged_versions",
+                         transactional_defects_vacuum_spares_staged_versions);
+    failures += run_test(filter, "transactional_defects.windowed_vacuum_reclaims_one_slice",
+                         transactional_defects_windowed_vacuum_reclaims_one_slice);
+
+    failures += run_test(filter, "commit_stamp.rolled_back_stage_does_not_abort_a_peer",
+                         commit_stamp_rolled_back_stage_does_not_abort_a_peer);
+    failures += run_test(filter, "commit_stamp.lost_update_is_refused", commit_stamp_lost_update_is_refused);
+    failures +=
+        run_test(filter, "commit_stamp.find_and_watch_records_absence", commit_stamp_find_and_watch_records_absence);
+
+    failures += run_test(filter, "transactional_consistency.find_does_not_watch",
+                         transactional_consistency_find_does_not_watch);
+
+    failures += run_test(filter, "transactional_defects.transaction_range_interleaves_staged_and_committed",
+                         transactional_defects_transaction_range_interleaves_staged_and_committed);
+    failures += run_test(filter, "transactional_defects.transaction_equal_range_sees_staged_writes",
+                         transactional_defects_transaction_equal_range_sees_staged_writes);
+    failures += run_test(filter, "transactional_defects.insert_reports_key_already_exists",
+                         transactional_defects_insert_reports_key_already_exists);
+    failures += run_test(filter, "transactional_defects.find_copy_reports_key_not_found",
+                         transactional_defects_find_copy_reports_key_not_found);
+    failures += run_test(filter, "transactional_defects.second_stage_is_rejected",
+                         transactional_defects_second_stage_is_rejected);
+
+    failures += run_test(filter, "fixture_coverage.container_balances_counted_keys",
+                         fixture_coverage_container_balances_counted_keys);
+    failures += run_test(filter, "fixture_coverage.rollback_balances_counted_keys",
+                         fixture_coverage_rollback_balances_counted_keys);
+
+    failures += run_test(filter, "structure.erase_const_iterator", structure_erase_const_iterator);
+
+    failures += run_test(filter, "fixture_coverage.container_honours_over_alignment",
+                         fixture_coverage_container_honours_over_alignment);
 
     return report_test_failures(failures);
 }

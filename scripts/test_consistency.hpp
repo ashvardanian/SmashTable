@@ -13,6 +13,20 @@
 
 namespace ashvardanian::smashtable::scripts {
 
+#pragma region Isolation Expectations
+
+/**
+ *  @brief The level at which a read repeated inside one transaction must return what it first saw.
+ *    Below it a container is free to show the newer committed value, and the suite asserts that it
+ *    does - an anomaly a level permits is a promise that level makes, not an outcome left open.
+ */
+inline constexpr isolation_t repeatable_reads_from_k = isolation_t::snapshot_k;
+
+/** @brief The level at which a predicate repeated inside one transaction must see the same members. */
+inline constexpr isolation_t stable_predicates_from_k = isolation_t::snapshot_k;
+
+#pragma endregion Isolation Expectations
+
 /**
  *  @brief Edge Case: Committing empty transaction succeeds
  */
@@ -634,7 +648,7 @@ void test_disjoint_keys_both_succeed() {
  *  Expected: Within transaction, reads CAN see different values
  */
 template <typename container_type_>
-void test_non_repeatable_reads_are_allowed() {
+void test_repeated_read_matches_isolation() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -659,9 +673,14 @@ void test_non_repeatable_reads_are_allowed() {
     auto second_read = transaction->find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(second_read.has_value());
 
-    // With Read Committed, second read sees committed changes
-    st_verify_((second_read->mapped) == (999) && "non-repeatable reads are allowed at this level");
-    st_verify_ne_(first_read->mapped, second_read->mapped);
+    if constexpr (at_least(container_t::isolation_k, repeatable_reads_from_k)) {
+        st_verify_((second_read->mapped) == (100) && "a snapshot must repeat its first read");
+        st_verify_eq_(first_read->mapped, second_read->mapped);
+    }
+    else {
+        st_verify_((second_read->mapped) == (999) && "below snapshot, a read sees the newest commit");
+        st_verify_ne_(first_read->mapped, second_read->mapped);
+    }
 }
 
 /**
@@ -680,7 +699,7 @@ void test_non_repeatable_reads_are_allowed() {
  *  Expected: Range counts can change within transaction
  */
 template <typename container_type_>
-void test_phantom_reads_are_allowed() {
+void test_repeated_range_matches_isolation() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -692,24 +711,35 @@ void test_phantom_reads_are_allowed() {
 
     auto transaction = container.transaction();
 
-    // First range query: see 5 items (reads are on committed state)
-    std::size_t first_count = 0;
-    container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
-                    [&](member_t const &) noexcept { first_count++; });
+    // The predicate is evaluated through the transaction, not through `container`. Asking the store
+    // would be a question about the store rather than about the transaction's view, and would hold at
+    // every isolation level including serializable - which is why the earlier shape of this test could
+    // not fail. It is spelled with `find` rather than a range scan because that is the one ordered-free
+    // surface every transaction type here offers, `partitioned_collection`'s included.
+    auto count_present = [&]() noexcept {
+        std::size_t present = 0;
+        for (std::size_t candidate = 0; candidate != 10; ++candidate)
+            if (transaction->contains(trivial_id_to_key<member_t>(candidate))) ++present;
+        return present;
+    };
+
+    std::size_t const first_count = count_present();
     st_verify_eq_(first_count, 5);
 
-    // External insert
+    // Committed from outside the transaction, after the first evaluation and before the second.
     st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(5, 5))));
     st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(6, 6))));
 
-    // Second range query while transaction still active - CAN see new items (phantom reads)
-    // In Read Committed, reads always see latest committed state
-    std::size_t second_count = 0;
-    container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10),
-                    [&](member_t const &) noexcept { second_count++; });
+    std::size_t const second_count = count_present();
 
-    st_verify_((second_count) == (7) && "phantom reads are allowed at this level");
-    st_verify_((second_count) > (first_count));
+    if constexpr (at_least(container_t::isolation_k, stable_predicates_from_k)) {
+        st_verify_((second_count) == (5) && "a snapshot must not admit phantoms");
+        st_verify_eq_(first_count, second_count);
+    }
+    else {
+        st_verify_((second_count) == (7) && "below snapshot, a repeated predicate sees the newest commits");
+        st_verify_((second_count) > (first_count));
+    }
 }
 
 /**
@@ -728,7 +758,7 @@ void test_delete_visibility() {
     st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(2))));
 
     // Delete via erase_range
-    container.erase_range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(2));
+    erase_range_of(container, trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(2));
 
     // Verify deleted key is invisible
     st_verify_(!(container.contains(trivial_id_to_key<member_t>(1))));
@@ -808,22 +838,22 @@ void test_watch_detects_staged_invisible_writes() {
     st_verify_(succeeded(t1->watch(trivial_id_to_key<member_t>(1))));
     st_verify_(succeeded(t2->watch(trivial_id_to_key<member_t>(1))));
 
-    // T2 modifies and stages (but doesn't commit)
+    // Both stage: a write nobody has committed is not yet binding on anyone, so neither is refused
+    // here. Refusing at this point would abort a transaction whose rival may still roll back.
     st_verify_(succeeded(t2->upsert(trivial_id_to_member<member_t>(1, 999))));
-    st_verify_(succeeded(t2->stage())); // Now gen=2, visible=false
-
-    // T1 should FAIL to stage because T2 has a staged (invisible) write
-    // This tests that find_latest_for_watch() is used, not find()
+    st_verify_(succeeded(t2->stage()));
     st_verify_(succeeded(t1->upsert(trivial_id_to_member<member_t>(1, 777))));
-    auto status = t1->stage();
-    st_verify_((failed(status)) && "staging must detect another transaction staged write");
+    st_verify_(succeeded(t1->stage()));
+
+    // T2 publishes first, so T1's watch does not match what is committed.
+    st_verify_(succeeded(t2->commit()));
+    auto status = t1->commit();
+    st_verify_((failed(status)) && "committing must detect the conflicting commit");
     st_verify_eq_(status, status_t::consistency_k);
 
-    // Clean up: rollback T2, verify original value persists
-    st_verify_(succeeded(t2->rollback()));
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (100) && "the original value must survive the other rollback");
+    st_verify_((maybe_final->mapped) == (999) && "the accepted writer's value must be the one that lands");
 }
 
 /**
@@ -868,11 +898,15 @@ void test_watch_detects_staged_writes_of_older_generation() {
     auto newcomer = container.transaction();
     st_verify_(succeeded(newcomer->watch(trivial_id_to_key<member_t>(1))));
     st_verify_(succeeded(newcomer->upsert(trivial_id_to_member<member_t>(1, 202))));
-    auto const status = newcomer->stage();
-    st_verify_((failed(status)) && "a staged write below the published generation must still conflict");
+    st_verify_(succeeded(newcomer->stage()));
+
+    // The commit stamp, not the generation, decides: whoever publishes first wins, and the loser
+    // is turned away even though its generation is the higher of the two.
+    st_verify_(succeeded(early->commit()));
+    auto const status = newcomer->commit();
+    st_verify_((failed(status)) && "a commit over a watched key must refuse the second writer");
     st_verify_eq_(status, status_t::consistency_k);
 
-    st_verify_(succeeded(early->commit()));
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
     st_verify_((maybe_final->mapped) == (102) && "the accepted writer's value must be the one that lands");
@@ -1003,6 +1037,56 @@ void test_moved_transaction_unwinds_once() {
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(5));
     st_verify_(maybe_final.has_value());
     st_verify_((maybe_final->mapped) == (555) && "a moved transaction must unwind exactly once");
+}
+
+/**
+ *  @brief A plain read joins no read set, and the watching variant does.
+ *
+ *  The read set is opt-in because it is memory, and a read that allocates is a read that can fail -
+ *  which the callback surface has no way to report. That makes the omission easy to walk into, so it
+ *  is pinned here from both sides: reading a key and writing back over a concurrent commit is a lost
+ *  update the store will accept, and the same shape through @c find_and_watch is one it refuses.
+ */
+template <typename container_type_>
+void test_find_does_not_watch() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    // A plain read records nothing, so the transaction commits over a value it never saw.
+    {
+        container_t container;
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 100))));
+
+        auto reader = container.transaction();
+        reader->find(trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {});
+
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 999))));
+        st_verify_(succeeded(reader->upsert(trivial_id_to_member<member_t>(1, 101))));
+        st_verify_((succeeded(reader->stage())) && "an unwatched read cannot refuse anything");
+        st_verify_((succeeded(reader->commit())) && "an unwatched read cannot refuse anything");
+    }
+
+    // The same shape through `find_and_watch` records what it saw, and the drift is caught.
+    {
+        container_t container;
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 100))));
+
+        auto reader = container.transaction();
+        st_verify_(succeeded(reader->find_and_watch(
+            trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {})));
+
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(1, 999))));
+        st_verify_(succeeded(reader->upsert(trivial_id_to_member<member_t>(1, 101))));
+
+        auto const staged = reader->stage();
+        auto const committed = succeeded(staged) ? reader->commit() : staged;
+        st_verify_((failed(committed)) && "a watched read must refuse a write over a newer commit");
+        st_verify_eq_(committed, status_t::consistency_k);
+    }
 }
 
 /**

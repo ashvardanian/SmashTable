@@ -59,12 +59,12 @@ namespace ashvardanian::smashtable {
  *
  *  Four distinct modification strategies with different failure handling:
  *
- *  | Method               | Key Exists?     | Returns          | Use Case                                      |
- *  |----------------------|-----------------|------------------|-----------------------------------------------|
- *  | insert()             | Fails (error)   | invalid_arg_k    | Strict: ensure key is new                     |
- *  | insert_if_missing()  | Skips (success) | success_k        | Lenient: insert only if absent, else no-op    |
- *  | upsert()             | Overwrites      | success_k        | Always update regardless of existence         |
- *  | update()             | Fails (error)   | key_not_found_k  | Strict: ensure key exists before updating     |
+ *  | Method               | Key Exists?     | Returns              | Use Case                                   |
+ *  |----------------------|-----------------|----------------------|--------------------------------------------|
+ *  | insert()             | Fails (error)   | key_already_exists_k | Strict: ensure key is new                  |
+ *  | insert_if_missing()  | Skips (success) | success_k            | Lenient: insert only if absent, else no-op |
+ *  | upsert()             | Overwrites      | success_k            | Always update regardless of existence      |
+ *  | update()             | Fails (error)   | key_not_found_k      | Strict: ensure key exists before updating  |
  *
  *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and providing a
  *    @c rebind template alias. Cores that also satisfy @c ordered_collection unlock the ordered surface -
@@ -176,6 +176,12 @@ class transactional_store {
         detached_and_emptied_k,
     };
 
+    /** @brief Whether the version a commit set out to unmask was still there to unmask. */
+    enum class unmasking_t {
+        published_k,
+        vanished_k,
+    };
+
     // The store keys one entry per identifier and hangs that identifier's versions off it. The
     // transaction stages into a plain tree of versions, where its own generation makes every key
     // unique, so only the store needs chains.
@@ -207,8 +213,6 @@ class transactional_store {
               watches_(watches_allocator_t(storage_shape_t::allocator_of(set.entries_))),
               changed_ids_(changed_ids_allocator_t(storage_shape_t::allocator_of(set.entries_))),
               generation_(set.new_generation_()) {}
-        /** @brief What this transaction saw when it looked at a key that was not there. */
-        static watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
 
         /**
          *  @brief Drops this transaction's version of the first @p processed changed identifiers.
@@ -224,6 +228,54 @@ class transactional_store {
 
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
+
+        /** @brief Stages @p versioned under this transaction's generation, recording @p id as changed. */
+        [[nodiscard]] status_t stage_version_(identifier_t &&id, versioned_t &&versioned) noexcept {
+            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
+            if (failed(reserve_status)) return reserve_status;
+            versioned.generation = generation_;
+            auto result = storage_shape_t::upsert(changes_, std::move(versioned));
+            if (failed(result)) return out_of_memory_heap_k;
+            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(id));
+            return success_k;
+        }
+
+        /**
+         *  @brief Hands the smaller of a staged and a committed candidate to @p callback_found.
+         *    Either may be null, and two nulls mean the merged view has nothing left to show.
+         */
+        template <typename callback_found_type_, typename callback_missing_type_>
+        void merge_candidates_(versioned_t const *staged, versioned_t const *committed,
+                               callback_found_type_ &&callback_found,
+                               callback_missing_type_ &&callback_missing) const noexcept {
+            if (!staged && !committed) {
+                callback_missing();
+                return;
+            }
+            if (!staged) {
+                callback_found(committed->unversioned);
+                return;
+            }
+            if (!committed) {
+                callback_found(staged->unversioned);
+                return;
+            }
+            auto const &ordering = changes_.key_comp();
+            if (ordering.less(committed->unversioned, staged->unversioned)) callback_found(committed->unversioned);
+            else callback_found(staged->unversioned);
+        }
+
+        /**
+         *  @brief Whether every watched key still carries the version this transaction read.
+         *    Asked twice - once when reserving, once when publishing - because a commit landing in
+         *    between is the only thing that can invalidate a read after it was validated.
+         */
+        [[nodiscard]] status_t validate_watches_() const noexcept {
+            auto const &store = store_ref();
+            return validate_watches(watches_, [&](identifier_t const &id, auto &&on_found, auto &&on_missing) noexcept {
+                store.find_committed_entry_(id, on_found, on_missing);
+            });
+        }
 
         /**
          *  @brief Drops anything staged and never published, and gives up this transaction's claim.
@@ -299,21 +351,7 @@ class transactional_store {
             if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k)
                 return key_already_exists_k;
             if (store_ref().contains(value)) return key_already_exists_k;
-
-            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return out_of_memory_heap_k;
-            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (failed(reserve_status)) return reserve_status;
-
-            versioned_t versioned(std::move(value));
-            versioned.generation = generation_;
-            versioned.presence = presence_t::present_k;
-            versioned.publication = publication_t::staged_k;
-            auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (failed(result)) return out_of_memory_heap_k;
-
-            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return success_k;
+            return upsert(std::move(value));
         }
 
         /**
@@ -327,21 +365,7 @@ class transactional_store {
             auto local_it = changes_.find(value);
             if (local_it != changes_.end() && (*local_it).presence == presence_t::present_k) return success_k;
             if (store_ref().contains(value)) return success_k;
-
-            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return out_of_memory_heap_k;
-            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (failed(reserve_status)) return reserve_status;
-
-            versioned_t versioned(std::move(value));
-            versioned.generation = generation_;
-            versioned.presence = presence_t::present_k;
-            versioned.publication = publication_t::staged_k;
-            auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (failed(result)) return out_of_memory_heap_k;
-
-            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return success_k;
+            return upsert(std::move(value));
         }
 
         /**
@@ -354,18 +378,9 @@ class transactional_store {
         [[nodiscard]] status_t upsert(value_t &&value) noexcept {
             auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
             if (!maybe_id) return out_of_memory_heap_k;
-            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (failed(reserve_status)) return reserve_status;
-
             versioned_t versioned(std::move(value));
-            versioned.generation = generation_;
             versioned.presence = presence_t::present_k;
-            versioned.publication = publication_t::staged_k;
-            auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (failed(result)) return out_of_memory_heap_k;
-
-            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return success_k;
+            return stage_version_(std::move(*maybe_id), std::move(versioned));
         }
 
         /**
@@ -391,25 +406,16 @@ class transactional_store {
          *  @return Success or error code (e.g., out of memory).
          */
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(id);
-            if (!maybe_id) return out_of_memory_heap_k;
-            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
-            if (failed(reserve_status)) return reserve_status;
-
             // The tombstone owns its own identifier, and the list of changed identifiers owns another,
             // so a move-only key needs two safe copies rather than one copy and one implicit one.
+            auto maybe_id = copy_safely<identifier_t>(id);
+            if (!maybe_id) return out_of_memory_heap_k;
             auto maybe_payload = copy_safely<identifier_t>(id);
             if (!maybe_payload) return out_of_memory_heap_k;
 
             versioned_t versioned(value_t {std::move(*maybe_payload)});
-            versioned.generation = generation_;
             versioned.presence = presence_t::erased_k;
-            versioned.publication = publication_t::staged_k;
-            auto result = storage_shape_t::upsert(changes_, std::move(versioned));
-            if (failed(result)) return out_of_memory_heap_k;
-
-            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(*maybe_id));
-            return success_k;
+            return stage_version_(std::move(*maybe_id), std::move(versioned));
         }
 
         [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.reserve(size); }
@@ -428,6 +434,23 @@ class transactional_store {
             auto missing = [&]() noexcept { result = watches_.push_back({std::move(id), missing_watch()}); };
             store_ref().find_visible_entry_(id, found, missing);
             return result;
+        }
+
+        /**
+         *  @brief Finds a member equal to @p comparable and records what it saw into the read set.
+         *    The watching counterpart to @c find: this one can fail, because a read set is memory.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
+                  typename callback_missing_type_ = no_op_fn_t>
+        [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                              callback_missing_type_ &&callback_missing = {}) noexcept {
+            auto maybe_id = copy_safely<identifier_t>(comparable);
+            if (!maybe_id) return maybe_id.status();
+            status_t const recorded = watch(std::move(*maybe_id));
+            if (failed(recorded)) return recorded;
+            find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
+                 std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
         }
 
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
@@ -514,22 +537,15 @@ class transactional_store {
             versioned_t const *store_visible = nullptr;
             for (auto cursor = store.entries_.lower_bound(comparable); cursor != store.entries_.end(); ++cursor) {
                 if (changes_.contains(*cursor)) continue;
-                if ((store_visible = store_t::visible_version_(*cursor)) != nullptr) break;
+                if ((store_visible = store_t::readable_version_(*cursor)) != nullptr) break;
             }
 
             auto changed_lb = changes_.lower_bound(comparable);
             while (changed_lb != changes_.end() && changed_lb->presence == presence_t::erased_k) { ++changed_lb; }
 
-            if (!store_visible && changed_lb == changes_.end()) { callback_missing(); }
-            else if (!store_visible) { callback_found(changed_lb->unversioned); }
-            else if (changed_lb == changes_.end()) { callback_found(store_visible->unversioned); }
-            else {
-                auto const &ordering = changes_.key_comp();
-                if (ordering.less(store_visible->unversioned, changed_lb->unversioned)) {
-                    callback_found(store_visible->unversioned);
-                }
-                else { callback_found(changed_lb->unversioned); }
-            }
+            merge_candidates_(changed_lb != changes_.end() ? &*changed_lb : nullptr, store_visible,
+                              std::forward<callback_found_type_>(callback_found),
+                              std::forward<callback_missing_type_>(callback_missing));
         }
 
         /**
@@ -542,13 +558,12 @@ class transactional_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_fn_t>
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-            find(
-                std::forward<comparable_type_>(comparable),
-                [&](versioned_t const &versioned) noexcept { callback(versioned.unversioned); }, []() noexcept {});
+            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
         }
 
         /**
          *  @brief Iterates over all entries in the range [ @p lower, @p upper), including transaction changes.
+         *    The two sides are merged as the walk goes, so the output is sorted however they interleave.
          *
          *  @param[in] lower Lower bound of the range (inclusive).
          *  @param[in] upper Upper bound of the range (exclusive).
@@ -559,17 +574,38 @@ class transactional_store {
         void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_collection<versioned_chains_t>
         {
+            // The bounds are compared through the transparent comparator rather than materialized as an
+            // `identifier_t`, which a move-only key cannot copy into.
+            auto const &store = store_ref();
             auto const less = changes_.key_comp();
-            auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
-            auto const upper_internal_bound = identifier_t(upper);
-            for (auto it = lower_internal; it != changes_.end() && less(*it, upper_internal_bound); ++it)
-                if (it->presence == presence_t::present_k) callback(it->unversioned);
+            auto staged_cursor = changes_.lower_bound(lower);
+            auto committed_cursor = store.entries_.lower_bound(lower);
 
-            store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                              [&](value_t const &external_value) {
-                                  auto local_state = changes_.find(external_value);
-                                  if (local_state == changes_.end()) callback(external_value);
-                              });
+            // A key this transaction touched is answered from its own version, so the committed side
+            // skips whatever `changes_` already speaks for and never emits a key twice.
+            for (;;) {
+                versioned_t const *staged = nullptr;
+                while (!staged && staged_cursor != changes_.end() && less(*staged_cursor, upper)) {
+                    if (staged_cursor->presence == presence_t::present_k) staged = &*staged_cursor;
+                    else ++staged_cursor;
+                }
+                versioned_t const *committed = nullptr;
+                while (!committed && committed_cursor != store.entries_.end() && less(*committed_cursor, upper)) {
+                    if (!changes_.contains(*committed_cursor))
+                        committed = store_t::readable_version_(*committed_cursor);
+                    if (!committed) ++committed_cursor;
+                }
+
+                if (!staged && !committed) break;
+                if (!staged || (committed && less(committed->unversioned, staged->unversioned))) {
+                    callback(committed->unversioned);
+                    ++committed_cursor;
+                }
+                else {
+                    callback(staged->unversioned);
+                    ++staged_cursor;
+                }
+            }
         }
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
@@ -583,35 +619,28 @@ class transactional_store {
             versioned_t const *store_visible = nullptr;
             for (auto cursor = store.entries_.upper_bound(comparable); cursor != store.entries_.end(); ++cursor) {
                 if (changes_.contains(*cursor)) continue;
-                if ((store_visible = store_t::visible_version_(*cursor)) != nullptr) break;
+                if ((store_visible = store_t::readable_version_(*cursor)) != nullptr) break;
             }
 
             auto changed_ub = changes_.upper_bound(comparable);
             while (changed_ub != changes_.end() && changed_ub->presence == presence_t::erased_k) { ++changed_ub; }
 
-            if (!store_visible && changed_ub == changes_.end()) { callback_missing(); }
-            else if (!store_visible) { callback_found(changed_ub->unversioned); }
-            else if (changed_ub == changes_.end()) { callback_found(store_visible->unversioned); }
-            else {
-                auto const &ordering = changes_.key_comp();
-                if (ordering.less(store_visible->unversioned, changed_ub->unversioned)) {
-                    callback_found(store_visible->unversioned);
-                }
-                else { callback_found(changed_ub->unversioned); }
-            }
+            merge_candidates_(changed_ub != changes_.end() ? &*changed_ub : nullptr, store_visible,
+                              std::forward<callback_found_type_>(callback_found),
+                              std::forward<callback_missing_type_>(callback_missing));
         }
 
         /**
-         *  @brief Finds the k-th smallest element including transaction changes.
-         *    Only available for tree implementations that support order statistics (e.g., WB trees).
-         *    Merges view of local staged changes with committed entries from main store.
+         *  @brief Finds the @p ordinal -th smallest element, merging staged changes with the store.
+         *    Walks both sides in order, since a subtree weight counts versions rather than visible values.
+         *    Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
          *
-         *  @param[in] k Zero-based index (0 = smallest element).
-         *  @param[in] callback_found Callback to receive the k-th element. Must be @c noexcept.
-         *  @param[in] callback_missing Callback triggered if k >= size(). Must be @c noexcept.
+         *  @param[in] ordinal Zero-based position among the elements this transaction can see.
+         *  @param[in] callback_found Callback to receive the element. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be @c noexcept.
          */
         template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
-        void select(std::size_t k, callback_found_type_ &&callback_found,
+        void select(std::size_t ordinal, callback_found_type_ &&callback_found,
                     callback_missing_type_ &&callback_missing = {}) const noexcept
             requires supports_order_statistics<versioned_chains_t>
         {
@@ -631,7 +660,7 @@ class transactional_store {
 
                 if (take_local) {
                     if (local_it->presence == presence_t::present_k) {
-                        if (visible_index == k) {
+                        if (visible_index == ordinal) {
                             callback_found(local_it->unversioned);
                             found = true;
                         }
@@ -640,10 +669,10 @@ class transactional_store {
                     ++local_it;
                 }
                 else {
-                    versioned_t const *store_visible = store_t::visible_version_(store_node->fruit);
-                    if (store_visible && store_visible->presence == presence_t::present_k &&
+                    versioned_t const *store_visible = store_t::readable_version_(store_node->fruit);
+                    if (store_visible &&
                         changes_.find(mapping_key_or_itself<value_t>(store_visible->unversioned)) == changes_.end()) {
-                        if (visible_index == k) {
+                        if (visible_index == ordinal) {
                             callback_found(store_visible->unversioned);
                             found = true;
                         }
@@ -658,9 +687,9 @@ class transactional_store {
         }
 
         /**
-         *  @brief Finds the rank (position) of an element including transaction changes.
-         *    Only available for tree implementations that support order statistics (e.g., WB trees).
-         *    Includes both staged changes and committed entries from main store.
+         *  @brief Finds the rank (position) of an element, merging staged changes with the store.
+         *    Walks both sides in order, since a subtree weight counts versions rather than visible values.
+         *    Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
          *
          *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
          *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
@@ -702,8 +731,8 @@ class transactional_store {
                     ++local_it;
                 }
                 else {
-                    versioned_t const *store_visible = store_t::visible_version_(store_node->fruit);
-                    if (store_visible && store_visible->presence == presence_t::present_k &&
+                    versioned_t const *store_visible = store_t::readable_version_(store_node->fruit);
+                    if (store_visible &&
                         changes_.find(mapping_key_or_itself<value_t>(store_visible->unversioned)) == changes_.end() &&
                         less(store_visible->unversioned, target_id)) {
                         ++rank_value;
@@ -721,22 +750,15 @@ class transactional_store {
          *  changes are merged into the main store but remain invisible until @c commit() is called.
          *  Otherwise, the user may call @c rollback() to pull back the staged changes into the
          *  transaction itself, or @c reset() to discard all changes and start fresh.
+         *
+         *  @return Success, @c operation_not_permitted_k when already staged, or an allocation failure.
          */
         [[nodiscard]] status_t stage() noexcept {
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             auto &store = store_ref();
             auto const prepaid = storage_shape_t::prepare(store.entries_, changed_ids_.size());
             if (failed(prepaid)) return prepaid;
-            auto const entry_missing = missing_watch();
-            for (auto const &id_and_watch : watches_) {
-                auto consistency_violated = false;
-                store.find_latest_entry_(
-                    id_and_watch.id,
-                    [&](versioned_t const &versioned) noexcept {
-                        consistency_violated = versioned != id_and_watch.watch;
-                    },
-                    [&]() noexcept { consistency_violated = entry_missing != id_and_watch.watch; });
-                if (consistency_violated) return status_t::consistency_k;
-            }
+            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
 
             // Every change needs somewhere to land before any of them moves, or a transaction could
             // run out of memory with half of itself already in the store. So this pass reserves a
@@ -757,7 +779,6 @@ class transactional_store {
                 versioned_t reservation(value_t {std::move(*reserved_id)});
                 reservation.generation = generation_;
                 reservation.presence = presence_t::present_k;
-                reservation.publication = publication_t::staged_k;
                 auto result = storage_shape_t::upsert(store.entries_, versioned_chain_t {std::move(reservation)});
                 if (failed(result)) {
                     unstage_(reserved);
@@ -807,9 +828,13 @@ class transactional_store {
             for (identifier_t const &id : changed_ids_) {
                 versioned_t recovered;
                 // ! Don't materialize a new copy of `id` here, use a reference
-                if (store.chain_discard_(id, generation_, &recovered) == detach_outcome_t::not_found_k) continue;
+                // A version that is absent cannot be handed back, and the pending write it
+                // carried is gone, so the rollback reports that rather than quietly dropping it.
+                if (store.chain_discard_(id, generation_, &recovered) == detach_outcome_t::not_found_k) {
+                    result = status_t::consistency_k;
+                    continue;
+                }
                 recovered.generation = resumed;
-                recovered.publication = publication_t::staged_k;
                 auto reinstated = storage_shape_t::upsert(changes_, std::move(recovered));
                 if (failed(reinstated)) result = out_of_memory_heap_k;
             }
@@ -822,15 +847,25 @@ class transactional_store {
         [[nodiscard]] status_t commit() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
-            // Once we make an entry visible, if there are more than one with the same key,
-            // the older generation must die.
+            // A watch is re-checked here as well as at staging: another transaction may have
+            // committed over a watched key while this one sat staged, and publishing on top of it
+            // would be the lost update the watch was taken to prevent.
             auto &store = store_ref();
-            for (auto const &id : changed_ids_) store.unmask_and_compact_(id, generation_);
+            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
 
-            changes_.clear();
+            // Once we make an entry visible, if there are more than one with the same key,
+            // the older generation must die. A version that is absent when unmasking runs was
+            // destroyed under the staging window, so the commit is incomplete and says so rather
+            // than reporting a success it did not deliver.
+            commit_stamp_t const stamp = store.new_commit_stamp_();
+            status_t result = success_k;
+            for (auto const &id : changed_ids_)
+                if (store.unmask_and_compact_(id, generation_, stamp) == unmasking_t::vanished_k)
+                    result = status_t::consistency_k;
+
             changed_ids_.clear();
             staging_ = staging_t::pending_k;
-            return success_k;
+            return result;
         }
     };
 
@@ -839,6 +874,7 @@ class transactional_store {
     version_node_t *spare_versions_ {nullptr};
     versioned_chains_t entries_;
     alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
+    alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
     std::size_t visible_count_ {0};
     std::size_t visible_deleted_count_ {0};
 
@@ -854,6 +890,17 @@ class transactional_store {
      */
     generation_t new_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
 
+    /**
+     *  @brief Hands out the stamp a write becomes visible under, which is the store's only ordering.
+     *
+     *  Drawn once per commit rather than once per write, so every key one transaction touched becomes
+     *  visible under the same number and a reader can never see half of it. Counted apart from
+     *  @c generation_, which dates a transaction's opening and says nothing about what is current.
+     */
+    commit_stamp_t new_commit_stamp_() noexcept {
+        return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
+    }
+
     /** @brief A writable reference to a stored element, which every core hands out as immutable. */
     template <typename element_type_>
     static element_type_ &mutable_ref_(element_type_ const &element) noexcept {
@@ -862,34 +909,27 @@ class transactional_store {
 
     /** @brief The one version a reader may see, or null while every version of the key is staged. */
     static versioned_t const *visible_version_(versioned_chain_t const &chain) noexcept {
-        if (chain.head.publication == publication_t::published_k) return &chain.head;
+        if (visible_now(chain.head.committed)) return &chain.head;
         for (version_node_t const *node = chain.others; node; node = node->next)
-            if (node->entry.publication == publication_t::published_k) return &node->entry;
+            if (visible_now(node->entry.committed)) return &node->entry;
         return nullptr;
     }
 
-    /** @brief The highest-generation version of the key, whether or not anything has committed it. */
-    static versioned_t const *latest_version_(versioned_chain_t const &chain) noexcept {
-        versioned_t const *latest = &chain.head;
-        for (version_node_t const *node = chain.others; node; node = node->next)
-            if (node->entry.generation > latest->generation) latest = &node->entry;
-        return latest;
+    /**
+     *  @brief The version a reader may @b see the payload of, which excludes a committed tombstone.
+     *
+     *  A committed erase stays in the tree as a published tombstone, because a watch has to be able to
+     *  observe it. Every surface that hands a payload out asks this instead of @c visible_version_, so
+     *  the rule that a tombstone is not an element lives in one place.
+     */
+    static versioned_t const *readable_version_(versioned_chain_t const &chain) noexcept {
+        versioned_t const *visible = visible_version_(chain);
+        return visible && visible->presence == presence_t::present_k ? visible : nullptr;
     }
 
-    /**
-     *  @brief The version a staging transaction must reconcile with: any staged one, else the newest.
-     *
-     *  A generation is handed out when a transaction opens, so one that opens early and stages late
-     *  carries a number below a version another transaction has already published. Ranking by
-     *  generation would look straight past that staged write, and the two transactions would commit
-     *  from the same base - which is the one thing a watch exists to prevent. Publication decides
-     *  here, matching @c unmask_and_compact_, where commit order already outranks generation order.
-     */
-    static versioned_t const *staging_version_(versioned_chain_t const &chain) noexcept {
-        if (chain.head.publication == publication_t::staged_k) return &chain.head;
-        for (version_node_t const *node = chain.others; node; node = node->next)
-            if (node->entry.publication == publication_t::staged_k) return &node->entry;
-        return latest_version_(chain);
+    /** @brief Whether nothing but a committed tombstone is left, so the whole entry can be freed. */
+    static bool is_reclaimable_(versioned_chain_t const &chain) noexcept {
+        return !chain.others && visible_now(chain.head.committed) && chain.head.presence == presence_t::erased_k;
     }
 
     /** @brief Hands back every spare the staging pass reserved and did not use. */
@@ -1032,8 +1072,72 @@ class transactional_store {
     }
 
     /**
+     *  @brief Drops the published version of @p chain, leaving every staged one where it is.
+     *
+     *  A staged version belongs to a transaction that has not committed, so no direct write is
+     *  entitled to decide its fate - only the commit that owns it is. Generations are unique within
+     *  a chain, so the published one is named by its own stamp.
+     *
+     *  @param[inout] chain The key's version chain, shortened by its published version if it has one.
+     *  @return Whether anything was dropped, and whether the entry must now leave the index.
+     */
+    detach_outcome_t retire_visible_(versioned_chain_t &chain) noexcept {
+        versioned_t const *const visible = visible_version_(chain);
+        if (!visible) return detach_outcome_t::not_found_k;
+        --visible_count_;
+        visible_deleted_count_ -= visible->presence == presence_t::erased_k;
+        return chain_detach_(chain, visible->generation, nullptr);
+    }
+
+    /**
+     *  @brief Frees the unreachable entries between @p cursor and @p stop, which an ordered core lets
+     *    the walk erase in place.
+     *  @return How many entries were reclaimed.
+     */
+    template <typename iterator_type_>
+    std::size_t vacuum_between_(iterator_type_ cursor, iterator_type_ const stop) noexcept {
+        std::size_t reclaimed = 0;
+        while (cursor != stop) {
+            if (!is_reclaimable_(*cursor)) {
+                ++cursor;
+                continue;
+            }
+            --visible_count_;
+            --visible_deleted_count_;
+            cursor = entries_.erase(cursor).next;
+            ++reclaimed;
+        }
+        return reclaimed;
+    }
+
+    /**
+     *  @brief Files @p version into @p chain as its one published version, retiring the one it replaces.
+     *    Overwriting the published slot in place costs nothing; a chain that holds only staged versions
+     *    has to lengthen, which is the one way a direct write can run out of memory.
+     *
+     *  @param[inout] chain The key's version chain, which already exists in the index.
+     *  @param[in] version The published version to file.
+     *  @return Success, or @c out_of_memory_heap_k when the chain cannot lengthen.
+     */
+    [[nodiscard]] status_t publish_directly_(versioned_chain_t &chain, versioned_t &&version) noexcept {
+        if (versioned_t const *const displaced = visible_version_(chain)) {
+            visible_deleted_count_ -= displaced->presence == presence_t::erased_k;
+            mutable_ref_(*displaced) = std::move(version);
+            return success_k;
+        }
+
+        version_allocator_t allocator(storage_shape_t::allocator_of(entries_));
+        version_node_t *const node = allocator.allocate(1);
+        if (!node) return out_of_memory_heap_k;
+        chain.others = new (node) version_node_t {std::move(version), chain.others};
+        chain.allocator = allocator;
+        ++visible_count_;
+        return success_k;
+    }
+
+    /**
      *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_t const &.
-     *    Used by internal methods that need access to generation, presence and publication fields.
+     *    Used by internal methods that need access to the generation, presence and commit stamp.
      *    Only considers VISIBLE entries (committed/staged).
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
@@ -1056,10 +1160,12 @@ class transactional_store {
     }
 
     /**
-     *  @brief The version a watch is validated against, staged ones included.
+     *  @brief The version a watch is validated against: the one carrying the newest commit stamp.
      *
-     *  A staged write is invisible to readers but binding on the next committer, so this deliberately
-     *  looks past visibility - see @c staging_version_ for which of several versions answers.
+     *  A version nobody has committed carries no stamp, so it cannot answer here - which is what lets
+     *  a transaction validate through another's staging window instead of being turned away by a
+     *  write that may yet be rolled back. A committed tombstone resolves to missing, matching the
+     *  shape @c watch records for a key that is not there.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
@@ -1067,19 +1173,25 @@ class transactional_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
               typename callback_missing_type_ = no_op_fn_t>
-    void find_latest_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                            callback_missing_type_ &&callback_missing = {}) const noexcept {
+    void find_committed_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         auto found = entries_.find(std::forward<comparable_type_>(comparable));
-        versioned_t const *latest = found != entries_.end() ? staging_version_(*found) : nullptr;
-        if (latest && latest->presence == presence_t::present_k) callback_found(*latest);
+        versioned_t const *committed = found != entries_.end() ? visible_version_(*found) : nullptr;
+        if (committed && committed->presence == presence_t::present_k) callback_found(*committed);
         else callback_missing();
     }
 
-    void unmask_and_compact_(identifier_t const &id, generation_t generation_to_unmask) noexcept {
+    /**
+     *  @brief Publishes the version of @p id carrying @p generation_to_unmask, retiring the one it replaces.
+     *  @param[in] stamp The stamp this commit publishes under, shared by every key it touched.
+     *  @return Whether the version was found and published, which a caller reports as its own success.
+     */
+    unmasking_t unmask_and_compact_(identifier_t const &id, generation_t generation_to_unmask,
+                                    commit_stamp_t stamp) noexcept {
         // ! Don't materialize a new copy of `id` here, use a reference
         auto found = entries_.find(id);
-        if (found == entries_.end()) return;
+        if (found == entries_.end()) return unmasking_t::vanished_k;
         auto &chain = mutable_ref_(*found);
 
         // Every other visible version of this key gives way to the one being unmasked, whether it is
@@ -1094,7 +1206,7 @@ class transactional_store {
             visible_deleted_count_ -= doomed_was_erased;
             if (outcome == detach_outcome_t::detached_and_emptied_k) {
                 entries_.erase(id);
-                return;
+                return unmasking_t::vanished_k;
             }
         }
 
@@ -1104,11 +1216,36 @@ class transactional_store {
             for (version_node_t *node = chain.others; node && !unmasked; node = node->next)
                 if (node->entry.generation == generation_to_unmask) unmasked = &node->entry;
 
-        if (unmasked && unmasked->publication == publication_t::staged_k) {
-            unmasked->publication = publication_t::published_k;
+        if (!unmasked) return unmasking_t::vanished_k;
+        if (!visible_now(unmasked->committed)) {
+            unmasked->committed = stamp;
             ++visible_count_;
             if (unmasked->presence == presence_t::erased_k) visible_deleted_count_++;
         }
+        return unmasking_t::published_k;
+    }
+
+    /**
+     *  @brief Stages every element of [ @p first, @p last ) through @p stage_one and commits them together.
+     *    Bailing out before @c stage leaves the store untouched, which is what makes a bulk write
+     *    all-or-nothing.
+     *
+     *  @param[in] first Beginning of the range to write.
+     *  @param[in] last End of the range to write.
+     *  @param[in] stage_one Invoked with the open transaction and one element, reporting what it staged.
+     *  @return The first failure any step reported, or the status of the commit.
+     */
+    template <typename input_iterator_type_, typename stage_one_type_>
+    [[nodiscard]] status_t commit_each_(input_iterator_type_ first, input_iterator_type_ last,
+                                        stage_one_type_ &&stage_one) noexcept {
+        if (first == last) return success_k;
+        auto opened = transaction();
+        if (!opened) return out_of_memory_heap_k;
+
+        for (; first != last; ++first)
+            if (status_t const staged = stage_one(*opened, value_t(*first)); failed(staged)) return staged;
+        if (status_t const staged = opened->stage(); failed(staged)) return staged;
+        return opened->commit();
     }
 
 #pragma endregion Type Definitions
@@ -1127,7 +1264,7 @@ class transactional_store {
         : entries_(storage_shape_t::template build<versioned_chain_t>(comparator, allocator)) {}
     transactional_store(transactional_store &&other) noexcept
         : spare_versions_(std::exchange(other.spare_versions_, nullptr)), entries_(std::move(other.entries_)),
-          generation_(other.generation_), visible_count_(other.visible_count_),
+          generation_(other.generation_), commits_(other.commits_), visible_count_(other.visible_count_),
           visible_deleted_count_(other.visible_deleted_count_) {}
 
     transactional_store &operator=(transactional_store &&other) noexcept {
@@ -1139,6 +1276,7 @@ class transactional_store {
         spare_versions_ = std::exchange(other.spare_versions_, nullptr);
         entries_ = std::move(other.entries_);
         generation_ = other.generation_;
+        commits_ = other.commits_;
         visible_count_ = other.visible_count_;
         visible_deleted_count_ = other.visible_deleted_count_;
         return *this;
@@ -1196,28 +1334,14 @@ class transactional_store {
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] allocator Allocator for copying the element (reserved for future use).
-     *  @return Result with copied element if found, or failure status.
-     */
-    template <typename comparable_type_ = identifier_t, typename copy_allocator_>
-    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable,
-                                              [[maybe_unused]] copy_allocator_ &&allocator) const noexcept {
-        expected<value_t> result {status_t::unknown_k};
-        find(std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept { result = copy_safely(v); });
-        return result;
-    }
-
-    /**
-     *  @brief Finds and returns a copy of an element equal to @p comparable using container's allocator.
-     *    Convenience method to avoid callback-based access in tests and simple use cases.
-     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
-     *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
-        return find_copy(std::forward<comparable_type_>(comparable), storage_shape_t::allocator_of(entries_));
+        expected<value_t> result {status_t::key_not_found_k};
+        find(std::forward<comparable_type_>(comparable),
+             [&](value_t const &found) noexcept { result = copy_safely(found); });
+        return result;
     }
 
     /**
@@ -1301,10 +1425,10 @@ class transactional_store {
      *    This is the strict insert semantics matching @c std::set::insert().
      *
      *  @param[in] value Element to insert (moved into the tree).
-     *  @return Success, or @c invalid_argument_k if key exists, or OOM error.
+     *  @return Success, or @c key_already_exists_k if key exists, or OOM error.
      */
     [[nodiscard]] status_t insert(value_t &&value) noexcept {
-        if (contains(value)) return invalid_argument_k;
+        if (contains(value)) return key_already_exists_k;
         return upsert(std::move(value));
     }
 
@@ -1362,27 +1486,17 @@ class transactional_store {
      *
      *  @param[in] element Element to upsert (moved into the tree).
      *  @return Success or error code (e.g., out of memory).
+     *  @note Only the published version gives way. A version staged by an open transaction is that
+     *    transaction's to publish or discard, and a direct write leaves it untouched.
      */
     [[nodiscard]] status_t upsert(value_t &&value) noexcept {
         versioned_t versioned(std::move(value));
         versioned.generation = new_generation_();
         versioned.presence = presence_t::present_k;
-        versioned.publication = publication_t::published_k;
+        versioned.committed = new_commit_stamp_();
 
-        // A direct write carries the newest generation there is, so nothing this key already holds can
-        // outrank it, staged versions included. The whole chain gives way to the single new version.
         auto found = entries_.find(mapping_key_or_itself<value_t>(versioned.unversioned));
-        if (found != entries_.end()) {
-            auto &chain = mutable_ref_(*found);
-            if (versioned_t const *displaced = visible_version_(chain)) {
-                --visible_count_;
-                visible_deleted_count_ -= displaced->presence == presence_t::erased_k;
-            }
-            chain.release_others();
-            chain.head = std::move(versioned);
-            ++visible_count_;
-            return success_k;
-        }
+        if (found != entries_.end()) return publish_directly_(mutable_ref_(*found), std::move(versioned));
 
         auto result = storage_shape_t::upsert(entries_, versioned_chain_t {std::move(versioned)});
         if (failed(result)) return out_of_memory_heap_k;
@@ -1409,28 +1523,17 @@ class transactional_store {
      *
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
-     *  @return Success, invalid_argument_k if any key exists, or out_of_memory_heap_k.
+     *  @return Success, @c key_already_exists_k if any key exists, or out_of_memory_heap_k.
      *    Operation is atomic (all-or-nothing).
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        if (first == last) return success_k;
-
-        // Staging is what makes this all-or-nothing: bailing out before `stage()` leaves the store
-        // untouched, and duplicates inside the range collapse onto a single staged version.
-        auto opened = transaction();
-        if (!opened) return out_of_memory_heap_k;
-
-        for (; first != last; ++first) {
-            value_t candidate(*first);
-            if (contains(mapping_key_or_itself<value_t>(candidate))) return invalid_argument_k;
-            auto status = opened->insert_if_missing(std::move(candidate));
-            if (failed(status)) return status;
-        }
-
-        auto stage_status = opened->stage();
-        if (failed(stage_status)) return stage_status;
-        return opened->commit();
+        // Duplicates inside the range collapse onto a single staged version, so the strictness is
+        // about the store's own keys rather than about the range repeating itself.
+        return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
+            if (contains(mapping_key_or_itself<value_t>(candidate))) return key_already_exists_k;
+            return staging.insert_if_missing(std::move(candidate));
+        });
     }
 
     /**
@@ -1444,17 +1547,9 @@ class transactional_store {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        auto opened = transaction();
-        if (!opened) return out_of_memory_heap_k;
-
-        for (; first != last; ++first) {
-            auto status = opened->insert_if_missing(value_t(*first));
-            if (failed(status)) return status;
-        }
-
-        auto stage_status = opened->stage();
-        if (failed(stage_status)) return stage_status;
-        return opened->commit();
+        return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
+            return staging.insert_if_missing(std::move(candidate));
+        });
     }
 
     /**
@@ -1467,17 +1562,9 @@ class transactional_store {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        auto opened = transaction();
-        if (!opened) return out_of_memory_heap_k;
-
-        for (; first != last; ++first) {
-            auto status = opened->upsert(value_t(*first));
-            if (failed(status)) return status;
-        }
-
-        auto stage_status = opened->stage();
-        if (failed(stage_status)) return stage_status;
-        return opened->commit();
+        return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
+            return staging.upsert(std::move(candidate));
+        });
     }
 
     /**
@@ -1490,21 +1577,10 @@ class transactional_store {
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        if (first == last) return success_k;
-
-        auto opened = transaction();
-        if (!opened) return out_of_memory_heap_k;
-
-        for (; first != last; ++first) {
-            value_t candidate(*first);
+        return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
             if (!contains(mapping_key_or_itself<value_t>(candidate))) return key_not_found_k;
-            auto status = opened->upsert(std::move(candidate));
-            if (failed(status)) return status;
-        }
-
-        auto stage_status = opened->stage();
-        if (failed(stage_status)) return stage_status;
-        return opened->commit();
+            return staging.upsert(std::move(candidate));
+        });
     }
 
 #pragma endregion Modifiers
@@ -1523,15 +1599,14 @@ class transactional_store {
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
 
-        // A committed erase leaves a visible tombstone, which `find_visible_entry_` still reports
-        // because `watch` needs to see it. To a reader the key is gone, so it reads as missing here.
-        find_visible_entry_(
-            std::forward<comparable_type_>(comparable),
-            [&](versioned_t const &versioned) noexcept {
-                if (versioned.presence == presence_t::erased_k) callback_missing();
-                else callback_found(versioned.unversioned);
-            },
-            [&]() noexcept { callback_missing(); });
+        static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
+                      "callback_found must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+
+        auto found = entries_.find(std::forward<comparable_type_>(comparable));
+        versioned_t const *readable = found != entries_.end() ? readable_version_(*found) : nullptr;
+        if (readable) callback_found(readable->unversioned);
+        else callback_missing();
     }
 
     /**
@@ -1556,7 +1631,7 @@ class transactional_store {
         // yet committed, so a cursor walk sees every key exactly once and never skips the smallest.
         chain_node_t *cursor = chain_node_t::lower_bound(entries_.root(), comparable, entries_.key_comp());
         versioned_t const *visible = nullptr;
-        while (cursor && !(visible = visible_version_(cursor->fruit)))
+        while (cursor && !(visible = readable_version_(cursor->fruit)))
             cursor = chain_node_t::upper_bound(entries_.root(), cursor->fruit, entries_.key_comp());
 
         if (visible) callback_found(visible->unversioned);
@@ -1590,7 +1665,7 @@ class transactional_store {
         // version of the one the caller just held, so a cursor walk cannot repeat itself.
         chain_node_t *cursor = chain_node_t::upper_bound(entries_.root(), comparable, entries_.key_comp());
         versioned_t const *visible = nullptr;
-        while (cursor && !(visible = visible_version_(cursor->fruit)))
+        while (cursor && !(visible = readable_version_(cursor->fruit)))
             cursor = chain_node_t::upper_bound(entries_.root(), cursor->fruit, entries_.key_comp());
 
         if (visible) callback_found(visible->unversioned);
@@ -1608,8 +1683,8 @@ class transactional_store {
     {
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             entries_.key_comp(), [&](chain_node_t *node) noexcept {
-                                if (versioned_t const *visible = visible_version_(node->fruit))
-                                    callback(visible->unversioned);
+                                if (versioned_t const *readable = readable_version_(node->fruit))
+                                    callback(readable->unversioned);
                             });
     }
 
@@ -1622,51 +1697,111 @@ class transactional_store {
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             entries_.key_comp(), [&](chain_node_t *node) noexcept {
                                 auto &chain = node->fruit;
-                                auto *visible = const_cast<versioned_t *>(visible_version_(chain));
-                                if (!visible) return;
-                                callback(visible->unversioned.key, visible->unversioned.mapped);
-                                visible->generation = generation;
+                                versioned_t const *readable = readable_version_(chain);
+                                if (!readable) return;
+                                versioned_t &mutable_version = mutable_ref_(*readable);
+                                callback(mutable_version.unversioned.key, mutable_version.unversioned.mapped);
+                                mutable_version.generation = generation;
                             });
     }
 
+    /**
+     *  @brief Retires every published version ordered in [ @p lower, @p upper), handing each to @p callback.
+     *  @return Always success; the status is reported so a wrapper that allocates can answer alike.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_fn_t>
-    status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
+    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
+                                       callback_type_ &&callback = {}) noexcept
         requires ordered_collection<versioned_chains_t>
     {
-        // The whole chain goes, staged versions included, so the counters only owe the visible one.
-        entries_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                             [&](versioned_chain_t const &chain) noexcept {
-                                 if (versioned_t const *visible = visible_version_(chain)) {
-                                     callback(visible->unversioned);
-                                     --visible_count_;
-                                     visible_deleted_count_ -= visible->presence == presence_t::erased_k;
-                                 }
-                             });
+        // Only published versions go, so the span cannot be split out whole: a chain that still holds
+        // a version staged by an open transaction keeps its entry, and the walk steps past it.
+        auto cursor = entries_.lower_bound(std::forward<lower_type_>(lower));
+        auto const stop = entries_.lower_bound(std::forward<upper_type_>(upper));
+        while (cursor != stop) {
+            auto &chain = mutable_ref_(*cursor);
+            if (versioned_t const *readable = readable_version_(chain)) callback(readable->unversioned);
+            if (retire_visible_(chain) == detach_outcome_t::detached_and_emptied_k)
+                cursor = entries_.erase(cursor).next;
+            else ++cursor;
+        }
         return success_k;
     }
 
 #pragma endregion Range Operations
 
+#pragma region Vacuuming
+
+    /**
+     *  @brief Frees every entry no reader can reach - a committed tombstone with nothing staged behind it.
+     *
+     *  A committed erase leaves the key in the index so that a watch can still observe it, and nothing
+     *  ever takes it back out. Reclaiming one changes nothing observable: @c size() already discounted
+     *  it, no lookup ever saw it, and on the unordered core it stops holding a slot against the load
+     *  factor.
+     *
+     *  @return How many entries were reclaimed, or @c out_of_memory_heap_k when the unordered core has
+     *    no room for the list of keys the walk has to erase after it.
+     */
+    [[nodiscard]] expected<std::size_t> vacuum() noexcept {
+        if constexpr (ordered_collection<versioned_chains_t>) {
+            return vacuum_between_(entries_.begin(), entries_.end());
+        }
+        else {
+            // An open-addressed table shifts its neighbours back when a slot is freed, so the walk only
+            // names what it will reclaim and the erasures follow it.
+            changed_ids_vector_t doomed(changed_ids_allocator_t(storage_shape_t::allocator_of(entries_)));
+            for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
+                if (!is_reclaimable_(*cursor)) continue;
+                auto reclaimed_id =
+                    copy_safely<identifier_t>(mapping_key_or_itself<value_t>((*cursor).head.unversioned));
+                if (!reclaimed_id) return out_of_memory_heap_k;
+                if (failed(doomed.push_back(std::move(*reclaimed_id)))) return out_of_memory_heap_k;
+            }
+            for (identifier_t const &id : doomed) {
+                --visible_count_;
+                --visible_deleted_count_;
+                entries_.erase(id);
+            }
+            return doomed.size();
+        }
+    }
+
+    /**
+     *  @brief Frees the unreachable entries ordered in [ @p lower, @p upper), so a caller can step through
+     *    the keyspace instead of paying for one pass over all of it.
+     *  @return How many entries were reclaimed.
+     */
+    template <typename lower_type_, typename upper_type_>
+    [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
+        requires ordered_collection<versioned_chains_t>
+    {
+        return vacuum_between_(entries_.lower_bound(std::forward<lower_type_>(lower)),
+                               entries_.lower_bound(std::forward<upper_type_>(upper)));
+    }
+
+#pragma endregion Vacuuming
+
 #pragma region Sampling
 
     template <typename lower_type_, typename upper_type_, typename generator_type_,
               typename callback_type_ = no_op_fn_t>
-    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                      callback_type_ &&callback) const noexcept
+    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                    callback_type_ &&callback) const noexcept
         requires ordered_collection<versioned_chains_t>
     {
 
         auto node = chain_node_t::sample_range( //
             entries_.root(), lower, upper, entries_.key_comp(), std::forward<generator_type_>(generator),
-            [](chain_node_t *candidate) noexcept { return visible_version_(candidate->fruit) != nullptr; });
+            [](chain_node_t *candidate) noexcept { return readable_version_(candidate->fruit) != nullptr; });
         // Callers see the stored value; the version metadata never leaves this class.
-        if (node) callback(visible_version_(node->fruit)->unversioned);
+        if (node) callback(readable_version_(node->fruit)->unversioned);
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    void sample_range(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                      std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
+    void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires ordered_collection<versioned_chains_t>
     {
 
@@ -1691,8 +1826,17 @@ class transactional_store {
 
 #pragma region Order Statistics
 
+    /**
+     *  @brief Finds the @p ordinal -th smallest visible (committed) element, counting from zero.
+     *    Walks every entry in order, since a subtree weight counts versions rather than visible values.
+     *    Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
+     *
+     *  @param[in] ordinal Zero-based position among the visible elements.
+     *  @param[in] callback_found Callback to receive the element. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be @c noexcept.
+     */
     template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
-    void select(std::size_t k, callback_found_type_ &&callback_found,
+    void select(std::size_t ordinal, callback_found_type_ &&callback_found,
                 callback_missing_type_ &&callback_missing = {}) const noexcept
         requires supports_order_statistics<versioned_chains_t>
     {
@@ -1700,10 +1844,10 @@ class transactional_store {
         bool found = false;
 
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
-            versioned_t const *visible = visible_version_(node->fruit);
-            if (!visible || visible->presence == presence_t::erased_k) return;
-            if (visible_index == k) {
-                callback_found(visible->unversioned);
+            versioned_t const *readable = readable_version_(node->fruit);
+            if (!readable) return;
+            if (visible_index == ordinal) {
+                callback_found(readable->unversioned);
                 found = true;
                 return;
             }
@@ -1715,8 +1859,8 @@ class transactional_store {
 
     /**
      *  @brief Finds the rank (position) of an element among visible (committed) elements.
-     *    Only available for tree implementations that support order statistics (e.g., WB trees).
-     *    Requires O(log n) time for weight-balanced trees.
+     *    Walks every entry in order, since a subtree weight counts versions rather than visible values.
+     *    Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
      *
      *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
@@ -1734,16 +1878,16 @@ class transactional_store {
         auto const less = entries_.key_comp();
 
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
-            versioned_t const *visible = visible_version_(node->fruit);
-            if (!visible || visible->presence == presence_t::erased_k) return;
+            versioned_t const *readable = readable_version_(node->fruit);
+            if (!readable) return;
 
-            if (less.same(visible->unversioned, target_id)) {
+            if (less.same(readable->unversioned, target_id)) {
                 callback_found(rank_value);
                 found = true;
                 return;
             }
 
-            if (less(visible->unversioned, target_id)) ++rank_value;
+            if (less(readable->unversioned, target_id)) ++rank_value;
         });
 
         if (!found) callback_missing();
@@ -1780,14 +1924,12 @@ class transactional_store {
             return status_t::key_not_found_k;
         }
 
-        // One entry holds every version of the key, so dropping it drops them all.
+        // Only the published version goes; a version an open transaction staged is not this call's to
+        // decide, so the entry survives whenever one is still hanging off it.
         auto doomed = entries_.find(comparable);
         if (doomed != entries_.end())
-            if (versioned_t const *visible = visible_version_(*doomed)) {
-                --visible_count_;
-                visible_deleted_count_ -= visible->presence == presence_t::erased_k;
-            }
-        entries_.erase(comparable);
+            if (retire_visible_(mutable_ref_(*doomed)) == detach_outcome_t::detached_and_emptied_k)
+                entries_.erase(comparable);
         return success_k;
     }
 
@@ -1804,12 +1946,13 @@ class transactional_store {
     [[nodiscard]] status_t reserve(std::size_t) noexcept { return success_k; }
 
     /**
-     *  @brief Removes all elements from the tree and resets generation counter.
+     *  @brief Removes all elements from the tree.
      *    Always succeeds here, but reports a status to match the partitioned collection, which allocates.
+     *  @note The generation counter keeps running. Rewinding it would hand a future transaction a stamp
+     *    an open one already carries, and a watch compares stamps by value.
      */
     [[nodiscard]] status_t clear() noexcept {
         entries_.clear();
-        generation_ = 0;
         visible_count_ = 0;
         visible_deleted_count_ = 0;
         return success_k;
@@ -1826,7 +1969,7 @@ class transactional_store {
         stream << "Items: " << entries_.size() << "\n";
         stream << "Imbalance: " << entries_.total_imbalance() << "\n";
         auto show = [&](versioned_t const &version) {
-            char const *marker = version.publication == publication_t::published_k ? "✓" : "✗";
+            char const *marker = visible_now(version.committed) ? "✓" : "✗";
             stream << identifier_t {version.unversioned} << " @" << version.generation;
             stream << marker << " ";
         };

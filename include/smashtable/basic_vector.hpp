@@ -15,7 +15,7 @@
  *  @section basic_vector_requirements Requirements
  *
  *  @par Element Type
- *  - Nothrow default-constructible and nothrow move constructible/assignable (required)
+ *  - Nothrow move-constructible (required); nothrow default-constructible for @c resize()
  *  - For @c emplace_back(): Nothrow constructible OR provides
  *      @code ::make(...) -> expected<T> @endcode
  *  - For @c copy() & @c resize(): Nothrow copy-constructible OR provides
@@ -23,6 +23,8 @@
  *
  *  @par Allocator Type
  *  - Must propagate on move assignment @c propagate_on_container_move_assignment==true
+ *  - Must report exhaustion by returning null from @c allocate, never by throwing, which is why the
+ *    default is @c default_allocator rather than @c std::allocator
  *  - For @c swap(): If non-propagating, both vectors must use equal allocators,
  *    otherwise @c invalid_argument_k is returned
  *
@@ -33,7 +35,7 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <memory>  // `std::allocator`
+#include <memory>  // `std::allocator_traits`
 #include <utility> // `std::exchange`, `std::forward`
 
 #include "shared.hpp"
@@ -45,13 +47,13 @@ namespace ashvardanian::smashtable {
  *    Provides RAII memory management with explicit failure handling, unlike @c std::vector.
  *
  *  @par Template requirements
- *  - @p element_type_ must be nothrow default-constructible and nothrow move constructible/assignable.
+ *  - @p element_type_ must be nothrow move-constructible, and nothrow default-constructible to be resized.
  *  - For types with potentially throwing constructors, provide a static @c .make() method
  *    returning @c expected<element_type_> to enable exception-free construction via @c emplace_back().
  *
  *  @see https://en.cppreference.com/w/cpp/container/vector
  */
-template <typename element_type_, typename allocator_type_ = std::allocator<element_type_>>
+template <typename element_type_, typename allocator_type_ = default_allocator<element_type_>>
 class basic_vector {
   public:
     using element_t = element_type_;
@@ -60,6 +62,10 @@ class basic_vector {
     // Allocator propagation requirement for exception-free move assignment
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "basic_vector requires allocators that propagate on move assignment");
+
+    // Reallocation moves every element inside a `noexcept` function, so a throwing move terminates
+    static_assert(std::is_nothrow_move_constructible_v<element_t>,
+                  "basic_vector relocates elements in noexcept code, so the element must move without throwing");
 
   private:
     element_t *data_ {nullptr};
@@ -84,7 +90,7 @@ class basic_vector {
      */
     ~basic_vector() noexcept {
         // Destroy all constructed elements
-        for (std::size_t i = 0; i < size_; ++i) data_[i].~element_t();
+        for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
         // Deallocate memory
         if (data_) allocator_.deallocate(data_, capacity_);
     }
@@ -102,7 +108,7 @@ class basic_vector {
     basic_vector &operator=(basic_vector &&other) noexcept {
         if (this != &other) {
             // Destroy current elements
-            for (std::size_t i = 0; i < size_; ++i) data_[i].~element_t();
+            for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
             // Deallocate current memory
             if (data_) allocator_.deallocate(data_, capacity_);
             // Transfer ownership
@@ -159,11 +165,11 @@ class basic_vector {
             if (failed(status)) return expected<basic_vector>(basic_vector(allocator_), status);
         }
         // Copy all elements using copy_safely
-        for (std::size_t i = 0; i < size_; ++i) {
-            auto copy_result = copy_safely(data_[i]);
+        for (std::size_t index = 0; index < size_; ++index) {
+            auto copy_result = copy_safely(data_[index]);
             if (!copy_result) {
                 // Clean up partially constructed elements
-                for (std::size_t j = 0; j < result.size_; ++j) result.data_[j].~element_t();
+                for (std::size_t built = 0; built < result.size_; ++built) result.data_[built].~element_t();
                 result.size_ = 0;
                 return expected<basic_vector>(basic_vector(allocator_), copy_result.status());
             }
@@ -177,20 +183,29 @@ class basic_vector {
      *    Grows by at least a doubling, so a caller asking for one more slot at a time
      *    still amortizes to constant reallocation cost.
      *  @param[in] new_capacity The new capacity.
-     *  @return Success, or @c out_of_memory_heap_k if allocation fails.
+     *  @return Success, or @c out_of_memory_heap_k if allocation fails or the request cannot be addressed.
      */
     [[nodiscard]] status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return success_k;
 
-        std::size_t const grown_capacity = larger_of<std::size_t>(new_capacity, capacity_ == 0 ? 4 : capacity_ * 2);
+        // A capacity whose byte count does not fit an address is refused here rather than passed on:
+        // an allocator that multiplies without checking would answer it with a small block, and the
+        // recorded capacity would then invite every later write past the end of it.
+        constexpr std::size_t max_capacity = static_cast<std::size_t>(-1) / sizeof(element_t);
+        if (new_capacity > max_capacity) return out_of_memory_heap_k;
+
+        std::size_t const doubled_capacity = capacity_ > max_capacity / 2 ? max_capacity : capacity_ * 2;
+        std::size_t const seeded_capacity = larger_of<std::size_t>(doubled_capacity, 4);
+        std::size_t const grown_capacity =
+            smaller_of<std::size_t>(larger_of<std::size_t>(new_capacity, seeded_capacity), max_capacity);
         auto new_data = allocator_.allocate(grown_capacity);
         if (!new_data) return out_of_memory_heap_k;
 
         // Move existing elements to new storage
-        for (std::size_t i = 0; i < size_; ++i) new (&new_data[i]) element_t(std::move(data_[i]));
+        for (std::size_t index = 0; index < size_; ++index) new (&new_data[index]) element_t(std::move(data_[index]));
 
         // Destroy moved-from elements in old storage
-        for (std::size_t i = 0; i < size_; ++i) data_[i].~element_t();
+        for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
 
         if (data_) allocator_.deallocate(data_, capacity_);
         data_ = new_data;
@@ -257,7 +272,7 @@ class basic_vector {
         // Slow path: potentially throwing constructor - use .make() method
         else if constexpr (has_make_method<element_t, args_types_...>) {
             auto result = element_t::make(std::forward<args_types_>(args)...);
-            if (failed(result)) return result.status();
+            if (!result) return result.status();
             new (&data_[size_++]) element_t(std::move(*result));
             return success_k;
         }
@@ -299,12 +314,15 @@ class basic_vector {
      *
      *  @param[in] new_size The new size.
      *  @return Success, or error code on failure.
-     *    On failure, the vector is unchanged (strong exception guarantee).
+     *    On failure the elements are unchanged, though the capacity may already have grown.
      */
     [[nodiscard]] status_t resize(std::size_t new_size) noexcept {
+        static_assert(std::is_nothrow_default_constructible_v<element_t>,
+                      "resize default-constructs in noexcept code, so the element must construct without throwing");
+
         // Shrink: destroy excess elements
         if (new_size < size_) {
-            for (std::size_t i = new_size; i < size_; ++i) data_[i].~element_t();
+            for (std::size_t index = new_size; index < size_; ++index) data_[index].~element_t();
             size_ = new_size;
             return success_k;
         }
@@ -315,7 +333,7 @@ class basic_vector {
                 if (failed(status)) return status;
             }
             // Default-construct new elements
-            for (std::size_t i = size_; i < new_size; ++i) new (&data_[i]) element_t();
+            for (std::size_t index = size_; index < new_size; ++index) new (&data_[index]) element_t();
             size_ = new_size;
         }
         return success_k;
@@ -328,12 +346,12 @@ class basic_vector {
      *  @param[in] new_size The new size.
      *  @param[in] value Value to copy into new elements.
      *  @return Success, or error code on failure.
-     *    On failure, the vector is unchanged (strong exception guarantee).
+     *    On failure the elements are unchanged, though the capacity may already have grown.
      */
     [[nodiscard]] status_t resize(std::size_t new_size, element_t const &value) noexcept {
         // Shrink: destroy excess elements
         if (new_size < size_) {
-            for (std::size_t i = new_size; i < size_; ++i) data_[i].~element_t();
+            for (std::size_t index = new_size; index < size_; ++index) data_[index].~element_t();
             size_ = new_size;
             return success_k;
         }
@@ -345,14 +363,14 @@ class basic_vector {
             }
             // Copy-construct new elements (with rollback on failure)
             std::size_t old_size = size_;
-            for (std::size_t i = old_size; i < new_size; ++i) {
+            for (std::size_t index = old_size; index < new_size; ++index) {
                 auto copy_result = copy_safely(value);
                 // Rollback: destroy partially constructed elements
                 if (!copy_result) {
-                    for (std::size_t j = old_size; j < i; ++j) data_[j].~element_t();
+                    for (std::size_t built = old_size; built < index; ++built) data_[built].~element_t();
                     return copy_result.status();
                 }
-                new (&data_[i]) element_t(std::move(*copy_result));
+                new (&data_[index]) element_t(std::move(*copy_result));
             }
             size_ = new_size;
         }
@@ -364,7 +382,7 @@ class basic_vector {
      */
     void clear() noexcept {
         // Destroy all elements
-        for (std::size_t i = 0; i < size_; ++i) data_[i].~element_t();
+        for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
         size_ = 0;
     }
 
@@ -522,8 +540,8 @@ class basic_vector {
      *  @brief Returns a const iterator to the end.
      */
     element_t const *end() const noexcept { return data_ + size_; }
-};
 
 #pragma endregion Iterators
+};
 
 } // namespace ashvardanian::smashtable
