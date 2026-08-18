@@ -73,6 +73,241 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
 
 #pragma endregion Liveness Ranking
 
+#pragma region Snapshot Clock
+
+/**
+ *  @brief The stamps and the reader census a family of stamp-based stores keeps in common.
+ *
+ *  A single store owns one of these and never shares it. A shard set hands the very same instance to
+ *  every partition, which is what turns sixteen independently locked stores into one snapshot: a
+ *  reader draws one snapshot here and answers every partition at it, and a commit draws one stamp
+ *  here and writes it into every partition it touched.
+ *
+ *  @section snapshot_clock_publication Publication
+ *
+ *  A stamp is drawn before the versions carrying it are written and the watermark only moves once
+ *  they all are, so a snapshot never names a commit that is still writing itself out. Commits may
+ *  overlap, so the watermark stops one below the oldest commit still in flight rather than at the
+ *  newest one finished - a later commit that finishes first stays invisible until the earlier one
+ *  lands, and then both appear together.
+ *
+ *  @section snapshot_clock_census Census
+ *
+ *  Readers are counted rather than listed, and the earliest snapshot among them is remembered while
+ *  the count leaves zero. That mark is what reclamation prunes to, and being global is the point: a
+ *  partition that pruned to its own readers would free a version a reader of another partition is
+ *  still entitled to name.
+ *
+ *  The mark only moves when the census empties, so a process that always has some transaction open
+ *  never advances it and reclaims nothing: every version of every key written while that is true is
+ *  kept. A long-lived service that holds a reader permanently should expect its memory to grow with
+ *  the number of writes rather than with the number of keys.
+ *
+ *  @section snapshot_clock_ordering Ordering
+ *
+ *  The watermark is a plain relaxed atomic, and the guarantee does not rest on it: @c end_commit
+ *  stores it and @c take_snapshot and @c low_water_mark read it under @c mutex_, so publication and
+ *  the drawing of a snapshot are ordered by that mutex rather than by the atomic. The bare
+ *  @c published_stamp accessor reaches only single-key reads outside any transaction, which promise
+ *  nothing across keys.
+ *
+ *  @warning A transactional path answering at @c published_stamp instead of at its own snapshot would
+ *    make that relaxed load load-bearing, and would be a real defect on a weakly ordered machine.
+ *    Read at a snapshot drawn through @c take_snapshot, or take @c mutex_.
+ *
+ *  @warning Every entry point here takes one short lock, and none of them calls back into a store, so
+ *    the clock is a leaf and may be reached with a store's own lock held. The one exception is
+ *    @c await_published, which blocks on another thread finishing its publication and must therefore
+ *    be called with no store lock held.
+ */
+class snapshot_clock_t {
+
+  public:
+    /**
+     *  @brief One commit that has drawn its stamp and has not finished writing it everywhere yet.
+     *    The clock links it in place, so it must outlive the publication - a local of the committing
+     *    frame, never a temporary - and it is neither copied nor moved.
+     */
+    class commit_in_flight_t {
+        friend class snapshot_clock_t;
+
+        /** @brief The commit that drew the previous stamp and is also still in flight. */
+        commit_in_flight_t *older_ {nullptr};
+        /** @brief The commit that drew the next stamp and is also still in flight. */
+        commit_in_flight_t *newer_ {nullptr};
+        /** @brief The stamp this commit publishes under, meaningless before it is drawn. */
+        generation_t stamp_ {0};
+
+      public:
+        constexpr commit_in_flight_t() noexcept = default;
+        commit_in_flight_t(commit_in_flight_t const &) = delete;
+        commit_in_flight_t &operator=(commit_in_flight_t const &) = delete;
+
+        /** @brief The stamp every version of this commit is written under. */
+        [[nodiscard]] commit_stamp_t stamp() const noexcept { return static_cast<commit_stamp_t>(stamp_); }
+    };
+
+    /**
+     *  @brief One reader's claim on a snapshot, which holds the low-water mark at or below it.
+     *    Moves with the transaction that owns it, and gives the claim back once, whenever it goes away.
+     */
+    class snapshot_lease_t {
+        friend class snapshot_clock_t;
+
+        /** @brief The clock the claim is registered with, null once it has been given back. */
+        snapshot_clock_t *clock_ {nullptr};
+        /** @brief The stamp every read under this claim is answered at. */
+        generation_t snapshot_ {0};
+
+      public:
+        constexpr snapshot_lease_t() noexcept = default;
+        snapshot_lease_t(snapshot_lease_t &&other) noexcept
+            : clock_(std::exchange(other.clock_, nullptr)), snapshot_(other.snapshot_) {}
+        snapshot_lease_t &operator=(snapshot_lease_t &&other) noexcept {
+            if (this == &other) return *this;
+            retire();
+            clock_ = std::exchange(other.clock_, nullptr);
+            snapshot_ = other.snapshot_;
+            return *this;
+        }
+        ~snapshot_lease_t() noexcept { retire(); }
+        snapshot_lease_t(snapshot_lease_t const &) = delete;
+        snapshot_lease_t &operator=(snapshot_lease_t const &) = delete;
+
+        /** @brief The stamp this claim reads at. */
+        [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
+
+        /** @brief Whether this claim is still registered, which a moved-from one is not. */
+        [[nodiscard]] bool held() const noexcept { return clock_ != nullptr; }
+
+        /** @brief Gives the claim back, letting the low-water mark move past it. Idempotent. */
+        void retire() noexcept {
+            if (!clock_) return;
+            clock_->retire_snapshot_();
+            clock_ = nullptr;
+        }
+    };
+
+  private:
+    /** @brief Guards the census and the in-flight list, both of which are read and written together. */
+    mutable spin_shared_mutex mutex_ {};
+    /** @brief Dates transactions rather than their visibility, and is drawn without the lock. */
+    alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
+    /** @brief The newest stamp handed to a commit, whether or not that commit has landed. */
+    generation_t commits_ {0};
+    /** @brief The newest stamp a fully written commit left behind, and the only snapshot handed out. */
+    alignas(atomic_alignment<generation_t>) generation_t published_stamp_ {0};
+    /** @brief The commit with the smallest stamp still writing itself out, which caps the watermark. */
+    commit_in_flight_t *oldest_in_flight_ {nullptr};
+    /** @brief Where a freshly drawn stamp joins the list, keeping it ordered by stamp. */
+    commit_in_flight_t *newest_in_flight_ {nullptr};
+    /** @brief How many readers currently hold a snapshot. */
+    alignas(atomic_alignment<std::size_t>) std::size_t open_snapshots_ {0};
+    /** @brief The snapshot the earliest of them opened on, meaningless while none are open. */
+    alignas(atomic_alignment<generation_t>) generation_t oldest_open_snapshot_ {0};
+
+    /** @brief Gives one reader's claim back, which only @c snapshot_lease_t is allowed to do. */
+    void retire_snapshot_() noexcept {
+        unique_lock<spin_shared_mutex> _ {mutex_};
+        assert(open_snapshots_ != 0 && "every retirement answers a registration");
+        atomic_store<std::size_t>(open_snapshots_, open_snapshots_ - 1);
+    }
+
+  public:
+    constexpr snapshot_clock_t() noexcept = default;
+    snapshot_clock_t(snapshot_clock_t const &) = delete;
+    snapshot_clock_t &operator=(snapshot_clock_t const &) = delete;
+
+    /** @brief Hands out the next generation, which dates a transaction rather than its visibility. */
+    generation_t next_generation() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
+
+    /** @brief The newest stamp every part of which is written, which is what a fresh read answers at. */
+    [[nodiscard]] generation_t published_stamp() const noexcept { return atomic_load(published_stamp_); }
+
+    /**
+     *  @brief Points @p lease at the newest whole stamp, giving back whatever it held first.
+     *  @return The snapshot the lease now reads at.
+     */
+    generation_t take_snapshot(snapshot_lease_t &lease) noexcept {
+        unique_lock<spin_shared_mutex> _ {mutex_};
+        if (lease.clock_) {
+            assert(open_snapshots_ != 0 && "every retirement answers a registration");
+            atomic_store<std::size_t>(open_snapshots_, open_snapshots_ - 1);
+        }
+        generation_t const snapshot = atomic_load(published_stamp_);
+        // The earliest snapshot is written before the census stops being empty, so a lock-free reader
+        // of the pair never sees a count claiming somebody is below a mark nobody is below.
+        if (open_snapshots_ == 0) atomic_store<generation_t>(oldest_open_snapshot_, snapshot);
+        atomic_store<std::size_t>(open_snapshots_, open_snapshots_ + 1);
+        lease.clock_ = this;
+        lease.snapshot_ = snapshot;
+        return snapshot;
+    }
+
+    /** @brief Draws the stamp @p node publishes under, and records that it has not landed yet. */
+    void begin_commit(commit_in_flight_t &node) noexcept {
+        unique_lock<spin_shared_mutex> _ {mutex_};
+        node.stamp_ = ++commits_;
+        node.older_ = newest_in_flight_;
+        node.newer_ = nullptr;
+        (newest_in_flight_ ? newest_in_flight_->newer_ : oldest_in_flight_) = &node;
+        newest_in_flight_ = &node;
+    }
+
+    /**
+     *  @brief Records that every version of @p node is written, and moves the watermark as far as it may go.
+     *    Which is one below the oldest commit still in flight, or all the way to the newest stamp drawn
+     *    when none is: a commit is whole only once every commit before it is.
+     */
+    void end_commit(commit_in_flight_t &node) noexcept {
+        unique_lock<spin_shared_mutex> _ {mutex_};
+        (node.older_ ? node.older_->newer_ : oldest_in_flight_) = node.newer_;
+        (node.newer_ ? node.newer_->older_ : newest_in_flight_) = node.older_;
+        node.older_ = nullptr;
+        node.newer_ = nullptr;
+        generation_t const whole = oldest_in_flight_ ? oldest_in_flight_->stamp_ - 1 : commits_;
+        atomic_store<generation_t>(published_stamp_, whole);
+    }
+
+    /**
+     *  @brief Waits until the watermark covers @p stamp, so the committer may read what it just wrote.
+     *  @warning Blocks on another thread's publication, so no store lock may be held across it.
+     */
+    void await_published(commit_stamp_t stamp) noexcept {
+        generation_t const wanted = static_cast<generation_t>(stamp);
+        while (atomic_load(published_stamp_) < wanted) pause_briefly();
+    }
+
+    /**
+     *  @brief The newest snapshot no reader can be sitting below, so everything older is unreachable.
+     *    Only the departure of the last reader moves it, which is what makes it conservative: an
+     *    early reader that leaves while a later one is still open keeps the mark where it was.
+     */
+    [[nodiscard]] generation_t low_water_mark() const noexcept {
+        // Read without the lock, because reclamation asks this on every direct write and the answer
+        // is safe however the two fields interleave. An empty census answers with the watermark,
+        // which is exactly what a reader arriving right now would open on. A census read as non-empty
+        // answers with the earliest snapshot it holds, and that field is only ever rewritten by a
+        // reader arriving into an empty census - so a newer value means every older reader has left.
+        if (atomic_load(open_snapshots_) == 0) return atomic_load(published_stamp_);
+        return atomic_load(oldest_open_snapshot_);
+    }
+
+    /** @brief How many readers currently hold a snapshot. */
+    [[nodiscard]] std::size_t open_snapshots() const noexcept { return atomic_load(open_snapshots_); }
+
+    /** @brief Takes over @p other's counters, for a store that is being moved and has nothing open. */
+    void adopt(snapshot_clock_t const &other) noexcept {
+        generation_ = atomic_load(other.generation_);
+        commits_ = other.commits_;
+        atomic_store<generation_t>(published_stamp_, atomic_load(other.published_stamp_));
+        open_snapshots_ = atomic_load(other.open_snapshots_);
+        oldest_open_snapshot_ = atomic_load(other.oldest_open_snapshot_);
+    }
+};
+
+#pragma endregion Snapshot Clock
+
 /**
  *  @brief  Transactional store offering Snapshot Isolation over any key-addressable core.
  *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
@@ -143,6 +378,9 @@ class snapshot_store {
 
     /** @brief Every read of a transaction is answered at the stamp the transaction opened on. */
     static constexpr isolation_t isolation_k = isolation_t::snapshot_k;
+
+    /** @brief Where stamps and snapshots come from, which a shard set shares across its partitions. */
+    using clock_t = snapshot_clock_t;
 
     using allocator_t = typename collection_type_::allocator_type;
 
@@ -310,6 +548,12 @@ class snapshot_store {
         watches_vector_t watches_ {};
         changed_identifiers_vector_t changed_identifiers_ {};
         generation_t generation_ {0};
+        /**
+         *  @brief This transaction's own claim on its snapshot, empty when a shard set holds one for it.
+         *    A partition of a sharded transaction reads at a snapshot somebody else is answering for,
+         *    so it registers nothing and retires nothing.
+         */
+        snapshot_clock_t::snapshot_lease_t lease_ {};
         /** @brief The stamp every read of this transaction is answered at. */
         generation_t snapshot_ {0};
         staging_t staging_ {staging_t::pending_k};
@@ -318,9 +562,17 @@ class snapshot_store {
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               watches_(watches_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.next_generation_()), snapshot_(store.published_stamp_) {
-            store.register_snapshot_(snapshot_);
-        }
+              generation_(store.next_generation_()), snapshot_(store.clock_->take_snapshot(lease_)) {}
+
+        /**
+         *  @brief Opens on a snapshot and a generation somebody else drew, for one partition of a
+         *    sharded transaction whose other partitions must answer at the very same stamp.
+         */
+        transaction_t(store_t &store, generation_t snapshot, generation_t generation) noexcept
+            : store_(&store), changes_(store_t::build_changes_(store.entries_)),
+              watches_(watches_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              generation_(generation), snapshot_(snapshot) {}
 
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
@@ -369,7 +621,7 @@ class snapshot_store {
         void unwind_() noexcept {
             if (!store_) return;
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
-            store_->retire_snapshot_();
+            lease_.retire();
             staging_ = staging_t::pending_k;
             store_ = nullptr;
         }
@@ -395,7 +647,7 @@ class snapshot_store {
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
               watches_(std::move(other.watches_)), changed_identifiers_(std::move(other.changed_identifiers_)),
-              generation_(other.generation_), snapshot_(other.snapshot_),
+              generation_(other.generation_), lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
 
         transaction_t &operator=(transaction_t &&other) noexcept {
@@ -406,6 +658,7 @@ class snapshot_store {
             watches_ = std::move(other.watches_);
             changed_identifiers_ = std::move(other.changed_identifiers_);
             generation_ = other.generation_;
+            lease_ = std::move(other.lease_);
             snapshot_ = other.snapshot_;
             staging_ = std::exchange(other.staging_, staging_t::pending_k);
             return *this;
@@ -634,6 +887,40 @@ class snapshot_store {
         }
 
         /**
+         *  @brief Hands @p callback every key this transaction reads, in whatever order the core holds them.
+         *
+         *  The one walk an unordered core can offer, so it promises no ordering even where the core has
+         *  one. Every key a @c find of this transaction would answer with at the moment of the call is
+         *  visited @b exactly @b once - its own staged writes included, its own tombstones and every version
+         *  its snapshot cannot read excluded. Nothing may write to the transaction or its store while the
+         *  walk runs.
+         *
+         *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+         */
+        template <typename callback_type_ = no_op_t>
+        void for_each(callback_type_ &&callback) const noexcept {
+            static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                          "callback must be noexcept invocable with value_t const &");
+
+            if constexpr (ordered_core_k) {
+                merge_all_([&](versioned_t const &version) noexcept {
+                    if (version.presence == presence_t::present_k) callback(version.payload);
+                    return probe_control_t::resume_k;
+                });
+            }
+            else {
+                for (auto staged = changes_.begin(); staged != changes_.end(); ++staged)
+                    if ((*staged).presence == presence_t::present_k) callback((*staged).payload);
+
+                // A key this transaction wrote is answered from its own version above, so the committed
+                // side skips whatever `changes_` already speaks for and never emits a key twice.
+                store_ref().for_each_at_(snapshot_, [&](value_t const &value) noexcept {
+                    if (changes_.find(mapping_key_or_itself<value_t>(value)) == changes_.end()) callback(value);
+                });
+            }
+        }
+
+        /**
          *  @brief Finds every member equal to @p comparable, which for a unique-key store is one or none.
          *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
          *  @param[in] callback Callback receiving each match. Must be @c noexcept.
@@ -845,24 +1132,64 @@ class snapshot_store {
          *  no snapshot handed out so far can name the new stamp.
          */
         [[nodiscard]] status_t commit() noexcept {
-            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+            if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
             auto &store = store_ref();
-            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
-            if (status_t const validated = validate_writes_(); failed(validated)) return validated;
 
-            status_t const result =
-                store.stamp_as_one_commit_(changed_identifiers_.data(), changed_identifiers_.size(), generation_);
+            snapshot_clock_t::commit_in_flight_t in_flight;
+            store.clock_->begin_commit(in_flight);
+            publish_under(in_flight.stamp());
+            store.clock_->end_commit(in_flight);
 
             // The snapshot moves to the stamp just published, so this transaction reads its own
-            // writes and the mark is free to follow it once every other reader has left.
-            store.retire_snapshot_();
-            snapshot_ = store.published_stamp_;
-            store.register_snapshot_(snapshot_);
+            // writes and the mark is free to follow it once every other reader has left. A commit
+            // drawn before this one and still writing itself out holds the watermark below both, so
+            // the wait is what makes reading one's own writes whole rather than partial.
+            store.clock_->await_published(in_flight.stamp());
+            snapshot_ = store.clock_->take_snapshot(lease_);
+            prune_committed();
+            return success_k;
+        }
 
+        /**
+         *  @brief Whether this transaction may still publish what it staged, refusing before it writes anything.
+         *
+         *  Asked again here because staging only proves the keys were free when they were staged, and
+         *  a commit landing in between is the one thing that can invalidate that. Nothing is written
+         *  until it answers, so a refusal leaves the transaction staged and retryable - and a caller
+         *  spreading one commit across several stores asks every one of them before writing any.
+         *
+         *  @return Success, @c consistency_k when a watched or written key moved under this
+         *    transaction, or @c operation_not_permitted_k when nothing was staged.
+         */
+        [[nodiscard]] status_t validate_for_commit() const noexcept {
+            if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
+            return validate_writes_();
+        }
+
+        /**
+         *  @brief Makes every staged version visible under @p stamp, which cannot fail and cannot refuse.
+         *
+         *  The second half of a commit, split out because a caller spanning several stores has to know
+         *  that once the first of them writes, none of the rest can turn back: @c validate_for_commit
+         *  answered for all of them first, and every version this writes was reserved by @c stage.
+         *
+         *  @warning Only ever called after @c validate_for_commit answered success, with nothing since.
+         */
+        void publish_under(commit_stamp_t stamp) noexcept {
+            assert(staging_ == staging_t::staged_k && "publishing what was never staged");
+            store_ref().stamp_under_(changed_identifiers_.data(), changed_identifiers_.size(), generation_, stamp);
+            staging_ = staging_t::pending_k;
+        }
+
+        /** @brief Answers every later read at @p snapshot, which a sharded transaction drew for all its parts. */
+        void adopt_snapshot(generation_t snapshot) noexcept { snapshot_ = snapshot; }
+
+        /** @brief Frees whatever the commit just published left unreachable, and forgets the keys it named. */
+        void prune_committed() noexcept {
+            auto &store = store_ref();
             store.prune_each_(changed_identifiers_.data(), changed_identifiers_.size());
             changed_identifiers_.clear();
-            staging_ = staging_t::pending_k;
-            return result;
         }
 
         /**
@@ -894,7 +1221,10 @@ class snapshot_store {
         }
 
         /** @brief Discards everything staged and pending, and takes a fresh snapshot. */
-        [[nodiscard]] status_t reset() noexcept {
+        [[nodiscard]] status_t reset() noexcept { return reset_at(store_ref().clock_->take_snapshot(lease_)); }
+
+        /** @brief The same, at a snapshot a sharded transaction drew once for every one of its parts. */
+        [[nodiscard]] status_t reset_at(generation_t snapshot) noexcept {
             auto &store = store_ref();
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
 
@@ -903,9 +1233,7 @@ class snapshot_store {
             changed_identifiers_.clear();
             staging_ = staging_t::pending_k;
             generation_ = store.next_generation_();
-            store.retire_snapshot_();
-            snapshot_ = store.published_stamp_;
-            store.register_snapshot_(snapshot_);
+            snapshot_ = snapshot;
             return success_k;
         }
 
@@ -1018,12 +1346,11 @@ class snapshot_store {
             if (!store_) return operation_not_permitted_k;
             if (staged_identifiers_.size() == 0) return success_k;
 
-            status_t const result =
-                store_->stamp_as_one_commit_(staged_identifiers_.data(), staged_identifiers_.size(), generation_);
+            store_->stamp_as_one_commit_(staged_identifiers_.data(), staged_identifiers_.size(), generation_);
             store_->prune_each_(staged_identifiers_.data(), staged_identifiers_.size());
             staged_identifiers_.clear();
             generation_ = store_->next_generation_();
-            return result;
+            return success_k;
         }
 
         /** @brief Drops every version staged and not yet published, leaving the store as it was. */
@@ -1039,14 +1366,10 @@ class snapshot_store {
 
   private:
     dated_entries_t entries_;
-    alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
-    alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
-    /** @brief The newest stamp a fully written commit left behind, and the only snapshot ever handed out. */
-    generation_t published_stamp_ {0};
-    /** @brief How many transactions currently hold a snapshot. */
-    std::size_t open_snapshots_ {0};
-    /** @brief The snapshot the earliest of them opened on, meaningless while none are open. */
-    generation_t oldest_open_snapshot_ {0};
+    /** @brief The clock this store keeps for itself, and the one it uses until somebody attaches another. */
+    snapshot_clock_t owned_clock_ {};
+    /** @brief Where every stamp and every snapshot comes from, which a shard set repoints at one it shares. */
+    snapshot_clock_t *clock_ {&owned_clock_};
     /** @brief Keys whose newest published version says they are there. */
     std::size_t live_count_ {0};
 
@@ -1054,37 +1377,30 @@ class snapshot_store {
 
 #pragma region Stamps and Snapshots
 
-    /** @brief Hands out the next generation, which dates a transaction rather than its visibility. */
-    generation_t next_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
-
-    /** @brief Hands out the stamp a commit publishes under, shared by every key that commit touched. */
-    commit_stamp_t next_commit_stamp_() noexcept {
-        return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
+    /**
+     *  @brief Points this store's clock where @p other's pointed, and takes its counters when they were its own.
+     *    A store sharing somebody's clock simply keeps sharing it; one that owned its clock copies the
+     *    counters over, since the object the old one lives in is about to stop speaking for anything.
+     */
+    void adopt_clock_of_(snapshot_store &other) noexcept {
+        if (other.clock_ != &other.owned_clock_) { clock_ = other.clock_; }
+        else {
+            owned_clock_.adopt(other.owned_clock_);
+            clock_ = &owned_clock_;
+        }
     }
+
+    /** @brief Hands out the next generation, which dates a transaction rather than its visibility. */
+    generation_t next_generation_() noexcept { return clock_->next_generation(); }
+
+    /** @brief The newest stamp every part of which is written, which is what a fresh read answers at. */
+    [[nodiscard]] generation_t published_stamp_() const noexcept { return clock_->published_stamp(); }
 
     /** @brief The stamp as a plain number, which is how two versions are ordered by recency. */
     static constexpr generation_t stamp_of(commit_stamp_t stamp) noexcept { return static_cast<generation_t>(stamp); }
 
-    /** @brief Takes note of one more reader at @p snapshot. Arithmetic only, so a constructor may call it. */
-    void register_snapshot_(generation_t snapshot) noexcept {
-        if (open_snapshots_ == 0) oldest_open_snapshot_ = snapshot;
-        ++open_snapshots_;
-    }
-
-    /** @brief Gives one reader's claim back. Arithmetic only, so a destructor may call it. */
-    void retire_snapshot_() noexcept {
-        assert(open_snapshots_ != 0 && "every retirement answers a registration");
-        --open_snapshots_;
-    }
-
-    /**
-     *  @brief The newest snapshot no reader can be sitting below, so everything older is unreachable.
-     *    Only the departure of the last reader moves it, which is what makes it conservative: an
-     *    early reader that leaves while a later one is still open keeps the mark where it was.
-     */
-    [[nodiscard]] generation_t low_water_mark_() const noexcept {
-        return open_snapshots_ == 0 ? published_stamp_ : oldest_open_snapshot_;
-    }
+    /** @brief The newest snapshot no reader can be sitting below, so everything older is unreachable. */
+    [[nodiscard]] generation_t low_water_mark_() const noexcept { return clock_->low_water_mark(); }
 
 #pragma endregion Stamps and Snapshots
 
@@ -1202,6 +1518,31 @@ class snapshot_store {
         else callback_missing();
     }
 
+    /**
+     *  @brief Hands @p callback the value @p snapshot reads for every key, in whatever order the core holds.
+     *
+     *  A key's versions are one contiguous run only on an ordered core, so the unordered walk reports an
+     *  entry when it @b is the version its own key resolves to, which names every readable key once and
+     *  no unreadable one at all.
+     */
+    template <typename callback_type_>
+    void for_each_at_(generation_t snapshot, callback_type_ &&callback) const noexcept {
+        if constexpr (ordered_core_k) {
+            walk_visible_keys_(
+                entries_.begin(), [](versioned_t const &) noexcept { return true; }, snapshot,
+                [&](value_t const &value) noexcept {
+                    callback(value);
+                    return probe_control_t::resume_k;
+                });
+        }
+        else {
+            for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
+                versioned_t const &version = *cursor;
+                if (readable_version_(identifier_of(version), snapshot) == &version) callback(version.payload);
+            }
+        }
+    }
+
 #pragma endregion Version Access
 
 #pragma region Ordered Walks
@@ -1254,6 +1595,28 @@ class snapshot_store {
             entries_.lower_bound(std::forward<lower_type_>(lower)),
             [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); }, snapshot,
             std::forward<callback_type_>(callback));
+    }
+
+    /** @brief Hands @p callback every value at or after @p lower as @p snapshot reads them. */
+    template <typename lower_type_, typename callback_type_>
+    void range_from_at_(lower_type_ &&lower, generation_t snapshot, callback_type_ &&callback) const noexcept
+        requires ordered_core_k
+    {
+        walk_visible_keys_(
+            entries_.lower_bound(std::forward<lower_type_>(lower)),
+            []([[maybe_unused]] versioned_t const &head) noexcept { return true; }, snapshot,
+            std::forward<callback_type_>(callback));
+    }
+
+    /** @brief Hands @p callback every value before @p upper as @p snapshot reads them. */
+    template <typename upper_type_, typename callback_type_>
+    void range_up_to_at_(upper_type_ &&upper, generation_t snapshot, callback_type_ &&callback) const noexcept
+        requires ordered_core_k
+    {
+        auto const ordering = entries_.key_comp();
+        walk_visible_keys_(
+            entries_.begin(), [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); },
+            snapshot, std::forward<callback_type_>(callback));
     }
 
 #pragma endregion Ordered Walks
@@ -1363,21 +1726,30 @@ class snapshot_store {
     }
 
     /**
-     *  @brief Stamps every version of @p identifiers carrying @p generation under one freshly drawn stamp.
+     *  @brief Writes @p stamp onto every version of @p identifiers carrying @p generation.
      *
      *  One stamp for the whole group is the whole point: a reader's snapshot either names that stamp
-     *  or does not, so it observes all of the group or none of it, never a prefix.
+     *  or does not, so it observes all of the group or none of it, never a prefix. The watermark is
+     *  left alone, so a caller spreading one commit over several stores stamps each of them and
+     *  publishes once, when the last has been written.
      *
-     *  @return @c consistency_k if some named version is absent when stamping runs, otherwise success.
+     *  @warning Every named version was filed under @p generation by whoever staged it and nobody
+     *    else may drop it, so a missing one is a defect rather than an outcome a caller can act on.
      */
-    [[nodiscard]] status_t stamp_as_one_commit_(identifier_t const *identifiers, std::size_t count,
-                                                generation_t generation) noexcept {
-        commit_stamp_t const stamp = next_commit_stamp_();
-        status_t result = success_k;
-        for (std::size_t index = 0; index != count; ++index)
-            if (!publish_version_(identifiers[index], generation, stamp)) result = status_t::consistency_k;
-        published_stamp_ = stamp_of(stamp);
-        return result;
+    void stamp_under_(identifier_t const *identifiers, std::size_t count, generation_t generation,
+                      commit_stamp_t stamp) noexcept {
+        for (std::size_t index = 0; index != count; ++index) {
+            [[maybe_unused]] bool const published = publish_version_(identifiers[index], generation, stamp);
+            assert(published && "a staged version went missing between staging and its stamp");
+        }
+    }
+
+    /** @brief Stamps a group that lives entirely in this store, drawing its stamp and publishing it. */
+    void stamp_as_one_commit_(identifier_t const *identifiers, std::size_t count, generation_t generation) noexcept {
+        snapshot_clock_t::commit_in_flight_t in_flight;
+        clock_->begin_commit(in_flight);
+        stamp_under_(identifiers, count, generation, in_flight.stamp());
+        clock_->end_commit(in_flight);
     }
 
     /** @brief Frees every version of every identifier in @p identifiers that no snapshot can still reach. */
@@ -1459,6 +1831,47 @@ class snapshot_store {
         return any ? prune_key_of_(*any, mark) : 0;
     }
 
+    /**
+     *  @brief Publishes a tombstone over every key @p walk offers, all under one stamp.
+     *
+     *  @param[in] walk Invoked with a collector that takes one @c value_t const & per key to erase.
+     *  @param[in] callback Callback handed each element about to be tombstoned. Must be @c noexcept.
+     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     *
+     *  The keys are copied out before anything is staged: the walk that produces them reads the very
+     *  index the tombstones are about to be staged into.
+     */
+    template <typename walk_type_, typename callback_type_>
+    [[nodiscard]] status_t tombstone_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept
+        requires ordered_core_k
+    {
+        changed_identifiers_vector_t doomed(changed_identifiers_allocator_t(storage_shape_t::allocator_of(entries_)));
+        status_t collecting = success_k;
+        walk([&](value_t const &value) noexcept {
+            if (failed(collecting)) return probe_control_t::halt_k;
+            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (!maybe_identifier) {
+                collecting = out_of_memory_heap_k;
+                return probe_control_t::halt_k;
+            }
+            if (status_t const kept = doomed.push_back(std::move(*maybe_identifier)); failed(kept)) {
+                collecting = kept;
+                return probe_control_t::halt_k;
+            }
+            callback(value);
+            return probe_control_t::resume_k;
+        });
+        if (failed(collecting)) return collecting;
+        if (doomed.size() == 0) return success_k;
+
+        auto opened = publication();
+        if (!opened) return out_of_memory_heap_k;
+        if (status_t const reserved = opened->reserve(doomed.size()); failed(reserved)) return reserved;
+        for (identifier_t const &identifier : doomed)
+            if (status_t const staged = opened->erase(identifier); failed(staged)) return staged;
+        return opened->publish();
+    }
+
 #pragma endregion Version Lifecycle
 
 #pragma endregion Type Definitions
@@ -1476,19 +1889,20 @@ class snapshot_store {
     snapshot_store(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
         : entries_(build_entries_(comparator, allocator)) {}
 
+    /**
+     *  @brief Takes over @p other's versions and its place on the clock.
+     *    A store sharing a clock keeps pointing at it; one keeping its own copies the counters across,
+     *    since the moved-from object the old clock lives in is about to stop speaking for anything.
+     */
     snapshot_store(snapshot_store &&other) noexcept
-        : entries_(std::move(other.entries_)), generation_(other.generation_), commits_(other.commits_),
-          published_stamp_(other.published_stamp_), open_snapshots_(other.open_snapshots_),
-          oldest_open_snapshot_(other.oldest_open_snapshot_), live_count_(other.live_count_) {}
+        : entries_(std::move(other.entries_)), live_count_(other.live_count_) {
+        adopt_clock_of_(other);
+    }
 
     snapshot_store &operator=(snapshot_store &&other) noexcept {
         if (this == &other) return *this;
         entries_ = std::move(other.entries_);
-        generation_ = other.generation_;
-        commits_ = other.commits_;
-        published_stamp_ = other.published_stamp_;
-        open_snapshots_ = other.open_snapshots_;
-        oldest_open_snapshot_ = other.oldest_open_snapshot_;
+        adopt_clock_of_(other);
         live_count_ = other.live_count_;
         return *this;
     }
@@ -1530,18 +1944,18 @@ class snapshot_store {
     }
 
     /** @brief The newest stamp a fully written commit left behind. */
-    [[nodiscard]] generation_t published_stamp() const noexcept { return published_stamp_; }
+    [[nodiscard]] generation_t published_stamp() const noexcept { return published_stamp_(); }
 
     /** @brief The newest snapshot no open transaction sits below, which is what @c vacuum prunes to. */
     [[nodiscard]] generation_t low_water_mark() const noexcept { return low_water_mark_(); }
 
     /** @brief How many transactions currently hold a snapshot. */
-    [[nodiscard]] std::size_t open_snapshots() const noexcept { return open_snapshots_; }
+    [[nodiscard]] std::size_t open_snapshots() const noexcept { return clock_->open_snapshots(); }
 
     /** @brief Whether a member equal to @p comparable is readable now. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
-        return readable_version_(comparable, published_stamp_) != nullptr;
+        return readable_version_(comparable, published_stamp_()) != nullptr;
     }
 
     /** @brief How many members equal @p comparable, which for a unique-key store is zero or one. */
@@ -1557,6 +1971,36 @@ class snapshot_store {
     /** @brief Opens a transaction, fixing the snapshot every one of its reads will be answered at. */
     [[nodiscard]] expected<transaction_t> transaction() noexcept { return transaction_t {*this}; }
 
+    /**
+     *  @brief Opens one part of a sharded transaction at a @p snapshot and @p generation drawn elsewhere.
+     *    Registers nothing with the clock: the owner of the snapshot holds the one claim that answers
+     *    for every part, so a claim per part would only make the low-water mark count the same reader
+     *    sixteen times.
+     */
+    [[nodiscard]] expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept {
+        return transaction_t {*this, snapshot, generation};
+    }
+
+    /**
+     *  @brief Draws every stamp and every snapshot from @p clock rather than from this store's own.
+     *
+     *  This is what makes a set of stores one snapshot: they share a stamp counter, a watermark and a
+     *  reader census, so a stamp drawn for a commit spanning them means the same thing in each, and no
+     *  one of them prunes a version a reader of another still names.
+     *
+     *  @warning @p clock has to be the clock that issued whatever stamps this store already holds,
+     *    which for a fresh store is vacuously true, and no reader may be open - its claim would be
+     *    left behind on the clock being dropped.
+     */
+    void attach_clock(snapshot_clock_t &clock) noexcept {
+        assert(clock_->open_snapshots() == 0 && "a reader would leave its claim on the clock being dropped");
+        clock_ = &clock;
+    }
+
+    /** @brief The clock this store draws from, its own until one is attached. */
+    [[nodiscard]] snapshot_clock_t &clock() noexcept { return *clock_; }
+    [[nodiscard]] snapshot_clock_t const &clock() const noexcept { return *clock_; }
+
 #pragma endregion Transaction Management
 
 #pragma region Lookup
@@ -1571,7 +2015,7 @@ class snapshot_store {
               typename callback_missing_type_ = no_op_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
-        find_at_(std::forward<comparable_type_>(comparable), published_stamp_,
+        find_at_(std::forward<comparable_type_>(comparable), published_stamp_(),
                  std::forward<callback_found_type_>(callback_found),
                  std::forward<callback_missing_type_>(callback_missing));
     }
@@ -1596,7 +2040,7 @@ class snapshot_store {
         value_t const *found = nullptr;
         walk_visible_keys_(
             entries_.lower_bound(std::forward<comparable_type_>(comparable)),
-            [](versioned_t const &) noexcept { return true; }, published_stamp_,
+            [](versioned_t const &) noexcept { return true; }, published_stamp_(),
             [&](value_t const &value) noexcept {
                 found = &value;
                 return probe_control_t::halt_k;
@@ -1615,7 +2059,7 @@ class snapshot_store {
         value_t const *found = nullptr;
         walk_visible_keys_(
             entries_.upper_bound(std::forward<comparable_type_>(comparable)),
-            [](versioned_t const &) noexcept { return true; }, published_stamp_,
+            [](versioned_t const &) noexcept { return true; }, published_stamp_(),
             [&](value_t const &value) noexcept {
                 found = &value;
                 return probe_control_t::halt_k;
@@ -1652,7 +2096,7 @@ class snapshot_store {
     [[nodiscard]] visible_cursor_t visible_keys() const noexcept
         requires ordered_core_k
     {
-        return visible_from_(entries_.begin(), published_stamp_);
+        return visible_from_(entries_.begin(), published_stamp_());
     }
 
     /** @brief A resumable walk starting at the first key not less than @p comparable. */
@@ -1660,7 +2104,7 @@ class snapshot_store {
     [[nodiscard]] visible_cursor_t visible_keys_from(comparable_type_ &&comparable) const noexcept
         requires ordered_core_k
     {
-        return visible_at_(std::forward<comparable_type_>(comparable), published_stamp_);
+        return visible_at_(std::forward<comparable_type_>(comparable), published_stamp_());
     }
 
     /** @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit. */
@@ -1669,7 +2113,7 @@ class snapshot_store {
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept
         requires ordered_core_k
     {
-        range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_,
+        range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
                   [&](value_t const &value) noexcept {
                       callback(value);
                       return probe_control_t::resume_k;
@@ -1733,7 +2177,7 @@ class snapshot_store {
                       "callback_found must be noexcept invocable with std::size_t");
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-        versioned_t const *readable = readable_version_(comparable, published_stamp_);
+        versioned_t const *readable = readable_version_(comparable, published_stamp_());
         if (!readable) {
             callback_missing();
             return;
@@ -1773,10 +2217,53 @@ class snapshot_store {
         return upsert(std::move(value));
     }
 
-    /** @brief Publishes @p value only if the key is absent, treating an existing key as a no-op. */
+    /**
+     *  @brief Publishes @p value only if the key is absent, treating an existing key as a no-op.
+     *  @sa The three-argument overload reports which of the two happened, which the status cannot.
+     */
     [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
         if (contains(mapping_key_or_itself<value_t>(value))) return success_k;
         return upsert(std::move(value));
+    }
+
+    /**
+     *  @brief Publishes @p value only if the key is absent, reporting which of the two outcomes occurred.
+     *    Declining to overwrite is a success, so the status alone cannot distinguish the cases and a
+     *    caller that needs to know would otherwise pay for a membership probe of its own.
+     *
+     *  @param[in] value Element to write, moved into the store when the key is absent.
+     *  @param[in] callback_inserted Invoked with the published element after a fresh insert. Must be @c noexcept.
+     *  @param[in] callback_existing Invoked with the element already published, which keeps its value.
+     *    Must be @c noexcept.
+     *  @return Success, or an allocation failure that leaves the store untouched.
+     *  @note Both the probe and the report are answered at the newest published stamp, so an element a
+     *    still-open transaction staged is neither a clash nor what @p callback_inserted hands back.
+     */
+    template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
+    [[nodiscard]] status_t insert_if_missing(value_t &&value, callback_inserted_type_ &&callback_inserted,
+                                             callback_existing_type_ &&callback_existing) noexcept {
+
+        static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
+                      "callback_existing must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
+                      "callback_inserted must be noexcept invocable with value_t const &");
+
+        if (versioned_t const *present = readable_version_(mapping_key_or_itself<value_t>(value), published_stamp_())) {
+            callback_existing(present->payload);
+            return success_k;
+        }
+
+        // The identifier has to be taken before the move, or the lookup below searches by a
+        // moved-from key - which compares wrongly rather than failing loudly.
+        auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+        if (!maybe_identifier) return out_of_memory_heap_k;
+        versioned_t versioned(std::move(value));
+        versioned.presence = presence_t::present_k;
+        if (status_t const published = publish_directly_(*maybe_identifier, std::move(versioned)); failed(published))
+            return published;
+        if (versioned_t const *stored = readable_version_(*maybe_identifier, published_stamp_()))
+            callback_inserted(stored->payload);
+        return success_k;
     }
 
     /** @brief Publishes @p value only if the key is already there. */
@@ -1851,7 +2338,7 @@ class snapshot_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                                  callback_missing_type_ &&callback_missing = {}) noexcept {
-        versioned_t const *readable = readable_version_(comparable, published_stamp_);
+        versioned_t const *readable = readable_version_(comparable, published_stamp_());
         if (!readable) {
             callback_missing();
             return status_t::key_not_found_k;
@@ -1892,13 +2379,34 @@ class snapshot_store {
      *    transaction a number an open one already carries, and both are compared by value.
      */
     [[nodiscard]] status_t clear() noexcept {
-        if (open_snapshots_ != 0) return operation_not_permitted_k;
+        if (clock_->open_snapshots() != 0) return operation_not_permitted_k;
         entries_.clear();
         live_count_ = 0;
         return success_k;
     }
 
 #pragma endregion Modifiers
+
+#pragma region Enumeration
+
+    /**
+     *  @brief Hands @p callback every key the newest published commit shows, in the core's own order.
+     *
+     *  The one walk an unordered core can offer, so it promises no ordering even where the core has one.
+     *  Every key a @c find would answer with at the moment of the call is visited @b exactly @b once - a
+     *  committed tombstone and every version no commit has published yet are both left out. Nothing may
+     *  write to the store while the walk runs.
+     *
+     *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+     */
+    template <typename callback_type_ = no_op_t>
+    void for_each(callback_type_ &&callback) const noexcept {
+        static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                      "callback must be noexcept invocable with value_t const &");
+        for_each_at_(published_stamp_(), std::forward<callback_type_>(callback));
+    }
+
+#pragma endregion Enumeration
 
 #pragma region Range Operations
 
@@ -1920,32 +2428,52 @@ class snapshot_store {
                                        callback_type_ &&callback = {}) noexcept
         requires ordered_core_k
     {
-        // The keys are copied out before anything is staged: the walk that produces them reads the very
-        // index the tombstones are about to be staged into.
-        changed_identifiers_vector_t doomed(changed_identifiers_allocator_t(storage_shape_t::allocator_of(entries_)));
-        status_t collecting = success_k;
-        range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
-            if (failed(collecting)) return;
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_identifier) {
-                collecting = out_of_memory_heap_k;
-                return;
-            }
-            if (status_t const kept = doomed.push_back(std::move(*maybe_identifier)); failed(kept)) {
-                collecting = kept;
-                return;
-            }
-            callback(value);
-        });
-        if (failed(collecting)) return collecting;
-        if (doomed.size() == 0) return success_k;
+        return tombstone_walked_(
+            [&](auto &&collect) noexcept {
+                range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
+                          collect);
+            },
+            std::forward<callback_type_>(callback));
+    }
 
-        auto opened = publication();
-        if (!opened) return out_of_memory_heap_k;
-        if (status_t const reserved = opened->reserve(doomed.size()); failed(reserved)) return reserved;
-        for (identifier_t const &identifier : doomed)
-            if (status_t const staged = opened->erase(identifier); failed(staged)) return staged;
-        return opened->publish();
+    /**
+     *  @brief Publishes a tombstone over every key at or after @p lower, all under one stamp.
+     *    One stamp for the whole window, for the reason @c erase_range() takes one.
+     *
+     *  @param[in] lower Lower bound, inclusive - a key equal to it is erased, which is the same end
+     *    @c erase_range() includes.
+     *  @param[in] callback Callback handed each element about to be tombstoned. Must be @c noexcept.
+     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     */
+    template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
+        requires ordered_core_k
+    {
+        return tombstone_walked_(
+            [&](auto &&collect) noexcept {
+                range_from_at_(std::forward<lower_type_>(lower), published_stamp_(), collect);
+            },
+            std::forward<callback_type_>(callback));
+    }
+
+    /**
+     *  @brief Publishes a tombstone over every key before @p upper, all under one stamp.
+     *    One stamp for the whole window, for the reason @c erase_range() takes one.
+     *
+     *  @param[in] upper Upper bound, exclusive - a key equal to it is kept, which is the same end
+     *    @c erase_range() excludes.
+     *  @param[in] callback Callback handed each element about to be tombstoned. Must be @c noexcept.
+     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     */
+    template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
+        requires ordered_core_k
+    {
+        return tombstone_walked_(
+            [&](auto &&collect) noexcept {
+                range_up_to_at_(std::forward<upper_type_>(upper), published_stamp_(), collect);
+            },
+            std::forward<callback_type_>(callback));
     }
 
     /**
@@ -2144,8 +2672,7 @@ class snapshot_store {
         if (failed(storage_shape_t::prepare(entries_, 1))) return out_of_memory_heap_k;
         if (failed(storage_shape_t::upsert(entries_, std::move(versioned)))) return out_of_memory_heap_k;
 
-        [[maybe_unused]] status_t const stamped = stamp_as_one_commit_(&identifier, 1, generation);
-        assert(succeeded(stamped) && "the version was staged one statement ago");
+        stamp_as_one_commit_(&identifier, 1, generation);
         prune_each_(&identifier, 1);
         return success_k;
     }

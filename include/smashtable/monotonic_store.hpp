@@ -610,6 +610,34 @@ class monotonic_store {
             }
         }
 
+        /**
+         *  @brief Hands @p callback every element this transaction reads, in whatever order the core holds them.
+         *
+         *  The one walk an unordered core can offer, so it promises no ordering even where the core has
+         *  one. Every element a @c find of this transaction would answer with at the moment of the call is
+         *  visited @b exactly @b once - its own staged writes included, its own tombstones and every version
+         *  another transaction has not committed excluded. Nothing may write to the transaction or its store
+         *  while the walk runs.
+         *
+         *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+         */
+        template <typename callback_type_ = no_op_t>
+        void for_each(callback_type_ &&callback) const noexcept {
+            static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                          "callback must be noexcept invocable with value_t const &");
+
+            for (auto staged = changes_.begin(); staged != changes_.end(); ++staged)
+                if ((*staged).presence == presence_t::present_k) callback((*staged).payload);
+
+            // A key this transaction touched is answered from its own version above, so the committed
+            // side skips whatever `changes_` already speaks for and never emits a key twice.
+            auto const &store = store_ref();
+            for (auto committed = store.entries_.begin(); committed != store.entries_.end(); ++committed) {
+                if (changes_.contains(*committed)) continue;
+                if (versioned_t const *readable = store_t::readable_version_(*committed)) callback(readable->payload);
+            }
+        }
+
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -650,15 +678,16 @@ class monotonic_store {
             bool found = false;
             auto const less = changes_.key_comp();
 
+            auto const &store = store_ref();
             auto staged_iterator = changes_.begin();
-            chain_node_t *store_node = chain_node_t::find_min(store_ref().entries_.root());
+            auto committed_iterator = store.entries_.begin();
 
-            while ((staged_iterator != changes_.end() || store_node) && !found) {
+            while ((staged_iterator != changes_.end() || committed_iterator != store.entries_.end()) && !found) {
                 bool take_local = false;
 
                 if (staged_iterator == changes_.end()) { take_local = false; }
-                else if (!store_node) { take_local = true; }
-                else { take_local = less(staged_iterator->payload, store_node->fruit); }
+                else if (committed_iterator == store.entries_.end()) { take_local = true; }
+                else { take_local = less(staged_iterator->payload, *committed_iterator); }
 
                 if (take_local) {
                     if (staged_iterator->presence == presence_t::present_k) {
@@ -671,7 +700,7 @@ class monotonic_store {
                     ++staged_iterator;
                 }
                 else {
-                    versioned_t const *store_visible = store_t::readable_version_(store_node->fruit);
+                    versioned_t const *store_visible = store_t::readable_version_(*committed_iterator);
                     if (store_visible &&
                         changes_.find(mapping_key_or_itself<value_t>(store_visible->payload)) == changes_.end()) {
                         if (visible_index == ordinal) {
@@ -681,7 +710,7 @@ class monotonic_store {
                         ++visible_index;
                     }
 
-                    store_node = chain_node_t::find_successor(store_node);
+                    ++committed_iterator;
                 }
             }
 
@@ -717,15 +746,16 @@ class monotonic_store {
                 return;
             }
 
+            auto const &store = store_ref();
             auto staged_iterator = changes_.begin();
-            chain_node_t *store_node = chain_node_t::find_min(store_ref().entries_.root());
+            auto committed_iterator = store.entries_.begin();
 
-            while (staged_iterator != changes_.end() || store_node) {
+            while (staged_iterator != changes_.end() || committed_iterator != store.entries_.end()) {
                 bool take_local = false;
 
                 if (staged_iterator == changes_.end()) { take_local = false; }
-                else if (!store_node) { take_local = true; }
-                else { take_local = less(staged_iterator->payload, store_node->fruit); }
+                else if (committed_iterator == store.entries_.end()) { take_local = true; }
+                else { take_local = less(staged_iterator->payload, *committed_iterator); }
 
                 if (take_local) {
                     if (staged_iterator->presence == presence_t::present_k &&
@@ -734,14 +764,14 @@ class monotonic_store {
                     ++staged_iterator;
                 }
                 else {
-                    versioned_t const *store_visible = store_t::readable_version_(store_node->fruit);
+                    versioned_t const *store_visible = store_t::readable_version_(*committed_iterator);
                     if (store_visible &&
                         changes_.find(mapping_key_or_itself<value_t>(store_visible->payload)) == changes_.end() &&
                         less(store_visible->payload, target_identifier)) {
                         ++rank_value;
                     }
 
-                    store_node = chain_node_t::find_successor(store_node);
+                    ++committed_iterator;
                 }
             }
 
@@ -1111,6 +1141,24 @@ class monotonic_store {
             ++reclaimed;
         }
         return reclaimed;
+    }
+
+    /**
+     *  @brief Retires the published version of every entry between @p cursor and @p stop, handing each
+     *    to @p callback before it goes.
+     *
+     *  Only published versions go, so the span cannot be split out whole: a chain that still holds a
+     *  version staged by an open transaction keeps its entry, and the walk steps past it.
+     */
+    template <typename iterator_type_, typename callback_type_>
+    void retire_between_(iterator_type_ cursor, iterator_type_ const stop, callback_type_ &&callback) noexcept {
+        while (cursor != stop) {
+            auto &chain = mutable_ref_(*cursor);
+            if (versioned_t const *readable = readable_version_(chain)) callback(readable->payload);
+            if (retire_visible_(chain) == detach_outcome_t::detached_and_emptied_k)
+                cursor = entries_.erase(cursor).next;
+            else ++cursor;
+        }
     }
 
     /**
@@ -1678,6 +1726,29 @@ class monotonic_store {
 
 #pragma endregion Lookup
 
+#pragma region Enumeration
+
+    /**
+     *  @brief Hands @p callback every element the store shows, in whatever order the core holds them.
+     *
+     *  The one walk an unordered core can offer, so it promises no ordering even where the core has one.
+     *  Every element a @c find would answer with at the moment of the call is visited @b exactly @b once -
+     *  a committed tombstone and every version no commit has published yet are both left out. Nothing may
+     *  write to the store while the walk runs.
+     *
+     *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+     */
+    template <typename callback_type_ = no_op_t>
+    void for_each(callback_type_ &&callback) const noexcept {
+        static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                      "callback must be noexcept invocable with value_t const &");
+
+        for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor)
+            if (versioned_t const *readable = readable_version_(*cursor)) callback(readable->payload);
+    }
+
+#pragma endregion Enumeration
+
 #pragma region Range Operations
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -1719,17 +1790,42 @@ class monotonic_store {
                                        callback_type_ &&callback = {}) noexcept
         requires ordered_collection<versioned_chains_t>
     {
-        // Only published versions go, so the span cannot be split out whole: a chain that still holds
-        // a version staged by an open transaction keeps its entry, and the walk steps past it.
-        auto cursor = entries_.lower_bound(std::forward<lower_type_>(lower));
-        auto const stop = entries_.lower_bound(std::forward<upper_type_>(upper));
-        while (cursor != stop) {
-            auto &chain = mutable_ref_(*cursor);
-            if (versioned_t const *readable = readable_version_(chain)) callback(readable->payload);
-            if (retire_visible_(chain) == detach_outcome_t::detached_and_emptied_k)
-                cursor = entries_.erase(cursor).next;
-            else ++cursor;
-        }
+        retire_between_(entries_.lower_bound(std::forward<lower_type_>(lower)),
+                        entries_.lower_bound(std::forward<upper_type_>(upper)), std::forward<callback_type_>(callback));
+        return success_k;
+    }
+
+    /**
+     *  @brief Retires every published version ordered at or after @p lower, with no upper bound at all.
+     *
+     *  @param[in] lower Lower bound of the range, inclusive - a key equal to it is erased, which is the
+     *    same end @c erase_range() includes.
+     *  @param[in] callback Callback handed each element about to be retired. Must be @c noexcept.
+     *  @return Always success; the status is reported so a wrapper that allocates can answer alike.
+     */
+    template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
+        requires ordered_collection<versioned_chains_t>
+    {
+        retire_between_(entries_.lower_bound(std::forward<lower_type_>(lower)), entries_.end(),
+                        std::forward<callback_type_>(callback));
+        return success_k;
+    }
+
+    /**
+     *  @brief Retires every published version ordered before @p upper, with no lower bound at all.
+     *
+     *  @param[in] upper Upper bound of the range, exclusive - a key equal to it is kept, which is the
+     *    same end @c erase_range() excludes.
+     *  @param[in] callback Callback handed each element about to be retired. Must be @c noexcept.
+     *  @return Always success; the status is reported so a wrapper that allocates can answer alike.
+     */
+    template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
+        requires ordered_collection<versioned_chains_t>
+    {
+        retire_between_(entries_.begin(), entries_.lower_bound(std::forward<upper_type_>(upper)),
+                        std::forward<callback_type_>(callback));
         return success_k;
     }
 
@@ -1848,6 +1944,8 @@ class monotonic_store {
         bool found = false;
 
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
+            // The walk has no early exit, so the answer has to guard itself against every entry after it.
+            if (found) return;
             versioned_t const *readable = readable_version_(node->fruit);
             if (!readable) return;
             if (visible_index == ordinal) {

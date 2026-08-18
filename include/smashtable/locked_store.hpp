@@ -80,6 +80,67 @@ class locked_store {
             transaction.upper_bound(key, callback, callback);
         };
 
+    /** @brief Whether the wrapped store enumerates its members with no ordering to walk them in. */
+    static constexpr bool inner_enumerates_k =
+        requires(inner_store_t const &store, no_op_t callback) { store.for_each(callback); };
+
+    /** @brief Whether the wrapped store reclaims superseded versions on demand. */
+    static constexpr bool inner_reclaims_k = requires(inner_store_t &store) { store.vacuum(); };
+
+    /** @brief Whether the wrapped store reclaims a window of the keyspace rather than all of it. */
+    static constexpr bool inner_reclaims_range_k =
+        requires(inner_store_t &store, identifier_t const &key) { store.vacuum(key, key); };
+
+    /**
+     *  @brief Whether the wrapped store answers by ordinal, which only an order-statistics core does.
+     *    The forwards below are gated on this, so a core keeping no subtree counts loses them at
+     *    overload resolution rather than deep inside an instantiation.
+     */
+    static constexpr bool inner_is_ranked_k =
+        requires(inner_store_t const &store, identifier_t const &key, std::size_t ordinal, no_op_t callback) {
+            store.select(ordinal, callback, callback);
+            store.rank(key, callback, callback);
+        };
+
+    /** @brief Whether the wrapped store rewrites the mapped side of a range in place. */
+    static constexpr bool inner_revises_range_k = requires(
+        inner_store_t &store, identifier_t const &key, no_op_t callback) { store.update_range(key, key, callback); };
+
+    /** @brief Whether the wrapped store refuses an occupied key rather than writing over it. */
+    static constexpr bool inner_refuses_occupied_key_k =
+        requires(inner_store_t &store, value_t &&element) { store.insert(std::move(element)); };
+
+    /** @brief Whether that refusal also says which element declined the insert. */
+    static constexpr bool inner_reports_occupied_key_k =
+        requires(inner_store_t &store, value_t &&element, no_op_t callback) {
+            store.insert(std::move(element), callback, callback);
+        };
+
+    /** @brief Whether the wrapped store refuses an absent key rather than creating it. */
+    static constexpr bool inner_refuses_absent_key_k =
+        requires(inner_store_t &store, value_t &&element) { store.update(std::move(element)); };
+
+    /** @brief Whether an open transaction refuses an occupied key rather than writing over it. */
+    static constexpr bool inner_transaction_refuses_occupied_key_k =
+        requires(inner_transaction_t &transaction, value_t &&element) { transaction.insert(std::move(element)); };
+
+    /** @brief Whether that refusal, inside a transaction, also says which element declined the insert. */
+    static constexpr bool inner_transaction_reports_occupied_key_k =
+        requires(inner_transaction_t &transaction, value_t &&element, no_op_t callback) {
+            transaction.insert(std::move(element), callback, callback);
+        };
+
+    /** @brief Whether an open transaction refuses an absent key rather than creating it. */
+    static constexpr bool inner_transaction_refuses_absent_key_k =
+        requires(inner_transaction_t &transaction, value_t &&element) { transaction.update(std::move(element)); };
+
+    /** @brief Whether the wrapped store erases an open-ended window of the keyspace. */
+    static constexpr bool inner_erases_open_range_k =
+        requires(inner_store_t &store, identifier_t const &key, no_op_t callback) {
+            store.erase_from(key, callback);
+            store.erase_up_to(key, callback);
+        };
+
     class transaction_t {
         friend class locked_store;
         locked_store &store_;
@@ -101,6 +162,41 @@ class locked_store {
         [[nodiscard]] status_t reserve(std::size_t size) noexcept { return unlocked_.reserve(size); }
         [[nodiscard]] status_t upsert(value_t &&element) noexcept { return unlocked_.upsert(std::move(element)); }
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept { return unlocked_.erase(id); }
+
+        /**
+         *  @brief Stages @p element only if its key is free, refusing rather than writing over it.
+         *    Takes the lock, unlike @c upsert: a strict insert reads the store to learn whether the
+         *    key is already there, and only staging itself lives outside the mutex.
+         */
+        [[nodiscard]] status_t insert(value_t &&element) noexcept
+            requires inner_transaction_refuses_occupied_key_k
+        {
+            shared_lock _ {store_.mutex_};
+            return unlocked_.insert(std::move(element));
+        }
+
+        /**
+         *  @brief Stages @p element only if its key is free, and says which branch was taken.
+         *  @param[in] callback_inserted Receives the element once staged.
+         *  @param[in] callback_existing Receives the element already under the key, which refused the insert.
+         */
+        template <typename callback_inserted_type_, typename callback_existing_type_>
+        [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
+                                      callback_existing_type_ &&callback_existing) noexcept
+            requires inner_transaction_reports_occupied_key_k
+        {
+            shared_lock _ {store_.mutex_};
+            return unlocked_.insert(std::move(element), std::forward<callback_inserted_type_>(callback_inserted),
+                                    std::forward<callback_existing_type_>(callback_existing));
+        }
+
+        /** @brief Stages @p element only if its key is already taken, refusing to create one. */
+        [[nodiscard]] status_t update(value_t &&element) noexcept
+            requires inner_transaction_refuses_absent_key_k
+        {
+            shared_lock _ {store_.mutex_};
+            return unlocked_.update(std::move(element));
+        }
 
         [[nodiscard]] status_t stage() noexcept {
             unique_lock _ {store_.mutex_};
@@ -203,9 +299,16 @@ class locked_store {
         return unlocked_.empty();
     }
 
-    [[nodiscard]] static expected<locked_store> make() noexcept {
+    /**
+     *  @brief Builds the inner store from @p arguments and takes ownership of it.
+     *    Forwards whatever the core needs - a comparator for a tree, a hasher and equality for a table -
+     *    so a store whose comparator has no default constructor is still constructible.
+     */
+    template <typename... arguments_type_>
+    [[nodiscard]] static expected<locked_store> make(arguments_type_ &&...arguments) noexcept {
         expected<locked_store> result;
-        if (expected<inner_store_t> unlocked = inner_store_t::make(); unlocked)
+        if (expected<inner_store_t> unlocked = inner_store_t::make(std::forward<arguments_type_>(arguments)...);
+            unlocked)
             result = locked_store {std::move(*unlocked)};
         return result;
     }
@@ -220,6 +323,65 @@ class locked_store {
     [[nodiscard]] status_t upsert(value_t &&element) noexcept {
         unique_lock _ {mutex_};
         return unlocked_.upsert(std::forward<value_t>(element));
+    }
+
+    /** @brief Erases @p identifier, reporting through the callbacks so presence needs no second probe. */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
+                                 callback_missing_type_ &&callback_missing = {}) noexcept {
+        unique_lock _ {mutex_};
+        return unlocked_.erase(identifier, std::forward<callback_found_type_>(callback_found),
+                               std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /** @brief Inserts @p element only if its key is absent, leaving an incumbent untouched. */
+    [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept {
+        unique_lock _ {mutex_};
+        return unlocked_.insert_if_missing(std::move(element));
+    }
+
+    /**
+     *  @brief Inserts @p element only if its key is absent, and says which branch was taken.
+     *  @param[in] callback_inserted Receives the element once stored.
+     *  @param[in] callback_existing Receives the element already present, which is what declined the insert.
+     */
+    template <typename callback_inserted_type_, typename callback_existing_type_>
+    [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
+                                             callback_existing_type_ &&callback_existing) noexcept {
+        unique_lock _ {mutex_};
+        return unlocked_.insert_if_missing(std::move(element), std::forward<callback_inserted_type_>(callback_inserted),
+                                           std::forward<callback_existing_type_>(callback_existing));
+    }
+
+    /** @brief Inserts @p element only if its key is free, refusing with the inner store's own status. */
+    [[nodiscard]] status_t insert(value_t &&element) noexcept
+        requires inner_refuses_occupied_key_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.insert(std::move(element));
+    }
+
+    /**
+     *  @brief Inserts @p element only if its key is free, and says which branch was taken.
+     *  @param[in] callback_inserted Receives the element once stored.
+     *  @param[in] callback_existing Receives the element already under the key, which refused the insert.
+     */
+    template <typename callback_inserted_type_, typename callback_existing_type_>
+    [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
+                                  callback_existing_type_ &&callback_existing) noexcept
+        requires inner_reports_occupied_key_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.insert(std::move(element), std::forward<callback_inserted_type_>(callback_inserted),
+                                std::forward<callback_existing_type_>(callback_existing));
+    }
+
+    /** @brief Writes @p element only if its key is already taken, refusing to create one. */
+    [[nodiscard]] status_t update(value_t &&element) noexcept
+        requires inner_refuses_absent_key_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.update(std::move(element));
     }
 
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
@@ -337,6 +499,118 @@ class locked_store {
         unique_lock _ {mutex_};
         return unlocked_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                      std::forward<callback_type_>(callback));
+    }
+
+    /** @brief Erases every element at or after @p lower, reporting each to @p callback. */
+    template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
+        requires inner_erases_open_range_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.erase_from(std::forward<lower_type_>(lower), std::forward<callback_type_>(callback));
+    }
+
+    /** @brief Erases every element before @p upper, reporting each to @p callback. */
+    template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
+        requires inner_erases_open_range_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.erase_up_to(std::forward<upper_type_>(upper), std::forward<callback_type_>(callback));
+    }
+
+    /**
+     *  @brief Rewrites the mapped side of every element in [ @p lower, @p upper ).
+     *  @param[in] callback Invoked with (key const &, mapped &) per element. Must be @c noexcept.
+     *  @return Success, or an allocation failure. A store whose own walk cannot fail always succeeds.
+     */
+    template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+              typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+        requires inner_revises_range_k
+    {
+        unique_lock _ {mutex_};
+        // The inner walk answers either @c status_t or nothing at all, and the wrapper has to name one
+        // return type. The wider of the two loses nothing: a walk that cannot refuse always succeeds.
+        if constexpr (std::is_void<decltype(unlocked_.update_range(std::forward<lower_type_>(lower),
+                                                                   std::forward<upper_type_>(upper),
+                                                                   std::forward<callback_type_>(callback)))>()) {
+            unlocked_.update_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                   std::forward<callback_type_>(callback));
+            return success_k;
+        }
+        else
+            return unlocked_.update_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                          std::forward<callback_type_>(callback));
+    }
+
+    /**
+     *  @brief Hands @p callback every member the store holds, in whatever order it keeps them.
+     *
+     *  The one walk an unordered core can offer, and the whole of it runs under one shared lock, so a
+     *  writer is held off for its length and the enumeration is a consistent snapshot: every element
+     *  present when the call began is visited exactly once, and no element inserted during it is seen.
+     */
+    template <typename callback_type_ = no_op_t>
+    void for_each(callback_type_ &&callback) const noexcept
+        requires inner_enumerates_k
+    {
+        shared_lock _ {mutex_};
+        unlocked_.for_each(std::forward<callback_type_>(callback));
+    }
+
+    /**
+     *  @brief Frees every version no reader can still reach.
+     *  @return How many versions were reclaimed, or why none could be. A store whose sweep cannot
+     *    refuse always answers with a count.
+     */
+    [[nodiscard]] expected<std::size_t> vacuum() noexcept
+        requires inner_reclaims_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.vacuum();
+    }
+
+    /**
+     *  @brief Frees the unreachable versions of every key in [ @p lower, @p upper ), so a caller can
+     *    step through the keyspace instead of paying for one pass over all of it.
+     *  @return How many versions were reclaimed, or why none could be.
+     */
+    template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t>
+    [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
+        requires inner_reclaims_range_k
+    {
+        unique_lock _ {mutex_};
+        return unlocked_.vacuum(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper));
+    }
+
+    /**
+     *  @brief Hands @p callback_found the element at zero-based position @p ordinal.
+     *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    void select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires inner_is_ranked_k
+    {
+        shared_lock _ {mutex_};
+        unlocked_.select(ordinal, std::forward<callback_found_type_>(callback_found),
+                         std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /**
+     *  @brief Hands @p callback_found how many elements the store orders before @p comparable.
+     *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be @c noexcept.
+     */
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
+    void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+              callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires inner_is_ranked_k
+    {
+        shared_lock _ {mutex_};
+        unlocked_.rank(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
+                       std::forward<callback_missing_type_>(callback_missing));
     }
 
     [[nodiscard]] status_t clear() noexcept {

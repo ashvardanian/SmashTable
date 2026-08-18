@@ -37,10 +37,12 @@ Every store publishes what it promises as a compile-time `isolation_k`, and the 
 | `snapshot_store`       |       ✓        |           ✓           |      ✓       | one thread        |      ✓       |          ✓ ²           |
 | `reference_store` ⁵    |       ✓        |           ✓           |      ✗       | one thread        |      ✓       |           ✓            |
 | `locked_store<S>`      |  inherits `S`  |     inherits `S`      | inherits `S` | whole transaction |      ✓       |      inherits `S`      |
-| `partitioned_store<S>` |       ✓        |          ✗ ¹          |     ✗ ¹      | per partition     |      ✓       |          ✓ ³           |
+| `partitioned_store<S>` |       ✓        |     inherits `S` ¹    | inherits `S` ¹ | per partition   |      ✓       |          ✓ ³           |
 
-> ¹ Above a single partition only Read Committed survives, because a commit takes and releases one partition lock at a time, so a reader crossing partitions can catch it half-applied.
-> With `partitions_k == 1` the inner store's level passes through intact, and a weaker inner level is never promoted.
+> ¹ A stamp-based inner store keeps its level across partitions, because visibility is a comparison against a commit stamp rather than a question about which locks are currently held.
+> Every partition draws from one shared clock, and the published watermark advances only once the last partition has published, so a reader sees a whole commit or none of it.
+> A monotonic inner store has no stamp for its reader to hold, so above a single partition only Read Committed survives; with `partitions_k == 1` its own level passes through intact.
+> Making a cross-partition commit atomic costs what it sounds like — a transaction touching one key is unaffected, one spanning all sixteen partitions serializes against every other.
 > ² `select` and `rank` descend on a maintained count and are exact at the newest published commit.
 > A reader holding an older snapshot gets a merged walk instead, because one number per node cannot answer for an unbounded parameter.
 > `clear` refuses while a reader is open rather than dropping versions out from under it.
@@ -57,6 +59,8 @@ A transaction never sees another's partial update at any of these levels; what v
 ```bash
 pip install smashtable
 ```
+
+Type stubs ship in the wheel, so a checker knows the key layouts, the isolation levels and the value modes without any configuration — a misspelled `isolation='serialisable'` is an error before it is an exception.
 
 Two indexes over the same entities have to move together, or a lookup by name finds an identifier that no longer resolves:
 
@@ -149,6 +153,56 @@ Separating the fallible phase from the applying phase is what lets independent t
   It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead.
   A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
 - __Scans are not snapshots either.__ `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
+
+### Choosing an Isolation Level
+
+A container names what it promises a reader, and reports back what it actually delivers:
+
+```python
+cache = st.SortedMap(key=int)                       # monotonic atomic view, the default
+ledger = st.SortedMap(key=int, isolation='snapshot')
+
+cache.isolation    # 'monotonic_atomic_view'
+ledger.isolation   # 'snapshot'
+```
+
+Under `snapshot` every read a transaction makes is answered at the instant the transaction opened, so a repeated read returns what it first saw:
+
+```python
+with st.atomic(ledger) as (view,):
+    first = view[account]
+    # ... another thread commits a new value for `account` here ...
+    assert view[account] == first     # holds under snapshot, not under monotonic
+```
+
+That is what `monotonic` does not give you, and the reason to pay for the extra versions.
+The cost is memory: a key keeps every version a live reader can still name, and the tail is freed once the last transaction closes.
+
+`sharing` decides how many writers can proceed at once:
+
+```python
+st.SortedMap(key=int, sharing='locked')        # one lock, the default
+st.SortedMap(key=int, sharing='partitioned')   # sixteen partitions, concurrent writers
+```
+
+`isolation` reports what a container delivers, not what it was asked for, and sharding is the one place those differ:
+
+```python
+sharded_snapshot = st.SortedMap(key=int, isolation='snapshot', sharing='partitioned')
+sharded_monotonic = st.SortedMap(key=int, isolation='monotonic', sharing='partitioned')
+
+sharded_snapshot.isolation    # 'snapshot'        — asked for snapshot, got snapshot
+sharded_monotonic.isolation   # 'read_committed'  — asked for monotonic, got less
+```
+
+A monotonic container has no stamp for a reader to hold, so a walk crossing partitions can catch a commit half-applied, and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives above a single key.
+A snapshot container does have one — visibility there is a comparison against a stamp rather than a lock somebody holds — so its commits become visible everywhere at once and its level survives however many partitions it is spread across.
+
+Keeping the guarantee is not free, though.
+Making a commit atomic across partitions costs in proportion to how many of them a transaction touches: one writing a single key is unaffected, while one writing across all sixteen serializes against every other transaction that does the same.
+Sharding pays off for point-heavy work spread over many keys, and least for transactions that touch everything.
+
+`locked` is the default because it is the setting under which the default level means what it says.
 
 ### Stored Types
 
@@ -330,14 +384,15 @@ Headers group as:
     └─ reference_store<T, Comparator, Alloc>        # the same contract over `std::set`, kept as the oracle
        ↓ either of the first two wraps a core; either of these wraps a store
     ├─ locked_store<Store, Mutex>                   # one lock spans a whole commit
-    └─ partitioned_store<Store, Hash, Mutex, N>     # one lock per partition, Read Committed above one
+    └─ partitioned_store<Store, Hash, Mutex, N>     # one lock per partition, one shared commit clock
 
   transaction_group<Stores...>  → One 2-phase commit spanning several stores
 ```
 
 Transactions and thread-safety are two independent axes, not one ladder.
 A wrapper serializes whole __transactions__, so its unit of exclusion is a two-phase commit.
-`locked_store` takes one lock across the whole commit and keeps whatever its inner store promises, while `partitioned_store` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives above a single partition.
+`locked_store` takes one lock across the whole commit and keeps whatever its inner store promises.
+`partitioned_store` takes and releases one partition lock at a time, so a monotonic reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives — but a snapshot reader answers at its own stamp, and every partition draws from one clock, so it keeps Snapshot across all sixteen.
 Every container publishes what it promises as `isolation_k`, so the level is checkable rather than folklore.
 `atomic_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_store`.
 

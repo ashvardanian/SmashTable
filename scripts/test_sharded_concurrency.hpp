@@ -399,6 +399,257 @@ void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
     st_verify_eq_(container.size(), key_span);
 }
 
+/** @brief A comparator the caller must supply, since a container cannot manufacture one. */
+struct no_default_less_t {
+    using is_transparent = void;
+    int tag;
+    no_default_less_t() = delete;
+    explicit no_default_less_t(int chosen) noexcept : tag(chosen) {}
+    template <typename first_type_, typename second_type_>
+    bool operator()(first_type_ const &first, second_type_ const &second) const noexcept {
+        return first < second;
+    }
+};
+
+/**
+ *  @brief The locked wrapper forwards construction, erase and conditional insert.
+ *
+ *  A comparator with no default constructor is the case that forced the forwarding form: a wrapper that
+ *  manufactured its own would have to default-construct one, and the Python binding's comparator holds a
+ *  function pointer that must come from the caller.
+ */
+inline void test_locked_store_forwards_construction_and_writes() {
+
+    using entry_t = mapping<std::uint64_t, std::uint64_t>;
+    using inner_t = monotonic_avl_map<std::uint64_t, std::uint64_t, no_default_less_t, std::allocator<entry_t>>;
+    using guarded_t = locked_store<inner_t>;
+
+    auto made = guarded_t::make(no_default_less_t {7}, std::allocator<entry_t> {});
+    st_verify_((made) && "a comparator without a default constructor must still reach the inner store");
+    auto &store = *made;
+    st_verify_(succeeded(store.upsert({1, 100})));
+
+    bool inserted = false, existing = false;
+    st_verify_(succeeded(store.insert_if_missing(
+        {1, 999}, [&](entry_t const &) noexcept { inserted = true; },
+        [&](entry_t const &) noexcept { existing = true; })));
+    st_verify_((!inserted && existing) && "an occupied key must report the incumbent, not a fresh insert");
+
+    bool found = false, missing = false;
+    st_verify_(
+        succeeded(store.erase(1, [&](entry_t const &) noexcept { found = true; }, [&]() noexcept { missing = true; })));
+    st_verify_((found && !missing) && "erase must report presence without a second probe");
+    st_verify_eq_(store.size(), 0u);
+}
+
+/**
+ *  @brief A reader crossing a commit that spans partitions must see all of that commit, or none of it.
+ *
+ *  A commit takes and releases one partition lock at a time, so its writes land one partition after
+ *  another and a reader opening in the middle of the walk can catch half of them. What denies that is
+ *  the stamp: the reader fixes one snapshot for every partition, the commit draws one stamp for every
+ *  partition, and the watermark only moves once the last partition has been written. A snapshot drawn
+ *  per partition instead - which is what a partition-local clock leaves - shows up here within a few
+ *  rounds as two rounds read at once.
+ */
+template <typename container_type_>
+void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rounds = 300) {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    static_assert(container_t::isolation_k == isolation_t::snapshot_k,
+                  "a store that does not promise a snapshot cannot be asked to keep one");
+
+    container_t container;
+    for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, 0))));
+
+    std::atomic<bool> writing {true};
+    std::atomic<std::size_t> torn_across_keys {0};
+    std::atomic<std::size_t> unrepeatable_reads {0};
+    std::atomic<std::size_t> reads_taken {0};
+    std::vector<std::thread> threads;
+    threads.reserve(sharded_threads_count_k + 1);
+
+    // Every round writes the same value to every key, so any two keys disagreeing is a commit read
+    // half applied - the one thing a snapshot spanning the partitions has to make impossible.
+    threads.emplace_back([&]() noexcept {
+        for (std::size_t round = 1; round <= rounds; ++round) {
+            auto writer = container.transaction();
+            if (!writer) break;
+            status_t staged = success_k;
+            for (std::size_t identifier = 0; identifier != keys_count && succeeded(staged); ++identifier)
+                staged = writer->upsert(trivial_id_to_member<member_t>(identifier, round));
+            if (succeeded(staged)) staged = writer->stage();
+            if (succeeded(staged)) { [[maybe_unused]] status_t const committed = writer->commit(); }
+        }
+        writing.store(false);
+    });
+
+    for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
+        threads.emplace_back([&]() noexcept {
+            auto read_every_key = [&](auto &reader, std::size_t &agreed_value) noexcept {
+                std::size_t disagreements = 0;
+                agreed_value = 0;
+                for (std::size_t identifier = 0; identifier != keys_count; ++identifier) {
+                    std::size_t observed = 0;
+                    reader.find(
+                        trivial_id_to_key<member_t>(identifier),
+                        [&](auto const &member) noexcept { observed = static_cast<std::size_t>(member.mapped); },
+                        [&]() noexcept { ++disagreements; });
+                    if (identifier == 0) agreed_value = observed;
+                    else if (observed != agreed_value) ++disagreements;
+                }
+                return disagreements;
+            };
+
+            while (writing.load()) {
+                auto reader = container.transaction();
+                if (!reader) continue;
+                std::size_t first_pass_value = 0;
+                std::size_t second_pass_value = 0;
+                if (read_every_key(*reader, first_pass_value) != 0) ++torn_across_keys;
+                if (read_every_key(*reader, second_pass_value) != 0) ++torn_across_keys;
+                if (first_pass_value != second_pass_value) ++unrepeatable_reads;
+                ++reads_taken;
+            }
+        });
+
+    for (auto &thread : threads) thread.join();
+
+    st_verify_((reads_taken.load() != 0) && "no reader ever crossed the writer, so this proves nothing");
+    st_verify_((torn_across_keys.load() == 0) && "a reader saw one commit half applied across partitions");
+    st_verify_((unrepeatable_reads.load() == 0) && "one transaction read two different commits");
+}
+
+/**
+ *  @brief A commit that refuses must have published nothing, whichever partition refused.
+ *
+ *  A refusal is the caller's signal to retry, so a commit that refuses after publishing part of
+ *  itself makes the retry apply that part twice. Several writers over one key set conflict on nearly
+ *  every round here, which is what makes the refusals frequent enough to check.
+ */
+template <typename container_type_>
+void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::size_t rounds = 60) {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier, 0))));
+
+    std::atomic<std::size_t> commit_refusals {0};
+    std::atomic<std::size_t> published_refusals {0};
+    std::vector<std::thread> threads;
+    threads.reserve(sharded_threads_count_k);
+
+    // Every attempt writes a value no other attempt writes, so finding one after a refusal is proof
+    // that the refused commit published something.
+    for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
+        threads.emplace_back([&, thread_index]() noexcept {
+            std::size_t attempt = 0;
+            for (std::size_t round = 0; round != rounds; ++round)
+                while (true) {
+                    std::size_t const marker = (thread_index + 1) * 1000000 + (++attempt);
+                    auto writer = container.transaction();
+                    if (!writer) return;
+                    status_t staged = success_k;
+                    for (std::size_t identifier = 0; identifier != keys_count && succeeded(staged); ++identifier)
+                        staged = writer->upsert(trivial_id_to_member<member_t>(identifier, marker));
+                    if (succeeded(staged)) staged = writer->stage();
+                    if (failed(staged)) {
+                        [[maybe_unused]] status_t const undone = writer->reset();
+                        continue;
+                    }
+                    if (succeeded(writer->commit())) break;
+
+                    ++commit_refusals;
+                    bool published = false;
+                    for (std::size_t identifier = 0; identifier != keys_count && !published; ++identifier)
+                        container.find(
+                            trivial_id_to_key<member_t>(identifier),
+                            [&](auto const &member) noexcept {
+                                published = published || static_cast<std::size_t>(member.mapped) == marker;
+                            },
+                            []() noexcept {});
+                    if (published) ++published_refusals;
+                    [[maybe_unused]] status_t const undone = writer->reset();
+                }
+        });
+
+    for (auto &thread : threads) thread.join();
+    st_verify_((published_refusals.load() == 0) && "a commit that refused had already published its writes");
+    // The refusals themselves are the point of the suite, not a defect - but without any, it proved nothing.
+    st_verify_((commit_refusals.load() != 0) && "no commit ever refused, so nothing here was exercised");
+}
+
+/**
+ *  @brief An enumeration must see every element that was there for the whole of it, exactly once.
+ *
+ *  The sharded enumeration takes one partition at a time rather than all of them, so a writer runs
+ *  alongside it and the walk is not a snapshot. What it still owes the caller is that nothing which
+ *  stayed put is missed or counted twice - a key's partition is fixed by its hash, so it can neither
+ *  be moved ahead of the cursor nor behind it. The churned keys carry the other half of the promise:
+ *  they may or may not turn up, and either answer is allowed, but never twice in one walk.
+ */
+template <typename container_type_>
+void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count = 128, std::size_t churn_count = 128,
+                                                        std::size_t rounds = 40) {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    for (std::size_t identifier = 0; identifier != stable_count; ++identifier)
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(identifier))));
+
+    std::atomic<bool> churning {true};
+    std::atomic<bool> churn_started {false};
+    std::atomic<std::size_t> walks_taken {0};
+    std::atomic<std::size_t> stable_misses {0};
+    std::atomic<std::size_t> repeat_visits {0};
+
+    std::thread writer([&]() noexcept {
+        churn_started.store(true);
+        for (std::size_t round = 0; round != rounds; ++round) {
+            for (std::size_t offset = 0; offset != churn_count; ++offset) [[maybe_unused]]
+                status_t const written = container.upsert(trivial_id_to_member<member_t>(stable_count + offset));
+            for (std::size_t offset = 0; offset != churn_count; ++offset) [[maybe_unused]]
+                status_t const removed = container.erase(trivial_id_to_key<member_t>(stable_count + offset));
+        }
+        churning.store(false);
+    });
+
+    std::vector<std::thread> walkers;
+    walkers.reserve(sharded_threads_count_k);
+    for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
+        walkers.emplace_back([&]() noexcept {
+            std::vector<std::size_t> visits(stable_count + churn_count, 0);
+            while (!churn_started.load()) pause_briefly();
+            do {
+                for (std::size_t &seen : visits) seen = 0;
+                container.for_each([&](member_t const &member) noexcept {
+                    std::size_t const identifier = static_cast<std::size_t>(member.unique_id);
+                    if (identifier < visits.size()) ++visits[identifier];
+                });
+                for (std::size_t identifier = 0; identifier != stable_count; ++identifier)
+                    if (visits[identifier] != 1) ++stable_misses;
+                for (std::size_t identifier = stable_count; identifier != visits.size(); ++identifier)
+                    if (visits[identifier] > 1) ++repeat_visits;
+                ++walks_taken;
+            } while (churning.load());
+        });
+
+    writer.join();
+    for (auto &walker : walkers) walker.join();
+
+    st_verify_((walks_taken.load() >= sharded_threads_count_k) &&
+               "every walker must complete a walk begun after the writer started, or this proves nothing");
+    st_verify_((stable_misses.load() == 0) && "an element present for the whole walk was missed or seen twice");
+    st_verify_((repeat_visits.load() == 0) && "one walk handed the same key to the callback twice");
+}
+
 #pragma endregion Sharded Concurrency
 
 } // namespace ashvardanian::smashtable::scripts

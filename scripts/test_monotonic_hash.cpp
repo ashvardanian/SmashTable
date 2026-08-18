@@ -9,6 +9,10 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
+#include <cstddef> // `std::size_t`
+
+#include <vector> // `std::vector`
+
 #include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
@@ -152,6 +156,70 @@ static void test_point_staging_survives_growth(std::size_t size = 500) {
     st_verify_eq_(container.size(), size);
     for (std::size_t index = 0; index < size; ++index)
         st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+}
+
+/** @brief Tests that the unordered walk reports every member once, over a store and over a transaction */
+template <typename container_type_>
+static void test_point_enumeration_visits_every_member() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using key_t = decltype(trivial_id_to_key<member_t>(0));
+    std::size_t const size = 8;
+
+    container_t container;
+    std::size_t empty_visits = 0;
+    container.for_each([&](member_t const &) noexcept { ++empty_visits; });
+    st_verify_eq_(empty_visits, 0);
+
+    // The keys are materialized up front, since a heap-allocating one cannot be built inside a
+    // `noexcept` callback, and a tally of one per key is what proves nothing was reported twice.
+    std::vector<key_t> keys;
+    for (std::size_t index = 0; index < size; ++index) {
+        keys.push_back(trivial_id_to_key<member_t>(index));
+        st_verify_(succeeded(container.upsert(trivial_id_to_member<member_t>(index))));
+    }
+
+    std::vector<std::size_t> tally(size, 0);
+    std::size_t visits = 0;
+    container.for_each([&](member_t const &member) noexcept {
+        ++visits;
+        for (std::size_t index = 0; index < size; ++index)
+            if (mapping_key_or_itself<member_t>(member) == keys[index]) ++tally[index];
+    });
+    st_verify_eq_(visits, container.size());
+    for (std::size_t index = 0; index < size; ++index) st_verify_eq_(tally[index], 1);
+
+    // A transaction reports its own staged writes and hides its own tombstones.
+    auto writing = container.transaction();
+    st_verify_(writing.has_value());
+    st_verify_(succeeded(writing->erase(trivial_id_to_key<member_t>(0))));
+    st_verify_(succeeded(writing->upsert(trivial_id_to_member<member_t>(size))));
+
+    std::vector<std::size_t> staged_tally(size, 0);
+    std::size_t staged_visits = 0;
+    writing->for_each([&](member_t const &member) noexcept {
+        ++staged_visits;
+        for (std::size_t index = 0; index < size; ++index)
+            if (mapping_key_or_itself<member_t>(member) == keys[index]) ++staged_tally[index];
+    });
+    st_verify_eq_(staged_visits, size);
+    st_verify_eq_(staged_tally[0], 0);
+    for (std::size_t index = 1; index < size; ++index) st_verify_eq_(staged_tally[index], 1);
+
+    // Nothing the transaction staged is published, so the store still reports what it did before.
+    st_verify_(succeeded(writing->stage()));
+    std::size_t published_visits = 0;
+    container.for_each([&](member_t const &) noexcept { ++published_visits; });
+    st_verify_eq_(published_visits, size);
+}
+
+static void point_access_enumeration_visits_every_member() {
+    test_point_enumeration_visits_every_member<transactional_trivial_set_t>();
+    test_point_enumeration_visits_every_member<transactional_heavy_set_t>();
+    test_point_enumeration_visits_every_member<transactional_trivial_map_t>();
+    test_point_enumeration_visits_every_member<transactional_composite_map_t>();
+    test_point_enumeration_visits_every_member<transactional_heavy_map_t>();
 }
 
 static void point_access_insert_strategies() {
@@ -468,6 +536,8 @@ int main() {
     std::size_t failures = 0;
 
     failures += run_test(filter, "point_access.insert_strategies", point_access_insert_strategies);
+    failures +=
+        run_test(filter, "point_access.enumeration_visits_every_member", point_access_enumeration_visits_every_member);
     failures += run_test(filter, "point_access.erase_visibility", point_access_erase_visibility);
     failures += run_test(filter, "point_access.rollback_restores_store", point_access_rollback_restores_store);
     failures += run_test(filter, "point_access.staging_survives_growth", point_access_staging_survives_growth);

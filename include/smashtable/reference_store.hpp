@@ -673,6 +673,32 @@ class reference_store {
         }
 
         /**
+         *  @brief Hands @p callback every element this transaction reads, in whatever order the core holds them.
+         *
+         *  The one walk an unordered core can offer, so it promises no ordering even where the core has
+         *  one. Every element a @c find of this transaction would answer with at the moment of the call is
+         *  visited @b exactly @b once - its own staged writes included, its own tombstones and every version
+         *  another transaction has not committed excluded. Nothing may write to the transaction or its store
+         *  while the walk runs.
+         *
+         *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+         */
+        template <typename callback_type_ = no_op_t>
+        void for_each(callback_type_ &&callback) const noexcept {
+            static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                          "callback must be noexcept invocable with value_t const &");
+
+            for (auto iterator = changes_.begin(); iterator != changes_.end(); ++iterator)
+                if (iterator->presence == presence_t::present_k) callback(iterator->payload);
+
+            // A key this transaction touched is answered from its own version above, so the committed
+            // side skips whatever `changes_` already speaks for and never emits a key twice.
+            store_ref().for_each([&](value_t const &external_element) noexcept {
+                if (changes_.find(external_element) == changes_.end()) callback(external_element);
+            });
+        }
+
+        /**
          *  @brief Validates watches and stages all changes to the main store, making them visible but uncommitted.
          *    Fails with @c status_t::consistency_k if any watched elements changed.
          *
@@ -1423,6 +1449,30 @@ class reference_store {
 
 #pragma endregion Lookup
 
+#pragma region Enumeration
+
+    /**
+     *  @brief Hands @p callback every element the store shows, in whatever order the core holds them.
+     *
+     *  The one walk an unordered core can offer, so it promises no ordering even where the core has one.
+     *  Every element a @c find would answer with at the moment of the call is visited @b exactly @b once -
+     *  a committed tombstone and every version no commit has published yet are both left out. Nothing may
+     *  write to the store while the walk runs.
+     *
+     *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+     */
+    template <typename callback_type_ = no_op_t>
+    void for_each(callback_type_ &&callback) const noexcept {
+        static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                      "callback must be noexcept invocable with value_t const &");
+
+        for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator)
+            if (visible_now(iterator->committed) && iterator->presence == presence_t::present_k)
+                callback(iterator->payload);
+    }
+
+#pragma endregion Enumeration
+
 #pragma region Range Operations
 
     /**
@@ -1531,6 +1581,44 @@ class reference_store {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         erase_visible_(lower_iterator, upper_iterator, std::forward<callback_type_>(callback));
+        return success_k;
+    }
+
+    /**
+     *  @brief Erases every entry ordered at or after @p lower, with no upper bound at all.
+     *
+     *  @param[in] lower Lower bound of the range, inclusive - an entry equal to it is erased, which is
+     *    the same end @c erase_range() includes.
+     *  @param[in] callback Optional callback invoked for each erased element. Must be @c noexcept.
+     *  @return Always succeeds.
+     */
+    template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept {
+
+        static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                      "callback must be noexcept invocable with value_t const &");
+
+        erase_visible_(entries_.lower_bound(std::forward<lower_type_>(lower)), entries_.end(),
+                       std::forward<callback_type_>(callback));
+        return success_k;
+    }
+
+    /**
+     *  @brief Erases every entry ordered before @p upper, with no lower bound at all.
+     *
+     *  @param[in] upper Upper bound of the range, exclusive - an entry equal to it is kept, which is
+     *    the same end @c erase_range() excludes.
+     *  @param[in] callback Optional callback invoked for each erased element. Must be @c noexcept.
+     *  @return Always succeeds.
+     */
+    template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
+
+        static_assert(is_safe_callback_for<callback_type_, value_t const &>,
+                      "callback must be noexcept invocable with value_t const &");
+
+        erase_visible_(entries_.begin(), entries_.lower_bound(std::forward<upper_type_>(upper)),
+                       std::forward<callback_type_>(callback));
         return success_k;
     }
 
