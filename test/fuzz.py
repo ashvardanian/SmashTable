@@ -15,6 +15,8 @@ import smashtable as st
 
 from .base import (
     assert_same_state,
+    enumerable_map_names,
+    enumerable_set_names,
     key_types,
     make,
     map_class_names,
@@ -35,7 +37,7 @@ class _Abort(Exception):
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
 @pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
 def test_a_random_sequence_matches_dict(container, keygen, valuegen, rng):
@@ -50,7 +52,7 @@ def test_a_random_sequence_matches_dict(container, keygen, valuegen, rng):
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
 )
 @pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", set_class_names)
+@pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_random_sequence_matches_set(container, keygen, rng):
     """A random walk over the set surface leaves the container agreeing with a set."""
@@ -88,7 +90,7 @@ def test_random_transactions_match_the_model(container_class, key_type, keygen, 
 
 
 @pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_random_scan_windows_match_the_sorted_model(container, keygen, rng):
     """Every random window agrees with the same slice of a sorted model."""
@@ -110,7 +112,7 @@ def test_random_scan_windows_match_the_sorted_model(container, keygen, rng):
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
 )
 @pytest.mark.repeat(4)
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_random_interleaved_iteration_terminates(container, keygen, rng):
     """A walk under random mutation always ends, and never yields a key twice."""

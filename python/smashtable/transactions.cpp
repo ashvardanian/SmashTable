@@ -135,13 +135,11 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
         PyErr_SetString(PyExc_TypeError, "this participant is a set; use add() rather than assigning a value");
         return -1;
     }
+    // This participant's own mode, never the group's first. A group mixing a scalar container with an
+    // object one would otherwise read the wrong policy for every participant but the first, which is
+    // the path where a missed GIL acquisition corrupts rather than fails.
     value_variant_t stored_value;
-    if (!value_from_python(
-            value,
-            object_as<container_object_t>(PyTuple_GET_ITEM(object_as<transaction_object_t>(view->owner)->containers, 0))
-                ->mode,
-            stored_value))
-        return -1;
+    if (!value_from_python(value, part->mode, stored_value)) return -1;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
             status = part.upsert(std::move(stored_key), std::move(stored_value));
         }) != 0)
@@ -699,10 +697,9 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     // one store would each believe they owned its staged state.
     for (Py_ssize_t index = 0; index != count; ++index) {
         PyObject *candidate = PyTuple_GET_ITEM(containers, index);
-        bool const is_map = Py_IS_TYPE(candidate, state->sorted_map_type);
-        bool const is_set = Py_IS_TYPE(candidate, state->sorted_set_type);
-        if (!is_map && !is_set) {
-            PyErr_Format(PyExc_TypeError, "atomic() takes SortedMap or SortedSet, not %s", Py_TYPE(candidate)->tp_name);
+        if (!is_container(state, candidate)) {
+            PyErr_Format(PyExc_TypeError, "atomic() takes a SmashTable container, not %s",
+                         Py_TYPE(candidate)->tp_name);
             return nullptr;
         }
         for (Py_ssize_t earlier = 0; earlier != index; ++earlier)
@@ -743,20 +740,13 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     for (Py_ssize_t position = 0; position != count; ++position) {
         PyObject *container = PyTuple_GET_ITEM(containers, order[static_cast<std::size_t>(position)]);
         auto const *header = object_as<container_object_t>(container);
-        bool opened = false;
-        if (Py_IS_TYPE(container, state->sorted_map_type)) {
-            if (auto transaction = object_as<sorted_map_object_t>(container)->store.transaction())
-                group->parts.push_back(assume_reserved,
-                                       participant_t {std::move(*transaction), header->ops, header->mode}),
-                    opened = true;
-        }
-        else if (auto transaction = object_as<sorted_set_object_t>(container)->store.transaction())
-            group->parts.push_back(assume_reserved, participant_t {std::move(*transaction), header->ops, header->mode}),
-                opened = true;
-        if (!opened) {
+        expected<void *> transaction = header->store_ops->transaction_make(header->store);
+        if (!transaction) {
             Py_DECREF(group);
             return PyErr_NoMemory();
         }
+        [[maybe_unused]] status_t const appended = group->parts.push_back(
+            assume_reserved, participant_t {header->store_ops, *transaction, header->ops, header->mode});
     }
 
     // Views are handed back in the caller's order, whatever order the participants stage in.

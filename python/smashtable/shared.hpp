@@ -36,11 +36,11 @@
 #include <mutex>    // `std::mutex`
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
+#include <utility>  // `std::exchange`, `std::swap`
 #include <variant>  // `std::variant`
 
 #include <smashtable/basic_vector.hpp>
-#include <smashtable/partitioned_store.hpp>
-#include <smashtable/monotonic_store.hpp>
+#include <smashtable/shared.hpp>
 
 namespace ashvardanian::smashtable::py {
 
@@ -352,15 +352,167 @@ struct key_hash_t {
     std::size_t operator()(key_variant_t const &key) const noexcept { return hash(key); }
 };
 
+/**
+ *  @brief Hashes a key by its layout, without consulting the table a container was built with.
+ *
+ *  Stateless and default-constructible on purpose: an unordered core builds its hasher itself, with
+ *  no seed passed in, so the function-pointer form @c key_hash_t takes cannot be used there. The
+ *  switch costs one predictable branch per operation rather than the per-comparison dispatch that
+ *  @c key_ops_t exists to avoid, because a probe hashes once and then compares.
+ */
+struct key_variant_hash_t {
+    std::size_t operator()(key_variant_t const &key) const noexcept {
+        return std::visit(
+            [](auto const &held) noexcept -> std::size_t {
+                using held_t = std::decay_t<decltype(held)>;
+                if constexpr (std::is_same_v<held_t, utf8_t>)
+                    return std::hash<std::string> {}(held.text);
+                else if constexpr (std::is_same_v<held_t, bytes_t>)
+                    return std::hash<std::string> {}(held.data);
+                else return std::hash<held_t> {}(held);
+            },
+            key.value);
+    }
+};
+
+/**
+ *  @brief Equality over two keys of one layout, which the variant already answers exactly.
+ *    Stateless for the same reason as @c key_variant_hash_t, and seeded into an unordered core as
+ *    the one policy that core does take from the caller.
+ */
+struct key_variant_equal_t {
+    using is_transparent = void;
+    bool operator()(key_variant_t const &first, key_variant_t const &second) const noexcept {
+        return first.value == second.value;
+    }
+};
+
 #pragma endregion Key Layouts
 
 #pragma region Stores
 
 using entry_t = mapping<key_variant_t, value_variant_t>;
-using map_tree_t = monotonic_avl_map<key_variant_t, value_variant_t, key_less_t, std::allocator<entry_t>>;
-using map_store_t = partitioned_store<map_tree_t, key_hash_t>;
-using set_tree_t = monotonic_avl_set<key_variant_t, key_less_t, std::allocator<key_variant_t>>;
-using set_store_t = partitioned_store<set_tree_t, key_hash_t>;
+
+/**
+ *  @brief One store instantiation reduced to a table of function pointers, resolved once.
+ *
+ *  The same shape as @c key_ops_t one level up: one @c constexpr table per instantiation, all shared by
+ *  every container built on it, so the pointer a container holds is to an object it never writes. It is
+ *  what lets one @c container.cpp serve every core, isolation level and sharing strategy without naming
+ *  a concrete store, and what keeps the participant of a transaction group free of a variant whose arms
+ *  would grow with the matrix.
+ *
+ *  @c store is always a pointer handed back by @c make and owned by exactly one container object.
+ *
+ *  A slot left null says the core does not carry that operation - a hash core supplies no ordering, so
+ *  its bounds and range erase are absent. Null is never tested in a method body: the class that would
+ *  have called it does not install the method, so the mismatch surfaces as @c AttributeError rather than
+ *  as a refusal invented here.
+ *
+ *  Reads answer through out-parameters rather than the callbacks the stores take, because a function
+ *  pointer cannot carry a template-typed callback. Each returns whether anything was found, which
+ *  collapses the found-and-missing pair the C++ side uses.
+ */
+struct store_ops_t {
+    /** @brief What this instantiation promises, straight from the store's @c isolation_k. */
+    isolation_t isolation;
+    /** @brief That promise as a Jepsen name, which @c isolation reports back. */
+    char const *isolation_name;
+    /** @brief Whether elements carry a mapped value, deciding map-versus-set at every shared site. */
+    bool is_associative;
+    /** @brief Whether the core orders its keys, which is what the ordered surface rests on. */
+    bool is_ordered;
+
+    /** @brief Builds an empty store of @p ops's layout, or reports why it could not. */
+    expected<void *> (*make)(key_ops_t const *ops) noexcept;
+    /** @brief Destroys a store @c make handed back. Never called with null. */
+    void (*destroy)(void *store) noexcept;
+
+    std::size_t (*size)(void *store) noexcept;
+    status_t (*clear)(void *store) noexcept;
+    bool (*contains)(void *store, key_variant_t const &key) noexcept;
+    /** @brief Reads a mapped value. Null on a set, which has none. */
+    bool (*find)(void *store, key_variant_t const &key, value_variant_t &value) noexcept;
+    /** @brief Inserts or overwrites. @p value is null for a set, which stores the key alone. */
+    status_t (*upsert)(void *store, key_variant_t &&key, value_variant_t *value) noexcept;
+    status_t (*erase)(void *store, key_variant_t const &key) noexcept;
+    /**
+     *  @brief Inserts only when absent, and reports the value that ended up stored.
+     *
+     *  The winner rather than who wrote it, because that is all @c setdefault needs and it is the one
+     *  answer both stores can give: a key arriving concurrently keeps its own value, and reading the
+     *  result back is what makes two threads racing on one key agree on what it holds.
+     */
+    status_t (*insert_if_missing)(void *store, key_variant_t const &key, value_variant_t &&value,
+                                  value_variant_t &winner) noexcept;
+
+    /** @brief First element at or after @p from. Null on an unordered core. */
+    bool (*lower_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept;
+    /** @brief First element strictly after @p from. Null on an unordered core. */
+    bool (*upper_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept;
+    /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
+    status_t (*erase_range)(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept;
+
+    /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
+    expected<void *> (*transaction_make)(void *store) noexcept;
+    void (*transaction_destroy)(void *transaction) noexcept;
+    bool (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
+    bool (*transaction_find)(void *transaction, key_variant_t const &key, value_variant_t &value) noexcept;
+    status_t (*transaction_upsert)(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept;
+    status_t (*transaction_erase)(void *transaction, key_variant_t const &key) noexcept;
+    status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
+    status_t (*transaction_stage)(void *transaction) noexcept;
+    status_t (*transaction_commit)(void *transaction) noexcept;
+    status_t (*transaction_rollback)(void *transaction) noexcept;
+    status_t (*transaction_reset)(void *transaction) noexcept;
+};
+
+/**
+ *  @brief Which core a container was built around, which is the axis that decides its method set.
+ *
+ *  A class per enumerator, because the core is what gates the ordered surface: a hash core supplies no
+ *  ordering, so its class installs no iteration, no scan and no range erase, and the mismatch is an
+ *  @c AttributeError rather than a runtime refusal.
+ */
+enum class core_t : std::uint8_t { sorted_k, hashed_k };
+
+/** @brief What a reader is promised, as the constructor's @c isolation argument names it. */
+enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k };
+
+/** @brief How a store is shared between threads, as the constructor's @c sharing argument names it. */
+enum class sharing_choice_t : std::uint8_t { locked_k, partitioned_k };
+
+/**
+ *  @brief The Jepsen name of a level, which @c isolation reports and nothing else spells.
+ *
+ *  A switch rather than an indexed table, so adding a level to @c isolation_t is a compiler warning
+ *  here rather than a silent read of the neighbouring name.
+ */
+constexpr char const *isolation_name_of(isolation_t level) noexcept {
+    switch (level) {
+    case isolation_t::read_uncommitted_k: return "read_uncommitted";
+    case isolation_t::read_committed_k: return "read_committed";
+    case isolation_t::monotonic_atomic_view_k: return "monotonic_atomic_view";
+    case isolation_t::snapshot_k: return "snapshot";
+    case isolation_t::serializable_k: return "serializable";
+    }
+    return "unknown";
+}
+
+/**
+ *  @brief Resolves one configuration to its table, or reports that this build does not carry it.
+ *  @return The table to use, or @c nullptr with no exception set.
+ */
+store_ops_t const *store_ops_for(core_t core, isolation_choice_t isolation, sharing_choice_t sharing,
+                                 bool associative) noexcept;
+
+/** @brief The ordered core's half of that resolution, defined beside the tables it names. */
+store_ops_t const *sorted_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
+                                        bool associative) noexcept;
+
+/** @brief The unordered core's half, whose tables carry no ordered slot at all. */
+store_ops_t const *hashed_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
+                                        bool associative) noexcept;
 
 #pragma endregion Stores
 
@@ -382,11 +534,16 @@ object_type_ *object_as(PyObject *object) noexcept {
 #pragma region Object Layouts
 
 /**
- *  @brief The header every container shares, so one cursor and one group can serve all of them.
+ *  @brief The one layout every container class shares, so one cursor and one group serve all of them.
  *
- *  @c ops is the key layout this container was built around, never null after construction. @c mode
- *  says whether its values may be arbitrary objects, which decides whether the GIL may be released
- *  around a value.
+ *  @c ops is the key layout this container was built around and @c store_ops the store it was built on,
+ *  both resolved at construction and never null after it. @c store is the type-erased store itself,
+ *  owned by this object alone and destroyed through @c store_ops->destroy. @c mode says whether values
+ *  may be arbitrary objects, which decides whether the GIL may be released around one.
+ *
+ *  There is no per-class layout. The store used to sit inline, which forced one object type per
+ *  instantiation; behind the table it is a pointer, so the four classes differ only in the method
+ *  tables their types install.
  *
  *  @c ordinal is what stops two groups deadlocking on each other. A group stages its participants in
  *  ordinal order rather than argument order, so @c atomic(a, b) on one thread and @c atomic(b, a) on
@@ -397,32 +554,33 @@ object_type_ *object_as(PyObject *object) noexcept {
  */
 struct container_object_t {
     PyObject_HEAD key_ops_t const *ops;
+    store_ops_t const *store_ops;
+    void *store;
     std::uint64_t ordinal;
     value_mode_t mode;
 };
 
-/** @brief Holds its store inline, placement-constructed into @c tp_alloc's storage. */
-struct sorted_map_object_t {
-    container_object_t base;
-    map_store_t store;
-};
-
-/** @brief Holds its store inline, placement-constructed into @c tp_alloc's storage. */
-struct sorted_set_object_t {
-    container_object_t base;
-    set_store_t store;
-};
-
-/** @brief Assigns each container a process-wide rank, used to order staging deterministically. */
 /** @brief The module state reached from a heap type, for the constructors that have no instance. */
 module_state_t *state_of_heap_type(PyTypeObject *type) noexcept;
+
+/** @brief Whether @p object is one of this module's container classes. */
+bool is_container(module_state_t *state, PyObject *object) noexcept;
+
+/**
+ *  @brief Builds an empty container of one class and layout, without re-entering the type through Python.
+ *  @param[in] state The module state, which hands out the staging ordinal.
+ *  @param[in] type The heap type to allocate, borrowed.
+ *  @param[in] ops The key layout the store is built around.
+ *  @param[in] store_ops The store table to build on, normally taken from an existing container.
+ *  @param[in] mode Whether values may be arbitrary objects.
+ *  @return A new reference, or @c nullptr with an exception set.
+ */
+PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t const *ops,
+                       store_ops_t const *store_ops, value_mode_t mode) noexcept;
 
 #pragma endregion Object Layouts
 
 #pragma region Cursors
-
-/** @brief Which container family a cursor is walking, so it can reach the right store. */
-enum class cursor_family_t : std::uint8_t { map_k, set_k };
 
 /** @brief What a cursor hands back per step. */
 enum class cursor_yields_t : std::uint8_t { keys_k, values_k, items_k };
@@ -481,7 +639,6 @@ struct cursor_object_t {
  */
 struct mapping_view_object_t {
     PyObject_HEAD PyObject *owner;
-    cursor_family_t family;
     cursor_yields_t yields;
 };
 
@@ -506,37 +663,42 @@ extern PyType_Spec cursor_spec;
 extern PyType_Spec mapping_view_spec;
 extern PyType_Spec sorted_map_spec;
 extern PyType_Spec sorted_set_spec;
+extern PyType_Spec hash_map_spec;
+extern PyType_Spec hash_set_spec;
 
 /**
  *  @brief Visits every element once, in key order, stepping exactly as the Python cursor does.
  *
- *  For the whole-container operations - @c __repr__, @c __eq__, @c copy - which need every element but
- *  have no reason to build a Python object per step. Same exclusive-successor stepping as the cursor, so
- *  the two cannot disagree about what "every element" means.
+ *  For the whole-container operations - @c __repr__, @c __eq__, the set algebra - which need every
+ *  element but have no reason to build a Python object per step. Same exclusive-successor stepping as
+ *  the cursor, so the two cannot disagree about what "every element" means, and the same tolerance of
+ *  concurrent change: a key erased under the walk is harmless, one inserted behind it is missed.
+ *
+ *  Only ever called on an ordered container, whose table carries the two bounds. A set hands the
+ *  callback a value nothing wrote, since it has none.
  */
-template <typename store_type_, typename callback_type_>
-void for_each_in_order(store_type_ &store, key_ops_t const *ops, callback_type_ &&callback) noexcept {
-    using value_t = typename store_type_::value_t;
+template <typename callback_type_>
+void for_each_in_order(container_object_t const *container, callback_type_ &&callback) noexcept {
+    store_ops_t const *table = container->store_ops;
+    assert(table->lower_bound && table->upper_bound && "ordered walk over an unordered core");
 
     key_variant_t cursor;
-    ops->least(cursor);
-    cursor_state_t state = cursor_state_t::fresh_k;
-    bool wants_more = true;
-    while (wants_more) {
-        bool advanced = false;
-        auto keep = [&](value_t const &element) noexcept {
-            cursor = mapping_key_or_itself<value_t>(element);
-            advanced = true;
-            // A callback answering `bool` stops the walk when it says so; one answering `void` is
-            // asking for every element, and the difference is resolved here rather than by a flag.
-            if constexpr (std::is_same_v<decltype(callback(element)), bool>) wants_more = callback(element);
-            else callback(element);
-        };
-        auto missing = []() noexcept {};
-        if (state == cursor_state_t::fresh_k)
-            store.lower_bound(cursor, keep, missing), state = cursor_state_t::walking_k;
-        else store.upper_bound(cursor, keep, missing);
+    container->ops->least(cursor);
+    key_variant_t found_key;
+    value_variant_t found_value;
+    bool fresh = true;
+    while (true) {
+        bool const advanced = fresh ? table->lower_bound(container->store, cursor, found_key, &found_value)
+                                    : table->upper_bound(container->store, cursor, found_key, &found_value);
+        fresh = false;
         if (!advanced) break;
+        cursor = found_key;
+        // A callback answering `bool` stops the walk when it says so; one answering `void` is asking
+        // for every element, and the difference is resolved here rather than by a flag.
+        if constexpr (std::is_same_v<decltype(callback(found_key, found_value)), bool>) {
+            if (!callback(found_key, found_value)) break;
+        }
+        else { callback(found_key, found_value); }
     }
 }
 
@@ -547,75 +709,77 @@ void for_each_in_order(store_type_ &store, key_ops_t const *ops, callback_type_ 
 /**
  *  @brief One participant in a group transaction, whatever container it came from.
  *
- *  The set of stores is closed and known at compile time, so the alternatives are held in a variant
- *  rather than behind a base class. Every uniform operation - stage, commit, rollback, reset, erase,
- *  watch, contains - is one @c std::visit over a two-alternative variant, which lowers to a switch
- *  with no vtable, no indirect call and no per-participant heap allocation. The three operations that
- *  genuinely differ between a map and a set are the only ones that name the alternatives.
+ *  Holds the open transaction type-erased, beside the table that knows how to drive it. Every uniform
+ *  operation - stage, commit, rollback, reset, erase, watch, contains - is one indirect call, with no
+ *  vtable dispatch of its own, no per-participant heap allocation beyond the transaction itself, and
+ *  no arm to add when the store matrix grows. The three operations that genuinely differ between a
+ *  map and a set ask @c is_associative rather than which type is engaged.
+ *
+ *  @c mode is this participant's own, not the group's. Reading it from any other participant picks the
+ *  wrong GIL policy for a group that mixes a scalar container with an object one, which is the path
+ *  where a missed acquisition corrupts rather than fails.
  */
 struct participant_t {
-    std::variant<map_store_t::transaction_t, set_store_t::transaction_t> inner;
-    key_ops_t const *ops;
-    value_mode_t mode;
+    store_ops_t const *table {nullptr};
+    void *transaction {nullptr};
+    key_ops_t const *ops {nullptr};
+    value_mode_t mode {value_mode_t::scalars_k};
 
-    /**
-     *  @brief Whether this participant stores values as well as keys.
-     *
-     *  Asks the store's element type rather than reading an alternative index, so reordering the
-     *  variant cannot silently invert every map-versus-set decision downstream.
-     */
-    [[nodiscard]] bool is_associative() const noexcept {
-        // Which alternative is engaged, asked as a type question rather than by index, so reordering
-        // the variant cannot silently invert every map-versus-set decision downstream.
-        return std::holds_alternative<map_store_t::transaction_t>(inner);
+    participant_t() = default;
+    participant_t(store_ops_t const *table, void *transaction, key_ops_t const *ops, value_mode_t mode) noexcept
+        : table(table), transaction(transaction), ops(ops), mode(mode) {}
+
+    participant_t(participant_t const &) = delete;
+    participant_t &operator=(participant_t const &) = delete;
+    participant_t(participant_t &&other) noexcept
+        : table(other.table), transaction(std::exchange(other.transaction, nullptr)), ops(other.ops),
+          mode(other.mode) {}
+    participant_t &operator=(participant_t &&other) noexcept {
+        std::swap(table, other.table);
+        std::swap(transaction, other.transaction);
+        std::swap(ops, other.ops);
+        std::swap(mode, other.mode);
+        return *this;
     }
+    ~participant_t() noexcept {
+        if (transaction) table->transaction_destroy(transaction);
+    }
+
+    /** @brief Whether this participant stores values as well as keys. */
+    [[nodiscard]] bool is_associative() const noexcept { return table->is_associative; }
 
     [[nodiscard]] bool contains(key_variant_t const &key) noexcept {
-        return std::visit([&](auto &transaction) noexcept { return transaction.contains(key); }, inner);
+        return table->transaction_contains(transaction, key);
     }
 
-    /** @brief Reads a mapped value. Always false for a set, which has none. */
+    /** @brief Reads a mapped value. Only ever called on a map; callers check @c is_associative first. */
     [[nodiscard]] bool find(key_variant_t const &key, value_variant_t &value) noexcept {
-        auto *as_map = std::get_if<map_store_t::transaction_t>(&inner);
-        assert(as_map && "find on a set participant; callers check is_associative first");
-        bool present = false;
-        as_map->find(
-            key, [&](entry_t const &entry) noexcept { value = entry.mapped, present = true; }, []() noexcept {});
-        return present;
+        assert(is_associative() && "find on a set participant; callers check is_associative first");
+        return table->transaction_find(transaction, key, value);
     }
 
-    /** @brief Inserts or overwrites a key and value. Refuses on a set. */
+    /** @brief Inserts or overwrites a key and value. Only ever called on a map. */
     [[nodiscard]] status_t upsert(key_variant_t &&key, value_variant_t &&value) noexcept {
-        auto *as_map = std::get_if<map_store_t::transaction_t>(&inner);
-        assert(as_map && "upsert on a set participant; callers check is_associative first");
-        return as_map->upsert(entry_t {std::move(key), std::move(value)});
+        assert(is_associative() && "upsert on a set participant; callers check is_associative first");
+        return table->transaction_upsert(transaction, std::move(key), &value);
     }
 
-    /** @brief Inserts a bare member. Refuses on a map, which needs a value. */
+    /** @brief Inserts a bare member. Only ever called on a set, which needs no value. */
     [[nodiscard]] status_t add(key_variant_t &&key) noexcept {
-        auto *as_set = std::get_if<set_store_t::transaction_t>(&inner);
-        assert(as_set && "add on a map participant; callers check is_associative first");
-        return as_set->upsert(std::move(key));
+        assert(!is_associative() && "add on a map participant; callers check is_associative first");
+        return table->transaction_upsert(transaction, std::move(key), nullptr);
     }
 
     [[nodiscard]] status_t erase(key_variant_t const &key) noexcept {
-        return std::visit([&](auto &transaction) noexcept { return transaction.erase(key); }, inner);
+        return table->transaction_erase(transaction, key);
     }
     [[nodiscard]] status_t watch(key_variant_t const &key) noexcept {
-        return std::visit([&](auto &transaction) noexcept { return transaction.watch(key); }, inner);
+        return table->transaction_watch(transaction, key);
     }
-    [[nodiscard]] status_t stage() noexcept {
-        return std::visit([](auto &transaction) noexcept { return transaction.stage(); }, inner);
-    }
-    [[nodiscard]] status_t commit() noexcept {
-        return std::visit([](auto &transaction) noexcept { return transaction.commit(); }, inner);
-    }
-    [[nodiscard]] status_t rollback() noexcept {
-        return std::visit([](auto &transaction) noexcept { return transaction.rollback(); }, inner);
-    }
-    [[nodiscard]] status_t reset() noexcept {
-        return std::visit([](auto &transaction) noexcept { return transaction.reset(); }, inner);
-    }
+    [[nodiscard]] status_t stage() noexcept { return table->transaction_stage(transaction); }
+    [[nodiscard]] status_t commit() noexcept { return table->transaction_commit(transaction); }
+    [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(transaction); }
+    [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(transaction); }
 };
 
 /**
@@ -685,6 +849,8 @@ struct module_state_t {
 
     PyTypeObject *sorted_map_type;
     PyTypeObject *sorted_set_type;
+    PyTypeObject *hash_map_type;
+    PyTypeObject *hash_set_type;
     PyTypeObject *transaction_type;
     PyTypeObject *view_type;
     PyTypeObject *cursor_type;

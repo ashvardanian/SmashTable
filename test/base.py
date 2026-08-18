@@ -39,7 +39,19 @@ set_class_names = [
 ]
 all_class_names = map_class_names + set_class_names
 sorted_map_names = [map_class_names[0]]
+sorted_set_names = [set_class_names[0]]
 sorted_class_names = [map_class_names[0], set_class_names[0]]
+
+# Classes whose contents can be walked, which is what the structural oracle needs: it compares
+# against `dict` and `set`, and cannot run against a container it cannot enumerate.
+#
+# A separate axis from `sorted_*` even though the two name the same classes today. Ordering and
+# enumerability are different properties - an unordered core that gains a `for_each` becomes
+# enumerable without becoming ordered - and a test that needs to list a container should say so
+# rather than borrowing a name that happens to coincide.
+enumerable_map_names = [map_class_names[0]]
+enumerable_set_names = [set_class_names[0]]
+enumerable_class_names = enumerable_map_names + enumerable_set_names
 
 # Every key type the containers accept. Floats and booleans are deliberately absent and are swept
 # as rejections in test/types.py instead.
@@ -58,6 +70,11 @@ sizes = [pytest.param(0, id="n0"), pytest.param(1, id="n1"), pytest.param(7, id=
 group_sizes = [pytest.param(1, id="g1"), pytest.param(2, id="g2"), pytest.param(5, id="g5")]
 
 transaction_styles = [pytest.param("context", id="with"), pytest.param("explicit", id="phases")]
+
+# What a reader is promised, and how the store is shared between threads. Two independent axes: the
+# level is asked for at construction, while the sharing decides how far up it actually survives.
+isolation_levels = [pytest.param("monotonic", id="monotonic"), pytest.param("snapshot", id="snapshot")]
+sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
 # endregion Matrices
 
@@ -142,11 +159,42 @@ def wrong_type_key(key_type: str):
 # region Builders
 
 
-def make(container_class: type, key_type: str, value_mode: str = "scalar"):
-    """The single place the suite spells container construction."""
+def make(
+    container_class: type,
+    key_type: str,
+    value_mode: str = "scalar",
+    isolation: str | None = None,
+    sharing: str | None = None,
+):
+    """The single place the suite spells container construction.
+
+    An axis left as None is not passed at all, so the container's own default applies and the
+    default is exercised by every test that does not sweep it.
+    """
+    arguments = {"key": key_type}
     if is_map_class(container_class) and value_mode != "scalar":
-        return container_class(key=key_type, value=value_mode)
-    return container_class(key=key_type)
+        arguments["value"] = value_mode
+    if isolation is not None:
+        arguments["isolation"] = isolation
+    if sharing is not None:
+        arguments["sharing"] = sharing
+    return container_class(**arguments)
+
+
+def effective_isolation(isolation: str, sharing: str) -> str:
+    """What a container actually promises, which is not always what was asked for.
+
+    A snapshot container carries its level across partitions, because visibility there is a stamp
+    comparison and every partition draws from one clock. A monotonic one cannot: its reader holds no
+    stamp to answer at, so a walk across partitions can catch a commit half-applied and only Read
+    Committed survives above a single key.
+
+    The single place the cap is spelled, so a core that changes what it can carry is one edit here
+    rather than a sweep through the suite.
+    """
+    if isolation == "snapshot":
+        return "snapshot"
+    return "read_committed" if sharing == "partitioned" else "monotonic_atomic_view"
 
 
 def populate(container, keys: Sequence, values: Sequence):
@@ -262,13 +310,30 @@ def run_set(target, op: Op):
     }[op.name]()
 
 
+def is_enumerable(container) -> bool:
+    """Whether this container can list its contents, which decides how it is compared."""
+    return hasattr(type(container), "__iter__")
+
+
 def assert_same_state(container, model) -> None:
     """Everything the container can be asked, asked of the model too.
 
     Iteration is walked on every call rather than in a handful of dedicated tests, so the lazy
     cursor is exercised thousands of times across a run.
+
+    A container that cannot enumerate itself is compared by length and by probing every key the
+    model holds. That is an equivalence rather than a weaker check: matching lengths mean the
+    container holds no key the model does not, so proving every model key present with the right
+    value proves the two agree.
     """
     assert len(container) == len(model), f"len {len(container)} vs {len(model)}"
+
+    if not is_enumerable(container):
+        for key in model:
+            assert key in container, f"model key {key!r} is absent from the container"
+            if isinstance(model, dict):
+                assert same_scalar(container[key], model[key]), f"{key!r}: {container[key]!r} vs {model[key]!r}"
+        return
 
     walked = list(container)
     assert len(walked) == len(model), f"iteration visited {len(walked)} keys, model holds {len(model)}"

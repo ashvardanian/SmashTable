@@ -8,6 +8,8 @@ Run:
     python -m pytest test/conflicts.py -v
 """
 
+import threading
+
 import pytest
 
 import smashtable as st
@@ -171,3 +173,80 @@ def test_the_retry_loop_converges(container, keygen):
             pytest.fail("retry loop failed to converge")
     assert container[key] == 490
     assert attempts == 2
+
+
+@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+@pytest.mark.parametrize("isolation", ["monotonic", "snapshot"])
+def test_a_refused_stage_applied_nothing(isolation, sharing):
+    """`ConflictError` must mean nothing landed, which is what makes a retry safe.
+
+    The contract the README leads with, and the one every retry loop rests on. Forced rather than
+    raced, so it holds every level to the promise without depending on an interleaving.
+    """
+    keys = list(range(64))
+    container = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
+    for key in keys:
+        container[key] = -1
+
+    group = st.atomic(container)
+    (view,) = group.begin()
+    view.watch(keys[0])
+    container[keys[0]] = 999  # An outsider commits under the watch
+
+    for key in keys:
+        view[key] = 12345
+    with pytest.raises(st.ConflictError):
+        group.stage()
+
+    assert 12345 not in {container[key] for key in keys}, "a refused transaction published its writes"
+
+
+@pytest.mark.slow
+@pytest.mark.thread_unsafe(reason="it runs its own threads and asserts on their interleaving")
+@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+def test_a_refused_commit_applied_nothing(sharing):
+    """The same contract for a refusal that arrives at `commit` rather than at `stage`.
+
+    Snapshot only: it is the level that validates writes as well as watches, so it is the only one
+    where a transaction can pass `stage` and still be refused. The precondition at the end is
+    load-bearing - a run in which nothing was refused has not exercised the path, and must not be
+    read as evidence that the path is sound.
+
+    Regression: a sharded snapshot commit once published its partitions and then reported a
+    conflict, so the retry applied the transaction a second time.
+    """
+    keys = list(range(64))
+    container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
+    for key in keys:
+        container[key] = -1
+
+    ghosts: list[int] = []
+    refusals = [0]
+    guard = threading.Lock()
+
+    def writer(index: int) -> None:
+        attempt = 0
+        for _ in range(30):
+            while True:
+                attempt += 1
+                marker = index * 1_000_000 + attempt
+                try:
+                    with st.atomic(container) as (view,):
+                        for key in keys:
+                            view[key] = marker
+                    break
+                except st.ConflictError:
+                    with guard:
+                        refusals[0] += 1
+                        if any(container[key] == marker for key in keys):
+                            ghosts.append(marker)
+
+    threads = [threading.Thread(target=writer, args=(index,)) for index in range(3)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    assert not any(thread.is_alive() for thread in threads), "a writer never finished"
+
+    assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
+    assert refusals[0] > 0, "nothing was refused, so this run proved nothing"

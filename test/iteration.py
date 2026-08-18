@@ -13,12 +13,19 @@ import gc
 
 import pytest
 
-from .base import all_class_names, is_map_class, key_types, populate, sorted_class_names
+from .base import (
+    all_class_names,
+    enumerable_class_names,
+    is_map_class,
+    key_types,
+    populate,
+    sorted_class_names,
+)
 
 # region Termination
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_iterating_nothing_stops_immediately(container):
     """An empty container yields nothing rather than hanging or raising."""
@@ -26,7 +33,7 @@ def test_iterating_nothing_stops_immediately(container):
     assert list(iter(container)) == []
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_each_key_is_visited_exactly_once(container, keygen):
     """A walk sees every element and never repeats one."""
@@ -106,7 +113,7 @@ def test_deletion_ahead_of_the_cursor_is_skipped(container_class):
     assert walked == [1, 3]
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_mutation_during_iteration_does_not_raise(container_class):
     """Unlike dict, changing the container mid-walk is legal here."""
     container = container_class(key="int")
@@ -131,7 +138,7 @@ def test_a_dict_would_have_raised_on_the_same_sequence():
                 model[100 + index] = 0
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_clear_during_iteration_terminates(container_class):
     """Emptying the container mid-walk ends the walk rather than looping."""
     container = container_class(key="int")
@@ -151,7 +158,7 @@ def test_clear_during_iteration_terminates(container_class):
 # region Lifetime and independence
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_an_iterator_keeps_its_container_alive(container_class):
     """Dropping the last named reference mid-walk must not free the store underneath."""
     container = container_class(key="int")
@@ -166,7 +173,7 @@ def test_an_iterator_keeps_its_container_alive(container_class):
     assert remaining == keys[1:]
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_two_walks_do_not_interfere(container_class):
     """Each cursor carries its own position, so nested walks are independent."""
     container = container_class(key="int")
@@ -176,7 +183,7 @@ def test_two_walks_do_not_interfere(container_class):
     assert len(pairs) == len(keys) * len(keys)
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_an_exhausted_walk_stays_exhausted(container_class):
     """A cursor that ended does not restart when the container grows again."""
     container = container_class(key="int")

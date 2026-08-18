@@ -327,4 +327,29 @@ def test_single_container_transaction_shorthand(container, keygen):
     assert container[key] == "solo"
 
 
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("object_first", [pytest.param(False, id="scalar-first"), pytest.param(True, id="object-first")])
+def test_a_group_may_mix_value_modes(key_type, keygen, object_first):
+    """Each participant writes under its own value mode, not under the group's first.
+
+    The two modes differ in whether the interpreter lock is held around a stored value, so a
+    participant reading a neighbour's mode picks the wrong policy - the path where a missed
+    acquisition corrupts rather than fails. Swept in both orders because reading participant zero
+    happens to be right for whichever container is there.
+    """
+    scalars = make(st.SortedMap, key_type)
+    objects = make(st.SortedMap, key_type, value_mode="object")
+    key = keygen(1)[0]
+    payload = {"nested": [1, 2]}
+
+    first, second = (objects, scalars) if object_first else (scalars, objects)
+    with st.atomic(first, second) as (first_view, second_view):
+        object_view, scalar_view = (first_view, second_view) if object_first else (second_view, first_view)
+        object_view[key] = payload
+        scalar_view[key] = 42
+
+    assert objects[key] is payload, "an object-mode value must round-trip by identity"
+    assert scalars[key] == 42
+
+
 # endregion Cross container

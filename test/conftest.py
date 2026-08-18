@@ -75,9 +75,21 @@ def value_mode(request) -> str:
 
 
 @pytest.fixture
-def container(container_class: type, key_type: str, value_mode: str):
-    """An empty container of the swept class, key type and value mode."""
-    return make(container_class, key_type, value_mode)
+def isolation(request) -> str | None:
+    """The level asked for, or None to leave the container's default in place."""
+    return getattr(request, "param", None)
+
+
+@pytest.fixture
+def sharing(request) -> str | None:
+    """How the store is shared, or None to leave the container's default in place."""
+    return getattr(request, "param", None)
+
+
+@pytest.fixture
+def container(container_class: type, key_type: str, value_mode: str, isolation, sharing):
+    """An empty container of the swept class, key type, value mode, isolation and sharing."""
+    return make(container_class, key_type, value_mode, isolation, sharing)
 
 
 @pytest.fixture

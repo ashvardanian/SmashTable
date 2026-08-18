@@ -15,6 +15,9 @@ from .base import (
     all_class_names,
     apply_op,
     assert_same_state,
+    enumerable_class_names,
+    enumerable_map_names,
+    enumerable_set_names,
     key_types,
     map_class_names,
     populate,
@@ -26,7 +29,7 @@ from .base import (
 # region Construction
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_new_container_is_empty(container):
     """A freshly built container holds nothing and is falsy."""
@@ -132,7 +135,7 @@ def test_get_and_setdefault_match_dict(container, keygen, valuegen):
         apply_op(container, model, op)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
 @pytest.mark.parametrize("size", sizes)
@@ -167,7 +170,7 @@ def test_update_from_mapping_and_pairs(container, keygen, valuegen):
 @pytest.mark.thread_unsafe(
     reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very state it compares against its model"
 )
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])
@@ -181,7 +184,7 @@ def test_popitem_removes_a_real_pair(populated):
     assert_same_state(container, model)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_popitem_on_empty_raises(container):
     """popitem on an empty container raises KeyError, as dict does."""
@@ -249,7 +252,7 @@ def test_a_set_refuses_item_assignment(container, keygen):
         container[member] = 1
 
 
-@pytest.mark.parametrize("class_name", set_class_names)
+@pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize(
     "operation",
@@ -266,7 +269,7 @@ def test_set_algebra_matches_set(container, keygen, operation):
     assert sorted(map(repr, got)) == sorted(map(repr, want))
 
 
-@pytest.mark.parametrize("class_name", set_class_names)
+@pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_isdisjoint_matches_set(container, keygen):
     """isdisjoint agrees with the stdlib set, both when it holds and when it does not."""
@@ -276,7 +279,7 @@ def test_isdisjoint_matches_set(container, keygen):
     assert container.isdisjoint(set(keys[:1])) == model.isdisjoint(set(keys[:1]))
 
 
-@pytest.mark.parametrize("class_name", set_class_names)
+@pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_subset_and_superset_match_set(container, keygen):
     """The four ordering comparisons agree with the stdlib set."""
@@ -317,7 +320,7 @@ def test_repr_of_a_large_container_is_bounded(populated):
     assert len(model) == 64
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])
@@ -339,7 +342,7 @@ def test_comparison_with_a_foreign_type_is_false(populated):
     assert not (container == object())
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_equality_follows_python_numeric_rules_for_values(container, keygen):
     """`{k: 1} == {k: 1.0}` holds for a container exactly as it does for a dict."""
@@ -348,7 +351,7 @@ def test_equality_follows_python_numeric_rules_for_values(container, keygen):
     assert container == {key: 1.0}
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_containers_are_unhashable(container):
     """A mutable container is unhashable, like dict and set."""
@@ -361,7 +364,7 @@ def test_containers_are_unhashable(container):
 # region Views
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 @pytest.mark.parametrize("size", [pytest.param(0, id="n0"), pytest.param(5, id="n5")])
@@ -373,7 +376,7 @@ def test_views_agree_with_each_other(populated):
     assert len(container.keys()) == len(model)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 @pytest.mark.parametrize("size", [pytest.param(3, id="n3")])
@@ -387,7 +390,7 @@ def test_a_view_reflects_later_writes(populated, keygen, valuegen):
     assert len(view) == len(model) + 1
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 @pytest.mark.parametrize("size", [pytest.param(3, id="n3")])

@@ -137,6 +137,12 @@ static int module_exec(PyObject *module) noexcept {
     state->sorted_set_type =
         reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &sorted_set_spec, nullptr));
     if (!state->sorted_set_type) return -1;
+    state->hash_map_type =
+        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &hash_map_spec, nullptr));
+    if (!state->hash_map_type) return -1;
+    state->hash_set_type =
+        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &hash_set_spec, nullptr));
+    if (!state->hash_set_type) return -1;
     state->transaction_type =
         reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &transaction_spec, nullptr));
     if (!state->transaction_type) return -1;
@@ -150,6 +156,8 @@ static int module_exec(PyObject *module) noexcept {
 
     if (add_transaction_method(state->sorted_map_type) != 0) return -1;
     if (add_transaction_method(state->sorted_set_type) != 0) return -1;
+    if (add_transaction_method(state->hash_map_type) != 0) return -1;
+    if (add_transaction_method(state->hash_set_type) != 0) return -1;
 
     if (PyModule_AddObjectRef(module, "Error", state->error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "ConflictError", state->conflict_error) < 0) return -1;
@@ -157,6 +165,8 @@ static int module_exec(PyObject *module) noexcept {
     if (PyModule_AddObjectRef(module, "StateError", state->state_error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "SortedMap", reinterpret_cast<PyObject *>(state->sorted_map_type)) < 0) return -1;
     if (PyModule_AddObjectRef(module, "SortedSet", reinterpret_cast<PyObject *>(state->sorted_set_type)) < 0) return -1;
+    if (PyModule_AddObjectRef(module, "HashMap", reinterpret_cast<PyObject *>(state->hash_map_type)) < 0) return -1;
+    if (PyModule_AddObjectRef(module, "HashSet", reinterpret_cast<PyObject *>(state->hash_set_type)) < 0) return -1;
     if (PyModule_AddStringConstant(module, "__version__", "0.1.0") < 0) return -1;
     return 0;
 }
@@ -165,6 +175,8 @@ static int module_traverse(PyObject *module, visitproc visit, void *arg) noexcep
     module_state_t *state = state_of(module);
     Py_VISIT(state->sorted_map_type);
     Py_VISIT(state->sorted_set_type);
+    Py_VISIT(state->hash_map_type);
+    Py_VISIT(state->hash_set_type);
     Py_VISIT(state->transaction_type);
     Py_VISIT(state->view_type);
     Py_VISIT(state->cursor_type);
@@ -180,6 +192,8 @@ static int module_clear(PyObject *module) noexcept {
     module_state_t *state = state_of(module);
     Py_CLEAR(state->sorted_map_type);
     Py_CLEAR(state->sorted_set_type);
+    Py_CLEAR(state->hash_map_type);
+    Py_CLEAR(state->hash_set_type);
     Py_CLEAR(state->transaction_type);
     Py_CLEAR(state->view_type);
     Py_CLEAR(state->cursor_type);

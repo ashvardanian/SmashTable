@@ -344,6 +344,12 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
     case status_t::operation_not_permitted_k:
         PyErr_SetString(state->state_error, "operation not permitted in this transaction state");
         break;
+    // Deliberately not a `MemoryError`: the probe run is full, which is a rehash the table could
+    // not perform rather than a heap that could not supply memory, and the two want different
+    // remedies from anyone who catches this.
+    case status_t::capacity_exhausted_k:
+        PyErr_SetString(state->error, "the table's probe sequence is full and it could not grow");
+        break;
     default: PyErr_Format(state->error, "operation failed with status %d", static_cast<int>(status)); break;
     }
     return -1;
@@ -356,33 +362,21 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
 /**
  *  @brief Advances one step, writing the key and, for a map, the value.
  *  @param[in] self The cursor to advance.
+ *  @param[in] container The container being walked, which carries both tables.
  *  @param[out] found_key The key yielded, written only when the step succeeded.
  *  @param[out] found_value The mapped value, written only for a map step that succeeded.
  *  @return True when a key was produced, false when the walk is over.
  */
-template <typename store_type_>
-static bool cursor_step(cursor_object_t *self, store_type_ &store, key_ops_t const *ops, key_variant_t &found_key,
+static bool cursor_step(cursor_object_t *self, container_object_t const *container, key_variant_t &found_key,
                         value_variant_t *found_value) noexcept {
-    using value_t = typename store_type_::value_t;
-
-    bool advanced = false;
-    auto keep = [&](value_t const &element) noexcept {
-        // `mapping_key_or_itself` is what lets one cursor serve both a map and a set: it unwraps a
-        // `mapping` and returns anything else untouched.
-        found_key = mapping_key_or_itself<value_t>(element);
-        if constexpr (is_mapping<value_t>)
-            if (found_value) *found_value = element.mapped;
-        advanced = true;
-    };
-    auto missing = []() noexcept {};
-
-    if (self->state == cursor_state_t::fresh_k) store.lower_bound(self->position, keep, missing);
-    else store.upper_bound(self->position, keep, missing);
-
+    store_ops_t const *table = container->store_ops;
+    bool const advanced = self->state == cursor_state_t::fresh_k
+                              ? table->lower_bound(container->store, self->position, found_key, found_value)
+                              : table->upper_bound(container->store, self->position, found_key, found_value);
     if (!advanced) return false;
 
     // A stop bound is exclusive, so a key that is not below it ends the walk without yielding.
-    if (self->limits.stop && !ops->less(found_key, *self->limits.stop)) return false;
+    if (self->limits.stop && !container->ops->less(found_key, *self->limits.stop)) return false;
 
     self->state = cursor_state_t::walking_k;
     self->position = found_key;
@@ -422,12 +416,10 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     auto *walk = object_as<cursor_object_t>(self);
     if (!walk->owner) return nullptr;
 
-    // The layout and the family are read back from the container rather than cached here, so neither
-    // can disagree with the object this walk is actually stepping through.
+    // Both tables are read back from the container rather than cached here, so neither can disagree
+    // with the object this walk is actually stepping through.
     auto const *header = object_as<container_object_t>(walk->owner);
-    module_state_t *state = state_of_type(walk->owner);
-    if (!state) return nullptr;
-    bool const over_a_map = Py_IS_TYPE(walk->owner, state->sorted_map_type);
+    bool const over_a_map = header->store_ops->is_associative;
 
     key_variant_t found_key;
     value_variant_t found_value;
@@ -443,12 +435,7 @@ static PyObject *cursor_next(PyObject *self) noexcept {
             walk->state = cursor_state_t::exhausted_k;
             return;
         }
-        if (over_a_map)
-            advanced = cursor_step(walk, object_as<sorted_map_object_t>(walk->owner)->store, header->ops, found_key,
-                                   &found_value);
-        else
-            advanced =
-                cursor_step(walk, object_as<sorted_set_object_t>(walk->owner)->store, header->ops, found_key, nullptr);
+        advanced = cursor_step(walk, header, found_key, over_a_map ? &found_value : nullptr);
         if (!advanced) {
             walk->state = cursor_state_t::exhausted_k;
             return;
@@ -494,11 +481,19 @@ PyType_Spec cursor_spec = {"smashtable._Cursor", sizeof(cursor_object_t), 0,
 
 PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t yields, key_variant_t const *start,
                      key_variant_t const *stop, Py_ssize_t limit) noexcept {
+    auto const *header = object_as<container_object_t>(container);
+
     // A set has no values, so asking one for values or items is a programming error rather than an
-    // empty result - it used to yield a default-constructed zero for every member.
-    bool const over_a_map = Py_IS_TYPE(container, state->sorted_map_type);
-    if (!over_a_map && yields != cursor_yields_t::keys_k) {
+    // empty result - it would yield a default-constructed zero for every member.
+    if (!header->store_ops->is_associative && yields != cursor_yields_t::keys_k) {
         PyErr_SetString(PyExc_TypeError, "a set has no values to walk");
+        return nullptr;
+    }
+
+    // An unordered core supplies no bounds, so there is nothing to step through. No class installs a
+    // walk over one, which is what makes this unreachable rather than merely refused.
+    if (!header->store_ops->is_ordered) {
+        PyErr_SetString(PyExc_TypeError, "this container has no ordering to walk");
         return nullptr;
     }
 
@@ -511,7 +506,7 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
     new (&walk->position) key_variant_t {};
     new (&walk->limits) walk_limits_t {};
 
-    auto const *ops = object_as<container_object_t>(container)->ops;
+    auto const *ops = header->ops;
     walk->owner = Py_NewRef(container);
     walk->yields = yields;
     walk->state = cursor_state_t::fresh_k;
@@ -565,13 +560,10 @@ static PyObject *mapping_view_iter(PyObject *self) noexcept {
 
 static Py_ssize_t mapping_view_length(PyObject *self) noexcept {
     auto *view = object_as<mapping_view_object_t>(self);
-    module_state_t *state = state_of_type(self);
-    if (!state) return -1;
-    bool const over_a_map = Py_IS_TYPE(view->owner, state->sorted_map_type);
+    auto const *header = object_as<container_object_t>(view->owner);
     std::size_t size = 0;
     Py_BEGIN_ALLOW_THREADS;
-    if (over_a_map) size = object_as<sorted_map_object_t>(view->owner)->store.size();
-    else size = object_as<sorted_set_object_t>(view->owner)->store.size();
+    size = header->store_ops->size(header->store);
     Py_END_ALLOW_THREADS;
     return static_cast<Py_ssize_t>(size);
 }

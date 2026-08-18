@@ -9,7 +9,7 @@ Run:
 
 import pytest
 
-from .base import key_types, populate, sorted_class_names, sorted_map_names
+from .base import make, key_types, populate, sorted_class_names, sorted_map_names
 
 # region Iteration order
 
@@ -116,3 +116,73 @@ def test_scan_rejects_a_foreign_bound(container):
 
 
 # endregion Scan
+
+
+# region Range erase
+
+
+@pytest.mark.parametrize("class_name", sorted_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize(
+    ("window", "kept"),
+    [
+        pytest.param(slice(2, 5), [0, 1, 5, 6, 7], id="both-bounds"),
+        pytest.param(slice(None, 3), [3, 4, 5, 6, 7], id="open-lower"),
+        pytest.param(slice(5, None), [0, 1, 2, 3, 4], id="open-upper"),
+        pytest.param(slice(None, None), [], id="both-open"),
+    ],
+)
+def test_deleting_a_slice_erases_the_window(container, keygen, window, kept):
+    """`del m[a:b]` removes the half-open window, with either end left out."""
+    keys = keygen(8)
+    for index, key in enumerate(keys):
+        container[key] = index
+    bounds = slice(
+        None if window.start is None else keys[window.start],
+        None if window.stop is None else keys[window.stop],
+    )
+    del container[bounds]
+    assert list(container) == [keys[index] for index in kept]
+
+
+@pytest.mark.parametrize("class_name", sorted_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_slice_window_matches_scan(container, keygen):
+    """What a slice erases is exactly what the same window would have scanned."""
+    keys = keygen(10)
+    for index, key in enumerate(keys):
+        container[key] = index
+    doomed = [key for key, _ in container.scan(keys[3], keys[7])]
+    del container[keys[3] : keys[7]]
+    assert all(key not in container for key in doomed)
+    assert len(container) == 10 - len(doomed)
+
+
+@pytest.mark.parametrize("class_name", sorted_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_slice_with_a_step_is_refused(container):
+    """A step would have to mean every n-th key, which no ordering over keys defines."""
+    with pytest.raises(ValueError):
+        del container[0:10:2]
+
+
+@pytest.mark.parametrize("class_name", sorted_map_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_slice_bound_of_the_wrong_type_is_refused(container):
+    """A bound is a key, so it is held to the container's layout exactly as a key is."""
+    with pytest.raises(TypeError):
+        del container["nope":"neither"]
+
+
+@pytest.mark.parametrize("class_name", [pytest.param("SortedSet", id="sortedset")])
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_set_erases_a_slice_too(container, keygen):
+    """A set names a window the same way, its only use for a subscript."""
+    keys = keygen(6)
+    for key in keys:
+        container.add(key)
+    del container[keys[1] : keys[4]]
+    assert list(container) == [keys[0], keys[4], keys[5]]
+
+
+# endregion Range erase

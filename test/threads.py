@@ -16,7 +16,12 @@ import pytest
 
 import smashtable as st
 
-from .base import make, map_class_names, skip_unless_free_threaded
+from .base import (
+    enumerable_map_names,
+    make,
+    map_class_names,
+    skip_unless_free_threaded,
+)
 
 
 def _drive(worker, count: int, failures: list[str], timeout: float = 60.0) -> None:
@@ -73,7 +78,7 @@ def test_concurrent_readers_never_raise(container, failures):
     _drive(worker, 4, failures)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_iteration_concurrent_with_mutation_never_crashes(container, failures):
     """A walk running alongside writers terminates and yields only real keys."""
@@ -119,7 +124,7 @@ def test_swapped_argument_order_does_not_deadlock(container_class, key_type, fai
     _drive(worker, 4, failures)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_group_is_never_half_visible(container_class, key_type, failures):
     """A reader sampling both containers never catches a group part-way in."""
@@ -158,7 +163,7 @@ def test_a_group_is_never_half_visible(container_class, key_type, failures):
     assert not failures, "\n".join(failures)
 
 
-@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int"), pytest.param("str", id="str")])
 def test_one_iterator_shared_by_many_threads(container, keygen, failures):
     """Threads pulling from one iterator between them see every key exactly once.
