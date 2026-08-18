@@ -45,7 +45,7 @@ section("Two indexes that must move together")
 by_id = st.SortedMap(key=int)
 by_name = st.SortedMap(key=str)
 
-with st.atomic(by_id, by_name) as (ids, names):
+with st.transaction(by_id, by_name) as (ids, names):
     ids[42] = "carol"
     names["carol"] = 42
 
@@ -61,7 +61,7 @@ section("A block that raises applies nothing")
 #     ──────────────────────────────────────────────────
 #     the block ends                    ✗  neither, and no torn state in between
 try:
-    with st.atomic(by_id, by_name) as (ids, names):
+    with st.transaction(by_id, by_name) as (ids, names):
         ids[43] = "dave"
         names["dave"] = 43
         raise ValueError("failed validation")
@@ -81,7 +81,7 @@ section("A group may mix maps and sets, and key types")
 #     the block ends                    ✓  all three, together
 tags = st.SortedSet(key=str)
 
-with st.atomic(by_id, by_name, tags) as (ids, names, labels):
+with st.transaction(by_id, by_name, tags) as (ids, names, labels):
     ids[7] = "eve"
     names["eve"] = 7
     labels.add("staff")
@@ -125,7 +125,7 @@ assert [key for key, _ in scores.scan("b", "d")] == ["bob", "carol"]
 
 # `popitem` takes the smallest key. An ordered store reaches it in one lookup, where the largest
 # would cost a full walk, so this is where it reasonably differs from `dict`.
-shows("scores.popitem()", scores.popitem())
+shows("scores.popmin()", scores.popmin())
 
 # endregion The Ordinary Surface
 
@@ -232,7 +232,7 @@ interfered = False
 while True:
     attempts += 1
     try:
-        group = st.atomic(accounts)
+        group = st.transaction(accounts)
         (view,) = group.begin()
         view.watch("alice")
         view["alice"] = accounts["alice"] - 10
@@ -265,7 +265,7 @@ section("The two phases, when the decision depends on staging")
 inventory = st.SortedMap(key=str)
 inventory["widget"] = 5
 
-group = st.atomic(inventory)
+group = st.transaction(inventory)
 (view,) = group.begin()
 view["widget"] = 0
 group.stage()

@@ -9,7 +9,7 @@
  *
  *  The four regions build on each other in order. A key layout says what a key IS - how it orders,
  *  how it hashes, where its floor is. Conversion carries a Python scalar across the boundary under
- *  that layout, refusing every type the container was not built for. Errors turn a store's status
+ *  that layout, refusing every type the store was not built for. Errors turn a store's status
  *  into a raised exception. The cursor is the one traversal in the binding, and every walk in every
  *  container goes through it.
  */
@@ -26,13 +26,13 @@ namespace ashvardanian::smashtable::py {
 
 /**
  *  @brief Reads the alternative this layout guarantees, checked in debug and free in release.
- *  @param[in] value The key, which the container has already validated against its layout.
+ *  @param[in] value The key, which the store has already validated against its layout.
  *  @return Reference to the stored alternative.
  */
 template <typename alternative_type_>
 static alternative_type_ const &assume_layout(key_variant_t const &key) noexcept {
     auto const *held = std::get_if<alternative_type_>(&key.value);
-    assert(held && "a key reached its comparator carrying a different layout than its container");
+    assert(held && "a key reached its comparator carrying a different layout than its store");
     return *held;
 }
 
@@ -231,13 +231,13 @@ bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &res
         return true;
     }
 
-    // Anything else is stored by reference, and only where the container promised to hold the GIL
+    // Anything else is stored by reference, and only where the store promised to hold the GIL
     // around every operation that could touch its refcount.
     if (mode == value_mode_t::objects_k) {
         result = value_variant_t {object_t {object}};
         return true;
     }
-    PyErr_Format(PyExc_TypeError, "unsupported value type: %s; build the container with value='object' to store it",
+    PyErr_Format(PyExc_TypeError, "unsupported value type: %s; build the store with value='object' to store it",
                  Py_TYPE(object)->tp_name);
     return false;
 }
@@ -249,11 +249,11 @@ bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &res
 /** @brief Names the offending type in a way that points at the fix rather than just the refusal. */
 static void raise_wrong_key_type(PyObject *object, key_ops_t const *ops) noexcept {
     if (PyBool_Check(object) || PyFloat_Check(object)) {
-        PyErr_Format(PyExc_TypeError, "%s is not a valid key; this container takes %s keys, and %s may only be a value",
+        PyErr_Format(PyExc_TypeError, "%s is not a valid key; this store takes %s keys, and %s may only be a value",
                      Py_TYPE(object)->tp_name, ops->name, Py_TYPE(object)->tp_name);
         return;
     }
-    PyErr_Format(PyExc_TypeError, "%s is not a valid key; this container takes %s keys", Py_TYPE(object)->tp_name,
+    PyErr_Format(PyExc_TypeError, "%s is not a valid key; this store takes %s keys", Py_TYPE(object)->tp_name,
                  ops->name);
 }
 
@@ -442,7 +442,7 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     auto *walk = object_as<cursor_object_t>(self);
     if (!walk->owner) return nullptr;
 
-    // Both tables are read back from the container rather than cached here, so neither can disagree
+    // Both tables are read back from the store rather than cached here, so neither can disagree
     // with the object this walk is actually stepping through.
     auto const *header = object_as<container_object_t>(walk->owner);
     bool const over_a_map = header->store_ops->is_associative;
@@ -498,7 +498,7 @@ static PyType_Slot cursor_slots[] = {
     {Py_tp_clear, reinterpret_cast<void *>(cursor_clear)},
     {Py_tp_iter, reinterpret_cast<void *>(PyObject_SelfIter)},
     {Py_tp_iternext, reinterpret_cast<void *>(cursor_next)},
-    {Py_tp_doc, const_cast<char *>("Lazy walk over a container in key order.")},
+    {Py_tp_doc, const_cast<char *>("Lazy walk over a store in key order.")},
     {0, nullptr},
 };
 
@@ -519,7 +519,7 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
     // An unordered core supplies no bounds, so there is nothing to step through. No class installs a
     // walk over one, which is what makes this unreachable rather than merely refused.
     if (!header->store_ops->is_ordered) {
-        PyErr_SetString(PyExc_TypeError, "this container has no ordering to walk");
+        PyErr_SetString(PyExc_TypeError, "this store has no ordering to walk");
         return nullptr;
     }
 
@@ -586,7 +586,7 @@ static PyObject *mapping_view_iter(PyObject *self) noexcept {
     // consumer has to expect that, because a finalizer running in the same collection pass can
     // reach an object that has already been cleared.
     if (!view->owner) {
-        PyErr_SetString(state->state_error, "this view's container has been collected");
+        PyErr_SetString(state->state_error, "this view's store has been collected");
         return nullptr;
     }
     return cursor_new(state, view->owner, view->yields, nullptr, nullptr, -1);
@@ -621,16 +621,29 @@ static PyType_Slot mapping_view_slots[] = {
     {Py_tp_iter, reinterpret_cast<void *>(mapping_view_iter)},
     {Py_mp_length, reinterpret_cast<void *>(mapping_view_length)},
     {Py_tp_getset, reinterpret_cast<void *>(mapping_view_getset)},
-    {Py_tp_doc, const_cast<char *>("Lazy view over a container's keys, values or items.")},
+    {Py_tp_doc, const_cast<char *>("Lazy view over a store's keys, values or items.")},
     {0, nullptr},
 };
 
-PyType_Spec mapping_view_spec = {"smashtable._View", sizeof(mapping_view_object_t), 0,
-                                 Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION,
-                                 mapping_view_slots};
+// Three names over one layout, because a traceback saying `KeysView` says which of the three the
+// caller is holding, and `_View` beside the transaction handle's `View` said nothing and collided.
+PyType_Spec keys_view_spec = {"smashtable.KeysView", sizeof(mapping_view_object_t), 0,
+                              Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                              mapping_view_slots};
+
+PyType_Spec values_view_spec = {"smashtable.ValuesView", sizeof(mapping_view_object_t), 0,
+                                Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                                mapping_view_slots};
+
+PyType_Spec items_view_spec = {"smashtable.ItemsView", sizeof(mapping_view_object_t), 0,
+                               Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION,
+                               mapping_view_slots};
 
 PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yields_t yields) noexcept {
-    auto *view = PyObject_GC_New(mapping_view_object_t, state->mapping_view_type);
+    PyTypeObject *type = yields == cursor_yields_t::keys_k    ? state->keys_view_type
+                         : yields == cursor_yields_t::values_k ? state->values_view_type
+                                                               : state->items_view_type;
+    auto *view = PyObject_GC_New(mapping_view_object_t, type);
     if (!view) return nullptr;
     // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in
     // dealloc gives back exactly one. Taking a second immortalises the type in practice.

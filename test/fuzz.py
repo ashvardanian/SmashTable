@@ -76,7 +76,7 @@ def test_random_transactions_match_the_model(container_class, key_type, keygen, 
         shadow = dict(model)
         batch = [(rng.choice(keys), rng.choice(values)) for _ in range(rng.randint(1, 6))]
         try:
-            with st.atomic(container) as (view,):
+            with st.transaction(container) as (view,):
                 for key, value in batch:
                     view[key] = value
                     shadow[key] = value

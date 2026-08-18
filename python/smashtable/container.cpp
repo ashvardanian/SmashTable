@@ -63,10 +63,10 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
 static bool isolation_from_python(PyObject *specification, isolation_choice_t &choice) noexcept {
     if (!specification || specification == Py_None) return true;
     if (!PyUnicode_Check(specification)) {
-        PyErr_SetString(PyExc_TypeError, "isolation must be 'monotonic' or 'snapshot'");
+        PyErr_SetString(PyExc_TypeError, "isolation must be 'monotonic_atomic_view' or 'snapshot'");
         return false;
     }
-    if (PyUnicode_CompareWithASCIIString(specification, "monotonic") == 0) {
+    if (PyUnicode_CompareWithASCIIString(specification, "monotonic_atomic_view") == 0) {
         choice = isolation_choice_t::monotonic_k;
         return true;
     }
@@ -74,7 +74,12 @@ static bool isolation_from_python(PyObject *specification, isolation_choice_t &c
         choice = isolation_choice_t::snapshot_k;
         return true;
     }
-    PyErr_SetObject(PyExc_ValueError, specification);
+    // A store reports the level it delivers, which for a sharded one can be weaker than any level
+    // that can be asked for. Naming that here is what stops `isolation=m.isolation` looking broken.
+    PyErr_Format(PyExc_ValueError,
+                 "isolation must be 'monotonic_atomic_view' or 'snapshot', not %R; a weaker level "
+                 "such as 'read_committed' is delivered by sharding rather than requested",
+                 specification);
     return false;
 }
 
@@ -93,7 +98,7 @@ static bool sharing_from_python(PyObject *specification, sharing_choice_t &choic
         choice = sharing_choice_t::partitioned_k;
         return true;
     }
-    PyErr_SetObject(PyExc_ValueError, specification);
+    PyErr_Format(PyExc_ValueError, "sharing must be 'locked' or 'partitioned', not %R", specification);
     return false;
 }
 
@@ -190,7 +195,7 @@ static void container_dealloc(PyObject *self) noexcept {
 }
 
 /**
- *  @brief Reports the type and every stored object, so a cycle through a container is collectable.
+ *  @brief Reports the type and every stored object, so a cycle through a store is collectable.
  *
  *  An object-mode container holds strong references, and a collector that is not told about them
  *  sees the objects as externally reachable and never breaks the cycle. Reporting them is what
@@ -205,9 +210,9 @@ static int container_traverse(PyObject *self, visitproc visit, void *arg) noexce
 }
 
 /**
- *  @brief Drops everything the container holds, which is how the collector breaks the cycle.
+ *  @brief Drops everything the store holds, which is how the collector breaks the cycle.
  *
- *  Emptying the store is the whole of it: the references it holds are the only ones a container
+ *  Emptying the store is the whole of it: the references it holds are the only ones a store
  *  owns. The drops go through the store call, so each is released after its lock is gone rather
  *  than inside it - a finalizer here would otherwise deadlock exactly as it did on an ordinary
  *  write.
@@ -273,7 +278,7 @@ static char const doc_get[] =                                     //
     "Value for a key, or default when the key is absent.\n"       //
     "\n"                                                          //
     "Raises:\n"                                                   //
-    "  TypeError: If key is not of this container's key type.\n"; //
+    "  TypeError: If key is not of this store's key type.\n"; //
 
 static PyObject *Map_get(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
     if (count < 1 || count > 2) {
@@ -346,7 +351,7 @@ static int Map_assign_subscript(PyObject *self, PyObject *key, PyObject *value) 
             return -1;
         }
         if (value) {
-            PyErr_SetString(PyExc_TypeError, "a slice of this container cannot be assigned to");
+            PyErr_SetString(PyExc_TypeError, "a slice of this store cannot be assigned to");
             return -1;
         }
         return container_delete_slice(self, key);
@@ -435,19 +440,19 @@ static PyObject *Map_pop(PyObject *self, PyObject *const *args, Py_ssize_t count
     return value_to_python(found);
 }
 
-static char const doc_popitem[] =                                                   //
-    "popitem()\n"                                                                   //
+static char const doc_popmin[] =                                                   //
+    "popmin()\n"                                                                   //
     "\n"                                                                            //
     "Remove and return the smallest (key, value) pair.\n"                           //
     "\n"                                                                            //
-    "Unlike dict, which pops the most recently inserted pair, this pops the\n"      //
-    "smallest key. The store steps forward only, so the largest key would cost a\n" //
-    "full walk while the smallest costs a single bounded lookup.\n"                 //
+    "Named for what it does rather than borrowing dict's popitem, which removes\n"  //
+    "the most recently inserted pair. The store steps forward only, so the\n"       //
+    "largest key would cost a full walk while the smallest costs one lookup.\n"     //
     "\n"                                                                            //
     "Raises:\n"                                                                     //
-    "  KeyError: If the container is empty.\n";                                     //
+    "  KeyError: If the store is empty.\n";                                     //
 
-static PyObject *Map_popitem(PyObject *self, PyObject *) noexcept {
+static PyObject *Map_popmin(PyObject *self, PyObject *) noexcept {
     auto *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
@@ -464,7 +469,7 @@ static PyObject *Map_popitem(PyObject *self, PyObject *) noexcept {
     });
 
     if (!present) {
-        PyErr_SetString(PyExc_KeyError, "popitem(): container is empty");
+        PyErr_SetString(PyExc_KeyError, "popmin(): store is empty");
         return nullptr;
     }
     if (raise_for(state, status) != 0) return nullptr;
@@ -652,8 +657,8 @@ static PyObject *Set_remove(PyObject *self, PyObject *member) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_set_pop[] =                                 //
-    "pop()\n"                                                     //
+static char const doc_set_popmin[] =                                 //
+    "popmin()\n"                                                  //
     "\n"                                                          //
     "Remove and return the smallest member.\n"                    //
     "\n"                                                          //
@@ -663,7 +668,7 @@ static char const doc_set_pop[] =                                 //
     "Raises:\n"                                                   //
     "  KeyError: If the set is empty.\n";                         //
 
-static PyObject *Set_pop(PyObject *self, PyObject *) noexcept {
+static PyObject *Set_popmin(PyObject *self, PyObject *) noexcept {
     auto *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
@@ -679,7 +684,7 @@ static PyObject *Set_pop(PyObject *self, PyObject *) noexcept {
     Py_END_ALLOW_THREADS;
 
     if (!present) {
-        PyErr_SetString(PyExc_KeyError, "pop(): set is empty");
+        PyErr_SetString(PyExc_KeyError, "popmin(): set is empty");
         return nullptr;
     }
     if (raise_for(state, status) != 0) return nullptr;
@@ -1028,7 +1033,7 @@ static char const doc_scan[] =                                                  
     "container itself when the whole range does not need to exist at once.\n"             //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
-    "  TypeError: If a bound is not of this container's key type.\n";                     //
+    "  TypeError: If a bound is not of this store's key type.\n";                     //
 
 /** @brief Drives the shared cursor into a list, so there is one traversal in the binding. */
 static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
@@ -1204,7 +1209,7 @@ static PyObject *Unordered_repr(PyObject *self) noexcept {
 /**
  *  @brief Compares against another map of this build or a @c dict, by content and never by arrival order.
  *
- *  Walks this container's store once and probes the other side per key. Against another map of the same
+ *  Walks this store's store once and probes the other side per key. Against another map of the same
  *  layout the key never becomes a Python object at all - it is compared as a stored scalar, through the
  *  same function pointer the tree orders by. Against a @c dict the key is built once and looked up
  *  through the C hash API. Neither path materializes a copy or dispatches through the interpreter.
@@ -1371,13 +1376,22 @@ static PyObject *container_isolation(PyObject *self, void *) noexcept {
     return PyUnicode_FromString(object_as<container_object_t>(self)->store_ops->isolation_name);
 }
 
+static PyObject *container_sharing(PyObject *self, void *) noexcept {
+    return PyUnicode_FromString(object_as<container_object_t>(self)->store_ops->sharing_name);
+}
+
 static char const doc_key_type[] =
-    "The key layout this container was built around: 'int', 'uint', 'str' or 'bytes'.";
+    "The key layout this store was built around: 'int', 'uint', 'str' or 'bytes'.";
 static char const doc_value_mode[] = "'scalar' when values must be scalars, 'object' when any object is stored.";
-static char const doc_isolation[] =
-    "What this container actually promises a reader, as Jepsen names it.\n"
+static char const doc_sharing[] =
+    "How this store is shared between threads: 'locked' or 'partitioned'.\n"
     "\n"
-    "The effective level rather than the one asked for. A snapshot container keeps\n"
+    "What was asked for, unlike isolation, which reports what is delivered.";
+
+static char const doc_isolation[] =
+    "What this store actually promises a reader, as Jepsen names it.\n"
+    "\n"
+    "The effective level rather than the one asked for. A snapshot store keeps\n"
     "its level across partitions, since visibility there is a stamp comparison. A\n"
     "monotonic one sharded across partitions reports 'read_committed', because a\n"
     "reader holding no stamp can catch a commit half-applied.";
@@ -1386,12 +1400,14 @@ static PyGetSetDef map_getset[] = {
     {"value_mode", container_value_mode, nullptr, const_cast<char *>(doc_value_mode), nullptr},
     {"key_type", container_key_type, nullptr, const_cast<char *>(doc_key_type), nullptr},
     {"isolation", container_isolation, nullptr, const_cast<char *>(doc_isolation), nullptr},
+    {"sharing", container_sharing, nullptr, const_cast<char *>(doc_sharing), nullptr},
     {nullptr, nullptr, nullptr, nullptr, nullptr},
 };
 
 static PyGetSetDef set_getset[] = {
     {"key_type", container_key_type, nullptr, const_cast<char *>(doc_key_type), nullptr},
     {"isolation", container_isolation, nullptr, const_cast<char *>(doc_isolation), nullptr},
+    {"sharing", container_sharing, nullptr, const_cast<char *>(doc_sharing), nullptr},
     {nullptr, nullptr, nullptr, nullptr, nullptr},
 };
 
@@ -1435,7 +1451,7 @@ static PyMethodDef SortedMap_methods[] = {
     {"get", as_pycfunction(Map_get), METH_FASTCALL, doc_get},
     {"clear", container_clear, METH_NOARGS, doc_clear},
     {"pop", as_pycfunction(Map_pop), METH_FASTCALL, doc_pop},
-    {"popitem", Map_popitem, METH_NOARGS, doc_popitem},
+    {"popmin", Map_popmin, METH_NOARGS, doc_popmin},
     {"setdefault", as_pycfunction(Map_setdefault), METH_FASTCALL, doc_setdefault},
     {"update", as_pycfunction(Map_update), METH_FASTCALL, doc_map_update},
     {"keys", Map_keys, METH_NOARGS, "A lazy view over the keys, in order."},
@@ -1449,7 +1465,7 @@ static PyMethodDef SortedSet_methods[] = {
     {"add", Set_add, METH_O, doc_add},
     {"discard", Set_discard, METH_O, doc_discard},
     {"remove", Set_remove, METH_O, doc_remove},
-    {"pop", Set_pop, METH_NOARGS, doc_set_pop},
+    {"popmin", Set_popmin, METH_NOARGS, doc_set_popmin},
     {"clear", container_clear, METH_NOARGS, doc_clear},
     {"update", as_pycfunction(Set_update), METH_FASTCALL, doc_set_update},
     {"union", as_pycfunction(Set_union), METH_FASTCALL, "Members of either side, as a new set."},
@@ -1487,7 +1503,7 @@ static int Set_assign_subscript(PyObject *self, PyObject *key, PyObject *value) 
         return -1;
     }
     if (value) {
-        PyErr_SetString(PyExc_TypeError, "a slice of this container cannot be assigned to");
+        PyErr_SetString(PyExc_TypeError, "a slice of this store cannot be assigned to");
         return -1;
     }
     return container_delete_slice(self, key);

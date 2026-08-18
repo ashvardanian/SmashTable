@@ -30,29 +30,31 @@ module_state_t *state_of_type(PyObject *self) noexcept {
 
 #pragma region Entry Points
 
-static char const doc_atomic[] =                                                       //
-    "atomic(*containers)\n"                                                            //
+static char const doc_transaction[] =                                                  //
+    "transaction(*stores)\n"                                                            //
     "\n"                                                                               //
-    "Open one transaction spanning every given container.\n"                           //
+    "Open one transaction spanning every given store.\n"                               //
     "\n"                                                                               //
     "Used as a context manager, the block either makes every change visible or none\n" //
-    "of them. Containers may mix maps and sets and may use different key types.\n"     //
+    "of them. Stores may mix maps and sets, ordered and unordered, and may use\n"      //
+    "different key types and isolation levels.\n"                                      //
     "\n"                                                                               //
     "Args:\n"                                                                          //
-    "  *containers: One or more SortedMap or SortedSet, each at most once.\n"          //
+    "  *stores: One or more SortedMap, SortedSet, HashMap or HashSet, each at\n"       //
+    "    most once. A store's own transaction() is this with one argument.\n"          //
     "\n"                                                                               //
     "Returns:\n"                                                                       //
-    "  Transaction: Whose views arrive in the order the containers were given.\n"      //
+    "  Transaction: Whose participants arrive in the order the stores were given.\n"   //
     "\n"                                                                               //
     "Raises:\n"                                                                        //
-    "  TypeError: If no container was given, or one is not a container.\n"             //
-    "  ValueError: If the same container is given twice.\n";                           //
+    "  TypeError: If no store was given, or one is not a store.\n"                     //
+    "  ValueError: If the same store is given twice.\n";                               //
 
-static PyObject *module_atomic(PyObject *module, PyObject *const *args, Py_ssize_t count) noexcept {
+static PyObject *module_transaction(PyObject *module, PyObject *const *args, Py_ssize_t count) noexcept {
     module_state_t *state = state_of(module);
     if (!state) return nullptr;
     if (count < 1) {
-        PyErr_SetString(PyExc_TypeError, "atomic() needs at least one container");
+        PyErr_SetString(PyExc_TypeError, "transaction() needs at least one store");
         return nullptr;
     }
 
@@ -64,7 +66,7 @@ static PyObject *module_atomic(PyObject *module, PyObject *const *args, Py_ssize
     return group;
 }
 
-/** @brief Opens a transaction over one container alone, the single-participant shorthand. */
+/** @brief Opens a transaction over one store alone, the single-participant case. */
 static PyObject *container_transaction(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
@@ -81,7 +83,7 @@ static PyCFunction as_pycfunction(function_type_ function) noexcept {
 }
 
 static PyMethodDef module_methods[] = {
-    {"atomic", as_pycfunction(module_atomic), METH_FASTCALL, doc_atomic},
+    {"transaction", as_pycfunction(module_transaction), METH_FASTCALL, doc_transaction},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -90,14 +92,14 @@ static PyMethodDef module_methods[] = {
 #pragma region Initialization
 
 /**
- *  @brief Attaches @c transaction() to a container type after it is built from its spec.
+ *  @brief Attaches @c transaction() to a store type after it is built from its spec.
  *
  *  Added here rather than in each container's method table because it has to reach the module state to
  *  find the transaction type, and both container families want the identical method.
  */
 static int add_transaction_method(PyTypeObject *type) noexcept {
     static PyMethodDef definition = {"transaction", container_transaction, METH_NOARGS,
-                                     "Open a transaction over this container alone."};
+                                     "Open a transaction over this store alone."};
     PyObject *descriptor = PyDescr_NewMethod(type, &definition);
     if (!descriptor) return -1;
     int const added = PyObject_SetAttrString(reinterpret_cast<PyObject *>(type), "transaction", descriptor);
@@ -110,7 +112,7 @@ static int module_exec(PyObject *module) noexcept {
 
     state->next_ordinal.store(0, std::memory_order_relaxed);
 
-    state->error = PyErr_NewException("smashtable.Error", nullptr, nullptr);
+    state->error = PyErr_NewException("smashtable.SmashTableError", nullptr, nullptr);
     if (!state->error) return -1;
 
     PyObject *conflict_bases = PyTuple_Pack(2, state->error, PyExc_RuntimeError);
@@ -150,16 +152,22 @@ static int module_exec(PyObject *module) noexcept {
     if (!state->view_type) return -1;
     state->cursor_type = reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &cursor_spec, nullptr));
     if (!state->cursor_type) return -1;
-    state->mapping_view_type =
-        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &mapping_view_spec, nullptr));
-    if (!state->mapping_view_type) return -1;
+    state->keys_view_type =
+        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &keys_view_spec, nullptr));
+    if (!state->keys_view_type) return -1;
+    state->values_view_type =
+        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &values_view_spec, nullptr));
+    if (!state->values_view_type) return -1;
+    state->items_view_type =
+        reinterpret_cast<PyTypeObject *>(PyType_FromModuleAndSpec(module, &items_view_spec, nullptr));
+    if (!state->items_view_type) return -1;
 
     if (add_transaction_method(state->sorted_map_type) != 0) return -1;
     if (add_transaction_method(state->sorted_set_type) != 0) return -1;
     if (add_transaction_method(state->hash_map_type) != 0) return -1;
     if (add_transaction_method(state->hash_set_type) != 0) return -1;
 
-    if (PyModule_AddObjectRef(module, "Error", state->error) < 0) return -1;
+    if (PyModule_AddObjectRef(module, "SmashTableError", state->error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "ConflictError", state->conflict_error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "DuplicateKeyError", state->duplicate_key_error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "StateError", state->state_error) < 0) return -1;
@@ -167,6 +175,11 @@ static int module_exec(PyObject *module) noexcept {
     if (PyModule_AddObjectRef(module, "SortedSet", reinterpret_cast<PyObject *>(state->sorted_set_type)) < 0) return -1;
     if (PyModule_AddObjectRef(module, "HashMap", reinterpret_cast<PyObject *>(state->hash_map_type)) < 0) return -1;
     if (PyModule_AddObjectRef(module, "HashSet", reinterpret_cast<PyObject *>(state->hash_set_type)) < 0) return -1;
+    // Exported so a caller can annotate and test against what the API hands back. Both refuse
+    // instantiation, so naming them grants no way to build one.
+    if (PyModule_AddObjectRef(module, "Transaction", reinterpret_cast<PyObject *>(state->transaction_type)) < 0)
+        return -1;
+    if (PyModule_AddObjectRef(module, "Participant", reinterpret_cast<PyObject *>(state->view_type)) < 0) return -1;
     if (PyModule_AddStringConstant(module, "__version__", "0.1.0") < 0) return -1;
     return 0;
 }
@@ -180,7 +193,9 @@ static int module_traverse(PyObject *module, visitproc visit, void *arg) noexcep
     Py_VISIT(state->transaction_type);
     Py_VISIT(state->view_type);
     Py_VISIT(state->cursor_type);
-    Py_VISIT(state->mapping_view_type);
+    Py_VISIT(state->keys_view_type);
+    Py_VISIT(state->values_view_type);
+    Py_VISIT(state->items_view_type);
     Py_VISIT(state->error);
     Py_VISIT(state->conflict_error);
     Py_VISIT(state->duplicate_key_error);
@@ -197,7 +212,9 @@ static int module_clear(PyObject *module) noexcept {
     Py_CLEAR(state->transaction_type);
     Py_CLEAR(state->view_type);
     Py_CLEAR(state->cursor_type);
-    Py_CLEAR(state->mapping_view_type);
+    Py_CLEAR(state->keys_view_type);
+    Py_CLEAR(state->values_view_type);
+    Py_CLEAR(state->items_view_type);
     Py_CLEAR(state->error);
     Py_CLEAR(state->conflict_error);
     Py_CLEAR(state->duplicate_key_error);
@@ -215,7 +232,7 @@ static PyModuleDef_Slot module_slots[] = {
 };
 
 static struct PyModuleDef smashtable_module = {
-    PyModuleDef_HEAD_INIT,  "smashtable",   "Safer associative containers with DBMS-like transactions in Python.",
+    PyModuleDef_HEAD_INIT,  "smashtable",   "Safer associative stores with DBMS-like transactions in Python.",
     sizeof(module_state_t), module_methods, module_slots,
     module_traverse,        module_clear,   nullptr,
 };

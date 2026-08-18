@@ -23,7 +23,7 @@ def test_an_external_write_to_a_watched_key_conflicts(container, keygen):
     """A watch turns a lost update into a refusal at stage time."""
     key = keygen(1)[0]
     container[key] = 100
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view.watch(key)
     view[key] = 50
@@ -41,7 +41,7 @@ def test_a_conflicted_stage_applies_nothing(container, keygen):
     """A refused stage leaves the store exactly as the other writer left it."""
     key = keygen(1)[0]
     container[key] = 100
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view.watch(key)
     view[key] = 50
@@ -60,7 +60,7 @@ def test_an_undisturbed_watch_commits(container, keygen):
     """A watch that nobody trips is invisible."""
     key = keygen(1)[0]
     container[key] = 100
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         view.watch(key)
         view[key] = 50
     assert container[key] == 50
@@ -75,7 +75,7 @@ def test_an_unwatched_key_does_not_conflict(container, keygen):
     """Only watched keys arm the check, so an unrelated write is not a conflict."""
     keys = keygen(2)
     container[keys[0]] = 1
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view.watch(keys[0])
     view[keys[0]] = 2
@@ -90,7 +90,7 @@ def test_an_unwatched_key_does_not_conflict(container, keygen):
 def test_watching_an_absent_key_conflicts_when_it_appears(container, keygen):
     """A watch covers absence too, so an insert by someone else is a conflict."""
     key = keygen(1)[0]
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view.watch(key)
     view[key] = "mine"
@@ -108,7 +108,7 @@ def test_watching_the_same_key_twice_is_idempotent(container, keygen):
     """Watching twice is not an error and does not double-arm anything."""
     key = keygen(1)[0]
     container[key] = 1
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         view.watch(key)
         view.watch(key)
         view[key] = 2
@@ -119,7 +119,7 @@ def test_watching_the_same_key_twice_is_idempotent(container, keygen):
 @pytest.mark.parametrize("key_type", key_types)
 def test_watch_rejects_a_foreign_key_type(container):
     """A watch on a key this container cannot hold is refused like any other key use."""
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         with pytest.raises(TypeError):
             view.watch(1.5)
 
@@ -132,7 +132,7 @@ def test_a_conflict_in_one_container_aborts_the_whole_group(container_class, key
     second = make(container_class, key_type)
     key = keygen(1)[0]
     first[key] = 1
-    group = st.atomic(first, second)
+    group = st.transaction(first, second)
     left, right = group.begin()
     left.watch(key)
     left[key] = 2
@@ -157,7 +157,7 @@ def test_the_retry_loop_converges(container, keygen):
     while True:
         attempts += 1
         try:
-            group = st.atomic(container)
+            group = st.transaction(container)
             (view,) = group.begin()
             view.watch(key)
             view[key] = container[key] - 10
@@ -176,7 +176,7 @@ def test_the_retry_loop_converges(container, keygen):
 
 
 @pytest.mark.parametrize("sharing", ["locked", "partitioned"])
-@pytest.mark.parametrize("isolation", ["monotonic", "snapshot"])
+@pytest.mark.parametrize("isolation", ["monotonic_atomic_view", "snapshot"])
 def test_a_refused_stage_applied_nothing(isolation, sharing):
     """`ConflictError` must mean nothing landed, which is what makes a retry safe.
 
@@ -188,7 +188,7 @@ def test_a_refused_stage_applied_nothing(isolation, sharing):
     for key in keys:
         container[key] = -1
 
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view.watch(keys[0])
     container[keys[0]] = 999  # An outsider commits under the watch
@@ -235,7 +235,7 @@ def test_a_refused_commit_applied_nothing(sharing):
                     attempt += 1
                     marker = index * 1_000_000 + attempt
                     try:
-                        with st.atomic(container) as (view,):
+                        with st.transaction(container) as (view,):
                             for key in keys:
                                 view[key] = marker
                         break

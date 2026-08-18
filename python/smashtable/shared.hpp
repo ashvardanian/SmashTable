@@ -71,7 +71,7 @@ struct bytes_t {
  *
  *  A stored value's destructor gives back a reference, and the last one runs @c __del__ - arbitrary
  *  Python. The store destroys what it displaces while holding its own lock, and that lock is not
- *  recursive, so a finalizer touching the container it was stored in blocks forever against the
+ *  recursive, so a finalizer touching the store it was stored in blocks forever against the
  *  write that freed it.
  *
  *  While a store call is in flight the drop is therefore recorded rather than performed, and what
@@ -125,7 +125,7 @@ inline void release_reference(PyObject *object) noexcept {
 /**
  *  @brief Arms deferral for the span of one store call, releasing what it collected afterwards.
  *
- *  Held across the call inside the bridge rather than around it at the container, so the release
+ *  Held across the call inside the bridge rather than around it at the store, so the release
  *  happens at the one point where the store's lock is known to have been dropped.
  */
 struct deferring_store_call_t {
@@ -140,10 +140,10 @@ struct deferring_store_call_t {
 #pragma endregion Deferred Releases
 
 /**
- *  @brief One owned Python reference, for a container whose values may be arbitrary objects.
+ *  @brief One owned Python reference, for a store whose values may be arbitrary objects.
  *
  *  Copying and destroying this touches a refcount, which requires the GIL. That is why an object is
- *  only ever engaged in a container built with @c value_mode_t::objects_k, and why such a container
+ *  only ever engaged in a store built with @c value_mode_t::objects_k, and why such a store
  *  never releases the GIL around anything that reads, writes, copies or destroys a value.
  */
 struct object_t {
@@ -212,7 +212,7 @@ struct key_variant_t {
 /**
  *  @brief What a value may be: everything a key may be, plus the three things it may not.
  *
- *  The last alternative is only ever engaged in a container whose mode admits it - see @c value_mode_t.
+ *  The last alternative is only ever engaged in a store whose mode admits it - see @c value_mode_t.
  *  A scalar-mode container refuses an object at the boundary, which is what lets it keep releasing the
  *  GIL around store operations.
  */
@@ -248,7 +248,7 @@ struct value_variant_t {
 };
 
 /**
- *  @brief What a container admits as a value, which decides whether it may release the GIL.
+ *  @brief What a store admits as a value, which decides whether it may release the GIL.
  *
  *  A scalar container holds nothing that touches a refcount, so every store operation runs with the
  *  GIL dropped. An object container may, so it holds the GIL across anything that reads, writes,
@@ -263,7 +263,7 @@ enum class value_mode_t : std::uint8_t { scalars_k, objects_k };
 /**
  *  @brief A per-object lock, distinct from the partition locks a store keeps.
  *
- *  A cursor and a transaction carry mutable state of their own - a walk position, a group state -
+ *  A cursor and a transaction carry mutable state of their own - a walk position, a transaction state -
  *  that no store lock covers, and every operation over it drops the GIL part-way. @c PyMutex exists
  *  only from CPython 3.13, so 3.12 gets a @c std::mutex instead; neither is ever acquired with the
  *  GIL attached, which is what keeps a thread waiting here from being the one holding the GIL its
@@ -325,7 +325,7 @@ void run_over_values(value_mode_t mode, object_lock_t &lock, operation_type_ &&o
 #pragma region Key Layouts
 
 /**
- *  @brief The four key layouts a container may be built around.
+ *  @brief The four key layouts a store may be built around.
  *
  *  In order: signed 64-bit integers, which a Python @c int maps to by default; unsigned 64-bit, for
  *  keys above @c 2**63-1; UTF-8 text, ordered bytewise; and opaque bytes, never decoded. Floats and
@@ -361,10 +361,10 @@ using key_hash_fn_t = std::size_t (*)(key_variant_t const &) noexcept;
 using key_least_fn_t = void (*)(key_variant_t &) noexcept;
 
 /**
- *  @brief Everything a container needs to know about its key layout, resolved once at construction.
+ *  @brief Everything a store needs to know about its key layout, resolved once at construction.
  *
  *  One table per layout, all @c constexpr, all shared by every container using that layout - so the
- *  pointer a container holds is to a cache-resident object it never writes.
+ *  pointer a store holds is to a cache-resident object it never writes.
  *
  *  @c type names the layout and @c name is what @c key_type reports back - @c "int", @c "uint",
  *  @c "str" or @c "bytes". The three function pointers order two keys, hash one, and write the
@@ -429,7 +429,7 @@ struct key_hash_t {
 };
 
 /**
- *  @brief Hashes a key by its layout, without consulting the table a container was built with.
+ *  @brief Hashes a key by its layout, without consulting the table a store was built with.
  *
  *  Stateless and default-constructible on purpose: an unordered core builds its hasher itself, with
  *  no seed passed in, so the function-pointer form @c key_hash_t takes cannot be used there. The
@@ -473,7 +473,7 @@ using entry_t = mapping<key_variant_t, value_variant_t>;
  *  @brief One store instantiation reduced to a table of function pointers, resolved once.
  *
  *  The same shape as @c key_ops_t one level up: one @c constexpr table per instantiation, all shared by
- *  every container built on it, so the pointer a container holds is to an object it never writes. It is
+ *  every container built on it, so the pointer a store holds is to an object it never writes. It is
  *  what lets one @c container.cpp serve every core, isolation level and sharing strategy without naming
  *  a concrete store, and what keeps the participant of a transaction group free of a variant whose arms
  *  would grow with the matrix.
@@ -494,6 +494,8 @@ struct store_ops_t {
     isolation_t isolation;
     /** @brief That promise as a Jepsen name, which @c isolation reports back. */
     char const *isolation_name;
+    /** @brief How the store is shared, which @c sharing reports back verbatim. */
+    char const *sharing_name;
     /** @brief Whether elements carry a mapped value, deciding map-versus-set at every shared site. */
     bool is_associative;
     /** @brief Whether the core orders its keys, which is what the ordered surface rests on. */
@@ -553,7 +555,7 @@ struct store_ops_t {
 };
 
 /**
- *  @brief Which core a container was built around, which is the axis that decides its method set.
+ *  @brief Which core a store was built around, which is the axis that decides its method set.
  *
  *  A class per enumerator, because the core is what gates the ordered surface: a hash core supplies no
  *  ordering, so its class installs no iteration, no scan and no range erase, and the mismatch is an
@@ -619,9 +621,9 @@ object_type_ *object_as(PyObject *object) noexcept {
 #pragma region Object Layouts
 
 /**
- *  @brief The one layout every container class shares, so one cursor and one group serve all of them.
+ *  @brief The one layout every container class shares, so one cursor and one transaction serve all of them.
  *
- *  @c ops is the key layout this container was built around and @c store_ops the store it was built on,
+ *  @c ops is the key layout this store was built around and @c store_ops the store it was built on,
  *  both resolved at construction and never null after it. @c store is the type-erased store itself,
  *  owned by this object alone and destroyed through @c store_ops->destroy. @c mode says whether values
  *  may be arbitrary objects, which decides whether the GIL may be released around one.
@@ -630,7 +632,7 @@ object_type_ *object_as(PyObject *object) noexcept {
  *  instantiation; behind the table it is a pointer, so the four classes differ only in the method
  *  tables their types install.
  *
- *  @c ordinal is what stops two groups deadlocking on each other. A group stages its participants in
+ *  @c ordinal is what stops two groups deadlocking on each other. A transaction stages its participants in
  *  ordinal order rather than argument order, so @c atomic(a, b) on one thread and @c atomic(b, a) on
  *  another acquire the same partition locks in the same sequence; without it each would hold what the
  *  other waits for. Any consistent total order would do - creation order is used because it is
@@ -676,7 +678,7 @@ enum class cursor_yields_t : std::uint8_t { keys_k, values_k, items_k };
  *  Three named states rather than a pair of flags, so "not begun" and "finished" cannot be confused
  *  or set at once. Fresh means nothing has been yielded and the next step seeks; walking means a key
  *  has been yielded and the next step advances strictly past it; exhausted means the walk ended, and
- *  it stays ended even if the container grows again.
+ *  it stays ended even if the store grows again.
  */
 enum class cursor_state_t : std::uint8_t { fresh_k, walking_k, exhausted_k };
 
@@ -698,9 +700,9 @@ struct walk_limits_t {
  *  ran - lifted out and made resumable, so the binding has exactly one traversal. Holding the position
  *  by value is what makes erasing the key it sits on harmless.
  *
- *  @c owner is a strong reference keeping the container alive for the walk, and is the only place the
+ *  @c owner is a strong reference keeping the store alive for the walk, and is the only place the
  *  layout and the family are recorded - both are read back from it per step rather than cached here,
- *  so a cache can never disagree with the container it describes. @c limits are fixed at construction;
+ *  so a cache can never disagree with the store it describes. @c limits are fixed at construction;
  *  @c position and @c state are the only members a step writes.
  *
  *  @c lock makes one step the unit of exclusion. A step drops the GIL, so two threads pulling from one
@@ -717,9 +719,9 @@ struct cursor_object_t {
 };
 
 /**
- *  @brief A lazy view over a container - what @c keys, @c values and @c items return.
+ *  @brief A lazy view over a store - what @c keys, @c values and @c items return.
  *
- *  @c owner is a strong reference to the container, so a view outlives no store; the other two say
+ *  @c owner is a strong reference to the store, so a view outlives no store; the other two say
  *  which family it belongs to and what each step produces. A fresh cursor is made per iteration.
  */
 struct mapping_view_object_t {
@@ -728,10 +730,10 @@ struct mapping_view_object_t {
 };
 
 /**
- *  @brief Builds a cursor over a container, optionally bounded.
+ *  @brief Builds a cursor over a store, optionally bounded.
  *  @param[in] state The module state holding the cursor type.
  *  @param[in] container The container to walk, borrowed; a strong reference is taken.
- *  @param[in] family Which store the container holds.
+ *  @param[in] family Which store the store holds.
  *  @param[in] yields What each step should produce.
  *  @param[in] start Inclusive lower bound, or @c nullptr to begin at the layout's floor.
  *  @param[in] stop Exclusive upper bound, or @c nullptr for unbounded.
@@ -745,7 +747,9 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
 PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yields_t yields) noexcept;
 
 extern PyType_Spec cursor_spec;
-extern PyType_Spec mapping_view_spec;
+extern PyType_Spec keys_view_spec;
+extern PyType_Spec values_view_spec;
+extern PyType_Spec items_view_spec;
 extern PyType_Spec sorted_map_spec;
 extern PyType_Spec sorted_set_spec;
 extern PyType_Spec hash_map_spec;
@@ -792,7 +796,7 @@ void for_each_in_order(container_object_t const *container, callback_type_ &&cal
 #pragma region Transactions
 
 /**
- *  @brief One participant in a group transaction, whatever container it came from.
+ *  @brief One participant in a transaction transaction, whatever container it came from.
  *
  *  Holds the open transaction type-erased, beside the table that knows how to drive it. Every uniform
  *  operation - stage, commit, rollback, reset, erase, watch, contains - is one indirect call, with no
@@ -800,8 +804,8 @@ void for_each_in_order(container_object_t const *container, callback_type_ &&cal
  *  no arm to add when the store matrix grows. The three operations that genuinely differ between a
  *  map and a set ask @c is_associative rather than which type is engaged.
  *
- *  @c mode is this participant's own, not the group's. Reading it from any other participant picks the
- *  wrong GIL policy for a group that mixes a scalar container with an object one, which is the path
+ *  @c mode is this participant's own, not the transaction's. Reading it from any other participant picks the
+ *  wrong GIL policy for a transaction that mixes a scalar container with an object one, which is the path
  *  where a missed acquisition corrupts rather than fails.
  */
 struct participant_t {
@@ -868,7 +872,7 @@ struct participant_t {
 };
 
 /**
- *  @brief Where a group stands.
+ *  @brief Where a transaction stands.
  *
  *  One enum rather than a pair of flags, so "staged" and "finished" cannot both be true - which two
  *  booleans prevented only through the order of two assignments.
@@ -876,7 +880,7 @@ struct participant_t {
 enum class group_state_t : std::uint8_t { open_k, staged_k, finished_k };
 
 /**
- *  @brief A group of containers updated all-or-nothing.
+ *  @brief A transaction of containers updated all-or-nothing.
  *
  *  @c containers holds the participants in the caller's order and @c views the per-container handles
  *  parallel to it, while @c parts holds the open transactions in canonical staging order. It lives
@@ -939,7 +943,9 @@ struct module_state_t {
     PyTypeObject *transaction_type;
     PyTypeObject *view_type;
     PyTypeObject *cursor_type;
-    PyTypeObject *mapping_view_type;
+    PyTypeObject *keys_view_type;
+    PyTypeObject *values_view_type;
+    PyTypeObject *items_view_type;
     PyObject *error;
     PyObject *conflict_error;
     PyObject *duplicate_key_error;
@@ -973,7 +979,7 @@ int raise_for(module_state_t *state, status_t status, PyObject *key = nullptr) n
 /**
  *  @brief Reads a Python object into an owned value.
  *  @param[in] object The value to read, borrowed.
- *  @param[in] mode Whether this container admits arbitrary objects or only scalars.
+ *  @param[in] mode Whether this store admits arbitrary objects or only scalars.
  *  @param[out] result Written only on success.
  *  @return True on success; false with an exception set otherwise.
  */
@@ -982,7 +988,7 @@ bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &res
 /**
  *  @brief Reads a Python object as a key of one specific layout, rejecting every other type.
  *  @param[in] object The candidate key, borrowed.
- *  @param[in] ops The layout the container was built around.
+ *  @param[in] ops The layout the store was built around.
  *  @param[out] result Written only on success.
  *  @return True on success; false with a @c TypeError or @c OverflowError set otherwise.
  */

@@ -175,10 +175,10 @@ def test_update_from_mapping_and_pairs(container, keygen, valuegen):
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])
-def test_popitem_removes_a_real_pair(populated):
-    """popitem returns a pair the container actually held, and removes exactly it."""
+def test_popmin_removes_a_real_pair(populated):
+    """popmin returns a pair the store actually held, and removes exactly it."""
     container, model = populated
-    key, value = container.popitem()
+    key, value = container.popmin()
     assert key in model
     assert model[key] == value
     del model[key]
@@ -187,10 +187,10 @@ def test_popitem_removes_a_real_pair(populated):
 
 @pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_popitem_on_empty_raises(container):
-    """popitem on an empty container raises KeyError, as dict does."""
+def test_popmin_on_empty_raises(container):
+    """popmin on an empty store raises KeyError, as dict's popitem does."""
     with pytest.raises(KeyError):
-        container.popitem()
+        container.popmin()
 
 
 @pytest.mark.iterations(1)
@@ -201,11 +201,11 @@ def test_popitem_on_empty_raises(container):
 @pytest.mark.parametrize("value_type", value_types)
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])
 @pytest.mark.parametrize("class_name", [pytest.param("SortedMap", id="sortedmap")])
-def test_sorted_popitem_takes_the_smallest(populated):
+def test_popmin_takes_the_smallest(populated):
     """A sorted map pops its smallest key, which is where it diverges from dict deliberately."""
     container, model = populated
     smallest = sorted(model)[0]
-    key, _ = container.popitem()
+    key, _ = container.popmin()
     assert key == smallest
 
 

@@ -31,7 +31,7 @@ class _Abort(Exception):
 def test_changes_are_invisible_until_the_block_ends(container, keygen):
     """A write inside a transaction is not visible outside it until commit."""
     key = keygen(1)[0]
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[key] = "staged"
     assert key not in container
@@ -46,7 +46,7 @@ def test_changes_are_invisible_until_the_block_ends(container, keygen):
 def test_a_view_reads_its_own_writes(container, keygen):
     """Inside the block, a write is immediately readable through the same view."""
     key = keygen(1)[0]
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         view[key] = "mine"
         assert view[key] == "mine"
         assert key in view
@@ -58,7 +58,7 @@ def test_a_raise_discards_everything(container, keygen):
     """A block that raises applies nothing, and the exception propagates unchanged."""
     keys = keygen(20)
     with pytest.raises(_Abort):
-        with st.atomic(container) as (view,):
+        with st.transaction(container) as (view,):
             for key in keys:
                 view[key] = "doomed"
             raise _Abort
@@ -70,7 +70,7 @@ def test_a_raise_discards_everything(container, keygen):
 def test_a_batch_lands_whole(container, keygen):
     """Every write of a committed block is visible together."""
     keys = keygen(20)
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         view.update({key: "batch" for key in keys})
     assert len(container) == len(keys)
     assert all(container[key] == "batch" for key in keys)
@@ -85,9 +85,9 @@ def test_erase_reports_presence(container, keygen):
     """A view's erase says whether the key was there, so a caller need not look first."""
     keys = keygen(2)
     container[keys[0]] = "present"
-    with st.atomic(container) as (view,):
-        assert view.erase(keys[0]) is True
-        assert view.erase(keys[1]) is False
+    with st.transaction(container) as (view,):
+        assert view.discard(keys[0]) is True
+        assert view.discard(keys[1]) is False
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -96,7 +96,7 @@ def test_a_transaction_sees_prior_state(container, keygen):
     """A block reads what was committed before it opened."""
     key = keygen(1)[0]
     container[key] = "before"
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         assert view[key] == "before"
 
 
@@ -104,7 +104,7 @@ def test_a_transaction_sees_prior_state(container, keygen):
 @pytest.mark.parametrize("key_type", key_types)
 def test_an_empty_transaction_commits(container):
     """A block that writes nothing still completes cleanly."""
-    with st.atomic(container) as (_,):
+    with st.transaction(container) as (_,):
         pass
     assert len(container) == 0
 
@@ -119,7 +119,7 @@ def test_an_empty_transaction_commits(container):
 def test_stage_then_rollback_applies_nothing(container, keygen):
     """Rolling a staged transaction back pulls the changes out again."""
     key = keygen(1)[0]
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[key] = "staged"
     group.stage()
@@ -131,7 +131,7 @@ def test_stage_then_rollback_applies_nothing(container, keygen):
 @pytest.mark.parametrize("key_type", key_types)
 def test_commit_without_stage_is_a_state_error(container, keygen):
     """The two phases are ordered, and skipping the first is refused."""
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[keygen(1)[0]] = "x"
     with pytest.raises(st.StateError):
@@ -142,7 +142,7 @@ def test_commit_without_stage_is_a_state_error(container, keygen):
 @pytest.mark.parametrize("key_type", key_types)
 def test_rollback_without_stage_is_a_state_error(container):
     """Rolling back something never staged is refused rather than silently ignored."""
-    group = st.atomic(container)
+    group = st.transaction(container)
     group.begin()
     with pytest.raises(st.StateError):
         group.rollback()
@@ -153,7 +153,7 @@ def test_rollback_without_stage_is_a_state_error(container):
 def test_reset_discards_pending_changes(container, keygen):
     """reset throws away the block's work and leaves the store untouched."""
     key = keygen(1)[0]
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[key] = "x"
     group.reset()
@@ -165,7 +165,7 @@ def test_reset_discards_pending_changes(container, keygen):
 def test_a_finished_group_refuses_more_work(container, keygen):
     """After commit the group is done, and its views say so rather than writing anywhere."""
     key = keygen(1)[0]
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[key] = "x"
     group.stage()
@@ -184,7 +184,7 @@ def test_a_finished_transaction_cannot_be_reset(key_type, keygen):
     container = make(st.SortedMap, key_type)
     keys = keygen(2)
 
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[keys[0]] = "first"
     group.stage()
@@ -204,7 +204,7 @@ def test_reset_is_allowed_before_the_transaction_finishes(key_type, keygen):
     container = make(st.SortedMap, key_type)
     key = keygen(1)[0]
 
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     view[key] = "pending"
     group.reset()  # open, not staged
@@ -231,11 +231,11 @@ def test_two_indexes_flip_together(container_class, key_type, style, keygen):
     second = make(container_class, key_type)
     key = keygen(1)[0]
     if style == "context":
-        with st.atomic(first, second) as (left, right):
+        with st.transaction(first, second) as (left, right):
             left[key] = "a"
             right[key] = "b"
     else:
-        group = st.atomic(first, second)
+        group = st.transaction(first, second)
         left, right = group.begin()
         left[key] = "a"
         right[key] = "b"
@@ -253,7 +253,7 @@ def test_a_raise_leaves_neither_container_touched(container_class, key_type, key
     second = make(container_class, key_type)
     key = keygen(1)[0]
     with pytest.raises(_Abort):
-        with st.atomic(first, second) as (left, right):
+        with st.transaction(first, second) as (left, right):
             left[key] = "a"
             right[key] = "b"
             raise _Abort
@@ -267,7 +267,7 @@ def test_a_group_may_span_many_containers(container_class, key_type, group_size,
     """A group is not limited to two, and every participant lands together."""
     containers = [make(container_class, key_type) for _ in range(group_size)]
     key = keygen(1)[0]
-    with st.atomic(*containers) as views:
+    with st.transaction(*containers) as views:
         assert len(views) == group_size
         for view in views:
             view[key] = "shared"
@@ -281,7 +281,7 @@ def test_views_arrive_in_argument_order(container_class, key_type, keygen):
     first = make(container_class, key_type)
     second = make(container_class, key_type)
     key = keygen(1)[0]
-    with st.atomic(second, first) as (left, right):
+    with st.transaction(second, first) as (left, right):
         left[key] = "into-second"
         right[key] = "into-first"
     assert second[key] == "into-second"
@@ -293,13 +293,13 @@ def test_views_arrive_in_argument_order(container_class, key_type, keygen):
 def test_the_same_container_twice_is_rejected(container):
     """Two participants over one store would each believe they owned its staged state."""
     with pytest.raises(ValueError):
-        st.atomic(container, container)
+        st.transaction(container, container)
 
 
 def test_atomic_needs_a_container():
     """A group with no participants is meaningless."""
     with pytest.raises(TypeError):
-        st.atomic()
+        st.transaction()
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -307,7 +307,7 @@ def test_atomic_needs_a_container():
 def test_atomic_rejects_a_foreign_object(container):
     """Only containers may participate."""
     with pytest.raises(TypeError):
-        st.atomic(container, {})
+        st.transaction(container, {})
 
 
 @pytest.mark.parametrize("class_name", sorted_class_names)
@@ -320,7 +320,7 @@ def test_a_group_may_mix_maps_and_sets(container_class, key_type, keygen):
     members = make(st.SortedSet, key_type)
     key = keygen(1)[0]
     assert is_map_class(st.SortedMap)
-    with st.atomic(mapping, members) as (map_view, set_view):
+    with st.transaction(mapping, members) as (map_view, set_view):
         map_view[key] = "value"
         set_view.add(key)
     assert mapping[key] == "value"
@@ -333,7 +333,7 @@ def test_a_set_participant_refuses_a_value(key_type, keygen):
     members = make(st.SortedSet, key_type)
     key = keygen(1)[0]
     with pytest.raises(TypeError):
-        with st.atomic(members) as (view,):
+        with st.transaction(members) as (view,):
             view[key] = "value"
 
 
@@ -343,7 +343,7 @@ def test_a_map_participant_refuses_add(container, keygen):
     """Calling add on a map participant is a TypeError pointing at assignment."""
     key = keygen(1)[0]
     with pytest.raises(TypeError):
-        with st.atomic(container) as (view,):
+        with st.transaction(container) as (view,):
             view.add(key)
 
 
@@ -353,7 +353,7 @@ def test_containers_may_use_different_key_types(container_class, key_type, keyge
     """A group does not require its participants to agree on a key layout."""
     by_number = make(container_class, "int")
     by_name = make(container_class, "str")
-    with st.atomic(by_number, by_name) as (numbers, names):
+    with st.transaction(by_number, by_name) as (numbers, names):
         numbers[42] = "carol"
         names["carol"] = 42
     assert by_number[42] == "carol"
@@ -386,7 +386,7 @@ def test_a_group_may_mix_value_modes(key_type, keygen, object_first):
     payload = {"nested": [1, 2]}
 
     first, second = (objects, scalars) if object_first else (scalars, objects)
-    with st.atomic(first, second) as (first_view, second_view):
+    with st.transaction(first, second) as (first_view, second_view):
         object_view, scalar_view = (first_view, second_view) if object_first else (second_view, first_view)
         object_view[key] = payload
         scalar_view[key] = 42

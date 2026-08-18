@@ -61,13 +61,13 @@ def delete_slice(m, boom):
 
 def handle_write(m, boom):
     m[1] = boom()
-    with st.atomic(m) as (view,):
+    with st.transaction(m) as (view,):
         view[1] = None
 
 
 def handle_delete(m, boom):
     m[1] = boom()
-    with st.atomic(m) as (view,):
+    with st.transaction(m) as (view,):
         del view[1]
 
 

@@ -73,7 +73,7 @@ transaction_styles = [pytest.param("context", id="with"), pytest.param("explicit
 
 # What a reader is promised, and how the store is shared between threads. Two independent axes: the
 # level is asked for at construction, while the sharing decides how far up it actually survives.
-isolation_levels = [pytest.param("monotonic", id="monotonic"), pytest.param("snapshot", id="snapshot")]
+isolation_levels = [pytest.param("monotonic_atomic_view", id="monotonic"), pytest.param("snapshot", id="snapshot")]
 sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
 # endregion Matrices
@@ -257,7 +257,7 @@ def same_scalar(left, right) -> bool:
 
 
 def same_result(left, right) -> bool:
-    """Compares two returned values, descending into tuples so `popitem` pairs compare exactly."""
+    """Compares two returned values, descending into tuples so `popmin` pairs compare exactly."""
     if isinstance(left, tuple) and isinstance(right, tuple):
         return len(left) == len(right) and all(same_result(a, b) for a, b in zip(left, right))
     if left is None or right is None:
@@ -288,7 +288,7 @@ def run_map(target, op: Op):
         "len": lambda: len(target),
         "get": lambda: target.get(*op.args),
         "pop": lambda: target.pop(*op.args),
-        "popitem": lambda: target.popitem(),
+        "popmin": lambda: target.popmin(),
         "setdefault": lambda: target.setdefault(*op.args),
         "update": lambda: target.update(op.args[0]),
         "clear": lambda: target.clear(),
@@ -304,7 +304,7 @@ def run_set(target, op: Op):
         "remove": lambda: target.remove(member),
         "contains": lambda: member in target,
         "len": lambda: len(target),
-        "pop": lambda: target.pop(),
+        "popmin": lambda: target.popmin(),
         "update": lambda: target.update(op.args[0]),
         "clear": lambda: target.clear(),
     }[op.name]()
@@ -362,7 +362,7 @@ def apply_op(container, model, op: Op) -> None:
     got = outcome(lambda: dispatch(container, op))
 
     if op.compare == "member":
-        # `popitem`/`pop` remove *some* element; only the sorted classes promise which one, so the
+        # `popmin` removes *some* element; only the sorted classes promise which one, so the
         # model is advanced to match the container's choice rather than run independently.
         assert got[0] == "ok" or len(model) == 0, f"{op}: {got}"
         if got[0] == "ok":
@@ -395,7 +395,7 @@ def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: 
         elif roll < 0.60:
             ops.append(Op("setdefault", (key, rng.choice(values))))
         elif roll < 0.66:
-            ops.append(Op("popitem", (), compare="member"))
+            ops.append(Op("popmin", (), compare="member"))
         elif roll < 0.70:
             ops.append(Op("update", ({other: rng.choice(values) for other in rng.sample(list(keys), 3)},)))
         elif roll < 0.72:
@@ -420,7 +420,7 @@ def random_set_ops(rng: random.Random, members: Sequence, count: int) -> list[Op
         elif roll < 0.62:
             ops.append(Op("remove", (member,)))
         elif roll < 0.68:
-            ops.append(Op("pop", (), compare="member"))
+            ops.append(Op("popmin", (), compare="member"))
         elif roll < 0.72:
             ops.append(Op("update", (rng.sample(list(members), 3),)))
         elif roll < 0.74:

@@ -115,7 +115,7 @@ def test_swapped_argument_order_does_not_deadlock(container_class, key_type, fai
         try:
             pair = (first, second) if index % 2 == 0 else (second, first)
             for round_number in range(25):
-                with st.atomic(*pair) as (left, right):
+                with st.transaction(*pair) as (left, right):
                     left[index * 100 + round_number] = index
                     right[index * 100 + round_number] = index
         except Exception as error:  # noqa: BLE001
@@ -136,7 +136,7 @@ def test_a_group_is_never_half_visible(container_class, key_type, failures):
         try:
             for round_number in range(200):
                 try:
-                    with st.atomic(first, second) as (left, right):
+                    with st.transaction(first, second) as (left, right):
                         left[round_number] = round_number
                         right[round_number] = round_number
                         if round_number % 3 == 0:
@@ -203,7 +203,7 @@ def test_one_transaction_staged_by_many_threads(container, keygen, failures):
     state test and stage the same participants again.
     """
     keys = keygen(8)
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     for key in keys:
         view[key] = 1
@@ -250,7 +250,7 @@ def test_a_transactional_counter_converges(container, failures):
             for _ in range(increments):
                 while True:
                     try:
-                        group = st.atomic(container)
+                        group = st.transaction(container)
                         (view,) = group.begin()
                         view.watch(0)
                         view[0] = view[0] + 1

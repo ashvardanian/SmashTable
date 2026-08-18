@@ -188,7 +188,7 @@ def test_internal_types_do_not_leak_a_type_reference(container):
     for label, make_one in (
         ("iterator", lambda: iter(container)),
         ("view", lambda: container.keys()),
-        ("transaction", lambda: st.atomic(container)),
+        ("transaction", lambda: st.transaction(container)),
     ):
         probe = make_one()
         internal_type = type(probe)
@@ -286,18 +286,18 @@ def test_unsupported_value_type_raises(container, value):
 def test_conflict_error_is_a_runtime_error():
     """ConflictError is catchable as RuntimeError, so a retry loop need not import it."""
     assert issubclass(st.ConflictError, RuntimeError)
-    assert issubclass(st.ConflictError, st.Error)
+    assert issubclass(st.ConflictError, st.SmashTableError)
 
 
 def test_duplicate_key_error_is_a_key_error():
     """DuplicateKeyError is catchable as KeyError."""
     assert issubclass(st.DuplicateKeyError, KeyError)
-    assert issubclass(st.DuplicateKeyError, st.Error)
+    assert issubclass(st.DuplicateKeyError, st.SmashTableError)
 
 
 def test_state_error_is_an_error():
     """StateError sits under the package root like the rest."""
-    assert issubclass(st.StateError, st.Error)
+    assert issubclass(st.StateError, st.SmashTableError)
     assert issubclass(st.StateError, RuntimeError)
 
 
@@ -427,12 +427,12 @@ def test_transactions_carry_objects(container, keygen, value_mode):
     """A value survives stage and commit, and vanishes on a raise, in either mode."""
     key = keygen(1)[0]
     payload = {"nested": True} if value_mode == "object" else "scalar"
-    with st.atomic(container) as (view,):
+    with st.transaction(container) as (view,):
         view[key] = payload
     assert container[key] == payload
 
     with pytest.raises(RuntimeError):
-        with st.atomic(container) as (view,):
+        with st.transaction(container) as (view,):
             view[key] = {"other": True} if value_mode == "object" else "other"
             raise RuntimeError("abort")
     assert container[key] == payload

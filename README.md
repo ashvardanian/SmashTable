@@ -70,7 +70,7 @@ import smashtable as st
 by_id = st.SortedMap(key=int)     # entity id → record
 by_name = st.SortedMap(key=str)   # name      → entity id
 
-with st.atomic(by_id, by_name) as (ids, names):
+with st.transaction(by_id, by_name) as (ids, names):
     ids[42] = "carol"
     names["carol"] = 42
 # both indexes became visible together
@@ -89,7 +89,7 @@ If the block raises, nothing was applied:
 
 ```python
 try:
-    with st.atomic(by_id, by_name) as (ids, names):
+    with st.transaction(by_id, by_name) as (ids, names):
         ids[43] = "dave"
         names["dave"] = 43
         raise ValueError("failed validation")
@@ -118,7 +118,7 @@ except Exception:
 ```python
 while True:
     try:
-        with st.atomic(accounts) as (view,):
+        with st.transaction(accounts) as (view,):
             view.watch("alice")
             view["alice"] = view["alice"] - 100
         break
@@ -132,7 +132,7 @@ while True:
 Both phases are also available directly:
 
 ```python
-group = st.atomic(by_id, by_name)
+group = st.transaction(by_id, by_name)
 ids, names = group.begin()
 ids[42] = "carol"; names["carol"] = 42
 group.stage()      # validates watches and reserves; still invisible, and may raise ConflictError
@@ -169,7 +169,7 @@ ledger.isolation   # 'snapshot'
 Under `snapshot` every read a transaction makes is answered at the instant the transaction opened, so a repeated read returns what it first saw:
 
 ```python
-with st.atomic(ledger) as (view,):
+with st.transaction(ledger) as (view,):
     first = view[account]
     # ... another thread commits a new value for `account` here ...
     assert view[account] == first     # holds under snapshot, not under monotonic
@@ -189,7 +189,7 @@ st.SortedMap(key=int, sharing='partitioned')   # sixteen partitions, concurrent 
 
 ```python
 sharded_snapshot = st.SortedMap(key=int, isolation='snapshot', sharing='partitioned')
-sharded_monotonic = st.SortedMap(key=int, isolation='monotonic', sharing='partitioned')
+sharded_monotonic = st.SortedMap(key=int, isolation='monotonic_atomic_view', sharing='partitioned')
 
 sharded_snapshot.isolation    # 'snapshot'        — asked for snapshot, got snapshot
 sharded_monotonic.isolation   # 'read_committed'  — asked for monotonic, got less

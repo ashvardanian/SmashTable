@@ -40,6 +40,9 @@ struct store_bridge {
 
     /** @brief Whether elements carry a mapped value, which decides map-versus-set at every shared site. */
     static constexpr bool associative_k = is_mapping<value_t>;
+    /** @brief Whether a partition hash routes the keys, which is what distinguishes the two sharings. */
+    static constexpr bool partitioned_k = requires { typename store_t::hash_t; };
+
     /** @brief Whether the core can hand back every element, which the collector's traversal needs. */
     static constexpr bool enumerable_k = requires(store_t const &store) { store.for_each(no_op_t {}); };
 
@@ -81,13 +84,11 @@ struct store_bridge {
         // has to be stateless rather than the function-pointer form.
         auto built = [&]() noexcept {
             if constexpr (ordered_k) {
-                if constexpr (requires { typename store_t::hash_t; })
-                    return store_t::make(key_less_t {ops->less}, key_hash_t {ops->hash});
+                if constexpr (partitioned_k) return store_t::make(key_less_t {ops->less}, key_hash_t {ops->hash});
                 else return store_t::make(key_less_t {ops->less}, std::allocator<value_t> {});
             }
             else {
-                if constexpr (requires { typename store_t::hash_t; })
-                    return store_t::make(key_variant_equal_t {}, key_hash_t {ops->hash});
+                if constexpr (partitioned_k) return store_t::make(key_variant_equal_t {}, key_hash_t {ops->hash});
                 else return store_t::make(key_variant_equal_t {}, std::allocator<value_t> {});
             }
         }();
@@ -294,6 +295,7 @@ struct store_bridge {
         store_ops_t built {};
         built.isolation = store_t::isolation_k;
         built.isolation_name = isolation_name_of(store_t::isolation_k);
+        built.sharing_name = partitioned_k ? "partitioned" : "locked";
         built.is_associative = associative_k;
         built.is_ordered = ordered_k;
 

@@ -53,7 +53,7 @@ def test_sharding_caps_a_stampless_level(container_class, key_type):
     Stated on its own because it is the permanent half of the cap: what a partitioned snapshot
     container reports may rise, but this cannot.
     """
-    sharded = make(container_class, key_type, isolation="monotonic", sharing="partitioned")
+    sharded = make(container_class, key_type, isolation="monotonic_atomic_view", sharing="partitioned")
     assert sharded.isolation == "read_committed"
 
 
@@ -109,7 +109,7 @@ def test_a_snapshot_repeats_its_reads(keygen):
     container = make(st.SortedMap, "int", isolation="snapshot", sharing="locked")
     container[key] = "first"
 
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     assert view[key] == "first"
 
@@ -129,7 +129,7 @@ def test_a_sharded_snapshot_repeats_reads_across_partitions(keygen):
     for key in keys:
         container[key] = 0
 
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     assert [view[key] for key in keys] == [0] * len(keys)
 
@@ -137,7 +137,7 @@ def test_a_sharded_snapshot_repeats_reads_across_partitions(keygen):
         container[key] = 1
     assert [view[key] for key in keys] == [0] * len(keys), "a sharded snapshot must not tear"
 
-    later = st.atomic(container)
+    later = st.transaction(container)
     (fresh_view,) = later.begin()
     assert [fresh_view[key] for key in keys] == [1] * len(keys), "a later transaction sees the commits"
 
@@ -150,10 +150,10 @@ def test_monotonic_does_not_repeat_its_reads(keygen):
     the two levels indistinguishable, which would leave the keyword buying nothing.
     """
     key = keygen(1)[0]
-    container = make(st.SortedMap, "int", isolation="monotonic", sharing="locked")
+    container = make(st.SortedMap, "int", isolation="monotonic_atomic_view", sharing="locked")
     container[key] = "first"
 
-    group = st.atomic(container)
+    group = st.transaction(container)
     (view,) = group.begin()
     assert view[key] == "first"
 
