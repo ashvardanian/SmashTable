@@ -97,10 +97,14 @@ Separating the fallible phase from the applying phase is what lets independent t
 
 ### What It Guarantees, and What It Does Not
 
-- __A group applies in full or not at all.__ A body that raises resets every participant. A stage that fails on one participant unwinds them all.
+- __A group applies in full or not at all.__
+  A body that raises resets every participant.
+  A stage that fails on one participant unwinds them all.
 - __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
 - __A transaction reads its own writes__ — `view[k]` sees what `view[k] = v` put there.
-- __Commit is not a snapshot.__ It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead. A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
+- __Commit is not a snapshot.__
+  It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead.
+  A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
 - __Scans are not snapshots either.__ `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
 
 ### Stored Types
@@ -166,8 +170,9 @@ find_package(smashtable REQUIRED)
 target_link_libraries(your_target PRIVATE smashtable::smashtable)
 ```
 
-The library throws nowhere.
+The library throws nowhere, and will not let you make it.
 Mutating APIs return `status_t`; read-only operations cannot fail and deliver results through `noexcept` callbacks.
+A key whose copy or comparison can throw fails to compile rather than being quietly accepted.
 All containers take custom allocators and can be pre-allocated.
 
 The same shape as the Python example, with no threads in sight:
@@ -214,34 +219,20 @@ The standard library has loose ends around failure.
 `std::set::insert(first, last)` has no defined behaviour on partial failure, and in practice an allocation failure leaves some elements inserted and the rest not:
 
 ```cpp
-#include <cstddef>  // `std::size_t`
-#include <iostream> // `std::cout`
-#include <new>      // `std::bad_alloc`
-#include <set>      // `std::set`
-#include <vector>   // `std::vector`
-
 struct failing_allocator_state_t {
     std::size_t count = 0, limit = 0;
 };
 
 template <typename value_type_>
-struct failing_allocator {
+struct failing_allocator { // ? rebind, converting constructor and `deallocate` elided
     using value_type = value_type_;
-    template <typename other_type_>
-    struct rebind { using other = failing_allocator<other_type_>; };
-
     failing_allocator_state_t *state_ {};
-    explicit failing_allocator(failing_allocator_state_t *state) noexcept : state_ {state} {}
 
-    failing_allocator() noexcept = default;
-    template <typename other_type_>
-    failing_allocator(failing_allocator<other_type_> const &other) noexcept : state_ {other.state_} {}
     value_type_ *allocate(std::size_t count) {
         if (!state_ || state_->count + count > state_->limit) throw std::bad_alloc {};
         state_->count += count;
         return static_cast<value_type_ *>(::operator new(count * sizeof(value_type_)));
     }
-    void deallocate(value_type_ *pointer, std::size_t) noexcept { ::operator delete(pointer); }
 };
 
 int main() {
@@ -250,11 +241,11 @@ int main() {
     std::vector<int> inputs {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
 
     try { values.insert(inputs.begin(), inputs.end()); }
-    catch (std::bad_alloc const &) { std::cout << "std::bad_alloc after " << state.count << " allocations\n"; }
+    catch (std::bad_alloc const &) { std::println("std::bad_alloc after {} allocations", state.count); }
 
-    std::cout << "set contains " << values.size() << " elements:\n";
-    for (int value : values) std::cout << value << ' ';
-    std::cout << '\n';
+    std::println("set contains {} elements:", values.size());
+    for (int value : values) std::print("{} ", value);
+    std::print("\n");
 }
 ```
 
@@ -272,8 +263,10 @@ Where this matters is secondary-index consistency inside a storage engine — an
 
 Terminology first, since both words are overloaded:
 
-- "Concurrency" does not imply threads. Several transactions can be open on one thread.
-- "Consistency" does not imply strict serializability. [Weaker levels exist](https://jepsen.io/consistency/models), and this library targets one of them.
+- "Concurrency" does not imply threads.
+  Several transactions can be open on one thread.
+- "Consistency" does not imply strict serializability.
+  [Weaker levels exist](https://jepsen.io/consistency/models), and this library targets one of them.
 
 Headers group as:
 
@@ -289,7 +282,8 @@ Headers group as:
        ↑ ::adopt(std::move(growable).release())   ↓ ::adopt(std::move(pinned).release())
 
   transactional_*       → 2-phase commit, watch and CAS
-    ├─ transactional_store<Collection>            # generic over both trees and the hash table
+    ├─ transactional_store<Collection>            # one visible version per key
+    ├─ transactional_snapshot_store<Collection>   # every version a live reader can still name
     └─ transactional_std_store<T, Comparator, Alloc>
 
   *_collection          → Serialized transactions across threads
@@ -315,7 +309,8 @@ The baseline reference design, and the yardstick the tree containers are held ag
 Updates group into transactions that stage and roll back before committing, which is what lets inter-dependent updates span several collections.
 
 Reads are consistent at the [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) level, so a transaction never sees another's partial update.
-That is weaker than strict serializability — there is no guarantee that every read within one transaction sees the same snapshot — and much cheaper than MVCC in both time and memory.
+That is weaker than strict serializability: there is no guarantee that every read within one transaction sees the same snapshot.
+`transactional_snapshot_store` is the sibling that does make that guarantee, and the section below states what it costs.
 
 ### Adelson-Velsky and Landis Trees
 
@@ -349,6 +344,57 @@ Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amor
 `transactional_store<Collection>` adds two-phase commit, watches and CAS on top of any key-addressable core.
 `transactional_avl_set`, `transactional_avl_map`, `transactional_wb_set` and `transactional_wb_map` are the aliases you'll name directly.
 `transactional_hash_set` and `transactional_hash_map` back the same store with the open-addressed table, which supplies no ordering, so bounds, ranges and order statistics are gated out of those instantiations at compile time.
+
+Which version a reader sees is decided by one number, stamped when a transaction commits.
+A version that has not committed carries no stamp, so it is invisible to readers and cannot make anyone else's validation fail — a transaction that stages and then rolls back costs its peers nothing.
+Two writers on one key are separated at commit rather than at stage: the first to publish wins, the second is refused with `consistency_k`.
+
+`find` never records what it read.
+A read set is memory, and a read that allocates is a read that can fail, so the recording variant is a different name with a different return type:
+
+```cpp
+transaction.find(key, on_found, on_missing);                 // returns void, records nothing
+_ = transaction.find_and_watch(key, on_found, on_missing);   // records, and can report out of memory
+```
+
+An erase leaves a tombstone that readers skip, and `vacuum()` is what returns that space:
+
+```cpp
+expected<std::size_t> const reclaimed = store.vacuum();          // everything no reader can name
+expected<std::size_t> const window = store.vacuum(lower, upper); // ordered cores, one slice at a time
+```
+
+### Snapshot Isolation
+
+> `smashtable/transactional_snapshot_store.hpp`
+
+`transactional_snapshot_store<Collection>` is the sibling that fixes a transaction's reads to one instant.
+It rebinds the same cores, exports `transactional_snapshot_avl_set`, `_avl_map`, `_wb_set`, `_wb_map`, `_hash_set` and `_hash_map`, and publishes `isolation_k == snapshot_k`.
+A repeated read returns what it first saw, a repeated range admits no phantoms, and neither holds in its sibling.
+
+Versions are kept as ordinary entries keyed by `(key, generation)` rather than chained off one entry, on ordered and unordered cores alike.
+The hash core still hashes the bare key, so every version of a key shares one probe run and a lookup walks that run instead of stopping at the first match.
+
+Old versions are freed against a low-water mark that only advances when the last open transaction closes, so it can never pass a snapshot somebody still holds.
+Pruning happens on every commit, and `vacuum()` reaches the keys nobody writes again.
+There is no background thread and no epoch registry.
+`clear()` refuses while a reader is open rather than dropping versions out from under it.
+
+Range writes publish under one stamp, so a reader on an older snapshot sees all of a range erase or none of it.
+`update_range` builds new versions rather than rewriting the visible one, which is what open readers make unsound.
+`select` and `rank` descend on the weight-balanced tree's augmented count, exact at the newest commit — a reader at an older snapshot gets the merged walk instead, because one number per node cannot answer for an unbounded parameter.
+
+What it costs, on an AVL core over `mapping<key, int>`:
+
+|                               | `transactional_store` | `transactional_snapshot_store` |
+| ----------------------------- | --------------------- | ------------------------------ |
+| Resident per key, one version | 80 B                  | 72 B                           |
+| Each retained older version   | 48 B chain node       | 72 B, a full entry             |
+| Read of one key               | one chain head        | the key's whole run            |
+
+At rest it is the cheaper of the two, because a key carries no chain-head pointer and no per-entry allocator.
+It becomes the more expensive one exactly when a long-lived reader pins history — and on the hash core a pinned version occupies a real slot, so it lengthens the probe runs of its neighbours as well.
+With no transaction open the low-water mark sits at the newest commit and the whole version tail is freed on the next write, so a store nobody is reading costs what its sibling costs.
 
 ### Hash Tables
 
@@ -403,7 +449,15 @@ ctest --test-dir build --output-on-failure
 SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
 ```
 
-One binary per container family runs the same suites — the `std::set` store, both trees, both thread-safety wrappers, the bare hash table and the transactional store over it — so a behavioural difference between them shows up as a failure rather than a surprise.
+One binary per container family runs the same suites — the `std::set` store, both trees, both thread-safety wrappers, the bare hash table and the transactional stores over it — so a behavioural difference between them shows up as a failure rather than a surprise.
+
+The suite asserts costs, not only answers.
+A counting comparator bounds a descent: `select` over the augmented count visits 12 nodes at 4096 entries and 18 at 262144, and the same assertion fails at a tighter multiple, so the bound is not vacuous.
+An element type that tallies its own construction and destruction turns a leak into arithmetic — a key leaked inside a correctly freed node is invisible to a sanitizer and not to the tally.
+A key whose hash keeps only its group forces the long probe runs a well-spread hash never produces, which is where tombstone reuse and severed runs actually show.
+
+`isolation_k` is checked against behaviour rather than against itself.
+The shared suite branches on the level a container declares and asserts both outcomes, so a container that quietly starts snapshotting without raising its level fails just as one that claims a level it does not deliver.
 
 For the Python side:
 

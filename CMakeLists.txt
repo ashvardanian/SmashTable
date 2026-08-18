@@ -150,6 +150,18 @@ if (SMASHTABLE_BUILD_TESTS)
     target_include_directories(smashtable_test_transactional_hash PRIVATE scripts/)
     target_link_libraries(smashtable_test_transactional_hash PRIVATE smashtable::smashtable smashtable_warnings)
 
+    add_executable(smashtable_test_snapshot_store scripts/test_snapshot_store.cpp)
+    target_include_directories(smashtable_test_snapshot_store PRIVATE scripts/)
+    target_link_libraries(smashtable_test_snapshot_store PRIVATE smashtable::smashtable smashtable_warnings)
+
+    add_executable(smashtable_test_shared scripts/test_shared.cpp)
+    target_include_directories(smashtable_test_shared PRIVATE scripts/)
+    target_link_libraries(smashtable_test_shared PRIVATE smashtable::smashtable smashtable_warnings)
+
+    add_executable(smashtable_test_vector scripts/test_vector.cpp)
+    target_include_directories(smashtable_test_vector PRIVATE scripts/)
+    target_link_libraries(smashtable_test_vector PRIVATE smashtable::smashtable smashtable_warnings)
+
     # The CUDA leg is opt-out rather than opt-in, but only materializes where a device compiler exists.
     # `check_language` finding one says nothing about a device being present, so the binary itself
     # skips when `cudaGetDeviceCount` comes back empty - that is what keeps a GPU-less runner green.
@@ -188,6 +200,9 @@ if (SMASHTABLE_BUILD_TESTS)
     add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
     add_test(NAME test_hash_table COMMAND smashtable_test_hash_table)
     add_test(NAME test_transactional_hash COMMAND smashtable_test_transactional_hash)
+    add_test(NAME test_snapshot_store COMMAND smashtable_test_snapshot_store)
+    add_test(NAME test_shared COMMAND smashtable_test_shared)
+    add_test(NAME test_vector COMMAND smashtable_test_vector)
     if (TARGET smashtable_test_concurrent_cuda)
         add_test(NAME test_concurrent_cuda COMMAND smashtable_test_concurrent_cuda)
     endif ()
