@@ -2,7 +2,7 @@
  *  @brief Regressions for the reclamation and reporting defects of the @c std::set-backed oracle.
  *      Templated on the container so the chain-backed store can be held to the same behaviour.
  *  @author Ash Vardanian
- *  @file scripts/test_std_store_defects.hpp
+ *  @file scripts/test_reference_store_defects.hpp
  *  @date August 17, 2026
  */
 #pragma once

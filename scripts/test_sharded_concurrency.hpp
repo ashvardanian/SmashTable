@@ -20,7 +20,7 @@
 #include <type_traits> // `std::is_same`
 #include <vector>      // `std::vector`
 
-#include <smashtable/locked_collection.hpp>
+#include <smashtable/locked_store.hpp>
 
 #include "test.hpp"
 
@@ -70,8 +70,8 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
 
     test_range_walk_takes_partitions_shared<container_t>();
     // The one-mutex wrapper carried the same redundant pair, so it is checked over the same store.
-    if constexpr (requires { typename container_t::part_t; })
-        test_range_walk_takes_partitions_shared<locked_collection<typename container_t::part_t>>();
+    if constexpr (requires { typename container_t::inner_store_t; })
+        test_range_walk_takes_partitions_shared<locked_store<typename container_t::inner_store_t>>();
 
     container_t container;
     std::vector<member_t> batch;

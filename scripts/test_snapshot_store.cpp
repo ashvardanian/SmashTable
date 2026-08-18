@@ -1,6 +1,6 @@
 /**
- *  @brief Test instantiations for @c transactional_snapshot_store. Covers the promise that separates it
- *      from @c transactional_store - a read answered at the stamp the transaction opened on - over both
+ *  @brief Test instantiations for @c snapshot_store. Covers the promise that separates it
+ *      from @c monotonic_store - a read answered at the stamp the transaction opened on - over both
  *      an ordered core and the open-addressed table, since the composite-key representation is uniform.
  *  @author Ash Vardanian
  *  @file scripts/test_snapshot_store.cpp
@@ -14,8 +14,8 @@
 #include <random> // `std::mt19937`
 #include <vector> // `std::vector`
 
-#include <smashtable/transactional_snapshot_store.hpp>
-#include <smashtable/transactional_store.hpp>
+#include <smashtable/snapshot_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
@@ -30,34 +30,34 @@ using namespace ashvardanian::smashtable::scripts;
  *  Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
  *  Tests: Snapshot reads, phantom-free ranges, run-based reclamation on a linked core
  */
-using snapshot_avl_map_t = transactional_snapshot_avl_map<trivial_key_t, int, std::less<trivial_key_t>,
-                                                          std::allocator<mapping<trivial_key_t, int>>>;
+using snapshot_avl_map_t =
+    snapshot_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
  *  Tests: The same suites over the weight-balanced core
  */
-using snapshot_wb_map_t = transactional_snapshot_wb_map<trivial_key_t, int, std::less<trivial_key_t>,
-                                                        std::allocator<mapping<trivial_key_t, int>>>;
+using snapshot_wb_map_t =
+    snapshot_wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
  *  Tests: What an order statistic costs, since every comparison this comparator makes is counted
  */
-using snapshot_ranked_map_t = transactional_snapshot_wb_map<trivial_key_t, int, counting_comparator_t,
-                                                            std::allocator<mapping<trivial_key_t, int>>>;
+using snapshot_ranked_map_t =
+    snapshot_wb_map<trivial_key_t, int, counting_comparator_t, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Ordering: ✗ | Copy: Trivial (key & value) | Memory: Stack
  *  Tests: Composite keys on the open-addressed core, where equality separates versions
  */
-using snapshot_hash_map_t = transactional_snapshot_hash_map<trivial_key_t, int>;
+using snapshot_hash_map_t = snapshot_hash_map<trivial_key_t, int>;
 
 /**
  *  Ordering: ✗ | Copy: .copy() → expected<T> | Memory: Heap
  *  Tests: Staging and reclamation with a key that allocates
  */
-using snapshot_heavy_set_t = transactional_snapshot_hash_set<heavy_key_t>;
+using snapshot_heavy_set_t = snapshot_hash_set<heavy_key_t>;
 
 #pragma endregion Type Aliases
 
@@ -103,7 +103,7 @@ static void test_isolation_traits() {
     static_assert(store_type_::isolation_k == isolation_t::snapshot_k,
                   "the store exists to promise Snapshot Isolation");
     static_assert(at_least(store_type_::isolation_k, isolation_t::monotonic_atomic_view_k),
-                  "Snapshot Isolation subsumes what `transactional_store` promises");
+                  "Snapshot Isolation subsumes what `monotonic_store` promises");
     static_assert(optimistically_concurrent_store<store_type_>,
                   "the store stages, validates and commits like every other optimistic store");
     static_assert(store_type_::is_transactional::value);
@@ -566,8 +566,8 @@ static void test_heavy_keys_round_trip() {
 /** @brief Tests that a group spanning a snapshot store and a monotonic one commits both together */
 static void test_group_spans_both_stores() {
     using snapshot_t = snapshot_avl_map_t;
-    using monotonic_t = transactional_avl_map<trivial_key_t, int, std::less<trivial_key_t>,
-                                              std::allocator<mapping<trivial_key_t, int>>>;
+    using monotonic_t =
+        monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
     using snapshot_member_t = typename snapshot_t::value_type;
     using monotonic_member_t = typename monotonic_t::value_type;
 

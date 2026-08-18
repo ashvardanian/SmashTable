@@ -1,6 +1,6 @@
 /**
  *  @brief Template test functions for unordered containers, exercising the hash-specific surface -
- *      growth through rehashes, tombstone reuse, iteration, and the lock-free atomic operations.
+ *      growth through rehashes, tombstone reuse, iteration, and the per-slot atomic operations.
  *  @author Ash Vardanian
  *  @file scripts/test_unordered.hpp
  *  @date August 16, 2026
@@ -40,7 +40,7 @@
 #include <vector>        // `std::vector`
 
 #include <smashtable/basic_hash_table.hpp>
-#include <smashtable/concurrent_hash_table.hpp>
+#include <smashtable/atomic_hash_table.hpp>
 
 #include "test_basic.hpp"
 
@@ -425,7 +425,7 @@ void test_unordered_capacity_management(std::size_t size = 800) {
     using reserve_result_t = typename container_t::reserve_result_t;
 
     container_t container;
-    st_verify_((container.reserve(size) == reserve_result_t::relayouted_k) &&
+    st_verify_((container.reserve(size) == reserve_result_t::reallocated_k) &&
                "the first reserve on an empty table must allocate");
     st_verify_((container.reserve(size) == reserve_result_t::unchanged_k) &&
                "a second reserve for the same count must be a no-op");
@@ -589,6 +589,77 @@ void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) 
     for (auto const &entry : oracle) unordered_verify_present(container, entry.first, entry.second);
 }
 
+/** @brief Inserts the element for @p identifier through the reporting overload of @c emplace. */
+template <typename container_type_, typename... tags_types_>
+auto unordered_emplace_reporting(container_type_ &container, std::size_t identifier, tags_types_... tags) noexcept {
+    using key_t = typename container_type_::key_type;
+    using report_t = typename container_type_::emplace_report_t;
+    if constexpr (unordered_has_values_k<container_type_>) {
+        using mapped_t = typename container_type_::mapped_type;
+        return container.template emplace<report_t::insert_result_k>(
+            unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier), tags...);
+    }
+    else return container.template emplace<report_t::insert_result_k>(unordered_key_from<key_t>(identifier), tags...);
+}
+
+/**
+ *  @brief Tests that a reporting insertion separates a fresh key from one already taken.
+ *    Two of the three outcomes; the refusal is a table that cannot grow, tested separately.
+ */
+template <typename container_type_>
+void test_unordered_insert_reports_outcome() {
+
+    using container_t = container_type_;
+    using upsert_result_t = typename container_t::upsert_result_t;
+
+    container_t container;
+    auto const stored = unordered_emplace_reporting(container, 1);
+    st_verify_((stored.outcome == upsert_result_t::inserted_k) && "a fresh key must report an insertion");
+    st_verify_((stored.position != container.end()) && "an insertion must name the slot it landed in");
+    st_verify_(!(stored.failed()));
+
+    auto const duplicate = unordered_emplace_reporting(container, 1);
+    st_verify_((duplicate.outcome == upsert_result_t::updated_k) && "a key already there must report an update");
+    st_verify_((duplicate.position != container.end()) && "an update must name the slot the key sits in");
+    st_verify_(!(duplicate.failed()) && "a key already there is not a failure");
+    st_verify_eq_(container.size(), 1u);
+}
+
+/**
+ *  @brief Tests that an insertion the table had no room for is distinguishable from a duplicate.
+ *    Both leave the size alone, and only the reported outcome tells them apart.
+ */
+template <typename container_type_>
+void test_unordered_insert_reports_refusal() {
+
+    using container_t = container_type_;
+    using upsert_result_t = typename container_t::upsert_result_t;
+
+    // One allocation is granted and then filled to the last slot, so the next key has nowhere to go
+    // and the table has no way to make room.
+    allocation_ledger_t ledger;
+    ledger.allow(1);
+    auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
+    st_verify_((allocated) && "the one permitted allocation must succeed");
+    container_t container = *std::move(allocated);
+    std::size_t const slots = container.slots_count().raw;
+    for (std::size_t identifier = 0; identifier < slots; ++identifier)
+        unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
+    st_verify_eq_(container.size(), slots);
+
+    // Both calls promise the reservation, so neither asks the refusing allocator for room and the
+    // only thing separating them is what the probe found.
+    auto const duplicate = unordered_emplace_reporting(container, 0, assume_reserved_t {});
+    st_verify_((duplicate.outcome == upsert_result_t::updated_k) && "a saturated table still updates what it holds");
+    st_verify_(!(duplicate.failed()));
+
+    auto const refused = unordered_emplace_reporting(container, slots + 1, assume_reserved_t {});
+    st_verify_((refused.outcome == upsert_result_t::no_slot_k) && "a table with no room must report the refusal");
+    st_verify_((refused.failed()) && "a refusal is the only way an insertion fails");
+    st_verify_((refused.position == container.end()) && "a refusal names no slot");
+    st_verify_eq_(container.size(), slots);
+}
+
 /**
  *  @brief Tests that a table with every slot taken refuses further keys, terminates while doing so,
  *    and does not count a store that never happened.
@@ -709,12 +780,59 @@ struct unordered_pinned_of;
 
 template <typename element_type_, typename hasher_type_, typename equals_type_, typename allocator_type_>
 struct unordered_pinned_of<basic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>> {
-    using type = concurrent_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>;
+    using type = atomic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>;
 };
 
 /** @brief The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */
 template <typename container_type_>
 using unordered_pinned_t = typename unordered_pinned_of<container_type_>::type;
+
+/**
+ *  @brief Tests that the pinned table answers a missing key with a status and a callback.
+ *
+ *  @c update and @c erase report @c key_not_found_k rather than a bare @c false, and @c find hands
+ *  the miss to a second callback rather than returning one, which is the shape every store here uses.
+ */
+template <typename container_type_>
+void test_unordered_pinned_reports_status() {
+
+    using container_t = container_type_;
+    using key_t = typename container_t::key_type;
+    using mapped_t = typename container_t::mapped_type;
+    static_assert(unordered_has_values_k<container_t>, "The pinned suites are written for maps");
+
+    auto allocated = container_t::make(std::size_t {64});
+    st_verify_((allocated) && "the growable table must build");
+    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+
+    st_verify_((container.emplace(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(1)) == success_k) &&
+               "an empty pinned table must take the first key");
+
+    st_verify_((container.update(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(2)) == success_k) &&
+               "updating a key that is there must succeed");
+    st_verify_((container.update(unordered_key_from<key_t>(9), unordered_value_from<mapped_t>(2)) == key_not_found_k) &&
+               "updating a key that was never stored must name the reason");
+
+    // The miss reaches a callback of its own, so a caller never infers absence from a return value.
+    std::size_t found_calls = 0, missing_calls = 0;
+    container.find(
+        unordered_key_from<key_t>(1), [&](auto const &) noexcept { ++found_calls; },
+        [&]() noexcept { ++missing_calls; });
+    st_verify_eq_(found_calls, 1u);
+    st_verify_eq_(missing_calls, 0u);
+    container.find(
+        unordered_key_from<key_t>(9), [&](auto const &) noexcept { ++found_calls; },
+        [&]() noexcept { ++missing_calls; });
+    st_verify_eq_(found_calls, 1u);
+    st_verify_eq_(missing_calls, 1u);
+
+    st_verify_((container.erase(unordered_key_from<key_t>(1)) == success_k) && "erasing a live key must succeed");
+    st_verify_((container.erase(unordered_key_from<key_t>(1)) == key_not_found_k) &&
+               "erasing a tombstone must name the reason");
+    st_verify_((container.erase(unordered_key_from<key_t>(9)) == key_not_found_k) &&
+               "erasing a key that was never stored must name the reason");
+    st_verify_eq_(container.size(), 0u);
+}
 
 /**
  *  @brief Tests that a pinned table with no free slot reports the refusal instead of probing forever.
@@ -758,7 +876,9 @@ void test_unordered_pinned_saturation() {
         st_verify_((updated == success_k) && "an overwrite needs no free slot");
     }
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
-        bool const reached = container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
+        bool reached = false;
+        container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
+            reached = true;
             st_verify_((slot.value() == unordered_value_from<mapped_t>(identifier + slots)) &&
                        "the overwrite must be the value that survives");
         });
@@ -812,10 +932,10 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
                 std::size_t const identifier = thread_index * per_thread + offset;
                 auto const key = unordered_key_from<key_t>(identifier);
                 if (container.contains(key)) ++contains_hits;
-                bool const reached = container.find(key, [&](auto const &address) noexcept {
+                container.find(key, [&](auto const &address) noexcept {
+                    ++callback_hits;
                     if (!(address.value() == unordered_value_from<mapped_t>(identifier))) ++mismatches;
                 });
-                callback_hits += reached;
             }
             found_by_contains += contains_hits;
             found_by_callback += callback_hits;
@@ -869,8 +989,8 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
             std::size_t landed = 0;
             for (std::size_t offset = 0; offset < per_thread; ++offset) {
                 std::size_t const identifier = thread_index * per_thread + offset;
-                landed += container.update(unordered_key_from<key_t>(identifier),
-                                           unordered_value_from<mapped_t>(identifier + total));
+                landed += succeeded(container.update(unordered_key_from<key_t>(identifier),
+                                                     unordered_value_from<mapped_t>(identifier + total)));
             }
             updates_landed += landed;
         });
@@ -879,7 +999,9 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
     st_verify_eq_(updates_landed.load(), total);
     st_verify_eq_(container.size(), total);
     for (std::size_t identifier = 0; identifier < total; ++identifier) {
-        bool const reached = container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
+        bool reached = false;
+        container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
+            reached = true;
             st_verify_((slot.value() == unordered_value_from<mapped_t>(identifier + total)) &&
                        "every update must be visible once the writers have joined");
         });
@@ -895,8 +1017,8 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
             std::size_t landed = 0, phantoms = 0;
             for (std::size_t offset = 0; offset < per_thread; offset += 2) {
                 std::size_t const identifier = thread_index * per_thread + offset;
-                landed += container.erase(unordered_key_from<key_t>(identifier));
-                phantoms += container.erase(unordered_key_from<key_t>(identifier + total));
+                landed += succeeded(container.erase(unordered_key_from<key_t>(identifier)));
+                phantoms += succeeded(container.erase(unordered_key_from<key_t>(identifier + total)));
             }
             erasures_landed += landed;
             phantom_erasures += phantoms;
@@ -941,7 +1063,7 @@ struct versioned_hash_t {
 };
 
 /** @brief Separates generations of one identifier, unless the probe asks for the bare key. */
-struct versioned_equals_t {
+struct per_key_equals_t {
     using is_transparent = void;
     bool operator()(versioned_key_t const &first, versioned_key_t const &second) const noexcept {
         return first.bare == second.bare && first.generation == second.generation;
@@ -954,21 +1076,21 @@ struct versioned_equals_t {
     }
 };
 
-using versioned_set_t = hash_set<versioned_key_t, versioned_hash_t, versioned_equals_t>;
+using versioned_set_t = hash_set<versioned_key_t, versioned_hash_t, per_key_equals_t>;
 
-/** @brief Collects the generations @c search_to_visit reaches for @p bare, in probe order. */
+/** @brief Collects the generations @c probe_to_visit reaches for @p bare, in probe order. */
 inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t const &container,
                                                             std::size_t bare) noexcept {
     std::vector<std::size_t> generations;
-    container.search_to_visit(bare_key_t {bare}, [&](auto const &slot) noexcept {
+    container.probe_to_visit(bare_key_t {bare}, [&](auto const &slot) noexcept {
         generations.push_back(slot.key().generation);
-        return probe_t::resume_k;
+        return probe_control_t::resume_k;
     });
     return generations;
 }
 
 /**
- *  @brief Tests that @c search_to_visit reaches every version of one key sharing a probe run, and
+ *  @brief Tests that @c probe_to_visit reaches every version of one key sharing a probe run, and
  *    none of the foreign keys sharing it.
  */
 inline void test_unordered_visit_every_match(std::size_t versions = 5) {
@@ -1009,9 +1131,9 @@ inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
 
     for (std::size_t stop_after = 1; stop_after <= versions; ++stop_after) {
         std::size_t visits = 0;
-        container.search_to_visit(bare_key_t {1}, [&](auto const &) noexcept {
+        container.probe_to_visit(bare_key_t {1}, [&](auto const &) noexcept {
             ++visits;
-            return visits == stop_after ? probe_t::halt_k : probe_t::resume_k;
+            return visits == stop_after ? probe_control_t::halt_k : probe_control_t::resume_k;
         });
         st_verify_eq_(visits, stop_after);
     }
@@ -1092,9 +1214,9 @@ inline void test_unordered_visit_full_table() {
 
     // A key absent from a table with nowhere to stop still has to walk exactly once around.
     std::size_t visits = 0;
-    container.search_to_visit(bare_key_t {2}, [&](auto const &) noexcept {
+    container.probe_to_visit(bare_key_t {2}, [&](auto const &) noexcept {
         ++visits;
-        return probe_t::resume_k;
+        return probe_control_t::resume_k;
     });
     st_verify_eq_(visits, 0u);
 

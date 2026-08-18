@@ -299,9 +299,9 @@ class basic_wb_node {
      *
      *  @par Example
      *  @code
-     *  auto pos = rank(root, value, comp);
-     *  // pos elements are smaller than value
-     *  // If value exists, it's at index pos
+     *  auto position = rank(root, value, comp);
+     *  // position elements are smaller than value
+     *  // If value exists, it's at index position
      *  @endcode
      */
     template <typename comparable_type_>
@@ -683,15 +683,23 @@ class basic_wb_node {
 
 #pragma region Insertions
 
+    /** @brief What a walk that may create a node did with the key it was handed. */
+    enum class node_placement_t : std::uint8_t {
+        /** @brief No node was available to store the key, so nothing was stored. */
+        refused_k,
+        /** @brief An equal key was already there, and @c match names the node holding it. */
+        matched_k,
+        /** @brief A fresh node took the key, and @c match names it. */
+        made_k,
+    };
+
     struct find_or_make_result_t {
         node_t *root = nullptr;
         node_t *match = nullptr;
-        bool inserted = false;
+        node_placement_t placement = node_placement_t::refused_k;
 
-        /**
-         *  @return True if the allocation of the new node has failed.
-         */
-        bool failed() const noexcept { return !inserted && !match; }
+        /** @brief Whether nothing was stored, which is the only way this walk fails. */
+        bool failed() const noexcept { return placement == node_placement_t::refused_k; }
     };
 
     /**
@@ -700,34 +708,34 @@ class basic_wb_node {
      *  @param[in] node Root of subtree to insert into.
      *  @param[in] new_child Pre-allocated node to insert.
      *  @param[in] comparator Comparator for element comparison.
-     *  @return Result containing new root, matched node, and insertion status.
+     *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
     static find_or_make_result_t insert(node_t *node, node_t *new_child, comparator_t const &comparator) noexcept {
-        if (!node) return {new_child, new_child, true};
+        if (!node) return {new_child, new_child, new_child ? node_placement_t::made_k : node_placement_t::refused_k};
 
         if (comparator(mapping_key_or_itself(new_child->fruit), mapping_key_or_itself(node->fruit))) {
             auto result = insert(node->left, new_child, comparator);
             node->left = result.root;
-            if (result.inserted) {
+            if (result.placement == node_placement_t::made_k) {
                 update_size(node);
                 node = rebalance(node);
             }
-            return {node, result.match, result.inserted};
+            return {node, result.match, result.placement};
         }
 
         else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(new_child->fruit))) {
             auto result = insert(node->right, new_child, comparator);
             node->right = result.root;
-            if (result.inserted) {
+            if (result.placement == node_placement_t::made_k) {
                 update_size(node);
                 node = rebalance(node);
             }
-            return {node, result.match, result.inserted};
+            return {node, result.match, result.placement};
         }
 
         else {
             // Key already exists - don't insert
-            return {node, node, false};
+            return {node, node, node_placement_t::matched_k};
         }
     }
 
@@ -739,7 +747,7 @@ class basic_wb_node {
      *  @param[in] fruit Entry to insert or assign (moved).
      *  @param[in] comparator Comparator for element comparison.
      *  @param[in] node_allocator Allocator function that returns new node pointer or nullptr on failure.
-     *  @return Result containing new root, matched node, and insertion status.
+     *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
     template <typename node_allocator_type_>
     static find_or_make_result_t upsert(node_t *node, value_type_ &&fruit, comparator_t const &comparator,
@@ -747,41 +755,41 @@ class basic_wb_node {
         // Base case: empty tree, allocate new node
         if (!node) {
             node_t *new_node = node_allocator();
-            if (!new_node) return {nullptr, nullptr, false};
+            if (!new_node) return {nullptr, nullptr, node_placement_t::refused_k};
             new (&new_node->fruit) value_type_(std::move(fruit));
             new_node->left = nullptr;
             new_node->right = nullptr;
             reset_to_leaf(new_node);
-            return {new_node, new_node, true};
+            return {new_node, new_node, node_placement_t::made_k};
         }
 
         // Recursive case: search for insertion point
         if (comparator(mapping_key_or_itself(fruit), mapping_key_or_itself(node->fruit))) {
             auto result = upsert(node->left, std::move(fruit), comparator, node_allocator);
             node->left = result.root;
-            if (result.inserted) {
+            if (result.placement == node_placement_t::made_k) {
                 update_size(node);
                 node = rebalance(node);
             }
             // Overwriting an existing entry leaves the shape alone but may flip its augmented count.
             else update_augmented_size(node);
-            return {node, result.match, result.inserted};
+            return {node, result.match, result.placement};
         }
         else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(fruit))) {
             auto result = upsert(node->right, std::move(fruit), comparator, node_allocator);
             node->right = result.root;
-            if (result.inserted) {
+            if (result.placement == node_placement_t::made_k) {
                 update_size(node);
                 node = rebalance(node);
             }
             else update_augmented_size(node);
-            return {node, result.match, result.inserted};
+            return {node, result.match, result.placement};
         }
         else {
             // Key already exists - update the fruit
             node->fruit = std::move(fruit);
             update_augmented_size(node);
-            return {node, node, false};
+            return {node, node, node_placement_t::matched_k};
         }
     }
 
@@ -794,7 +802,7 @@ class basic_wb_node {
         callback(node);
     }
 
-    struct remove_if_result_t {
+    struct erase_if_result_t {
         node_t *root = nullptr;
         std::size_t count = 0;
     };
@@ -805,13 +813,13 @@ class basic_wb_node {
      *    stitched back in place - rotating once could not close a gap of many weight classes.
      */
     template <typename predicate_type_, typename node_deallocator_type_>
-    static remove_if_result_t remove_if(node_t *node, predicate_type_ &&predicate,
-                                        node_deallocator_type_ &&node_deallocator,
-                                        comparator_t const &comparator) noexcept {
+    static erase_if_result_t erase_if(node_t *node, predicate_type_ &&predicate,
+                                      node_deallocator_type_ &&node_deallocator,
+                                      comparator_t const &comparator) noexcept {
         if (!node) return {nullptr, 0};
 
-        auto left_result = remove_if(node->left, predicate, node_deallocator, comparator);
-        auto right_result = remove_if(node->right, predicate, node_deallocator, comparator);
+        auto left_result = erase_if(node->left, predicate, node_deallocator, comparator);
+        auto right_result = erase_if(node->right, predicate, node_deallocator, comparator);
         node->left = node->right = nullptr;
         reset_to_leaf(node);
 
@@ -824,8 +832,7 @@ class basic_wb_node {
     }
 
     /** @brief Uniformly samples one node whose key lies in [lower, upper), or nullptr when empty. */
-    template <typename lower_type_, typename upper_type_, typename generator_type_,
-              typename predicate_type_ = no_op_fn_t>
+    template <typename lower_type_, typename upper_type_, typename generator_type_, typename predicate_type_ = no_op_t>
     static node_t *sample_range(node_t *node, lower_type_ &&lower, upper_type_ &&upper, comparator_t const &comparator,
                                 generator_type_ &&generator, predicate_type_ &&predicate = {}) noexcept {
 
@@ -833,7 +840,7 @@ class basic_wb_node {
         node_t *chosen = nullptr;
         std::size_t seen = 0;
         range(node, lower, upper, comparator, [&](node_t *candidate) noexcept {
-            if constexpr (!std::is_same_v<std::remove_cvref_t<predicate_type_>, no_op_fn_t>)
+            if constexpr (!std::is_same_v<std::remove_cvref_t<predicate_type_>, no_op_t>)
                 if (!predicate(candidate)) return;
             ++seen;
             if (draw_below(generator, seen) == 0) chosen = candidate;
@@ -1094,23 +1101,23 @@ class basic_wb_tree {
         auto result =
             node_t::upsert(root_, std::move(fruit), comparator_, [&]() noexcept { return allocator_.allocate(1); });
         root_ = result.root;
-        size_ += result.inserted;
-        return {result.match, result.inserted};
+        size_ += result.placement == node_t::node_placement_t::made_k;
+        return {result.match, result.placement == node_t::node_placement_t::made_k};
     }
 
     /**
-     *  @brief Result type for upsert operations.
+     *  @brief The node an upsert settled on, and how it got there.
+     *    Assigning to the result overwrites that node's entry, which is what makes it usable as a
+     *    handle rather than a report.
      */
-    struct upsert_result_t {
+    struct upserted_node_t {
         node_t *node = nullptr;
-        bool inserted = false;
+        typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
 
-        /**
-         *  @return True if the allocation of the new node has failed.
-         */
-        bool failed() const noexcept { return !inserted && !node; }
+        /** @brief Whether nothing was stored, which is the only way an upsert fails. */
+        bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
         explicit operator bool() const noexcept { return !failed(); }
-        upsert_result_t &operator=(value_t &&fruit) noexcept {
+        upserted_node_t &operator=(value_t &&fruit) noexcept {
             node->fruit = std::move(fruit);
             return *this;
         }
@@ -1121,25 +1128,24 @@ class basic_wb_tree {
      *    Overwrites existing fruit if key exists. Matches @c std::map::insert_or_assign() semantics.
      *
      *  @param[in] fruit Entry to insert or assign (moved into the tree).
-     *  @return Result containing pointer to node and insertion status.
-     *    @c inserted is true if new node was created, false if existing was updated.
+     *  @return The node the entry now lives in, and whether it was made or matched.
      */
     template <typename comparable_type_>
-    upsert_result_t insert_or_assign(comparable_type_ &&comparable) noexcept {
+    upserted_node_t insert_or_assign(comparable_type_ &&comparable) noexcept {
         auto result = node_t::upsert(root_, std::forward<comparable_type_>(comparable), comparator_,
                                      [&]() noexcept { return allocator_.allocate(1); });
         root_ = result.root;
-        size_ += result.inserted;
-        return {result.match, result.inserted};
+        size_ += result.placement == node_t::node_placement_t::made_k;
+        return {result.match, result.placement};
     }
 
     /**
      *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an fruit.
      *  @param[in] fruit Entry to insert or assign (moved into the tree).
-     *  @return Result containing pointer to node and insertion status.
+     *  @return The node the entry now lives in, and whether it was made or matched.
      */
     template <typename comparable_type_>
-    upsert_result_t upsert(comparable_type_ &&comparable) noexcept {
+    upserted_node_t upsert(comparable_type_ &&comparable) noexcept {
         return insert_or_assign(std::forward<comparable_type_>(comparable));
     }
 
@@ -1206,8 +1212,8 @@ class basic_wb_tree {
      *
      *  @par Example
      *  @code
-     *  auto pos = tree.rank(42);
-     *  // pos elements are smaller than 42
+     *  auto position = tree.rank(42);
+     *  // position elements are smaller than 42
      *  @endcode
      */
     size_t rank(value_t const &fruit) const noexcept { return node_t::rank(root_, fruit, comparator_); }
@@ -1268,8 +1274,8 @@ class basic_wb_tree {
 
     /** @brief Drops every element satisfying @p predicate and reports how many went. */
     template <typename predicate_type_>
-    std::size_t remove_if(predicate_type_ &&predicate) noexcept {
-        auto result = node_t::remove_if(
+    std::size_t erase_if(predicate_type_ &&predicate) noexcept {
+        auto result = node_t::erase_if(
             root_, std::forward<predicate_type_>(predicate),
             [&](node_t *node) noexcept {
                 node->fruit.~value_t();
@@ -1286,7 +1292,7 @@ class basic_wb_tree {
      *  @brief Erases the half-open range [lower, upper), invoking @p callback for each element.
      *    Splitting twice and re-joining keeps this O(log N + K) rather than K separate erases.
      */
-    template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         if (!root_) return;
 
@@ -1430,7 +1436,7 @@ class basic_wb_tree {
                 return;
             }
             root_ = result.root;
-            size_ += result.inserted;
+            size_ += result.placement == node_t::node_placement_t::made_k;
         }
     }
 
@@ -1448,9 +1454,9 @@ class basic_wb_tree {
         node_t *node_to_insert = other.release();
         auto result = node_t::insert(root_, node_to_insert, comparator_);
         root_ = result.root;
-        size_ += result.inserted;
+        size_ += result.placement == node_t::node_placement_t::made_k;
         // Key conflict - node wasn't inserted, so release the entry it carried
-        if (!result.inserted) {
+        if (result.placement == node_t::node_placement_t::matched_k) {
             node_to_insert->fruit.~value_t();
             allocator_.deallocate(node_to_insert, 1);
         }
@@ -1524,14 +1530,14 @@ class basic_wb_tree {
     class const_iterator;
 
     /** @brief Visits every element in [lower, upper) in sorted order. */
-    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
     }
 
     /** @brief Same range walk, but the callback may modify each element in place. */
-    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
@@ -1631,9 +1637,9 @@ class basic_wb_tree {
         }
 
         iterator operator++(int) noexcept {
-            iterator tmp = *this;
+            iterator previous = *this;
             ++(*this);
-            return tmp;
+            return previous;
         }
 
         iterator &operator--() noexcept {
@@ -1642,9 +1648,9 @@ class basic_wb_tree {
         }
 
         iterator operator--(int) noexcept {
-            iterator tmp = *this;
+            iterator previous = *this;
             --(*this);
-            return tmp;
+            return previous;
         }
 
         bool operator==(iterator const &other) const noexcept { return node_ == other.node_; }
@@ -1683,9 +1689,9 @@ class basic_wb_tree {
         }
 
         const_iterator operator++(int) noexcept {
-            const_iterator tmp = *this;
+            const_iterator previous = *this;
             ++(*this);
-            return tmp;
+            return previous;
         }
 
         const_iterator &operator--() noexcept {
@@ -1694,9 +1700,9 @@ class basic_wb_tree {
         }
 
         const_iterator operator--(int) noexcept {
-            const_iterator tmp = *this;
+            const_iterator previous = *this;
             --(*this);
-            return tmp;
+            return previous;
         }
 
         bool operator==(const_iterator const &other) const noexcept { return node_ == other.node_; }
@@ -1818,17 +1824,17 @@ class basic_wb_tree {
      *  @brief Erases the element at the specified iterator position.
      *    Unlike STL, returns both the next iterator and a status code for error reporting.
      *
-     *  @param[in] pos Iterator to element to erase. Must be valid and dereferenceable.
+     *  @param[in] position Iterator to element to erase. Must be valid and dereferenceable.
      *  @return Contains iterator to element following the erased element and operation status.
      *
-     *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      *    If erase fails (e.g., tree corruption), returns {end(), error}.
      */
-    erase_result_t erase(iterator pos) noexcept {
-        if (pos == end()) return {end(), {success_k}};
-        auto next = pos;
+    erase_result_t erase(iterator position) noexcept {
+        if (position == end()) return {end(), {success_k}};
+        auto next = position;
         ++next;
-        bool erased = erase(*pos);
+        bool erased = erase(*position);
         return {next, erased ? success_k : status_t::unknown_k};
     }
 
@@ -1836,14 +1842,14 @@ class basic_wb_tree {
      *  @brief Erases the element at the specified const_iterator position.
      *    Unlike STL, returns both the next iterator and a status code for error reporting.
      *
-     *  @param[in] pos Const iterator to element to erase. Must be valid and dereferenceable.
+     *  @param[in] position Const iterator to element to erase. Must be valid and dereferenceable.
      *  @return Contains iterator to element following the erased element and operation status.
      *
-     *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      *    If erase fails (e.g., tree corruption), returns {end(), error}.
      */
-    erase_result_t erase(const_iterator pos) noexcept {
-        return erase(iterator(const_cast<basic_wb_tree *>(this), const_cast<node_t *>(pos.node_)));
+    erase_result_t erase(const_iterator position) noexcept {
+        return erase(iterator(const_cast<basic_wb_tree *>(this), const_cast<node_t *>(position.node_)));
     }
 
     /**

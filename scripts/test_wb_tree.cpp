@@ -1,6 +1,6 @@
 /**
  *  @brief Test instantiations for weight-balanced tree containers. Covers basic_wb_tree (non-transactional) and
- *      transactional_store<basic_wb_tree> (transactional). The weight-balanced tree also carries order
+ *      monotonic_store<basic_wb_tree> (transactional). The weight-balanced tree also carries order
  *      statistics - @c rank and @c select.
  *  @author Ash Vardanian
  *  @file scripts/test_wb_tree.cpp
@@ -16,15 +16,15 @@
 #include <vector>    // `std::vector`
 
 #include <smashtable/basic_wb_tree.hpp>
-#include <smashtable/transactional_store.hpp>
-#include <smashtable/transactional_std_store.hpp>
+#include <smashtable/reference_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
 #include "test_fixture_coverage.hpp"
-#include "test_transactional_store_defects.hpp"
+#include "test_monotonic_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -86,54 +86,53 @@ using heavy_map_t =
  *  Tests: Baseline transactional correctness, isolation levels
  */
 using transactional_trivial_set_t =
-    transactional_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+    monotonic_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
  *  Tests: Transaction resource accounting, OOM during stage/commit
  */
-using transactional_tracking_set_t = transactional_wb_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using transactional_tracking_set_t = monotonic_wb_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
  *  Tests: Heterogeneous watch/find in transactions
  */
 using transactional_composite_set_t =
-    transactional_wb_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
+    monotonic_wb_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✓
  *  Tests: Watch copy OOM, transaction rollback with heap types
  */
-using transactional_heavy_set_t = transactional_wb_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
+using transactional_heavy_set_t = monotonic_wb_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
  *  Value: int | Tests: Transactional map operations, value overwrites
  */
 using transactional_trivial_map_t =
-    transactional_wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+    monotonic_wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
  *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA
  */
-using transactional_tracking_map_t =
-    transactional_wb_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
+using transactional_tracking_map_t = monotonic_wb_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values
  */
-using transactional_composite_map_t = transactional_wb_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
-                                                           std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
+using transactional_composite_map_t = monotonic_wb_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
+                                                       std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap rollback
  */
-using transactional_heavy_map_t = transactional_wb_map<heavy_key_t, guarded_payload_t, std::less<void>,
-                                                       std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
+using transactional_heavy_map_t = monotonic_wb_map<heavy_key_t, guarded_payload_t, std::less<void>,
+                                                   std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 #pragma endregion Type Aliases
 
@@ -703,7 +702,7 @@ static void weight_balance_erase_iterator_range() {
 }
 
 /** @brief Dropping an arbitrary subset must leave a balanced tree, not merely a correct one. */
-static void weight_balance_remove_if_rebalances() {
+static void weight_balance_erase_if_rebalances() {
     std::mt19937 generator(2026);
     for (std::size_t trial = 0; trial < 200; ++trial) {
         ordered_set_t tree;
@@ -715,7 +714,7 @@ static void weight_balance_remove_if_rebalances() {
         }
 
         int const residue = int(generator() % 7);
-        std::size_t const dropped = tree.remove_if([&](int const &element) noexcept { return element % 7 == residue; });
+        std::size_t const dropped = tree.erase_if([&](int const &element) noexcept { return element % 7 == residue; });
         std::size_t counted = 0;
         for (auto position = oracle.begin(); position != oracle.end();) {
             if (*position % 7 == residue) position = oracle.erase(position), ++counted;
@@ -881,10 +880,10 @@ static void augmented_randomized_mutations() {
             break;
         }
         case 5: {
-            // `remove_if` rebuilds both halves through `join`, which has to carry the counts along.
+            // `erase_if` rebuilds both halves through `join`, which has to carry the counts along.
             int const residue = int(generator() % 5);
             std::size_t const dropped =
-                tree.remove_if([&](mapping<int, int> const &entry) noexcept { return entry.key % 5 == residue; });
+                tree.erase_if([&](mapping<int, int> const &entry) noexcept { return entry.key % 5 == residue; });
             std::size_t counted = 0;
             for (auto position = oracle.begin(); position != oracle.end();) {
                 if (position->first % 5 == residue) position = oracle.erase(position), ++counted;
@@ -1039,6 +1038,37 @@ static void allocation_failure_preserves_the_argument() {
     st_verify_eq_(tree.size(), 3u);
 }
 
+/**
+ *  @brief An upsert must name which of its three outcomes happened.
+ *
+ *  A node that was made, one that was already there, and an allocation that never came back are
+ *  three answers, and none of them should have to be read off a null check.
+ */
+static void upsert_reports_placement() {
+    using placement_t = traced_set_t::node_t::node_placement_t;
+    allocation_ledger_t ledger;
+    ledger.allow(1);
+    traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+
+    auto const made = tree.upsert(traced_key_t(1));
+    st_verify_((made.placement == placement_t::made_k) && "a fresh key must report a node of its own");
+    st_verify_(succeeded(made));
+    st_verify_ne_(made.node, nullptr);
+
+    auto const matched = tree.upsert(traced_key_t(1));
+    st_verify_((matched.placement == placement_t::matched_k) && "a key already there must report a match");
+    st_verify_(succeeded(matched) && "an overwrite is not a failure");
+    st_verify_ne_(matched.node, nullptr);
+
+    // The budget is spent, so the second key has no node to live in - the outcome that shares a
+    // null match with nothing else.
+    auto const refused = tree.upsert(traced_key_t(2));
+    st_verify_((refused.placement == placement_t::refused_k) && "a refused allocation must say so");
+    st_verify_(failed(refused));
+    st_verify_eq_(refused.node, nullptr);
+    st_verify_eq_(tree.size(), 1u);
+}
+
 /** @brief @c insert_if_missing must separate "already there" from "out of memory". */
 static void allocation_failure_is_distinct_from_presence() {
     allocation_ledger_t ledger;
@@ -1121,7 +1151,7 @@ static void fixture_coverage_container_balances_counted_keys() {
 }
 
 static void fixture_coverage_rollback_balances_counted_keys() {
-    test_rollback_balances_counted_keys<transactional_wb_map<counted_key_t, int>>();
+    test_rollback_balances_counted_keys<monotonic_wb_map<counted_key_t, int>>();
 }
 
 #pragma endregion Fixture Coverage
@@ -1203,7 +1233,8 @@ int main() {
     failures += run_test(filter, "weight_balance.split_and_join_track_size", weight_balance_split_and_join_track_size);
     failures += run_test(filter, "weight_balance.range_is_half_open", weight_balance_range_is_half_open);
     failures += run_test(filter, "weight_balance.erase_iterator_range", weight_balance_erase_iterator_range);
-    failures += run_test(filter, "weight_balance.remove_if_rebalances", weight_balance_remove_if_rebalances);
+    failures += run_test(filter, "weight_balance.erase_if_rebalances", weight_balance_erase_if_rebalances);
+    failures += run_test(filter, "weight_balance.upsert_reports_placement", upsert_reports_placement);
     failures += run_test(filter, "weight_balance.randomized_mutations", weight_balance_randomized_mutations);
 
     failures += run_test(filter, "augmented.randomized_mutations", augmented_randomized_mutations);

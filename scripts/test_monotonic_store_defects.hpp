@@ -3,7 +3,7 @@
  *      Covers what a direct write may do to a staged version, what an ordered read may show of a
  *      committed erase, and what @c vacuum reclaims afterwards.
  *  @author Ash Vardanian
- *  @file scripts/test_transactional_store_defects.hpp
+ *  @file scripts/test_monotonic_store_defects.hpp
  *  @date August 17, 2026
  */
 #pragma once

@@ -7,7 +7,7 @@
  *  @section hash_layout_overview Overview
  *
  *  Two tables are carved from the same memory layout - a growable single-threaded one and a pinned
- *  lock-free one - and this header is everything they have in common. Neither table names the other,
+ *  concurrently-readable one - and this header is everything they have in common. Neither table names the other,
  *  and the only thing that travels between them is a @c hash_storage, moved as a value.
  *
  *  @section hash_layout_memory Memory Layout
@@ -70,16 +70,16 @@ inline constexpr std::size_t hash_bucket_capacity_k = 32;
  *  - @c 10 (populations=1, deletions=0): Populated slot with valid key-value pair
  *  - @c 11 (populations=1, deletions=1): Locked slot, temporarily held for atomic operations
  *
- *  @c u32s exposes the two lanes separately - @c populations has a set bit for every populated or
- *  locked slot, @c deletions one for every deleted or locked slot. @c u64 views both lanes at once,
- *  which is what enables atomic operations on the entire header (2 × 32 bits = 64 bits).
+ *  @c lanes exposes the two 32-bit halves separately - @c populations has a set bit for every
+ *  populated or locked slot, @c deletions one for every deleted or locked slot. @c u64 views both at
+ *  once, which is what enables atomic operations on the entire header (2 × 32 bits = 64 bits).
  */
 union hash_bucket_head_t {
 
     struct {
         std::uint32_t populations;
         std::uint32_t deletions;
-    } u32s;
+    } lanes;
     std::uint64_t u64;
 };
 
@@ -89,7 +89,7 @@ static_assert(sizeof(hash_bucket_head_t) == sizeof(std::uint64_t));
 using hash_bucket_mask_t = std::uint32_t;
 
 /** @brief The four states a slot can be in, spelled out by the two header lanes. */
-enum class hash_slot_state_t : std::uint32_t {
+enum class hash_slot_state_t : std::uint8_t {
     /** @brief Never used, or fully freed. */
     free_k = 0,
     /** @brief Tombstone left behind by a lazy deletion. */
@@ -102,27 +102,27 @@ enum class hash_slot_state_t : std::uint32_t {
 
 /** @brief Reads the state of the slot selected by @p mask out of both header lanes. */
 constexpr hash_slot_state_t hash_slot_state_of(hash_bucket_head_t const &head, hash_bucket_mask_t mask) noexcept {
-    std::uint32_t const populated = (head.u32s.populations & mask) != 0;
-    std::uint32_t const deleted = (head.u32s.deletions & mask) != 0;
+    std::uint32_t const populated = (head.lanes.populations & mask) != 0;
+    std::uint32_t const deleted = (head.lanes.deletions & mask) != 0;
     return static_cast<hash_slot_state_t>(populated * 2u + deleted);
 }
 
 /** @brief Drives the slot selected by @p mask into the @c free_k state. */
 constexpr void hash_mark_free(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
-    head.u32s.populations &= ~mask;
-    head.u32s.deletions &= ~mask;
+    head.lanes.populations &= ~mask;
+    head.lanes.deletions &= ~mask;
 }
 
 /** @brief Drives the slot selected by @p mask into the @c populated_k state. */
 constexpr void hash_mark_populated(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
-    head.u32s.populations |= mask;
-    head.u32s.deletions &= ~mask;
+    head.lanes.populations |= mask;
+    head.lanes.deletions &= ~mask;
 }
 
 /** @brief Drives the slot selected by @p mask into the @c deleted_k state. */
 constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
-    head.u32s.populations &= ~mask;
-    head.u32s.deletions |= mask;
+    head.lanes.populations &= ~mask;
+    head.lanes.deletions |= mask;
 }
 
 /**
@@ -385,7 +385,11 @@ struct hash_slot_ref {
  *
  *  The bits outside the active ones in each 32-bit word shouldn't be changed. The active ones may have
  *  to be flipped. Assuming the value of the relevant bits couldn't have changed, we can use @c fetch_xor
- *  to control the result in the same lock-free manner. @b XOR-is-all-you-need!
+ *  to control the result with one more atomic and no compare-and-swap loop. @b XOR-is-all-you-need!
+ *
+ *  Neither path is lock-free in the technical sense: @c lock() spins until it wins the slot, so a
+ *  thread stopped between @c lock() and @c unlock() blocks every prober that reaches that slot. What
+ *  the pair buys is that the whole table is never locked, and that no slot state needs a CAS retry.
  *
  *  This doesn't resolve @b false-sharing issues native to such a densely packed design, but still results
  *  in very low contention if the duration of atomic operations under the lock is comparable to CPU's
@@ -402,8 +406,8 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
     /** @brief Both lanes of this slot's bit, the exact footprint the lock owns. */
     constexpr hash_bucket_head_t header_mask_() const noexcept {
         hash_bucket_head_t mask {};
-        mask.u32s.populations = base_t::mask_in_bucket();
-        mask.u32s.deletions = base_t::mask_in_bucket();
+        mask.lanes.populations = base_t::mask_in_bucket();
+        mask.lanes.deletions = base_t::mask_in_bucket();
         return mask;
     }
 
@@ -496,9 +500,9 @@ void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, c
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
 
     hash_bucket_head_t const &head = slot.header_ref();
-    assert(!(head.u32s.populations & head.u32s.deletions) &&
+    assert(!(head.lanes.populations & head.lanes.deletions) &&
            "A locked slot would be skipped: this walk is only sound on a table nobody is probing");
-    hash_bucket_mask_t populations_left = head.u32s.populations & ~head.u32s.deletions;
+    hash_bucket_mask_t populations_left = head.lanes.populations & ~head.lanes.deletions;
     while (populations_left) {
         offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
         slot.slot_ = bucket_start + index_in_bucket;
@@ -524,9 +528,9 @@ bool find_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, predi
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
 
     hash_bucket_head_t const &head = slot.header_ref();
-    assert(!(head.u32s.populations & head.u32s.deletions) &&
+    assert(!(head.lanes.populations & head.lanes.deletions) &&
            "A locked slot would be skipped: this walk is only sound on a table nobody is probing");
-    hash_bucket_mask_t populations_left = head.u32s.populations & ~head.u32s.deletions;
+    hash_bucket_mask_t populations_left = head.lanes.populations & ~head.lanes.deletions;
     while (populations_left) {
         offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
         slot.slot_ = bucket_start + index_in_bucket;
@@ -568,7 +572,7 @@ struct hash_storage {
     /** @brief Whether teardown must run a key destructor. */
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
     /** @brief Whether teardown must run a value destructor. */
-    inline static constexpr bool destruct_vals_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
+    inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
 
     /** @brief Base of the single allocation the three regions are carved from. */
     std::byte *memory {};
@@ -673,7 +677,7 @@ struct hash_storage {
 
     /** @brief Runs the destructors of every live key and value, leaving the headers as they are. */
     void destroy_elements() noexcept {
-        if constexpr (destruct_keys_k || destruct_vals_k) {
+        if constexpr (destruct_keys_k || destruct_values_k) {
             if (!memory) return;
             slot_ref_t slot;
             retarget_slot(slot, 0);
@@ -682,7 +686,7 @@ struct hash_storage {
                 slot.slot_ = bucket_index * hash_bucket_capacity_k;
                 for_each_in_hash_bucket(slot, [](slot_ref_t const &live) noexcept {
                     if constexpr (destruct_keys_k) live.key_ref().~key_t();
-                    if constexpr (destruct_vals_k) live.value_ref().~value_storage_t();
+                    if constexpr (destruct_values_k) live.value_ref().~value_storage_t();
                 });
             }
         }

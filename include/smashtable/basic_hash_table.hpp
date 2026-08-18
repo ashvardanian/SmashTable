@@ -168,8 +168,8 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
 
 #pragma endregion Iterators
 
-/** @brief Whether a probe walk keeps going or has seen enough. */
-enum class probe_t : std::uint8_t {
+/** @brief What the callback tells the probe walk to do next, returned from each visit. */
+enum class probe_control_t : std::uint8_t {
     /** @brief The callback wants the remaining matches of the same probe run. */
     resume_k,
     /** @brief The callback is done, and the walk stops before the next slot. */
@@ -226,29 +226,9 @@ class basic_hash_table {
     /** @brief Whether erasure and teardown must run a key destructor. */
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
     /** @brief Whether erasure and teardown must run a value destructor. */
-    inline static constexpr bool destruct_vals_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
+    inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
 
   public:
-    /**
-     *  @brief A return type for the insert function, similar to @c insert_return_type in STL.
-     *  @c position indicates the inserted or conflicted element, if none exists points to the end.
-     *  @c inserted true if the given element was inserted or updated.
-     */
-    struct insert_result_t {
-        iterator_t position;
-        bool inserted = false;
-    };
-
-    /** @brief What a growth attempt did to the table. */
-    enum class reserve_result_t : std::uint8_t {
-        /** @brief The capacity already covered the request, so every iterator stays valid. */
-        unchanged_k,
-        /** @brief A larger buffer replaced the old one, invalidating every iterator. */
-        relayouted_k,
-        /** @brief The allocator refused, leaving the table exactly as it was. */
-        failed_k,
-    };
-
     /** @brief What a probe that may store an element managed to do. */
     enum class upsert_result_t : std::uint8_t {
         /** @brief A free or tombstoned slot took the new element. */
@@ -257,6 +237,30 @@ class basic_hash_table {
         updated_k,
         /** @brief Every slot was taken by a different key, so nothing was stored. */
         no_slot_k,
+    };
+
+    /**
+     *  @brief A return type for the insert function, similar to @c insert_return_type in STL.
+     *  @c position names the stored or the conflicting element, and the end when nothing was stored.
+     *  @c outcome says which of the three happened, so a key already taken is distinguishable from an
+     *  allocation the table could not make, without comparing the iterator against @c end().
+     */
+    struct insert_result_t {
+        iterator_t position;
+        upsert_result_t outcome = upsert_result_t::no_slot_k;
+
+        /** @brief Whether nothing was stored, which is the only way an insertion fails. */
+        bool failed() const noexcept { return outcome == upsert_result_t::no_slot_k; }
+    };
+
+    /** @brief What a growth attempt did to the table. */
+    enum class reserve_result_t : std::uint8_t {
+        /** @brief The capacity already covered the request, so every iterator stays valid. */
+        unchanged_k,
+        /** @brief A larger buffer replaced the old one, invalidating every iterator. */
+        reallocated_k,
+        /** @brief The allocator refused, leaving the table exactly as it was. */
+        failed_k,
     };
 
     /*  STL-compatibility definitions, identical to that of `std::unordered_map`:
@@ -310,7 +314,7 @@ class basic_hash_table {
         : storage_(storage_t::make(slots, std::move(allocator))), hasher_(std::move(hasher)),
           equals_(std::move(equals)) {}
 
-    /** @brief What an insertion that stored nothing reports: the end position, and no insertion. */
+    /** @brief What an insertion that stored nothing reports: the end position, and @c no_slot_k. */
     insert_result_t missed_position_() noexcept {
         insert_result_t result;
         unsafe_retarget(result.position, storage_.slots_count);
@@ -437,18 +441,18 @@ class basic_hash_table {
 
 #pragma endregion Metadata
 
-#pragma region Search
+#pragma region Probes
 
     /**
-     *  @brief Search optimized for @c find: checks if a value is present.
-     *    Unlike @c search_to_insert or @c search_to_upsert, doesn't track "deleted" slots.
+     *  @brief Probe optimized for @c find: checks if a value is present.
+     *    Unlike @c probe_to_insert or @c probe_to_upsert, doesn't track "deleted" slots.
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call A callback receiving a @c const_slot_ref_t to an initialized matching object.
      *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void search_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
+    void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
 
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
@@ -492,11 +496,11 @@ class basic_hash_table {
      *    the hasher still peels to the bare key. Finding one of them is not finding the newest one.
      *
      *  @param[in] wanted Hashable and comparable with key object.
-     *  @param[in] call Receives each @c const_slot_ref_t and returns @c probe_t. Must be @c noexcept.
+     *  @param[in] call Receives each @c const_slot_ref_t and returns @c probe_control_t. Must be @c noexcept.
      *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void search_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
+    void probe_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
 
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
@@ -515,7 +519,7 @@ class basic_hash_table {
             // So instead of one runtime `if`, we have two nested `if`s.
             if (slot.is_populated()) {
                 if (equals_(slot.key(), wanted))
-                    if (call(slot) == probe_t::halt_k) break;
+                    if (call(slot) == probe_control_t::halt_k) break;
                 offset = (offset + 1) & offset_mask;
                 if (offset == initial_offset) break;
             }
@@ -535,15 +539,15 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Search optimized for @c find: checks if a value is present.
-     *    Unlike @c search_to_insert or @c search_to_upsert, doesn't track "deleted" slots.
+     *  @brief Probe optimized for @c find: checks if a value is present.
+     *    Unlike @c probe_to_insert or @c probe_to_upsert, doesn't track "deleted" slots.
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call A callback receiving a @c slot_ref_t to an initialized matching object.
      *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void search_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
+    void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
 
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
@@ -577,8 +581,8 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Search optimized for @c insert of a unique key.
-     *    Unlike @c search_to_upsert avoids potentially expensive equality comparisons,
+     *  @brief Probe optimized for @c insert of a unique key.
+     *    Unlike @c probe_to_upsert avoids potentially expensive equality comparisons,
      *    knowing that the incoming key is different from all present members.
      *
      *  @param[in] wanted Hashable and comparable with key object.
@@ -587,7 +591,7 @@ class basic_hash_table {
      *  @return Whether a slot took the element; the counters only move when one did.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    upsert_result_t search_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
+    upsert_result_t probe_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t offset = hasher_(wanted) & offset_mask;
@@ -616,8 +620,8 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Search optimized for potential @c upserts.
-     *    More expensive than @c search_to_find and @c search_to_insert, so pick this method wisely.
+     *  @brief Probe optimized for potential @c upserts.
+     *    More expensive than @c probe_to_find and @c probe_to_insert, so pick this method wisely.
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call_unused A callback receiving a @c slot_ref_t to UN-initialized memory, where
@@ -627,8 +631,8 @@ class basic_hash_table {
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_,
               typename... tags_types_>
-    upsert_result_t search_to_upsert(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
-                                     callback_equal_type_ &&call_equal, tags_types_...) noexcept {
+    upsert_result_t probe_to_upsert(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
+                                    callback_equal_type_ &&call_equal, tags_types_...) noexcept {
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t offset = hasher_(wanted) & offset_mask;
@@ -696,7 +700,7 @@ class basic_hash_table {
         storage_.retarget_slot(slot, slot_index);
     }
 
-#pragma endregion Search
+#pragma endregion Probes
 
 #pragma region Lookups
 
@@ -710,7 +714,7 @@ class basic_hash_table {
     template <typename comparable_key_type_, typename... tags_types_>
     bool contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
         bool result = false;
-        search_to_find(
+        probe_to_find(
             std::forward<comparable_key_type_>(wanted), [&result](auto const &) noexcept { result = true; }, tags...);
         return result;
     }
@@ -724,8 +728,8 @@ class basic_hash_table {
         const_iterator_t it;
         unsafe_retarget(it, storage_.slots_count);
         it.slots_remaining = 0;
-        search_to_find(std::forward<comparable_key_type_>(wanted),
-                       [&it](auto const &slot) noexcept { it.slot_ = slot.slot_; });
+        probe_to_find(std::forward<comparable_key_type_>(wanted),
+                      [&it](auto const &slot) noexcept { it.slot_ = slot.slot_; });
         it.slots_remaining = slots_remaining_after(it);
         return it;
     }
@@ -739,8 +743,8 @@ class basic_hash_table {
         iterator_t it;
         unsafe_retarget(it, storage_.slots_count);
         it.slots_remaining = 0;
-        search_to_find(std::forward<comparable_key_type_>(wanted),
-                       [&it](auto const &slot) noexcept { it.slot_ = slot.slot_; });
+        probe_to_find(std::forward<comparable_key_type_>(wanted),
+                      [&it](auto const &slot) noexcept { it.slot_ = slot.slot_; });
         it.slots_remaining = slots_remaining_after(it);
         return it;
     }
@@ -757,7 +761,7 @@ class basic_hash_table {
         slot_ref_t result;
         unsafe_retarget(result, 0);
         bool found = false;
-        search_to_find(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
+        probe_to_find(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
             result.slot_ = slot.slot_;
             found = true;
         });
@@ -778,7 +782,7 @@ class basic_hash_table {
         const_slot_ref_t result;
         unsafe_retarget(result, 0);
         bool found = false;
-        search_to_find(std::forward<comparable_key_type_>(key), [&](const_slot_ref_t const &slot) noexcept {
+        probe_to_find(std::forward<comparable_key_type_>(key), [&](const_slot_ref_t const &slot) noexcept {
             result.slot_ = slot.slot_;
             found = true;
         });
@@ -840,7 +844,7 @@ class basic_hash_table {
     end_sentinel_t cend() const noexcept { return end_sentinel_t {}; }
 
     /** @brief Invokes the callback for every populated slot, bucket by bucket. */
-    template <typename callback_type_ = no_op_fn<slot_ref_t>>
+    template <typename callback_type_ = no_op<slot_ref_t>>
     void for_each(callback_type_ &&callback) noexcept {
         slot_ref_t slot;
         unsafe_retarget(slot, 0);
@@ -852,7 +856,7 @@ class basic_hash_table {
     }
 
     /** @brief Invokes the callback for every populated slot, bucket by bucket. */
-    template <typename callback_type_ = no_op_fn<const_slot_ref_t>>
+    template <typename callback_type_ = no_op<const_slot_ref_t>>
     void for_each(callback_type_ &&callback) const noexcept {
         const_slot_ref_t slot;
         unsafe_retarget(slot, 0);
@@ -878,15 +882,15 @@ class basic_hash_table {
         return !has_values_k && std::is_constructible<key_t, convertible_key_type_ &&>();
     }
 
-    /** @brief Whether an insertion hands back where the element landed, or nothing at all. */
-    enum class emplace_report_t : bool { discard_k, position_k };
+    /** @brief What an insertion hands back: nothing at all, or where the element landed and how. */
+    enum class emplace_report_t : bool { no_result_k, insert_result_k };
 
     /**
      *  @brief Deleted: hint-based emplace is not supported.
      *    A hint names a position, and an open-addressed table decides position by hashing the key,
      *    so there is nothing a caller could usefully hint at. Declaring it deleted rather than
      *    omitting it turns a port from @c std::unordered_map into a signposted error instead of an
-     *    unexplained missing member. Use @c emplace, or @c search_to_upsert for finer control.
+     *    unexplained missing member. Use @c emplace, or @c probe_to_upsert for finer control.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/emplace_hint
      */
     template <typename... args_types_>
@@ -901,21 +905,21 @@ class basic_hash_table {
      *    @c assume_reserved_t avoids reserving more memory, @c assume_unique_t skips equality comparisons.
      */
     template <
-        emplace_report_t report_ = emplace_report_t::discard_k, typename convertible_key_type_,
+        emplace_report_t report_ = emplace_report_t::no_result_k, typename convertible_key_type_,
         typename convertible_value_type_, typename... tags_types_,
         typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
-    std::conditional_t<report_ == emplace_report_t::position_k, insert_result_t, void> emplace(
+    std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> emplace(
         convertible_key_type_ &&key, convertible_value_type_ &&value, tags_types_... tags) noexcept {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
         // fills it to the last slot and then has nowhere left to go.
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (reserve_more(1) == reserve_result_t::failed_k) {
-                if constexpr (report_ == emplace_report_t::position_k) return missed_position_();
+                if constexpr (report_ == emplace_report_t::insert_result_k) return missed_position_();
                 else return;
             }
 
-        constexpr bool return_k = report_ == emplace_report_t::position_k;
+        constexpr bool return_k = report_ == emplace_report_t::insert_result_k;
         using result_t = std::conditional_t<return_k, insert_result_t, placeholder_t>;
 
         [[maybe_unused]] result_t result;
@@ -927,16 +931,14 @@ class basic_hash_table {
         auto callback_unused = [&](slot_ref_t &unused_slot) noexcept {
             new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
             new (&unused_slot.value_ref()) value_storage_t(std::forward<convertible_value_type_>(value));
-            if constexpr (return_k) {
-                result.position.slot_ = unused_slot.slot_;
-                result.inserted = true;
-            }
+            if constexpr (return_k) result.position.slot_ = unused_slot.slot_;
         };
 
+        [[maybe_unused]] upsert_result_t stored = upsert_result_t::no_slot_k;
         if constexpr (contains_type<assume_unique_t, tags_types_...>())
-            search_to_insert(key, callback_unused, assume_reserved_t {}, tags...);
+            stored = probe_to_insert(key, callback_unused, assume_reserved_t {}, tags...);
         else
-            search_to_upsert(
+            stored = probe_to_upsert(
                 key, callback_unused,
                 [&](slot_ref_t &equal_slot) noexcept {
                     equal_slot.value_ref() = std::forward<convertible_value_type_>(value);
@@ -945,6 +947,7 @@ class basic_hash_table {
                 assume_reserved_t {}, tags...);
 
         if constexpr (return_k) {
+            result.outcome = stored;
             result.position.slots_remaining = slots_remaining_after(result.position);
             return result;
         }
@@ -958,21 +961,21 @@ class basic_hash_table {
      *  @param[in] tags Markers for special acceleration:
      *    @c assume_reserved_t avoids reserving more memory, @c assume_unique_t skips equality comparisons.
      */
-    template <emplace_report_t report_ = emplace_report_t::discard_k, typename convertible_key_type_,
+    template <emplace_report_t report_ = emplace_report_t::no_result_k, typename convertible_key_type_,
               typename... tags_types_,
               typename std::enable_if<can_use_set_emplace<convertible_key_type_>(), int>::type = 0>
-    std::conditional_t<report_ == emplace_report_t::position_k, insert_result_t, void> emplace(
+    std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> emplace(
         convertible_key_type_ &&key, tags_types_... tags) noexcept {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
         // fills it to the last slot and then has nowhere left to go.
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (reserve_more(1) == reserve_result_t::failed_k) {
-                if constexpr (report_ == emplace_report_t::position_k) return missed_position_();
+                if constexpr (report_ == emplace_report_t::insert_result_k) return missed_position_();
                 else return;
             }
 
-        constexpr bool return_k = report_ == emplace_report_t::position_k;
+        constexpr bool return_k = report_ == emplace_report_t::insert_result_k;
         using result_t = std::conditional_t<return_k, insert_result_t, placeholder_t>;
 
         [[maybe_unused]] result_t result;
@@ -983,22 +986,21 @@ class basic_hash_table {
 
         auto callback_unused = [&](slot_ref_t &unused_slot) noexcept {
             new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
-            if constexpr (return_k) {
-                result.position.slot_ = unused_slot.slot_;
-                result.inserted = true;
-            }
+            if constexpr (return_k) result.position.slot_ = unused_slot.slot_;
         };
 
+        [[maybe_unused]] upsert_result_t stored = upsert_result_t::no_slot_k;
         if constexpr (contains_type<assume_unique_t, tags_types_...>())
-            search_to_insert(key, callback_unused, assume_reserved_t {}, tags...);
+            stored = probe_to_insert(key, callback_unused, assume_reserved_t {}, tags...);
         else if constexpr (return_k)
-            search_to_upsert(
+            stored = probe_to_upsert(
                 key, callback_unused,
                 [&](slot_ref_t &equal_slot) noexcept { result.position.slot_ = equal_slot.slot_; },
                 assume_reserved_t {}, tags...);
-        else search_to_upsert(key, callback_unused, no_op_fn_t {}, assume_reserved_t {}, tags...);
+        else stored = probe_to_upsert(key, callback_unused, no_op_t {}, assume_reserved_t {}, tags...);
 
         if constexpr (return_k) {
+            result.outcome = stored;
             result.position.slots_remaining = slots_remaining_after(result.position);
             return result;
         }
@@ -1010,9 +1012,9 @@ class basic_hash_table {
      *
      *  @note With maps this expects a @c mapping, exposing @c key and @c mapped members.
      */
-    template <emplace_report_t report_ = emplace_report_t::discard_k, typename temporary_pack_type_,
+    template <emplace_report_t report_ = emplace_report_t::no_result_k, typename temporary_pack_type_,
               typename... tags_types_, typename std::enable_if<!is_iterator<temporary_pack_type_>(), int>::type = 0>
-    std::conditional_t<report_ == emplace_report_t::position_k, insert_result_t, void> insert(
+    std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> insert(
         temporary_pack_type_ &&pack, tags_types_... tags) noexcept {
         if constexpr (has_values_k)
             return emplace<report_>(std::forward<temporary_pack_type_>(pack).key,
@@ -1044,7 +1046,7 @@ class basic_hash_table {
 
         upsert_result_t stored = upsert_result_t::no_slot_k;
         if constexpr (has_values_k)
-            stored = search_to_upsert(
+            stored = probe_to_upsert(
                 element.key,
                 [&](slot_ref_t &unused_slot) noexcept {
                     new (&unused_slot.key_ref()) key_t(std::move(element.key));
@@ -1053,7 +1055,7 @@ class basic_hash_table {
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.value_ref() = std::move(element.mapped); },
                 assume_reserved_t {});
         else
-            stored = search_to_upsert(
+            stored = probe_to_upsert(
                 element,
                 [&](slot_ref_t &unused_slot) noexcept { new (&unused_slot.key_ref()) key_t(std::move(element)); },
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.key_ref() = std::move(element); },
@@ -1080,7 +1082,7 @@ class basic_hash_table {
      */
     void erase(slot_ref_t slot) noexcept {
         if constexpr (destruct_keys_k) slot.key_ref().~key_t();
-        if constexpr (destruct_vals_k) slot.value_ref().~value_storage_t();
+        if constexpr (destruct_values_k) slot.value_ref().~value_storage_t();
         slot.mark_deleted();
         ++storage_.deleted_count;
         --storage_.populated_count;
@@ -1104,11 +1106,11 @@ class basic_hash_table {
     bool erase(comparable_key_type_ &&key, tags_types_... tags) noexcept {
 
         bool result = false;
-        search_to_find(
+        probe_to_find(
             std::forward<comparable_key_type_>(key),
             [&](slot_ref_t const &slot) noexcept {
                 if constexpr (destruct_keys_k) slot.key_ref().~key_t();
-                if constexpr (destruct_vals_k) slot.value_ref().~value_storage_t();
+                if constexpr (destruct_values_k) slot.value_ref().~value_storage_t();
                 slot.mark_deleted();
                 ++storage_.deleted_count;
                 --storage_.populated_count;
@@ -1161,7 +1163,7 @@ class basic_hash_table {
         basic_hash_table resized = move_to_new(slots_count);
         if (slots_count.raw && !resized.storage_.is_allocated()) return reserve_result_t::failed_k;
         swap(resized);
-        return reserve_result_t::relayouted_k;
+        return reserve_result_t::reallocated_k;
     }
 
     /**
@@ -1235,7 +1237,7 @@ class basic_hash_table {
                                assume_reserved_t {}, assume_unique_t {});
             else target.emplace(std::move(source_slot.key_ref()), assume_reserved_t {}, assume_unique_t {});
             if constexpr (destruct_keys_k) source_slot.key_ref().~key_t();
-            if constexpr (destruct_vals_k) source_slot.value_ref().~value_storage_t();
+            if constexpr (destruct_values_k) source_slot.value_ref().~value_storage_t();
         });
 
         assert(target.size() == size() && "Element counts must match!");

@@ -476,15 +476,23 @@ class basic_avl_node {
 
 #pragma region Insertions
 
+    /** @brief What a walk that may create a node did with the key it was handed. */
+    enum class node_placement_t : std::uint8_t {
+        /** @brief No node was available to store the key, so nothing was stored. */
+        refused_k,
+        /** @brief An equal key was already there, and @c match names the node holding it. */
+        matched_k,
+        /** @brief A fresh node took the key, and @c match names it. */
+        made_k,
+    };
+
     struct find_or_make_result_t {
         node_t *root = nullptr;
         node_t *match = nullptr;
-        bool inserted = false;
+        node_placement_t placement = node_placement_t::refused_k;
 
-        /**
-         *  @return True if the allocation of the new node has failed.
-         */
-        bool failed() const noexcept { return !inserted && !match; }
+        /** @brief Whether nothing was stored, which is the only way this walk fails. */
+        bool failed() const noexcept { return placement == node_placement_t::refused_k; }
     };
 
     template <typename comparable_type_>
@@ -529,27 +537,29 @@ class basic_avl_node {
                 new_node->parent = nullptr;
                 new_node->height = 1;
             }
-            return {new_node, new_node, true};
+            return {new_node, new_node, new_node ? node_placement_t::made_k : node_placement_t::refused_k};
         }
 
         if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) {
             auto subtree_result = find_or_make(node->left, comparable, comparator, callback_found, new_node);
             node->left = subtree_result.root;
             if (subtree_result.root) subtree_result.root->parent = node;
-            if (subtree_result.inserted) node = rebalance_on_insert(node, subtree_result.match->fruit, comparator);
-            return {node, subtree_result.match, subtree_result.inserted};
+            if (subtree_result.placement == node_placement_t::made_k)
+                node = rebalance_on_insert(node, subtree_result.match->fruit, comparator);
+            return {node, subtree_result.match, subtree_result.placement};
         }
         else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable))) {
             auto subtree_result = find_or_make(node->right, comparable, comparator, callback_found, new_node);
             node->right = subtree_result.root;
             if (subtree_result.root) subtree_result.root->parent = node;
-            if (subtree_result.inserted) node = rebalance_on_insert(node, subtree_result.match->fruit, comparator);
-            return {node, subtree_result.match, subtree_result.inserted};
+            if (subtree_result.placement == node_placement_t::made_k)
+                node = rebalance_on_insert(node, subtree_result.match->fruit, comparator);
+            return {node, subtree_result.match, subtree_result.placement};
         }
         else {
             // Equal keys are not allowed in BST
             callback_found(node);
-            return {node, node, false};
+            return {node, node, node_placement_t::matched_k};
         }
     }
 
@@ -563,7 +573,7 @@ class basic_avl_node {
      *
      *  @param[in] first Iterator to beginning of sorted range.
      *  @param[in] count Number of elements in range.
-     *  @param[in] alloc Allocator function that returns new node pointer or nullptr on failure.
+     *  @param[in] allocate_node Allocator function that returns new node pointer or nullptr on failure.
      *  @return The root of the balanced tree, or @c nullptr if an allocation failed.
      *
      *  @note Complexity: O(n) time, O(log n) recursion depth.
@@ -571,7 +581,8 @@ class basic_avl_node {
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
      */
     template <typename iterator_type_, typename allocator_func_>
-    static node_t *build_from_sorted(iterator_type_ first, std::size_t count, allocator_func_ &&alloc) noexcept {
+    static node_t *build_from_sorted(iterator_type_ first, std::size_t count,
+                                     allocator_func_ &&allocate_node) noexcept {
         if (count == 0) return nullptr;
 
         // Find middle element
@@ -580,20 +591,20 @@ class basic_avl_node {
         std::advance(mid_iter, mid);
 
         // Allocate root node
-        node_t *root = alloc();
+        node_t *root = allocate_node();
         if (!root) return nullptr;
         new (&root->fruit) value_t(*mid_iter);
         // Raw memory, so the link to the parent is only correct once the caller overwrites it.
         root->parent = nullptr;
 
         // Build left subtree from [first, mid)
-        root->left = build_from_sorted(first, mid, alloc);
+        root->left = build_from_sorted(first, mid, allocate_node);
         if (root->left) root->left->parent = root;
 
         // Build right subtree from (mid, last)
         auto right_first = mid_iter;
         ++right_first;
-        root->right = build_from_sorted(right_first, count - mid - 1, alloc);
+        root->right = build_from_sorted(right_first, count - mid - 1, allocate_node);
         if (root->right) root->right->parent = root;
 
         // Set height (no balancing needed for perfectly balanced construction)
@@ -713,31 +724,31 @@ class basic_avl_node {
             return extract(node, comparator);
     }
 
-    struct remove_if_result_t {
+    struct erase_if_result_t {
         node_t *root = nullptr;
         std::size_t count = 0;
     };
 
     template <typename predicate_type_, typename node_deallocator_type_>
-    static remove_if_result_t remove_if(node_t *node, predicate_type_ &&predicate,
-                                        node_deallocator_type_ &&node_deallocator,
-                                        comparator_t const &comparator) noexcept {
+    static erase_if_result_t erase_if(node_t *node, predicate_type_ &&predicate,
+                                      node_deallocator_type_ &&node_deallocator,
+                                      comparator_t const &comparator) noexcept {
         if (!node) return {nullptr, 0};
 
-        auto left_res = remove_if(node->left, predicate, node_deallocator, comparator);
-        node->left = left_res.root;
+        auto left_result = erase_if(node->left, predicate, node_deallocator, comparator);
+        node->left = left_result.root;
         if (node->left) node->left->parent = node;
 
-        auto right_res = remove_if(node->right, predicate, node_deallocator, comparator);
-        node->right = right_res.root;
+        auto right_result = erase_if(node->right, predicate, node_deallocator, comparator);
+        node->right = right_result.root;
         if (node->right) node->right->parent = node;
 
-        std::size_t count = left_res.count + right_res.count;
+        std::size_t count = left_result.count + right_result.count;
 
         if (predicate(node->fruit)) {
-            auto extract_res = extract(node, comparator);
-            node_deallocator(extract_res.extracted.release());
-            return {extract_res.root, count};
+            auto extract_result = extract(node, comparator);
+            node_deallocator(extract_result.extracted.release());
+            return {extract_result.root, count};
         }
         else {
             node->height = 1 + larger_of(get_height(node->left), get_height(node->right));
@@ -965,28 +976,28 @@ class basic_avl_node {
     /**
      *  @brief Merges two sorted spines into one sorted spine.
      *
-     *  @param[in] spine1 First sorted spine.
-     *  @param[in] spine2 Second sorted spine.
+     *  @param[in] first_spine First sorted spine.
+     *  @param[in] second_spine Second sorted spine.
      *  @return The head of the merged spine.
      *
      *  @note O(n+m) time, O(1) space. Just like merging sorted linked lists.
      */
-    static node_t *merge_spines(node_t *spine1, node_t *spine2, comparator_t const &comparator) noexcept {
-        if (!spine1) return spine2;
-        if (!spine2) return spine1;
+    static node_t *merge_spines(node_t *first_spine, node_t *second_spine, comparator_t const &comparator) noexcept {
+        if (!first_spine) return second_spine;
+        if (!second_spine) return first_spine;
 
         node_t *merged_head = nullptr;
         node_t *merged_tail = nullptr;
 
-        while (spine1 && spine2) {
+        while (first_spine && second_spine) {
             node_t *next_node;
-            if (comparator(mapping_key_or_itself(spine1->fruit), mapping_key_or_itself(spine2->fruit))) {
-                next_node = spine1;
-                spine1 = spine1->right;
+            if (comparator(mapping_key_or_itself(first_spine->fruit), mapping_key_or_itself(second_spine->fruit))) {
+                next_node = first_spine;
+                first_spine = first_spine->right;
             }
             else {
-                next_node = spine2;
-                spine2 = spine2->right;
+                next_node = second_spine;
+                second_spine = second_spine->right;
             }
 
             if (!merged_head) merged_head = next_node;
@@ -995,7 +1006,7 @@ class basic_avl_node {
         }
 
         // Append remaining nodes
-        node_t *remaining = spine1 ? spine1 : spine2;
+        node_t *remaining = first_spine ? first_spine : second_spine;
         if (merged_tail) merged_tail->right = remaining;
         else merged_head = remaining;
 
@@ -1054,8 +1065,8 @@ class basic_avl_node {
      *    Best for large similarly-sized trees: O(n+m) time, O(1) space.
      *    Flattens both trees to spines, merges spines, rebuilds balanced tree.
      *
-     *  @param[in] tree1 First tree to merge (will be consumed).
-     *  @param[in] tree2 Second tree to merge (will be consumed).
+     *  @param[in] first_tree First tree to merge (will be consumed).
+     *  @param[in] second_tree Second tree to merge (will be consumed).
      *  @param[in] comparator Comparator for element comparison.
      *  @param[out] out_size Total number of nodes in result.
      *  @return The root of the merged, rebalanced tree.
@@ -1066,18 +1077,18 @@ class basic_avl_node {
      *  @see Stout & Warren, "Tree Rebalancing in Optimal Time and Space" (1986)
      *  @see https://en.wikipedia.org/wiki/Day%E2%80%93Stout%E2%80%93Warren_algorithm
      */
-    static node_t *merge_dsw(node_t *tree1, node_t *tree2, comparator_t const &comparator,
+    static node_t *merge_dsw(node_t *first_tree, node_t *second_tree, comparator_t const &comparator,
                              std::size_t &out_size) noexcept {
-        std::size_t count1 = 0, count2 = 0;
+        std::size_t first_count = 0, second_count = 0;
 
         // Convert both trees to spines: O(n + m)
-        node_t *spine1 = tree_to_spine(tree1, count1);
-        node_t *spine2 = tree_to_spine(tree2, count2);
+        node_t *first_spine = tree_to_spine(first_tree, first_count);
+        node_t *second_spine = tree_to_spine(second_tree, second_count);
 
         // Merge spines: O(n + m)
-        node_t *merged_spine = merge_spines(spine1, spine2, comparator);
+        node_t *merged_spine = merge_spines(first_spine, second_spine, comparator);
 
-        out_size = count1 + count2;
+        out_size = first_count + second_count;
 
         // Rebuild balanced tree from spine: O(n + m)
         return spine_to_balanced(merged_spine, out_size);
@@ -1214,9 +1225,9 @@ class basic_avl_tree {
         }
 
         iterator operator++(int) noexcept {
-            iterator tmp = *this;
+            iterator previous = *this;
             ++(*this);
-            return tmp;
+            return previous;
         }
 
         iterator &operator--() noexcept {
@@ -1226,9 +1237,9 @@ class basic_avl_tree {
         }
 
         iterator operator--(int) noexcept {
-            iterator tmp = *this;
+            iterator previous = *this;
             --(*this);
-            return tmp;
+            return previous;
         }
 
         bool operator==(iterator const &other) const noexcept { return node_ == other.node_; }
@@ -1268,9 +1279,9 @@ class basic_avl_tree {
         }
 
         const_iterator operator++(int) noexcept {
-            const_iterator tmp = *this;
+            const_iterator previous = *this;
             ++(*this);
-            return tmp;
+            return previous;
         }
 
         const_iterator &operator--() noexcept {
@@ -1280,9 +1291,9 @@ class basic_avl_tree {
         }
 
         const_iterator operator--(int) noexcept {
-            const_iterator tmp = *this;
+            const_iterator previous = *this;
             --(*this);
-            return tmp;
+            return previous;
         }
 
         bool operator==(const_iterator const &other) const noexcept { return node_ == other.node_; }
@@ -1408,13 +1419,13 @@ class basic_avl_tree {
     /**
      *  @brief Copies entry from source node into destination node.
      *  @param[in] source Source node to copy from.
-     *  @param[in] dest Destination node (must have allocated memory, but entry not constructed).
+     *  @param[in] destination Destination node (must have allocated memory, but entry not constructed).
      *  @return @c success_k when the copy completed, an error code otherwise.
      */
-    static status_t copy_entry_into_(node_t *source, node_t *dest) noexcept {
+    static status_t copy_entry_into_(node_t *source, node_t *destination) noexcept {
         auto entry_copy = copy_safely(source->fruit);
         if (!entry_copy) return entry_copy.status();
-        new (&dest->fruit) value_t(std::move(*entry_copy));
+        new (&destination->fruit) value_t(std::move(*entry_copy));
         return success_k;
     }
 
@@ -1818,7 +1829,7 @@ class basic_avl_tree {
      *  @param[in] comparable Object comparable to @c value_t and convertible to search key.
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
-    template <typename comparable_type_ = value_t, typename callback_type_ = no_op_fn_t>
+    template <typename comparable_type_ = value_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto it = find(std::forward<comparable_type_>(comparable));
         if (it != end()) { callback(*it); }
@@ -1832,7 +1843,7 @@ class basic_avl_tree {
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
      */
-    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
@@ -1846,7 +1857,7 @@ class basic_avl_tree {
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[inout] callback Callback invoked for each mutable element in range. Must be @c noexcept.
      */
-    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
@@ -1857,8 +1868,8 @@ class basic_avl_tree {
 #pragma region Modifiers
 
     template <typename predicate_type_>
-    std::size_t remove_if(predicate_type_ &&predicate) noexcept {
-        auto result = node_t::remove_if(
+    std::size_t erase_if(predicate_type_ &&predicate) noexcept {
+        auto result = node_t::erase_if(
             root_, std::forward<predicate_type_>(predicate),
             [&](node_t *node) noexcept {
                 node->fruit.~value_t();
@@ -1881,7 +1892,7 @@ class basic_avl_tree {
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[in] callback Optional callback invoked for each erased element.
      */
-    template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         if (!root_) return;
 
@@ -1902,16 +1913,19 @@ class basic_avl_tree {
         size_ -= deleted_count;
     }
 
-    struct upsert_result_t {
+    /**
+     *  @brief The node an upsert settled on, and how it got there.
+     *    Assigning to the result overwrites that node's entry, which is what makes it usable as a
+     *    handle rather than a report.
+     */
+    struct upserted_node_t {
         node_t *node = nullptr;
-        bool inserted = false;
+        typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
 
-        /**
-         *  @return True if the allocation of the new node has failed.
-         */
-        bool failed() const noexcept { return !inserted && !node; }
+        /** @brief Whether nothing was stored, which is the only way an upsert fails. */
+        bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
         explicit operator bool() const noexcept { return !failed(); }
-        upsert_result_t &operator=(value_t &&fruit) noexcept {
+        upserted_node_t &operator=(value_t &&fruit) noexcept {
             node->fruit = std::move(fruit);
             return *this;
         }
@@ -1941,7 +1955,7 @@ class basic_avl_tree {
         auto result = node_t::insert(root_, new_node, comparator_);
         root_ = result.root;
         if (root_) root_->parent = nullptr;
-        size_ += result.inserted;
+        size_ += result.placement == node_t::node_placement_t::made_k;
 
         if (result.failed()) {
             // Insertion failed, deallocate the node.
@@ -1950,7 +1964,7 @@ class basic_avl_tree {
             return {end(), false};
         }
 
-        return {iterator(this, result.match), result.inserted};
+        return {iterator(this, result.match), result.placement == node_t::node_placement_t::made_k};
     }
 
     /**
@@ -1974,7 +1988,7 @@ class basic_avl_tree {
 
         root_ = result.root;
         if (root_) root_->parent = nullptr;
-        size_ += result.inserted;
+        size_ += result.placement == node_t::node_placement_t::made_k;
 
         if (result.failed()) {
             new_node->fruit.~value_t();
@@ -1982,7 +1996,7 @@ class basic_avl_tree {
             return {end(), status_t::out_of_memory_heap_k};
         }
 
-        if (!result.inserted) { // Key already existed
+        if (result.placement == node_t::node_placement_t::matched_k) { // Key already existed
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
             return {iterator(this, result.match), status_t::key_already_exists_k};
@@ -1996,33 +2010,32 @@ class basic_avl_tree {
      *    Overwrites existing entry if key exists (upsert semantics).
      *
      *  @param[in] entry Entry to upsert (moved into the tree).
-     *  @return Result containing pointer to node and insertion status.
-     *    @c inserted is true if new node was created, false if existing was updated.
+     *  @return The node the entry now lives in, and whether it was made or matched.
      */
     template <typename comparable_type_>
-    upsert_result_t upsert(comparable_type_ &&comparable) noexcept {
+    upserted_node_t upsert(comparable_type_ &&comparable) noexcept {
         auto existing = find(comparable);
         if (existing != end()) {
             *existing = std::forward<comparable_type_>(comparable);
-            return {existing.node_, false};
+            return {existing.node_, node_t::node_placement_t::matched_k};
         }
 
         node_t *new_node = allocator_.allocate(1);
-        if (!new_node) return {nullptr, false};
+        if (!new_node) return {nullptr, node_t::node_placement_t::refused_k};
 
         new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
         auto result = node_t::insert(root_, new_node, comparator_);
         root_ = result.root;
         if (root_) root_->parent = nullptr;
-        size_ += result.inserted;
+        size_ += result.placement == node_t::node_placement_t::made_k;
 
         if (result.failed()) {
             new_node->fruit.~value_t();
             allocator_.deallocate(new_node, 1);
-            return {nullptr, false};
+            return {nullptr, node_t::node_placement_t::refused_k};
         }
 
-        return {result.match, result.inserted};
+        return {result.match, result.placement};
     }
 
     /**
@@ -2380,8 +2393,8 @@ class basic_avl_tree {
      *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = value_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = value_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                callback_missing_type_ &&callback_missing) noexcept {
         auto position = find(comparable);
@@ -2410,16 +2423,16 @@ class basic_avl_tree {
      *  @brief Erases the element at the specified iterator position.
      *    Unlike STL, returns both the next iterator and a status code for error reporting.
      *
-     *  @param[in] pos Iterator to element to erase. Must be valid and dereferenceable.
+     *  @param[in] position Iterator to element to erase. Must be valid and dereferenceable.
      *  @return Contains iterator to element following the erased element and operation status.
      *
-     *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      *    If erase fails (e.g., tree corruption), returns {end(), error}.
      */
-    erase_result_t erase(iterator pos) noexcept {
-        if (pos == end()) return {end(), {success_k}};
-        auto next = std::next(pos);
-        bool erased = erase(*pos);
+    erase_result_t erase(iterator position) noexcept {
+        if (position == end()) return {end(), {success_k}};
+        auto next = std::next(position);
+        bool erased = erase(*position);
         return {next, erased ? success_k : status_t::unknown_k};
     }
 
@@ -2427,15 +2440,15 @@ class basic_avl_tree {
      *  @brief Erases the element at the specified const_iterator position.
      *    Unlike STL, returns both the next iterator and a status code for error reporting.
      *
-     *  @param[in] pos Const iterator to element to erase. Must be valid and dereferenceable.
+     *  @param[in] position Const iterator to element to erase. Must be valid and dereferenceable.
      *  @return Contains iterator to element following the erased element and operation status.
      *
-     *  @note If @p pos is end(), returns {end(), success} without modifying the tree.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      *    If erase fails (e.g., tree corruption), returns {end(), error}.
      */
-    erase_result_t erase(const_iterator pos) noexcept {
+    erase_result_t erase(const_iterator position) noexcept {
         // Erasing through a const iterator is the STL contract: the position is const, this tree is not.
-        return erase(iterator(this, const_cast<node_t *>(pos.node_)));
+        return erase(iterator(this, const_cast<node_t *>(position.node_)));
     }
 
     /**
@@ -2519,9 +2532,9 @@ class basic_avl_tree {
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
             auto result = node_t::insert(root_, node, comparator_);
             root_ = result.root;
-            size_ += result.inserted;
+            size_ += result.placement == node_t::node_placement_t::made_k;
             // Key conflict - node wasn't inserted, so release the entry it carried
-            if (!result.inserted) {
+            if (result.placement == node_t::node_placement_t::matched_k) {
                 node->fruit.~value_t();
                 allocator_.deallocate(node, 1);
             }
@@ -2619,9 +2632,9 @@ class basic_avl_tree {
         node_t *node_to_insert = other.release();
         auto result = node_t::insert(root_, node_to_insert, comparator_);
         root_ = result.root;
-        size_ += result.inserted;
+        size_ += result.placement == node_t::node_placement_t::made_k;
         // Key conflict - node wasn't inserted, so release the entry it carried
-        if (!result.inserted) {
+        if (result.placement == node_t::node_placement_t::matched_k) {
             node_to_insert->fruit.~value_t();
             allocator_.deallocate(node_to_insert, 1);
         }

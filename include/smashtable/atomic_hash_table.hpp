@@ -1,10 +1,10 @@
 /**
- *  @brief A pinned open-addressed hash table: fixed capacity, lock-free per-operation atomicity, no iterators.
+ *  @brief A pinned open-addressed hash table: fixed capacity, per-operation atomicity, no iterators.
  *  @author Ash Vardanian
- *  @file include/smashtable/concurrent_hash_table.hpp
+ *  @file include/smashtable/atomic_hash_table.hpp
  *  @date December 21, 2021
  *
- *  @section concurrent_hash_table_why_a_second_type Why a Second Type
+ *  @section atomic_hash_table_why_a_second_type Why a Second Type
  *
  *  A table that can grow can never be read concurrently: growing repoints the key, value and header
  *  regions that every live slot reference has already cached. This table cannot grow, which is what
@@ -14,7 +14,18 @@
  *  The two share only @c hash_layout.hpp. An allocation travels between them as a @c hash_storage:
  *  @c adopt takes one over, @c release hands it back, and neither type names the other.
  *
- *  @section concurrent_hash_table_what_is_absent What Is Absent, and Why
+ *  @section atomic_hash_table_what_atomic_means What Atomicity Is Promised
+ *
+ *  Each operation is atomic with respect to the slot it touches, and nothing wider. There is no
+ *  global lock and no reallocation, but the table is @b not lock-free: a slot is taken by spinning
+ *  on @c fetch_or over its two header bits, so a thread descheduled while holding a slot blocks
+ *  every other prober that walks onto it. What the name promises is that no caller has to serialize
+ *  the table from outside, not that a stalled thread cannot stall its neighbours.
+ *
+ *  A multi-slot statement is therefore not atomic: @c size and @c deleted_count are relaxed reads
+ *  that a concurrent writer is already moving, and two operations on two keys interleave freely.
+ *
+ *  @section atomic_hash_table_what_is_absent What Is Absent, and Why
  *
  *  No @c begin, no @c end, no @c for_each: a snapshot of a table other threads are mutating is not a
  *  snapshot. No @c at: it hands out a reference that a concurrent erase invalidates. No @c reserve,
@@ -24,7 +35,7 @@
  *  Tombstones only accumulate while pinned, since compaction needs a rehash. @c deleted_count is
  *  what tells a caller it is time to hand the storage back to a growable table and compact it.
  *
- *  @section concurrent_hash_table_gpu Portability to GPUs
+ *  @section atomic_hash_table_gpu Portability to GPUs
  *
  *  The slot protocol underneath is one @c fetch_or to take a slot and one @c fetch_xor to release it,
  *  over a 64-bit bucket header shared by 32 slots - one warp. Those reach a device through the
@@ -37,8 +48,10 @@
  *  and @c std::allocator, neither of which exists on a device. The table object and its storage have
  *  to sit in memory the device can address, which in practice means @c cudaMallocManaged.
  *
- *  Independent thread scheduling is required, so @c sm_70 and newer. A warp probing one bucket
- *  serializes through @c lock, and without it the spin livelocks the warp.
+ *  Independent thread scheduling is required, so @c sm_70 and newer, because the slot protocol
+ *  blocks: 32 slots share one header, so a warp probing one bucket serializes through @c lock, and
+ *  on older hardware the lanes that lost the @c fetch_or spin in lockstep with the lane that won,
+ *  which never gets to run its unlock. That is a livelock, not a slow path.
  */
 #pragma once
 #include <cstddef> // `std::byte`, `std::size_t`
@@ -50,13 +63,16 @@
 
 namespace ashvardanian::smashtable {
 
-#pragma region Concurrent Table
+#pragma region Atomic Table
 
 /**
- *  @brief A fixed-capacity open-addressed table whose every operation is lock-free.
+ *  @brief A fixed-capacity open-addressed table, atomic per operation through per-slot spin locks.
  *
  *  Built by adopting an allocation someone else sized, which is what guarantees the capacity was
  *  reserved before any thread could observe the table.
+ *
+ *  @warning Not lock-free. A slot is held between @c lock and @c unlock, so a thread stopped in
+ *    between blocks every other prober that reaches that slot; see the file header.
  *
  *  @tparam element_type_ Stored element - a bare key for a set, a @c mapping for a map.
  *  @tparam hasher_type_ Hashes a key to a slot index.
@@ -65,7 +81,7 @@ namespace ashvardanian::smashtable {
  */
 template <typename element_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator<std::byte>>
-class concurrent_hash_table {
+class atomic_hash_table {
 
     using layout_t = hash_layout_for<element_type_, hasher_type_>;
     using key_t = typename layout_t::key_t;
@@ -79,7 +95,7 @@ class concurrent_hash_table {
     /** @brief Whether erasure and teardown must run a key destructor. */
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
     /** @brief Whether erasure and teardown must run a value destructor. */
-    inline static constexpr bool destruct_vals_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
+    inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
 
     using hasher_t = hasher_type_;
     using equals_t = equals_type_;
@@ -118,30 +134,30 @@ class concurrent_hash_table {
     ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
   public:
-    concurrent_hash_table(hasher_t hasher = {}, equals_t equals = {}) noexcept
+    atomic_hash_table(hasher_t hasher = {}, equals_t equals = {}) noexcept
         : hasher_(std::move(hasher)), equals_(std::move(equals)) {}
 
-    concurrent_hash_table(concurrent_hash_table &&other) noexcept { swap(other); }
-    concurrent_hash_table &operator=(concurrent_hash_table &&other) noexcept {
+    atomic_hash_table(atomic_hash_table &&other) noexcept { swap(other); }
+    atomic_hash_table &operator=(atomic_hash_table &&other) noexcept {
         swap(other);
         return *this;
     }
-    concurrent_hash_table(concurrent_hash_table const &) = delete;
-    concurrent_hash_table &operator=(concurrent_hash_table const &) = delete;
+    atomic_hash_table(atomic_hash_table const &) = delete;
+    atomic_hash_table &operator=(atomic_hash_table const &) = delete;
 
     /** @brief Surrenders the allocation, leaving this table empty. */
     [[nodiscard]] storage_t release() && noexcept { return std::move(storage_); }
 
     /** @brief Takes ownership of an allocation another table built. */
-    [[nodiscard]] static concurrent_hash_table adopt(storage_t &&storage, hasher_t hasher = {},
-                                                     equals_t equals = {}) noexcept {
-        concurrent_hash_table table(std::move(hasher), std::move(equals));
+    [[nodiscard]] static atomic_hash_table adopt(storage_t &&storage, hasher_t hasher = {},
+                                                 equals_t equals = {}) noexcept {
+        atomic_hash_table table(std::move(hasher), std::move(equals));
         table.storage_ = std::move(storage);
         return table;
     }
 
     /** @brief A cheap copy-less exchange of the allocation and the two functors. */
-    void swap(concurrent_hash_table &other) noexcept {
+    void swap(atomic_hash_table &other) noexcept {
         storage_.swap(other.storage_);
         if constexpr (!std::is_empty<hasher_t>::value) std::swap(hasher_, other.hasher_);
         if constexpr (!std::is_empty<equals_t>::value) std::swap(equals_, other.equals_);
@@ -175,18 +191,21 @@ class concurrent_hash_table {
 #pragma region Lookups
 
     /**
-     *  @brief Invokes @p callback with the matching slot, under that slot's lock.
-     *  @return Whether the key was present, and therefore whether @p callback ran.
+     *  @brief Invokes one of the two callbacks, the found one under the matching slot's lock.
+     *    Reads arrive through a callback rather than a reference, since a concurrent erase would
+     *    invalidate anything handed back.
      */
-    template <typename comparable_key_type_, typename callback_type_>
-    constexpr bool find(comparable_key_type_ &&wanted, callback_type_ &&callback) const noexcept {
-        return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted),
-                                                std::forward<callback_type_>(callback));
+    template <typename comparable_key_type_, typename callback_found_type_, typename callback_missing_type_ = no_op_t>
+    constexpr void find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
+                        callback_missing_type_ &&callback_missing = {}) const noexcept {
+        if (!probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted),
+                                              std::forward<callback_found_type_>(callback_found)))
+            callback_missing();
     }
 
     template <typename comparable_key_type_>
     constexpr bool contains(comparable_key_type_ &&wanted) const noexcept {
-        return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted), no_op_fn_t {});
+        return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted), no_op_t {});
     }
 
     /** @brief Deleted: a reference into a slot is invalid the moment another thread erases it. */
@@ -232,36 +251,40 @@ class concurrent_hash_table {
             [&](slot_ref_t &unused_slot) noexcept {
                 new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
             },
-            no_op_fn_t {});
+            no_op_t {});
     }
 
     /**
      *  @brief Overwrites the value of an existing key, doing nothing when it is absent.
-     *  @return Whether the key was there.
+     *  @return @c success_k, or @c key_not_found_k when no equal key was there.
+     *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
      */
     template <typename comparable_key_type_, typename convertible_value_type_>
-    constexpr bool update(comparable_key_type_ &&key, convertible_value_type_ &&new_value) noexcept {
+    [[nodiscard]] constexpr status_t update(comparable_key_type_ &&key, convertible_value_type_ &&new_value) noexcept {
         static_assert(has_values_k, "update() is only available for maps, not sets");
-        return probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key),
-                                          [&](slot_ref_t const &slot) noexcept {
-                                              slot.value_ref() = std::forward<convertible_value_type_>(new_value);
-                                          });
+        bool const found =
+            probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
+                slot.value_ref() = std::forward<convertible_value_type_>(new_value);
+            });
+        return found ? success_k : key_not_found_k;
     }
 
     /**
      *  @brief Leaves a tombstone rather than freeing the slot, so probe sequences stay intact.
-     *  @return Whether the key was there.
+     *  @return @c success_k, or @c key_not_found_k when no equal key was there.
+     *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
      */
     template <typename comparable_key_type_>
-    constexpr bool erase(comparable_key_type_ &&key) noexcept {
-        return probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key),
-                                          [&](slot_ref_t const &slot) noexcept {
-                                              if constexpr (destruct_keys_k) slot.key_ref().~key_t();
-                                              if constexpr (destruct_vals_k) slot.value_ref().~value_storage_t();
-                                              slot.mark_deleted();
-                                              atomic_add_fetch<offset_t>(storage_.deleted_count, 1);
-                                              atomic_sub_fetch<offset_t>(storage_.populated_count, 1);
-                                          });
+    [[nodiscard]] constexpr status_t erase(comparable_key_type_ &&key) noexcept {
+        bool const found =
+            probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
+                if constexpr (destruct_keys_k) slot.key_ref().~key_t();
+                if constexpr (destruct_values_k) slot.value_ref().~value_storage_t();
+                slot.mark_deleted();
+                atomic_add_fetch<offset_t>(storage_.deleted_count, 1);
+                atomic_sub_fetch<offset_t>(storage_.populated_count, 1);
+            });
+        return found ? success_k : key_not_found_k;
     }
 
 #pragma endregion Modifications
@@ -374,18 +397,17 @@ class concurrent_hash_table {
 #pragma endregion Probes
 };
 
-#pragma endregion Concurrent Table
+#pragma endregion Atomic Table
 
 #pragma region Aliases
 
 template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
-using concurrent_hash_map =
-    concurrent_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>;
+using atomic_hash_map = atomic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>;
 
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator<std::byte>>
-using concurrent_hash_set = concurrent_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
+using atomic_hash_set = atomic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
 
 #pragma endregion Aliases
 

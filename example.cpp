@@ -10,10 +10,10 @@
  */
 #include <random> // `std::mt19937`, `std::random_device`
 
-#include <smashtable/locked_collection.hpp>
-#include <smashtable/partitioned_collection.hpp>
-#include <smashtable/transactional_store.hpp>
-#include <smashtable/transactional_std_store.hpp>
+#include <smashtable/locked_store.hpp>
+#include <smashtable/reference_store.hpp>
+#include <smashtable/partitioned_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #define macro_concat_(prefix, suffix) prefix##suffix
 #define macro_concat(prefix, suffix) macro_concat_(prefix, suffix)
@@ -61,7 +61,7 @@ void api() {
 
     // Exports
     value_t result;
-    container.find(identifier_t {}, copy_to(result), no_op_fn_t {});
+    container.find(identifier_t {}, copy_to(result), no_op_t {});
 }
 
 using pair_t = mapping<std::size_t, std::size_t>;
@@ -77,15 +77,15 @@ struct pair_compare_t {
 
 int main() {
 
-    using stl_t = transactional_std_store<pair_t, pair_compare_t>;
+    using stl_t = reference_store<pair_t, pair_compare_t>;
     api<stl_t>();
-    api<locked_collection<stl_t>>();
-    api<partitioned_collection<stl_t>>();
+    api<locked_store<stl_t>>();
+    api<partitioned_store<stl_t>>();
 
-    using avl_t = transactional_avl_set<pair_t, pair_compare_t>;
+    using avl_t = monotonic_avl_set<pair_t, pair_compare_t>;
     api<avl_t>();
-    api<locked_collection<avl_t>>();
-    api<partitioned_collection<avl_t>>();
+    api<locked_store<avl_t>>();
+    api<partitioned_store<avl_t>>();
 
     return 0;
 }

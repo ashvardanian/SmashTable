@@ -39,8 +39,8 @@
 #include <variant>  // `std::variant`
 
 #include <smashtable/basic_vector.hpp>
-#include <smashtable/partitioned_collection.hpp>
-#include <smashtable/transactional_store.hpp>
+#include <smashtable/partitioned_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 namespace ashvardanian::smashtable::py {
 
@@ -357,10 +357,10 @@ struct key_hash_t {
 #pragma region Stores
 
 using entry_t = mapping<key_variant_t, value_variant_t>;
-using map_tree_t = transactional_avl_map<key_variant_t, value_variant_t, key_less_t, std::allocator<entry_t>>;
-using map_store_t = partitioned_collection<map_tree_t, key_hash_t>;
-using set_tree_t = transactional_avl_set<key_variant_t, key_less_t, std::allocator<key_variant_t>>;
-using set_store_t = partitioned_collection<set_tree_t, key_hash_t>;
+using map_tree_t = monotonic_avl_map<key_variant_t, value_variant_t, key_less_t, std::allocator<entry_t>>;
+using map_store_t = partitioned_store<map_tree_t, key_hash_t>;
+using set_tree_t = monotonic_avl_set<key_variant_t, key_less_t, std::allocator<key_variant_t>>;
+using set_store_t = partitioned_store<set_tree_t, key_hash_t>;
 
 #pragma endregion Stores
 

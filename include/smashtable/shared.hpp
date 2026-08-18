@@ -7,7 +7,7 @@
  *
  *  @section shared_store_tiers Store Tiers
  *
- *  What @c transactional_store needs from its parameter is narrower than tree-ness. The concepts near
+ *  What @c monotonic_store needs from its parameter is narrower than tree-ness. The concepts near
  *  the end of this file state that requirement, so a container which does not meet it says so at the
  *  call site rather than deep inside the adapter.
  *
@@ -323,19 +323,19 @@ struct end_sentinel_t {};
 struct placeholder_t {};
 
 template <typename type_>
-struct no_op_fn {
+struct no_op {
     constexpr void operator()(type_ &&) const noexcept {}
     constexpr void operator()(type_ const &) const noexcept {}
 };
 
 template <>
-struct no_op_fn<void> {
+struct no_op<void> {
     template <typename type_>
     constexpr void operator()(type_ &&) const noexcept {}
     constexpr void operator()() const noexcept {}
 };
 
-using no_op_fn_t = no_op_fn<void>;
+using no_op_t = no_op<void>;
 
 /** @brief Callback that stores whatever it is handed into a caller-owned destination. */
 template <typename element_type_>
@@ -627,7 +627,7 @@ struct mapped_value_type_or_void<can_be_mapping_type_, true> {
  *  its identity for ordering purposes. Examples may be:
  *
  *  - Non-owning @c std::string_view for @c std::string keys
- *  - Integer IDs extracted from composite structures
+ *  - Integer identifiers extracted from composite structures
  *
  *  If the @c comparator_type_ has a @c value_type member - indicating some form of a unique
  *  identifier can be distilled from @c comparable_type_ - we expose it via @c ::type.
@@ -722,6 +722,22 @@ enum class presence_t : bool {
     erased_k,
 };
 
+/**
+ *  @brief What a commit found when it went looking for the version it was asked to publish.
+ *
+ *  @c already_published_k is what makes a repeated identifier harmless: a commit listing one key
+ *  twice finds the second pass settled rather than missing, which a two-state answer could only
+ *  spell as the same success a fresh publish reports.
+ */
+enum class unmask_outcome_t : std::uint8_t {
+    /** @brief The staged version was there and now carries this commit's stamp. */
+    unmasked_k,
+    /** @brief This commit had already published that version on an earlier pass. */
+    already_published_k,
+    /** @brief No entry carries that generation, so nothing became visible. */
+    version_missing_k,
+};
+
 /** @brief Watch metadata for versioned elements. */
 struct watch_t {
     generation_t generation {0};
@@ -748,17 +764,18 @@ constexpr watch_t missing_watch() noexcept { return watch_t {absent_generation_k
 /**
  *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
  *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
- *  @param[in] resolve_latest Invoked as @c resolve_latest(id,on_found,on_missing) . Must be noexcept.
+ *  @param[in] resolve_latest Invoked as @c resolve_latest(identifier,on_found,on_missing) . Must be noexcept.
  *  @return @c success_k, or @c consistency_k for the first watch that fails to match.
  */
 template <typename watches_type_, typename resolver_type_>
 [[nodiscard]] status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
     watch_t const entry_missing = missing_watch();
-    for (auto const &id_and_watch : watches) {
+    for (auto const &identifier_and_watch : watches) {
         bool drifted = false;
         resolve_latest(
-            id_and_watch.id, [&](auto const &entry) noexcept { drifted = entry != id_and_watch.watch; },
-            [&]() noexcept { drifted = entry_missing != id_and_watch.watch; });
+            identifier_and_watch.identifier,
+            [&](auto const &entry) noexcept { drifted = entry != identifier_and_watch.watch; },
+            [&]() noexcept { drifted = entry_missing != identifier_and_watch.watch; });
         if (drifted) return status_t::consistency_k;
     }
     return success_k;
@@ -768,7 +785,7 @@ template <typename identifier_type_>
 struct dated_identifier {
     using identifier_t = identifier_type_;
 
-    identifier_t id;
+    identifier_t identifier;
     generation_t generation {0};
 };
 
@@ -776,7 +793,7 @@ template <typename identifier_type_>
 struct watched_identifier {
     using identifier_t = identifier_type_;
 
-    identifier_t id;
+    identifier_t identifier;
     watch_t watch;
 };
 
@@ -807,7 +824,7 @@ concept carries_generation = requires(type_ const &value) {
  *    payload, and would otherwise be peeled down a branch that does not compile.
  */
 template <typename type_>
-concept carries_versioned_payload = carries_generation<type_> && requires(type_ const &value) { value.unversioned; };
+concept carries_versioned_payload = carries_generation<type_> && requires(type_ const &value) { value.payload; };
 
 /**
  *  @brief Operands whose generation can break a tie, because a key can still be peeled out of them.
@@ -815,7 +832,7 @@ concept carries_versioned_payload = carries_generation<type_> && requires(type_ 
  *    compared against the entry it dates rather than fed to a comparator.
  */
 template <typename type_>
-concept carries_dated_key =
+concept orderable_per_version =
     carries_versioned_payload<type_> || (carries_generation<type_> && is_dating_identifier_v<type_>);
 
 /**
@@ -824,12 +841,12 @@ concept carries_dated_key =
  *    to the identifier inside it, so a plain key is reached from any of the shapes a store stores.
  */
 template <typename type_>
-decltype(auto) versioned_particle(type_ const &object) noexcept {
+decltype(auto) identifier_of(type_ const &object) noexcept {
     using dereferenced_t = std::remove_reference_t<type_>;
-    if constexpr (requires { typename dereferenced_t::is_version_chain; }) return versioned_particle(object.head);
+    if constexpr (requires { typename dereferenced_t::is_version_chain; }) return identifier_of(object.head);
     else if constexpr (is_dating_identifier_v<dereferenced_t>)
-        return (typename dereferenced_t::identifier_t const &)object.id;
-    else if constexpr (carries_versioned_payload<dereferenced_t>) return versioned_particle(object.unversioned);
+        return (typename dereferenced_t::identifier_t const &)object.identifier;
+    else if constexpr (carries_versioned_payload<dereferenced_t>) return identifier_of(object.payload);
     else return mapping_key_or_itself(object);
 }
 
@@ -867,14 +884,14 @@ struct versioning_for {
 
     static_assert(!std::is_reference<value_t>(), "Only value types are supported.");
     static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
-                  "To WATCH, the ID must be nothrow copy constructible or provide .copy()");
+                  "To WATCH, the identifier must be nothrow copy constructible or provide .copy()");
     static_assert(std::is_nothrow_default_constructible<value_t>(), "We need an empty state.");
     static_assert(std::is_nothrow_move_constructible<value_t>() && std::is_nothrow_move_assignable<value_t>(),
                   "To make all the methods `noexcept`, the moves must be safe too.");
 
     struct versioned_t {
         /** @brief The stored value, with none of the metadata around it. */
-        value_t unversioned;
+        value_t payload;
         /** @brief Which transaction wrote this version, which is how its own writer finds it again. */
         generation_t generation {0};
         /** @brief Whether this version says the key is there, or says it was taken away. */
@@ -887,7 +904,7 @@ struct versioning_for {
         versioned_t &operator=(versioned_t &&) noexcept = default;
         versioned_t(versioned_t const &) noexcept = delete;
         versioned_t &operator=(versioned_t const &) noexcept = delete;
-        versioned_t(value_t &&unversioned) noexcept : unversioned(std::move(unversioned)) {}
+        versioned_t(value_t &&payload) noexcept : payload(std::move(payload)) {}
 
         bool operator==(watch_t const &watch) const noexcept {
             return watch.presence == presence && watch.generation == generation;
@@ -911,9 +928,6 @@ struct versioning_for {
          */
         ST_NO_UNIQUE_ADDRESS_ comparator_t comparator;
 
-        // Constrained rather than defaulted, so a comparator that refuses default construction - one
-        // carrying a dispatch pointer with no meaningful empty value - makes every site that tried to
-        // manufacture one a compile error instead of a null call in a branch nobody exercises.
         versioned_comparator_t() noexcept
             requires std::is_default_constructible_v<comparator_t>
             : comparator() {}
@@ -926,18 +940,18 @@ struct versioning_for {
          */
         template <typename type_>
         decltype(auto) comparable(type_ const &object) const noexcept {
-            return versioned_particle(object);
+            return identifier_of(object);
         }
 
         template <typename first_type_, typename second_type_>
-        bool dated_compare(first_type_ const &a, second_type_ const &b) const noexcept {
+        bool per_version_compare(first_type_ const &a, second_type_ const &b) const noexcept {
             auto a_less_b = comparator(comparable(a), comparable(b));
             auto b_less_a = comparator(comparable(b), comparable(a));
             return !a_less_b && !b_less_a ? a.generation < b.generation : a_less_b;
         }
 
         template <typename first_type_, typename second_type_>
-        bool native_compare(first_type_ const &a, second_type_ const &b) const noexcept {
+        bool per_key_compare(first_type_ const &a, second_type_ const &b) const noexcept {
             return comparator(comparable(a), comparable(b));
         }
 
@@ -947,8 +961,9 @@ struct versioning_for {
             using second_t = std::remove_reference_t<second_type_>;
             static_assert(!std::is_same_v<first_t, watch_t> && !std::is_same_v<second_t, watch_t>,
                           "A watch dates an entry without naming one, so it is compared with `==`, never ordered");
-            if constexpr (carries_dated_key<first_t> && carries_dated_key<second_t>) return dated_compare(a, b);
-            else return native_compare(a, b);
+            if constexpr (orderable_per_version<first_t> && orderable_per_version<second_t>)
+                return per_version_compare(a, b);
+            else return per_key_compare(a, b);
         }
 
         template <typename first_type_, typename second_type_>
@@ -969,44 +984,42 @@ struct versioning_for {
  *    @c versioned_comparator_t is to an ordered one.
  */
 template <typename hasher_type_>
-struct versioned_hasher {
+struct per_key_hasher {
     using is_transparent = void;
 
     /** @brief The hasher this wrapper was built with, consulted for every element. */
     ST_NO_UNIQUE_ADDRESS_ hasher_type_ hasher;
 
-    // Constrained rather than defaulted, matching the ordered comparator: a hasher carrying a seed
-    // with no meaningful empty value makes every site that tried to manufacture one a compile error.
-    versioned_hasher() noexcept
+    per_key_hasher() noexcept
         requires std::is_default_constructible_v<hasher_type_>
         : hasher() {}
-    explicit versioned_hasher(hasher_type_ const &other) noexcept : hasher(other) {}
+    explicit per_key_hasher(hasher_type_ const &other) noexcept : hasher(other) {}
 
     template <typename type_>
     std::size_t operator()(type_ const &object) const noexcept {
-        return hasher(versioned_particle(object));
+        return hasher(identifier_of(object));
     }
 };
 
 /**
  *  @brief Compares version-decorated objects by the identifier inside them, ignoring the metadata.
- *    Paired with @c versioned_hasher, since an open-addressed table needs both to place an entry.
+ *    Paired with @c per_key_hasher, since an open-addressed table needs both to place an entry.
  */
 template <typename equals_type_>
-struct versioned_equals {
+struct per_key_equals {
     using is_transparent = void;
 
     /** @brief The equality this wrapper was built with, consulted for every comparison. */
     ST_NO_UNIQUE_ADDRESS_ equals_type_ equals;
 
-    versioned_equals() noexcept
+    per_key_equals() noexcept
         requires std::is_default_constructible_v<equals_type_>
         : equals() {}
-    explicit versioned_equals(equals_type_ const &other) noexcept : equals(other) {}
+    explicit per_key_equals(equals_type_ const &other) noexcept : equals(other) {}
 
     template <typename first_type_, typename second_type_>
     bool operator()(first_type_ const &first, second_type_ const &second) const noexcept {
-        return equals(versioned_particle(first), versioned_particle(second));
+        return equals(identifier_of(first), identifier_of(second));
     }
 };
 
@@ -1015,28 +1028,28 @@ struct versioned_equals {
  *    A bare key matches every version of that key - which is what a visibility walk asks - while a
  *    dated identifier matches exactly one, which is what a commit asks.
  *
- *  Paired with @c versioned_hasher, which keeps peeling to the bare key so every version of a key
+ *  Paired with @c per_key_hasher, which keeps peeling to the bare key so every version of a key
  *  shares one probe run; only equality widens. The ordered core needs no counterpart, since
- *  @c versioned_comparator_t::less already routes to @c dated_compare when both operands date.
+ *  @c versioned_comparator_t::less already routes to @c per_version_compare when both operands date.
  */
 template <typename equals_type_>
-struct dated_equals {
+struct per_version_equals {
     using is_transparent = void;
 
     /** @brief The equality this wrapper was built with, consulted for every comparison. */
     ST_NO_UNIQUE_ADDRESS_ equals_type_ equals;
 
-    dated_equals() noexcept
+    per_version_equals() noexcept
         requires std::is_default_constructible_v<equals_type_>
         : equals() {}
-    explicit dated_equals(equals_type_ const &other) noexcept : equals(other) {}
+    explicit per_version_equals(equals_type_ const &other) noexcept : equals(other) {}
 
     template <typename first_type_, typename second_type_>
     bool operator()(first_type_ const &first, second_type_ const &second) const noexcept {
-        if (!equals(versioned_particle(first), versioned_particle(second))) return false;
+        if (!equals(identifier_of(first), identifier_of(second))) return false;
         using first_t = std::remove_reference_t<first_type_>;
         using second_t = std::remove_reference_t<second_type_>;
-        if constexpr (carries_dated_key<first_t> && carries_dated_key<second_t>)
+        if constexpr (orderable_per_version<first_t> && orderable_per_version<second_t>)
             return first.generation == second.generation;
         else return true;
     }
@@ -1406,14 +1419,14 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
 
     using versioning_t = versioning_for<value_type_, typename collection_type_::key_equal>;
     using addressing_source_t = typename collection_type_::key_equal;
-    using addressing_t = versioned_hasher<typename collection_type_::hasher>;
-    using equality_t = versioned_equals<typename collection_type_::key_equal>;
+    using addressing_t = per_key_hasher<typename collection_type_::hasher>;
+    using equality_t = per_key_equals<typename collection_type_::key_equal>;
 
     template <typename element_type_>
     using rebind = typename collection_type_::template rebind<element_type_, addressing_t, equality_t>;
 
     /** @brief The equality that keeps one slot per version, rather than one per key. */
-    using dated_equality_t = dated_equals<typename collection_type_::key_equal>;
+    using dated_equality_t = per_version_equals<typename collection_type_::key_equal>;
 
     /**
      *  @brief The same storage keyed by identifier @b and generation, holding one entry per version.
@@ -1727,7 +1740,7 @@ template <optimistically_concurrent_store... store_types_>
  *  timed acquisition, no upgrading. Both collection wrappers take the mutex as a template parameter,
  *  so this is the default rather than the only choice.
  */
-class shared_mutex_t {
+class spin_shared_mutex {
     /** @brief Set while one writer owns the lock; the reader count is zero for as long as it is. */
     static constexpr std::uint32_t writer_held_k = 1u << 31;
     /** @brief One unit of the waiting-writer tally, which occupies the fifteen bits below the held bit. */
@@ -1753,9 +1766,9 @@ class shared_mutex_t {
     }
 
   public:
-    constexpr shared_mutex_t() noexcept = default;
-    shared_mutex_t(shared_mutex_t const &) = delete;
-    shared_mutex_t &operator=(shared_mutex_t const &) = delete;
+    constexpr spin_shared_mutex() noexcept = default;
+    spin_shared_mutex(spin_shared_mutex const &) = delete;
+    spin_shared_mutex &operator=(spin_shared_mutex const &) = delete;
 
     [[nodiscard]] bool try_lock() noexcept {
         std::uint32_t expected = 0;

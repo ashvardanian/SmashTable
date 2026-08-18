@@ -4,7 +4,7 @@
  *      trees, weight-balanced trees, open-addressed tables - and gates its ordered surface behind the
  *      cores that supply an ordering. Exception-free, with all reads delivered through callbacks.
  *  @author Ash Vardanian
- *  @file include/smashtable/transactional_snapshot_store.hpp
+ *  @file include/smashtable/snapshot_store.hpp
  *  @date August 17, 2026
  */
 #pragma once
@@ -77,24 +77,24 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *  @brief  Transactional store offering Snapshot Isolation over any key-addressable core.
  *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
- *  @section transactional_snapshot_store_design_goals Design Goals
+ *  @section snapshot_store_design_goals Design Goals
  *
  *  A transaction fixes one commit stamp when it opens and answers every read at it, so a value read
  *  twice reads the same both times and a range walked twice admits no key that was not there the
  *  first time. Writes are checked first-committer-wins: a transaction is refused if anything committed
  *  to a key it wrote or watched after its snapshot was taken.
  *
- *  @c transactional_store keeps one published version per key and promises only Monotonic Atomic
+ *  @c monotonic_store keeps one published version per key and promises only Monotonic Atomic
  *  View. This store keeps every version a live snapshot can still reach, which is what buys the
  *  stronger promise and what the reclamation machinery below has to give back.
  *
  *  @see https://jepsen.io/consistency/models/snapshot-isolation
  *
- *  @section transactional_snapshot_store_representation Representation
+ *  @section snapshot_store_representation Representation
  *
  *  One entry per @c (key,generation) pair, uniformly for ordered and unordered cores. An ordered core
  *  needs no new comparator - @c versioned_comparator_t already breaks a tie on the generation, so a
- *  key's versions occupy one contiguous run. An unordered core rebinds on @c dated_equals, which
+ *  key's versions occupy one contiguous run. An unordered core rebinds on @c per_version_equals, which
  *  widens equality to the pair while the hasher keeps peeling to the bare key, so a key's versions
  *  share one probe run. Neither shape carries a chain, so visibility, rollback and reclamation each
  *  have exactly one implementation.
@@ -103,7 +103,7 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *  would relocate a tree node and could overflow a table, and a commit that can fail is not a commit.
  *  Only @c committed is ever written in place.
  *
- *  @section transactional_snapshot_store_reclamation Reclamation
+ *  @section snapshot_store_reclamation Reclamation
  *
  *  Versions are pruned on write against a low-water mark, and an explicit @c vacuum sweeps the rest.
  *  There is no background thread, no epoch registry and no hidden global state: registering and
@@ -112,7 +112,7 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *  unable to pass a snapshot somebody still holds. With nothing open the mark equals the published
  *  stamp, so a key falls back to a single entry on the next commit that touches it.
  *
- *  @section transactional_snapshot_store_ranking Ranking
+ *  @section snapshot_store_ranking Ranking
  *
  *  A core that sums a second per-subtree count carries @c select and @c rank, descending on a survivor
  *  tag written into each entry beside its stamp. Those two answer at the newest published stamp and only
@@ -123,7 +123,7 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *    a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock bounds and ranges.
  */
 template <typename collection_type_>
-class transactional_snapshot_store {
+class snapshot_store {
 
   public:
 #pragma region Type Definitions
@@ -182,13 +182,14 @@ class transactional_snapshot_store {
         typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
     using watches_vector_t = basic_vector<watched_identifier_t, watches_allocator_t>;
 
-    using changed_ids_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
-    using changed_ids_vector_t = basic_vector<identifier_t, changed_ids_allocator_t>;
+    using changed_identifiers_allocator_t =
+        typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
+    using changed_identifiers_vector_t = basic_vector<identifier_t, changed_identifiers_allocator_t>;
 
     using values_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<value_t>;
     using values_vector_t = basic_vector<value_t, values_allocator_t>;
 
-    using store_t = transactional_snapshot_store;
+    using store_t = snapshot_store;
 
     /** @brief Whether the core orders its keys, which is what unlocks bounds and ranges. */
     static constexpr bool ordered_core_k = ordered_collection<dated_entries_t>;
@@ -275,13 +276,13 @@ class transactional_snapshot_store {
          *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered once nothing is left. Must be @c noexcept.
          */
-        template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         void peek(callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
             static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                           "callback_found must be noexcept invocable with value_t const &");
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
-            if (standing_) callback_found(standing_->unversioned);
+            if (standing_) callback_found(standing_->payload);
             else callback_missing();
         }
 
@@ -307,7 +308,7 @@ class transactional_snapshot_store {
         store_t *store_ {nullptr};
         changes_t changes_;
         watches_vector_t watches_ {};
-        changed_ids_vector_t changed_ids_ {};
+        changed_identifiers_vector_t changed_identifiers_ {};
         generation_t generation_ {0};
         /** @brief The stamp every read of this transaction is answered at. */
         generation_t snapshot_ {0};
@@ -316,8 +317,8 @@ class transactional_snapshot_store {
         transaction_t(store_t &store) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               watches_(watches_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              changed_ids_(changed_ids_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.new_generation_()), snapshot_(store.published_stamp_) {
+              changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              generation_(store.next_generation_()), snapshot_(store.published_stamp_) {
             store.register_snapshot_(snapshot_);
         }
 
@@ -330,7 +331,7 @@ class transactional_snapshot_store {
             for (std::size_t index = 0; index != processed; ++index)
                 // ! Don't materialize a new copy of the identifier here, use a reference
                 [[maybe_unused]]
-                bool const dropped = store.drop_version_(changed_ids_[index], generation_);
+                bool const dropped = store.drop_version_(changed_identifiers_[index], generation_);
         }
 
         /**
@@ -340,9 +341,10 @@ class transactional_snapshot_store {
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            return validate_watches(watches_, [&](identifier_t const &id, auto &&on_found, auto &&on_missing) noexcept {
-                store.find_committed_entry_(id, on_found, on_missing);
-            });
+            return validate_watches(watches_,
+                                    [&](identifier_t const &identifier, auto &&on_found, auto &&on_missing) noexcept {
+                                        store.find_committed_entry_(identifier, on_found, on_missing);
+                                    });
         }
 
         /**
@@ -352,8 +354,8 @@ class transactional_snapshot_store {
          */
         [[nodiscard]] status_t validate_writes_() const noexcept {
             auto const &store = store_ref();
-            for (identifier_t const &id : changed_ids_)
-                if (store.key_changed_since_(id, snapshot_)) return status_t::consistency_k;
+            for (identifier_t const &identifier : changed_identifiers_)
+                if (store.key_changed_since_(identifier, snapshot_)) return status_t::consistency_k;
             return success_k;
         }
 
@@ -366,20 +368,21 @@ class transactional_snapshot_store {
          */
         void unwind_() noexcept {
             if (!store_) return;
-            if (staging_ == staging_t::staged_k) unstage_(changed_ids_.size());
+            if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
             store_->retire_snapshot_();
             staging_ = staging_t::pending_k;
             store_ = nullptr;
         }
 
-        /** @brief Stages @p versioned under this transaction's generation, recording @p id as changed. */
-        [[nodiscard]] status_t record_(identifier_t &&id, versioned_t &&versioned) noexcept {
-            auto reserve_status = changed_ids_.reserve(changed_ids_.size() + 1);
+        /** @brief Stages @p versioned under this transaction's generation, recording @p identifier as changed. */
+        [[nodiscard]] status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
+            auto reserve_status = changed_identifiers_.reserve(changed_identifiers_.size() + 1);
             if (failed(reserve_status)) return reserve_status;
             versioned.generation = generation_;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
-            [[maybe_unused]] status_t const recorded = changed_ids_.push_back(assume_reserved, std::move(id));
+            [[maybe_unused]] status_t const recorded =
+                changed_identifiers_.push_back(assume_reserved, std::move(identifier));
             return success_k;
         }
 
@@ -391,7 +394,7 @@ class transactional_snapshot_store {
          */
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
-              watches_(std::move(other.watches_)), changed_ids_(std::move(other.changed_ids_)),
+              watches_(std::move(other.watches_)), changed_identifiers_(std::move(other.changed_identifiers_)),
               generation_(other.generation_), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
 
@@ -401,7 +404,7 @@ class transactional_snapshot_store {
             store_ = std::exchange(other.store_, nullptr);
             changes_ = std::move(other.changes_);
             watches_ = std::move(other.watches_);
-            changed_ids_ = std::move(other.changed_ids_);
+            changed_identifiers_ = std::move(other.changed_identifiers_);
             generation_ = other.generation_;
             snapshot_ = other.snapshot_;
             staging_ = std::exchange(other.staging_, staging_t::pending_k);
@@ -453,11 +456,11 @@ class transactional_snapshot_store {
          *  @return Success unless an allocation failed.
          */
         [[nodiscard]] status_t upsert(value_t &&value) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return out_of_memory_heap_k;
+            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (!maybe_identifier) return out_of_memory_heap_k;
             versioned_t versioned(std::move(value));
             versioned.presence = presence_t::present_k;
-            return record_(std::move(*maybe_id), std::move(versioned));
+            return stage_(std::move(*maybe_identifier), std::move(versioned));
         }
 
         /**
@@ -471,21 +474,21 @@ class transactional_snapshot_store {
         }
 
         /**
-         *  @brief Stages an erase of @p id as a tombstone, which only a commit turns into an absence.
-         *  @param[in] id Identifier of the element to erase.
+         *  @brief Stages an erase of @p identifier as a tombstone, which only a commit turns into an absence.
+         *  @param[in] identifier Identifier of the element to erase.
          *  @return Success unless an allocation failed.
          */
-        [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
+        [[nodiscard]] status_t erase(identifier_t const &identifier) noexcept {
             // The tombstone owns its own identifier and the changed list owns another, so a move-only
             // key needs two safe copies rather than one copy and one implicit one.
-            auto maybe_id = copy_safely<identifier_t>(id);
-            if (!maybe_id) return out_of_memory_heap_k;
-            auto maybe_payload = copy_safely<identifier_t>(id);
+            auto maybe_identifier = copy_safely<identifier_t>(identifier);
+            if (!maybe_identifier) return out_of_memory_heap_k;
+            auto maybe_payload = copy_safely<identifier_t>(identifier);
             if (!maybe_payload) return out_of_memory_heap_k;
 
             versioned_t versioned(value_t {std::move(*maybe_payload)});
             versioned.presence = presence_t::erased_k;
-            return record_(std::move(*maybe_id), std::move(versioned));
+            return stage_(std::move(*maybe_identifier), std::move(versioned));
         }
 
         /** @brief Sizes the watch list up front, so a later @c watch cannot run out of memory. */
@@ -496,40 +499,41 @@ class transactional_snapshot_store {
 #pragma region Transaction Lookup
 
         /**
-         *  @brief Records what this transaction's snapshot resolves @p id to, so a later commit can
+         *  @brief Records what this transaction's snapshot resolves @p identifier to, so a later commit can
          *    refuse if anything published over it in the meantime.
-         *  @param[in] id Identifier to watch, moved into the read set.
+         *  @param[in] identifier Identifier to watch, moved into the read set.
          *  @return Success unless the read set could not grow.
          */
-        [[nodiscard]] status_t watch(identifier_t id) noexcept {
+        [[nodiscard]] status_t watch(identifier_t identifier) noexcept {
             auto const &store = store_ref();
-            versioned_t const *seen = store.visible_version_(id, snapshot_);
+            versioned_t const *seen = store.visible_version_(identifier, snapshot_);
             // A committed tombstone resolves to "missing" during validation, so a watch on one must
             // record that same shape or it could never match itself.
             watch_t const observed = seen && seen->presence == presence_t::present_k
                                          ? watch_t {seen->generation, seen->presence}
                                          : missing_watch();
-            return watches_.push_back({std::move(id), observed});
+            return watches_.push_back({std::move(identifier), observed});
         }
 
         /** @brief Records @p versioned as the version this transaction read of its own key. */
         [[nodiscard]] status_t watch(versioned_t const &versioned) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(identifier_t {versioned.unversioned});
-            if (!maybe_id) return out_of_memory_heap_k;
-            return watches_.push_back({std::move(*maybe_id), watch_t {versioned.generation, versioned.presence}});
+            auto maybe_identifier = copy_safely<identifier_t>(identifier_t {versioned.payload});
+            if (!maybe_identifier) return out_of_memory_heap_k;
+            return watches_.push_back(
+                {std::move(*maybe_identifier), watch_t {versioned.generation, versioned.presence}});
         }
 
         /**
          *  @brief Finds a member equal to @p comparable and records what it saw into the read set.
          *    The watching counterpart to @c find: this one can fail, because a read set is memory.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                               callback_missing_type_ &&callback_missing = {}) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(comparable);
-            if (!maybe_id) return maybe_id.status();
-            status_t const recorded = watch(std::move(*maybe_id));
+            auto maybe_identifier = copy_safely<identifier_t>(comparable);
+            if (!maybe_identifier) return maybe_identifier.status();
+            status_t const recorded = watch(std::move(*maybe_identifier));
             if (failed(recorded)) return recorded;
             find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
                  std::forward<callback_missing_type_>(callback_missing));
@@ -544,12 +548,12 @@ class transactional_snapshot_store {
          *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
             if (auto iterator = changes_.find(comparable); iterator != changes_.end()) {
-                if ((*iterator).presence == presence_t::present_k) callback_found((*iterator).unversioned);
+                if ((*iterator).presence == presence_t::present_k) callback_found((*iterator).payload);
                 else callback_missing();
                 return;
             }
@@ -584,8 +588,8 @@ class transactional_snapshot_store {
          *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
@@ -596,8 +600,8 @@ class transactional_snapshot_store {
         }
 
         /** @brief Finds the first member @b strictly greater than @p comparable at this snapshot. */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                          callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
@@ -617,15 +621,15 @@ class transactional_snapshot_store {
          *  of itself.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename callback_type_ = no_op_fn_t>
+                  typename callback_type_ = no_op_t>
         void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
             auto const ordering = changes_.key_comp();
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
-                if (!ordering.native_compare(version, upper)) return probe_t::halt_k;
-                if (version.presence == presence_t::present_k) callback(version.unversioned);
-                return probe_t::resume_k;
+                if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
+                if (version.presence == presence_t::present_k) callback(version.payload);
+                return probe_control_t::resume_k;
             });
         }
 
@@ -634,7 +638,7 @@ class transactional_snapshot_store {
          *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
          *  @param[in] callback Callback receiving each match. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
             find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
         }
@@ -648,7 +652,7 @@ class transactional_snapshot_store {
          *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be @c noexcept.
          */
-        template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         void select(std::size_t ordinal, callback_found_type_ &&callback_found,
                     callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
@@ -659,14 +663,14 @@ class transactional_snapshot_store {
 
             bool found = false;
             merge_all_([&](versioned_t const &version) noexcept {
-                if (version.presence != presence_t::present_k) return probe_t::resume_k;
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
                 if (ordinal != 0) {
                     --ordinal;
-                    return probe_t::resume_k;
+                    return probe_control_t::resume_k;
                 }
-                callback_found(version.unversioned);
+                callback_found(version.payload);
                 found = true;
-                return probe_t::halt_k;
+                return probe_control_t::halt_k;
             });
             if (!found) callback_missing();
         }
@@ -679,8 +683,8 @@ class transactional_snapshot_store {
          *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if the key is not readable. Must be @c noexcept.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
@@ -696,9 +700,9 @@ class transactional_snapshot_store {
             auto const ordering = changes_.key_comp();
             std::size_t counted = 0;
             merge_all_([&](versioned_t const &version) noexcept {
-                if (!ordering.native_compare(version, comparable)) return probe_t::halt_k;
+                if (!ordering.per_key_compare(version, comparable)) return probe_control_t::halt_k;
                 if (version.presence == presence_t::present_k) ++counted;
-                return probe_t::resume_k;
+                return probe_control_t::resume_k;
             });
             callback_found(counted);
         }
@@ -718,26 +722,26 @@ class transactional_snapshot_store {
             auto const ordering = changes_.key_comp();
             while (staged != changes_.end() || !committed.exhausted()) {
                 if (committed.exhausted()) {
-                    if (callback(*staged) == probe_t::halt_k) return;
+                    if (callback(*staged) == probe_control_t::halt_k) return;
                     ++staged;
                     continue;
                 }
                 versioned_t const &visible = *committed.standing_;
                 if (staged == changes_.end()) {
-                    if (callback(visible) == probe_t::halt_k) return;
+                    if (callback(visible) == probe_control_t::halt_k) return;
                     committed.advance();
                     continue;
                 }
                 versioned_t const &pending = *staged;
-                if (ordering.native_compare(visible, pending)) {
-                    if (callback(visible) == probe_t::halt_k) return;
+                if (ordering.per_key_compare(visible, pending)) {
+                    if (callback(visible) == probe_control_t::halt_k) return;
                     committed.advance();
                     continue;
                 }
                 // A staged write speaks for its key, so the committed version of it is dropped rather
                 // than reported alongside - including when the staging is a tombstone.
-                if (!ordering.native_compare(pending, visible)) committed.advance();
-                if (callback(pending) == probe_t::halt_k) return;
+                if (!ordering.per_key_compare(pending, visible)) committed.advance();
+                if (callback(pending) == probe_control_t::halt_k) return;
                 ++staged;
             }
         }
@@ -768,19 +772,19 @@ class transactional_snapshot_store {
             requires ordered_core_k
         {
             while (!committed.exhausted() &&
-                   changes_.find(mapping_key_or_itself<value_t>(committed.standing_->unversioned)) != changes_.end())
+                   changes_.find(mapping_key_or_itself<value_t>(committed.standing_->payload)) != changes_.end())
                 committed.advance();
 
             while (staged != changes_.end() && (*staged).presence == presence_t::erased_k) ++staged;
 
             if (committed.exhausted() && staged == changes_.end()) callback_missing();
-            else if (committed.exhausted()) callback_found((*staged).unversioned);
-            else if (staged == changes_.end()) callback_found(committed.standing_->unversioned);
+            else if (committed.exhausted()) callback_found((*staged).payload);
+            else if (staged == changes_.end()) callback_found(committed.standing_->payload);
             else {
                 auto const ordering = changes_.key_comp();
-                value_t const &visible = committed.standing_->unversioned;
-                if (ordering.native_compare(visible, (*staged).unversioned)) callback_found(visible);
-                else callback_found((*staged).unversioned);
+                value_t const &visible = committed.standing_->payload;
+                if (ordering.per_key_compare(visible, (*staged).payload)) callback_found(visible);
+                else callback_found((*staged).payload);
             }
         }
 
@@ -798,7 +802,7 @@ class transactional_snapshot_store {
         [[nodiscard]] status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             auto &store = store_ref();
-            auto const prepaid = storage_shape_t::prepare(store.entries_, changed_ids_.size());
+            auto const prepaid = storage_shape_t::prepare(store.entries_, changed_identifiers_.size());
             if (failed(prepaid)) return prepaid;
             if (status_t const validated = validate_watches_(); failed(validated)) return validated;
             if (status_t const validated = validate_writes_(); failed(validated)) return validated;
@@ -807,13 +811,13 @@ class transactional_snapshot_store {
             // run out of memory with half of itself already in the store. So this pass files a
             // key-only placeholder under this generation for each written key, and only then does
             // the second pass move the payloads onto slots already paid for, where it cannot fail.
-            for (std::size_t reserved = 0; reserved != changed_ids_.size(); ++reserved) {
-                auto reserved_id = copy_safely<identifier_t>(changed_ids_[reserved]);
-                if (!reserved_id) {
+            for (std::size_t reserved = 0; reserved != changed_identifiers_.size(); ++reserved) {
+                auto reserved_identifier = copy_safely<identifier_t>(changed_identifiers_[reserved]);
+                if (!reserved_identifier) {
                     unstage_(reserved);
                     return out_of_memory_heap_k;
                 }
-                versioned_t placeholder(value_t {std::move(*reserved_id)});
+                versioned_t placeholder(value_t {std::move(*reserved_identifier)});
                 placeholder.generation = generation_;
                 placeholder.presence = presence_t::present_k;
                 if (failed(storage_shape_t::upsert(store.entries_, std::move(placeholder)))) {
@@ -824,8 +828,8 @@ class transactional_snapshot_store {
 
             for (auto staged = changes_.begin(); staged != changes_.end(); ++staged) {
                 versioned_t &version = store_t::mutable_ref_(*staged);
-                [[maybe_unused]] status_t const filed = storage_shape_t::upsert(store.entries_, std::move(version));
-                assert(succeeded(filed) && "the placeholder pass already paid for this slot");
+                [[maybe_unused]] status_t const moved = storage_shape_t::upsert(store.entries_, std::move(version));
+                assert(succeeded(moved) && "the placeholder pass already paid for this slot");
             }
 
             changes_.clear();
@@ -846,7 +850,8 @@ class transactional_snapshot_store {
             if (status_t const validated = validate_watches_(); failed(validated)) return validated;
             if (status_t const validated = validate_writes_(); failed(validated)) return validated;
 
-            status_t const result = store.stamp_together_(changed_ids_.data(), changed_ids_.size(), generation_);
+            status_t const result =
+                store.stamp_as_one_commit_(changed_identifiers_.data(), changed_identifiers_.size(), generation_);
 
             // The snapshot moves to the stamp just published, so this transaction reads its own
             // writes and the mark is free to follow it once every other reader has left.
@@ -854,8 +859,8 @@ class transactional_snapshot_store {
             snapshot_ = store.published_stamp_;
             store.register_snapshot_(snapshot_);
 
-            store.prune_together_(changed_ids_.data(), changed_ids_.size());
-            changed_ids_.clear();
+            store.prune_each_(changed_identifiers_.data(), changed_identifiers_.size());
+            changed_identifiers_.clear();
             staging_ = staging_t::pending_k;
             return result;
         }
@@ -872,10 +877,10 @@ class transactional_snapshot_store {
             // The recovered versions carry the generation they were staged under, and this
             // transaction is about to take a new one, so each is re-stamped while it is out of any
             // container. The changed identifiers are kept: these keys are still going to be written.
-            generation_t const resumed = store.new_generation_();
-            for (identifier_t const &id : changed_ids_) {
+            generation_t const resumed = store.next_generation_();
+            for (identifier_t const &identifier : changed_identifiers_) {
                 versioned_t recovered;
-                if (!store.recover_version_(id, generation_, recovered)) {
+                if (!store.recover_version_(identifier, generation_, recovered)) {
                     result = status_t::consistency_k;
                     continue;
                 }
@@ -891,13 +896,13 @@ class transactional_snapshot_store {
         /** @brief Discards everything staged and pending, and takes a fresh snapshot. */
         [[nodiscard]] status_t reset() noexcept {
             auto &store = store_ref();
-            if (staging_ == staging_t::staged_k) unstage_(changed_ids_.size());
+            if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
 
             watches_.clear();
             changes_.clear();
-            changed_ids_.clear();
+            changed_identifiers_.clear();
             staging_ = staging_t::pending_k;
-            generation_ = store.new_generation_();
+            generation_ = store.next_generation_();
             store.retire_snapshot_();
             snapshot_ = store.published_stamp_;
             store.register_snapshot_(snapshot_);
@@ -917,7 +922,7 @@ class transactional_snapshot_store {
      *  once, which is the same two-step shape @c transaction_t::commit has, without the validation a
      *  store-level write never had to do.
      *
-     *  Anything filed and not published is dropped when the publication goes away, so a failure part
+     *  Anything staged and not published is dropped when the publication goes away, so a failure part
      *  way through a group leaves the store exactly as it was.
      */
     class publication_t {
@@ -925,52 +930,54 @@ class transactional_snapshot_store {
         friend store_t;
 
         store_t *store_ {nullptr};
-        changed_ids_vector_t staged_ids_;
-        /** @brief The generation every version filed by this publication carries. */
+        changed_identifiers_vector_t staged_identifiers_;
+        /** @brief The generation every version staged by this publication carries. */
         generation_t generation_ {0};
 
         explicit publication_t(store_t &store) noexcept
-            : store_(&store), staged_ids_(changed_ids_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.new_generation_()) {}
+            : store_(&store),
+              staged_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              generation_(store.next_generation_()) {}
 
-        /** @brief Files @p versioned invisibly under this publication's generation. */
-        [[nodiscard]] status_t file_(identifier_t &&id, versioned_t &&versioned) noexcept {
+        /** @brief Stages @p versioned invisibly under this publication's generation. */
+        [[nodiscard]] status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
             if (!store_) return operation_not_permitted_k;
-            if (status_t const reserved = staged_ids_.reserve(staged_ids_.size() + 1); failed(reserved))
+            if (status_t const reserved = staged_identifiers_.reserve(staged_identifiers_.size() + 1); failed(reserved))
                 return reserved;
             if (failed(storage_shape_t::prepare(store_->entries_, 1))) return out_of_memory_heap_k;
             versioned.generation = generation_;
             if (failed(storage_shape_t::upsert(store_->entries_, std::move(versioned)))) return out_of_memory_heap_k;
-            [[maybe_unused]] status_t const recorded = staged_ids_.push_back(assume_reserved, std::move(id));
+            [[maybe_unused]] status_t const recorded =
+                staged_identifiers_.push_back(assume_reserved, std::move(identifier));
             return success_k;
         }
 
       public:
         publication_t(publication_t &&other) noexcept
-            : store_(std::exchange(other.store_, nullptr)), staged_ids_(std::move(other.staged_ids_)),
+            : store_(std::exchange(other.store_, nullptr)), staged_identifiers_(std::move(other.staged_identifiers_)),
               generation_(other.generation_) {}
 
         publication_t &operator=(publication_t &&other) noexcept {
             if (this == &other) return *this;
-            discard();
+            rollback();
             store_ = std::exchange(other.store_, nullptr);
-            staged_ids_ = std::move(other.staged_ids_);
+            staged_identifiers_ = std::move(other.staged_identifiers_);
             generation_ = other.generation_;
             return *this;
         }
 
-        ~publication_t() noexcept { discard(); }
+        ~publication_t() noexcept { rollback(); }
 
         publication_t(publication_t const &) = delete;
         publication_t &operator=(publication_t const &) = delete;
 
-        /** @brief How many keys are filed and waiting for a stamp. */
-        [[nodiscard]] std::size_t staged_count() const noexcept { return staged_ids_.size(); }
+        /** @brief How many keys are staged and waiting for a stamp. */
+        [[nodiscard]] std::size_t staged_count() const noexcept { return staged_identifiers_.size(); }
 
         /** @brief Sizes the group up front, so a later @c upsert cannot run out of memory. */
         [[nodiscard]] status_t reserve(std::size_t count) noexcept {
             if (!store_) return operation_not_permitted_k;
-            if (status_t const reserved = staged_ids_.reserve(count); failed(reserved)) return reserved;
+            if (status_t const reserved = staged_identifiers_.reserve(count); failed(reserved)) return reserved;
             return storage_shape_t::prepare(store_->entries_, count);
         }
 
@@ -980,50 +987,51 @@ class transactional_snapshot_store {
          *  @return Success or an allocation failure that leaves the group as it was.
          */
         [[nodiscard]] status_t upsert(value_t &&value) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) return out_of_memory_heap_k;
+            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (!maybe_identifier) return out_of_memory_heap_k;
             versioned_t versioned(std::move(value));
             versioned.presence = presence_t::present_k;
-            return file_(std::move(*maybe_id), std::move(versioned));
+            return stage_(std::move(*maybe_identifier), std::move(versioned));
         }
 
         /**
-         *  @brief Files a tombstone over @p id, invisible until @c publish stamps the group.
+         *  @brief Files a tombstone over @p identifier, invisible until @c publish stamps the group.
          *    A tombstone rather than a detached entry, so a snapshot older than the group keeps reading
          *    the version it opened on.
          */
-        [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            auto maybe_id = copy_safely<identifier_t>(id);
-            if (!maybe_id) return out_of_memory_heap_k;
-            auto maybe_payload = copy_safely<identifier_t>(id);
+        [[nodiscard]] status_t erase(identifier_t const &identifier) noexcept {
+            auto maybe_identifier = copy_safely<identifier_t>(identifier);
+            if (!maybe_identifier) return out_of_memory_heap_k;
+            auto maybe_payload = copy_safely<identifier_t>(identifier);
             if (!maybe_payload) return out_of_memory_heap_k;
 
             versioned_t versioned(value_t {std::move(*maybe_payload)});
             versioned.presence = presence_t::erased_k;
-            return file_(std::move(*maybe_id), std::move(versioned));
+            return stage_(std::move(*maybe_identifier), std::move(versioned));
         }
 
         /**
-         *  @brief Makes every filed version visible under one stamp, then prunes what the group masked.
+         *  @brief Makes every staged version visible under one stamp, then prunes what the group masked.
          *    The publication stays usable afterwards and starts a fresh group on the next write.
          */
         [[nodiscard]] status_t publish() noexcept {
             if (!store_) return operation_not_permitted_k;
-            if (staged_ids_.size() == 0) return success_k;
+            if (staged_identifiers_.size() == 0) return success_k;
 
-            status_t const result = store_->stamp_together_(staged_ids_.data(), staged_ids_.size(), generation_);
-            store_->prune_together_(staged_ids_.data(), staged_ids_.size());
-            staged_ids_.clear();
-            generation_ = store_->new_generation_();
+            status_t const result =
+                store_->stamp_as_one_commit_(staged_identifiers_.data(), staged_identifiers_.size(), generation_);
+            store_->prune_each_(staged_identifiers_.data(), staged_identifiers_.size());
+            staged_identifiers_.clear();
+            generation_ = store_->next_generation_();
             return result;
         }
 
-        /** @brief Drops every version filed and not yet published, leaving the store as it was. */
-        void discard() noexcept {
+        /** @brief Drops every version staged and not yet published, leaving the store as it was. */
+        void rollback() noexcept {
             if (!store_) return;
-            for (identifier_t const &id : staged_ids_) [[maybe_unused]]
-                bool const dropped = store_->drop_version_(id, generation_);
-            staged_ids_.clear();
+            for (identifier_t const &identifier : staged_identifiers_) [[maybe_unused]]
+                bool const dropped = store_->drop_version_(identifier, generation_);
+            staged_identifiers_.clear();
         }
     };
 
@@ -1047,10 +1055,10 @@ class transactional_snapshot_store {
 #pragma region Stamps and Snapshots
 
     /** @brief Hands out the next generation, which dates a transaction rather than its visibility. */
-    generation_t new_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
+    generation_t next_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
 
     /** @brief Hands out the stamp a commit publishes under, shared by every key that commit touched. */
-    commit_stamp_t new_commit_stamp_() noexcept {
+    commit_stamp_t next_commit_stamp_() noexcept {
         return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
     }
 
@@ -1093,9 +1101,9 @@ class transactional_snapshot_store {
     [[nodiscard]] bool same_key_(first_type_ const &first, second_type_ const &second) const noexcept {
         if constexpr (ordered_core_k) {
             auto const ordering = entries_.key_comp();
-            return !ordering.native_compare(first, second) && !ordering.native_compare(second, first);
+            return !ordering.per_key_compare(first, second) && !ordering.per_key_compare(second, first);
         }
-        else { return entries_.key_eq().equals(versioned_particle(first), versioned_particle(second)); }
+        else { return entries_.key_eq().equals(identifier_of(first), identifier_of(second)); }
     }
 
     /**
@@ -1111,9 +1119,9 @@ class transactional_snapshot_store {
                 visitor(*cursor);
         }
         else {
-            entries_.search_to_visit(comparable, [&](auto const &slot) noexcept {
+            entries_.probe_to_visit(comparable, [&](auto const &slot) noexcept {
                 visitor(slot.key());
-                return probe_t::resume_k;
+                return probe_control_t::resume_k;
             });
         }
     }
@@ -1190,7 +1198,7 @@ class transactional_snapshot_store {
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         versioned_t const *readable = readable_version_(comparable, snapshot);
-        if (readable) callback_found(readable->unversioned);
+        if (readable) callback_found(readable->payload);
         else callback_missing();
     }
 
@@ -1207,14 +1215,14 @@ class transactional_snapshot_store {
      *  run's first entry, which lets a bounded walk stop without stepping past its window.
      */
     template <typename within_type_, typename callback_type_>
-    void walk_visible_(entry_iterator_t start, within_type_ &&within, generation_t snapshot,
-                       callback_type_ &&callback) const noexcept
+    void walk_visible_keys_(entry_iterator_t start, within_type_ &&within, generation_t snapshot,
+                            callback_type_ &&callback) const noexcept
         requires ordered_core_k
     {
         for (visible_cursor_t cursor(*this, start, snapshot); !cursor.exhausted(); cursor.step_()) {
             if (!within(*cursor.position_)) break;
             if (!cursor.standing_) continue;
-            if (callback(cursor.standing_->unversioned) == probe_t::halt_k) break;
+            if (callback(cursor.standing_->payload) == probe_control_t::halt_k) break;
         }
     }
 
@@ -1242,9 +1250,9 @@ class transactional_snapshot_store {
         requires ordered_core_k
     {
         auto const ordering = entries_.key_comp();
-        walk_visible_(
+        walk_visible_keys_(
             entries_.lower_bound(std::forward<lower_type_>(lower)),
-            [&](versioned_t const &head) noexcept { return ordering.native_compare(head, upper); }, snapshot,
+            [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); }, snapshot,
             std::forward<callback_type_>(callback));
     }
 
@@ -1276,20 +1284,20 @@ class transactional_snapshot_store {
         }
     }
 
-    /** @brief Drops the version of @p id carrying @p generation, which only its own writer may do. */
-    [[nodiscard]] bool drop_version_(identifier_t const &id, generation_t generation) noexcept {
-        return entries_.erase(dated_reference_t {id, generation});
+    /** @brief Drops the version of @p identifier carrying @p generation, which only its own writer may do. */
+    [[nodiscard]] bool drop_version_(identifier_t const &identifier, generation_t generation) noexcept {
+        return entries_.erase(dated_reference_t {identifier, generation});
     }
 
     /**
-     *  @brief Takes the version of @p id carrying @p generation out, moving its payload to @p destination.
+     *  @brief Takes the version of @p identifier carrying @p generation out, moving its payload to @p destination.
      *  @return Whether a version was there to take.
      *  @note The entry leaves the index before anything is moved out of it, since the key the index
      *    addresses it by lives inside the payload and a moved-from key neither compares nor hashes.
      */
-    [[nodiscard]] bool recover_version_(identifier_t const &id, generation_t generation,
+    [[nodiscard]] bool recover_version_(identifier_t const &identifier, generation_t generation,
                                         versioned_t &destination) noexcept {
-        dated_reference_t const dated {id, generation};
+        dated_reference_t const dated {identifier, generation};
         if constexpr (ordered_core_k) {
             auto extracted = entries_.extract(dated);
             if (!extracted.node_ptr_) return false;
@@ -1306,36 +1314,41 @@ class transactional_snapshot_store {
     }
 
     /**
-     *  @brief Stamps the version of @p id carrying @p generation as published under @p stamp.
+     *  @brief Stamps the version of @p identifier carrying @p generation as published under @p stamp.
      *  @return Whether the version was still there to publish.
      */
-    [[nodiscard]] bool publish_version_(identifier_t const &id, generation_t generation,
+    [[nodiscard]] bool publish_version_(identifier_t const &identifier, generation_t generation,
                                         commit_stamp_t stamp) noexcept {
-        versioned_t const *staged = dated_version_(id, generation);
+        versioned_t const *staged = dated_version_(identifier, generation);
         if (!staged) return false;
-        versioned_t const *const superseded = readable_version_(id, latest_snapshot_k);
+        versioned_t const *const previously_visible = readable_version_(identifier, latest_snapshot_k);
         mutable_ref_(*staged).committed = stamp;
-        versioned_t const *const survivor = readable_version_(id, latest_snapshot_k);
-        live_count_ += static_cast<std::size_t>(survivor != nullptr) - static_cast<std::size_t>(superseded != nullptr);
-        retag_(superseded, survivor);
+        versioned_t const *const now_visible = readable_version_(identifier, latest_snapshot_k);
+        live_count_ +=
+            static_cast<std::size_t>(now_visible != nullptr) - static_cast<std::size_t>(previously_visible != nullptr);
+        mark_liveness_(previously_visible, now_visible);
         return true;
     }
 
     /**
-     *  @brief Moves the survivor tag from @p superseded to @p survivor, repairing the counts above both.
-     *    Two entries rather than one: publishing a version of a key demotes whichever version of that
-     *    same key spoke for it until now.
+     *  @brief Moves the survivor tag from the version a key read before to the one it reads now,
+     *    repairing the counts above both.
+     *
+     *  The two arguments are the same type and read in time order - what the key resolved to before
+     *  this publish, then what it resolves to after - so swapping them tags the wrong entry as the
+     *  survivor and leaves the rank index counting a version no reader can reach.
      */
-    void retag_([[maybe_unused]] versioned_t const *superseded, [[maybe_unused]] versioned_t const *survivor) noexcept {
+    void mark_liveness_([[maybe_unused]] versioned_t const *previously_visible,
+                        [[maybe_unused]] versioned_t const *now_visible) noexcept {
         if constexpr (ranked_core_k) {
-            if (superseded == survivor) return;
-            if (superseded) {
-                mutable_ref_(*superseded).liveness = liveness_t::superseded_k;
-                refresh_tag_(*superseded);
+            if (previously_visible == now_visible) return;
+            if (previously_visible) {
+                mutable_ref_(*previously_visible).liveness = liveness_t::superseded_k;
+                refresh_tag_(*previously_visible);
             }
-            if (survivor) {
-                mutable_ref_(*survivor).liveness = liveness_t::survivor_k;
-                refresh_tag_(*survivor);
+            if (now_visible) {
+                mutable_ref_(*now_visible).liveness = liveness_t::survivor_k;
+                refresh_tag_(*now_visible);
             }
         }
     }
@@ -1345,33 +1358,33 @@ class transactional_snapshot_store {
         requires ranked_core_k
     {
         [[maybe_unused]] bool const repaired =
-            entries_.refresh_augmentation(dated_reference_t {versioned_particle(version), version.generation});
+            entries_.refresh_augmentation(dated_reference_t {identifier_of(version), version.generation});
         assert(repaired && "the entry whose tag flipped was found through the very same index");
     }
 
     /**
-     *  @brief Stamps every version of @p ids carrying @p generation under one freshly drawn stamp.
+     *  @brief Stamps every version of @p identifiers carrying @p generation under one freshly drawn stamp.
      *
      *  One stamp for the whole group is the whole point: a reader's snapshot either names that stamp
      *  or does not, so it observes all of the group or none of it, never a prefix.
      *
      *  @return @c consistency_k if some named version is absent when stamping runs, otherwise success.
      */
-    [[nodiscard]] status_t stamp_together_(identifier_t const *ids, std::size_t count,
-                                           generation_t generation) noexcept {
-        commit_stamp_t const stamp = new_commit_stamp_();
+    [[nodiscard]] status_t stamp_as_one_commit_(identifier_t const *identifiers, std::size_t count,
+                                                generation_t generation) noexcept {
+        commit_stamp_t const stamp = next_commit_stamp_();
         status_t result = success_k;
         for (std::size_t index = 0; index != count; ++index)
-            if (!publish_version_(ids[index], generation, stamp)) result = status_t::consistency_k;
+            if (!publish_version_(identifiers[index], generation, stamp)) result = status_t::consistency_k;
         published_stamp_ = stamp_of(stamp);
         return result;
     }
 
-    /** @brief Frees every version of every identifier in @p ids that no snapshot can still reach. */
-    void prune_together_(identifier_t const *ids, std::size_t count) noexcept {
+    /** @brief Frees every version of every identifier in @p identifiers that no snapshot can still reach. */
+    void prune_each_(identifier_t const *identifiers, std::size_t count) noexcept {
         generation_t const mark = low_water_mark_();
         for (std::size_t index = 0; index != count; ++index) {
-            [[maybe_unused]] std::size_t const reclaimed = prune_key_(ids[index], mark);
+            [[maybe_unused]] std::size_t const reclaimed = prune_key_(identifiers[index], mark);
         }
     }
 
@@ -1388,8 +1401,8 @@ class transactional_snapshot_store {
      *    @p anchor is judged last, so the key the walk is addressed by outlives every erasure but its own.
      *  @return How many versions were reclaimed.
      */
-    std::size_t prune_around_(versioned_t const &anchor, generation_t mark) noexcept {
-        identifier_t const &key = versioned_particle(anchor);
+    std::size_t prune_key_of_(versioned_t const &anchor, generation_t mark) noexcept {
+        identifier_t const &key = identifier_of(anchor);
         versioned_t const *const survivor = visible_version_(key, mark);
         std::size_t reclaimed = 0;
 
@@ -1418,7 +1431,7 @@ class transactional_snapshot_store {
             }
         }
         else {
-            entries_.search_to_visit(key, [&](auto const &slot) noexcept {
+            entries_.probe_to_visit(key, [&](auto const &slot) noexcept {
                 versioned_t const &version = slot.key();
                 if (&version != &anchor && unreachable_(version, survivor, mark)) {
                     // The doomed version is its own search key, so the probe never consults an
@@ -1426,7 +1439,7 @@ class transactional_snapshot_store {
                     [[maybe_unused]] bool const erased = entries_.erase(mutable_ref_(version));
                     ++reclaimed;
                 }
-                return probe_t::resume_k;
+                return probe_control_t::resume_k;
             });
             if (unreachable_(anchor, survivor, mark)) {
                 [[maybe_unused]] bool const erased = entries_.erase(mutable_ref_(anchor));
@@ -1436,14 +1449,14 @@ class transactional_snapshot_store {
         return reclaimed;
     }
 
-    /** @brief Frees every version of @p id that no snapshot at or below @p mark reaches. */
+    /** @brief Frees every version of @p identifier that no snapshot at or below @p mark reaches. */
     template <typename comparable_type_>
     std::size_t prune_key_(comparable_type_ const &comparable, generation_t mark) noexcept {
         versioned_t const *any = nullptr;
         visit_versions_(comparable, [&](versioned_t const &version) noexcept {
             if (!any) any = &version;
         });
-        return any ? prune_around_(*any, mark) : 0;
+        return any ? prune_key_of_(*any, mark) : 0;
     }
 
 #pragma endregion Version Lifecycle
@@ -1453,22 +1466,22 @@ class transactional_snapshot_store {
   public:
 #pragma region Constructors and Assignment
 
-    transactional_snapshot_store() noexcept : entries_(build_entries_(comparator_t {}, allocator_t {})) {}
+    snapshot_store() noexcept : entries_(build_entries_(comparator_t {}, allocator_t {})) {}
 
     /** @brief Seeds the underlying core's allocator, which a stateful allocator needs. */
-    explicit transactional_snapshot_store(allocator_t const &allocator) noexcept
+    explicit snapshot_store(allocator_t const &allocator) noexcept
         : entries_(build_entries_(comparator_t {}, allocator)) {}
 
     /** @brief Seeds the addressing as well, which a comparator carrying state or a dispatch pointer needs. */
-    transactional_snapshot_store(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
+    snapshot_store(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
         : entries_(build_entries_(comparator, allocator)) {}
 
-    transactional_snapshot_store(transactional_snapshot_store &&other) noexcept
+    snapshot_store(snapshot_store &&other) noexcept
         : entries_(std::move(other.entries_)), generation_(other.generation_), commits_(other.commits_),
           published_stamp_(other.published_stamp_), open_snapshots_(other.open_snapshots_),
           oldest_open_snapshot_(other.oldest_open_snapshot_), live_count_(other.live_count_) {}
 
-    transactional_snapshot_store &operator=(transactional_snapshot_store &&other) noexcept {
+    snapshot_store &operator=(snapshot_store &&other) noexcept {
         if (this == &other) return *this;
         entries_ = std::move(other.entries_);
         generation_ = other.generation_;
@@ -1480,10 +1493,10 @@ class transactional_snapshot_store {
         return *this;
     }
 
-    ~transactional_snapshot_store() noexcept { entries_.clear(); }
+    ~snapshot_store() noexcept { entries_.clear(); }
 
-    transactional_snapshot_store(transactional_snapshot_store const &) = delete;
-    transactional_snapshot_store &operator=(transactional_snapshot_store const &) = delete;
+    snapshot_store(snapshot_store const &) = delete;
+    snapshot_store &operator=(snapshot_store const &) = delete;
 
     /** @brief Builds a store around an allocator, reported as a result rather than thrown. */
     [[nodiscard]] static expected<store_t> make(allocator_t const &allocator = {}) noexcept {
@@ -1554,8 +1567,8 @@ class transactional_snapshot_store {
      *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
         find_at_(std::forward<comparable_type_>(comparable), published_stamp_,
@@ -1574,38 +1587,38 @@ class transactional_snapshot_store {
     }
 
     /** @brief Finds the first member @b greater or equal to @p comparable. */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ordered_core_k
     {
         value_t const *found = nullptr;
-        walk_visible_(
+        walk_visible_keys_(
             entries_.lower_bound(std::forward<comparable_type_>(comparable)),
             [](versioned_t const &) noexcept { return true; }, published_stamp_,
             [&](value_t const &value) noexcept {
                 found = &value;
-                return probe_t::halt_k;
+                return probe_control_t::halt_k;
             });
         if (found) callback_found(*found);
         else callback_missing();
     }
 
     /** @brief Finds the first member @b strictly greater than @p comparable. */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                      callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ordered_core_k
     {
         value_t const *found = nullptr;
-        walk_visible_(
+        walk_visible_keys_(
             entries_.upper_bound(std::forward<comparable_type_>(comparable)),
             [](versioned_t const &) noexcept { return true; }, published_stamp_,
             [&](value_t const &value) noexcept {
                 found = &value;
-                return probe_t::halt_k;
+                return probe_control_t::halt_k;
             });
         if (found) callback_found(*found);
         else callback_missing();
@@ -1652,14 +1665,14 @@ class transactional_snapshot_store {
 
     /** @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit. */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_fn_t>
+              typename callback_type_ = no_op_t>
     void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept
         requires ordered_core_k
     {
         range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_,
                   [&](value_t const &value) noexcept {
                       callback(value);
-                      return probe_t::resume_k;
+                      return probe_control_t::resume_k;
                   });
     }
 
@@ -1668,7 +1681,7 @@ class transactional_snapshot_store {
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback Callback receiving each match. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), []() noexcept {});
     }
@@ -1688,7 +1701,7 @@ class transactional_snapshot_store {
      *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be @c noexcept.
      */
-    template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     void select(std::size_t ordinal, callback_found_type_ &&callback_found,
                 callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ranked_core_k
@@ -1698,7 +1711,7 @@ class transactional_snapshot_store {
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         auto const *node = entries_.select_augmented(ordinal);
-        if (node) callback_found(node->fruit.unversioned);
+        if (node) callback_found(node->fruit.payload);
         else callback_missing();
     }
 
@@ -1710,8 +1723,8 @@ class transactional_snapshot_store {
      *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if the key is not readable. Must be @c noexcept.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ranked_core_k
@@ -1727,7 +1740,7 @@ class transactional_snapshot_store {
         }
         // Dated at a generation no version can carry, so the descent orders the target strictly before
         // every version of its own key rather than stopping inside that key's run.
-        callback_found(entries_.rank_augmented(dated_reference_t {versioned_particle(*readable), 0}));
+        callback_found(entries_.rank_augmented(dated_reference_t {identifier_of(*readable), 0}));
     }
 
     /** @brief How many keys the augmented counts say are readable, which is what @c select indexes. */
@@ -1747,11 +1760,11 @@ class transactional_snapshot_store {
      *  @return Success or an allocation failure that leaves the store untouched.
      */
     [[nodiscard]] status_t upsert(value_t &&value) noexcept {
-        auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-        if (!maybe_id) return out_of_memory_heap_k;
+        auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+        if (!maybe_identifier) return out_of_memory_heap_k;
         versioned_t versioned(std::move(value));
         versioned.presence = presence_t::present_k;
-        return publish_directly_(*maybe_id, std::move(versioned));
+        return publish_directly_(*maybe_identifier, std::move(versioned));
     }
 
     /** @brief Publishes @p value only if the key is absent, reporting a clash rather than hiding it. */
@@ -1834,8 +1847,8 @@ class transactional_snapshot_store {
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      *  @return @c key_not_found_k if nothing was readable, otherwise success.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                                  callback_missing_type_ &&callback_missing = {}) noexcept {
         versioned_t const *readable = readable_version_(comparable, published_stamp_);
@@ -1843,16 +1856,16 @@ class transactional_snapshot_store {
             callback_missing();
             return status_t::key_not_found_k;
         }
-        callback_found(readable->unversioned);
+        callback_found(readable->payload);
 
-        auto maybe_id = copy_safely<identifier_t>(versioned_particle(*readable));
-        if (!maybe_id) return out_of_memory_heap_k;
-        auto maybe_payload = copy_safely<identifier_t>(*maybe_id);
+        auto maybe_identifier = copy_safely<identifier_t>(identifier_of(*readable));
+        if (!maybe_identifier) return out_of_memory_heap_k;
+        auto maybe_payload = copy_safely<identifier_t>(*maybe_identifier);
         if (!maybe_payload) return out_of_memory_heap_k;
 
         versioned_t tombstone(value_t {std::move(*maybe_payload)});
         tombstone.presence = presence_t::erased_k;
-        return publish_directly_(*maybe_id, std::move(tombstone));
+        return publish_directly_(*maybe_identifier, std::move(tombstone));
     }
 
     /** @brief Grows the core to hold @p size more versions, so later writes cannot run out of memory. */
@@ -1902,23 +1915,23 @@ class transactional_snapshot_store {
      *  @return Success, or an allocation failure that leaves the store exactly as it was.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_fn_t>
+              typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
                                        callback_type_ &&callback = {}) noexcept
         requires ordered_core_k
     {
-        // The keys are copied out before anything is filed: the walk that produces them reads the very
-        // index the tombstones are about to be filed into.
-        changed_ids_vector_t doomed(changed_ids_allocator_t(storage_shape_t::allocator_of(entries_)));
+        // The keys are copied out before anything is staged: the walk that produces them reads the very
+        // index the tombstones are about to be staged into.
+        changed_identifiers_vector_t doomed(changed_identifiers_allocator_t(storage_shape_t::allocator_of(entries_)));
         status_t collecting = success_k;
         range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
             if (failed(collecting)) return;
-            auto maybe_id = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_id) {
+            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+            if (!maybe_identifier) {
                 collecting = out_of_memory_heap_k;
                 return;
             }
-            if (status_t const kept = doomed.push_back(std::move(*maybe_id)); failed(kept)) {
+            if (status_t const kept = doomed.push_back(std::move(*maybe_identifier)); failed(kept)) {
                 collecting = kept;
                 return;
             }
@@ -1930,8 +1943,8 @@ class transactional_snapshot_store {
         auto opened = publication();
         if (!opened) return out_of_memory_heap_k;
         if (status_t const reserved = opened->reserve(doomed.size()); failed(reserved)) return reserved;
-        for (identifier_t const &id : doomed)
-            if (status_t const filed = opened->erase(id); failed(filed)) return filed;
+        for (identifier_t const &identifier : doomed)
+            if (status_t const staged = opened->erase(identifier); failed(staged)) return staged;
         return opened->publish();
     }
 
@@ -1948,7 +1961,7 @@ class transactional_snapshot_store {
      *  @return Success, or an allocation failure that leaves the store exactly as it was.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_fn_t>
+              typename callback_type_ = no_op_t>
     [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_mapping<value_t> && ordered_core_k
     {
@@ -1972,7 +1985,7 @@ class transactional_snapshot_store {
         for (std::size_t index = 0; index != revised.size(); ++index) {
             value_t &revision = revised[index];
             callback(revision.key, revision.mapped);
-            if (status_t const filed = opened->upsert(std::move(revision)); failed(filed)) return filed;
+            if (status_t const staged = opened->upsert(std::move(revision)); failed(staged)) return staged;
         }
         return opened->publish();
     }
@@ -2037,7 +2050,7 @@ class transactional_snapshot_store {
             generation_t const mark = low_water_mark_();
             std::size_t reclaimed = 0;
             for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor)
-                reclaimed += prune_around_(*cursor, mark);
+                reclaimed += prune_key_of_(*cursor, mark);
             return reclaimed;
         }
     }
@@ -2056,7 +2069,7 @@ class transactional_snapshot_store {
     {
         auto const ordering = entries_.key_comp();
         return vacuum_runs_(entries_.lower_bound(std::forward<lower_type_>(lower)),
-                            [&](versioned_t const &head) noexcept { return ordering.native_compare(head, upper); });
+                            [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); });
     }
 
 #pragma endregion Vacuuming
@@ -2125,15 +2138,15 @@ class transactional_snapshot_store {
      *    Direct writes take a generation of their own, so they never collide with a staged version
      *    an open transaction still owns.
      */
-    [[nodiscard]] status_t publish_directly_(identifier_t const &id, versioned_t &&versioned) noexcept {
-        generation_t const generation = new_generation_();
+    [[nodiscard]] status_t publish_directly_(identifier_t const &identifier, versioned_t &&versioned) noexcept {
+        generation_t const generation = next_generation_();
         versioned.generation = generation;
         if (failed(storage_shape_t::prepare(entries_, 1))) return out_of_memory_heap_k;
         if (failed(storage_shape_t::upsert(entries_, std::move(versioned)))) return out_of_memory_heap_k;
 
-        [[maybe_unused]] status_t const stamped = stamp_together_(&id, 1, generation);
-        assert(succeeded(stamped) && "the version was filed one statement ago");
-        prune_together_(&id, 1);
+        [[maybe_unused]] status_t const stamped = stamp_as_one_commit_(&identifier, 1, generation);
+        assert(succeeded(stamped) && "the version was staged one statement ago");
+        prune_each_(&identifier, 1);
         return success_k;
     }
 };
@@ -2149,8 +2162,7 @@ class transactional_snapshot_store {
  */
 template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<value_type_>>
-using transactional_snapshot_avl_set =
-    transactional_snapshot_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
+using snapshot_avl_set = snapshot_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief Snapshot-isolated transactional map backed by an AVL tree.
@@ -2162,8 +2174,8 @@ using transactional_snapshot_avl_set =
  */
 template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
-using transactional_snapshot_avl_map =
-    transactional_snapshot_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+using snapshot_avl_map =
+    snapshot_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief Snapshot-isolated transactional set backed by a weight-balanced tree.
@@ -2175,8 +2187,8 @@ using transactional_snapshot_avl_map =
  */
 template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<value_type_>>
-using transactional_snapshot_wb_set = transactional_snapshot_store<
-    basic_wb_tree<value_type_, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+using snapshot_wb_set =
+    snapshot_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /**
  *  @brief Snapshot-isolated transactional map backed by a weight-balanced tree.
@@ -2189,7 +2201,7 @@ using transactional_snapshot_wb_set = transactional_snapshot_store<
  */
 template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
-using transactional_snapshot_wb_map = transactional_snapshot_store<
+using snapshot_wb_map = snapshot_store<
     basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /**
@@ -2203,8 +2215,7 @@ using transactional_snapshot_wb_map = transactional_snapshot_store<
  */
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = std::allocator<std::byte>>
-using transactional_snapshot_hash_set =
-    transactional_snapshot_store<basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>>;
+using snapshot_hash_set = snapshot_store<basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>>;
 
 /**
  *  @brief Snapshot-isolated transactional map backed by an open-addressed hash table.
@@ -2218,8 +2229,8 @@ using transactional_snapshot_hash_set =
  */
 template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
-using transactional_snapshot_hash_map = transactional_snapshot_store<
-    basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+using snapshot_hash_map =
+    snapshot_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 #pragma endregion Aliases
 

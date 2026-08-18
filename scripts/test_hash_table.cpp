@@ -1,6 +1,6 @@
 /**
  *  @brief Test instantiations for the open-addressing hash table. Covers sets and maps over trivial and
- *      heap-allocating key and value types, and the lock-free atomic operations exercised from several threads.
+ *      heap-allocating key and value types, and the per-slot atomic operations exercised from several threads.
  *  @author Ash Vardanian
  *  @file scripts/test_hash_table.cpp
  *  @date August 16, 2026
@@ -8,7 +8,7 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 
 #include <smashtable/basic_hash_table.hpp>
-#include <smashtable/concurrent_hash_table.hpp>
+#include <smashtable/atomic_hash_table.hpp>
 
 #include "test.hpp"
 #include "test_fixture_coverage.hpp"
@@ -168,6 +168,29 @@ static void unordered_ops_exhausted_allocator_insertions() {
     test_unordered_exhausted_allocator_insertions<capped_map_t>();
 }
 
+/** @brief Tests that a reporting insertion separates a fresh key from one already present */
+static void unordered_ops_insert_reports_outcome() {
+    test_unordered_insert_reports_outcome<trivial_set_t>();
+    test_unordered_insert_reports_outcome<strong_set_t>();
+    test_unordered_insert_reports_outcome<trivial_map_t>();
+    test_unordered_insert_reports_outcome<guarded_map_t>();
+    test_unordered_insert_reports_outcome<string_set_t>();
+    test_unordered_insert_reports_outcome<string_map_t>();
+}
+
+/** @brief Tests that an insertion with nowhere to go is distinguishable from one that met a duplicate */
+static void unordered_ops_insert_reports_refusal() {
+    test_unordered_insert_reports_refusal<capped_set_t>();
+    test_unordered_insert_reports_refusal<capped_map_t>();
+}
+
+/** @brief Tests that the pinned table reports a missing key as a status and through a callback */
+static void unordered_ops_pinned_reports_status() {
+    test_unordered_pinned_reports_status<trivial_map_t>();
+    test_unordered_pinned_reports_status<guarded_map_t>();
+    test_unordered_pinned_reports_status<string_map_t>();
+}
+
 /** @brief Tests that a table with every slot taken refuses further keys without inflating its size */
 static void unordered_ops_full_table_refusals() {
     test_unordered_full_table_refusals<trivial_set_t>();
@@ -265,8 +288,11 @@ int main() {
 
     failures +=
         run_test(filter, "unordered_ops.exhausted_allocator_insertions", unordered_ops_exhausted_allocator_insertions);
+    failures += run_test(filter, "unordered_ops.insert_reports_outcome", unordered_ops_insert_reports_outcome);
+    failures += run_test(filter, "unordered_ops.insert_reports_refusal", unordered_ops_insert_reports_refusal);
     failures += run_test(filter, "unordered_ops.full_table_refusals", unordered_ops_full_table_refusals);
     failures += run_test(filter, "unordered_ops.pinned_saturation", unordered_ops_pinned_saturation);
+    failures += run_test(filter, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
     failures += run_test(filter, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
     failures += run_test(filter, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
 

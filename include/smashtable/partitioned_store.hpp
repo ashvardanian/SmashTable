@@ -1,11 +1,14 @@
 /**
- *  @brief Shards a transactional collection across independently locked partitions, so writers touching different keys
+ *  @brief Shards a transactional store across independently locked partitions, so writers touching different keys
  *      rarely contend.
  *  @author Ash Vardanian
- *  @file include/smashtable/partitioned_collection.hpp
+ *  @file include/smashtable/partitioned_store.hpp
  *  @date October 16, 2022
  */
 #pragma once
+#include <cstddef> // `std::size_t`
+#include <cstdint> // `std::uint8_t`, `std::uint64_t`
+
 #include <array> // `std::array`
 #include <bit>   // `std::countr_zero`
 
@@ -32,19 +35,21 @@ template <typename type_, std::size_t count_, typename generator_type_>
 static expected<std::array<type_, count_>> generate_array_safely(generator_type_ &&generator) noexcept {
     alignas(type_) char raw_parts_mem[count_ * sizeof(type_)];
     type_ *raw_parts = reinterpret_cast<type_ *>(raw_parts_mem);
-    for (std::size_t part_index = 0; part_index != count_; ++part_index) {
+    for (std::size_t partition_index = 0; partition_index != count_; ++partition_index) {
 
-        if (auto new_part = generator(part_index); new_part) new (raw_parts + part_index) type_(std::move(*new_part));
+        if (auto new_part = generator(partition_index); new_part)
+            new (raw_parts + partition_index) type_(std::move(*new_part));
         else {
             // Destruct all the previous parts.
-            for (std::size_t destructed_index = 0; destructed_index != part_index; ++destructed_index)
+            for (std::size_t destructed_index = 0; destructed_index != partition_index; ++destructed_index)
                 raw_parts[destructed_index].~type_();
             return {};
         }
     }
 
     std::array<type_, count_> moved = move_to_array(raw_parts, std::make_index_sequence<count_> {});
-    for (std::size_t part_index = 0; part_index != count_; ++part_index) raw_parts[part_index].~type_();
+    for (std::size_t partition_index = 0; partition_index != count_; ++partition_index)
+        raw_parts[partition_index].~type_();
     return moved;
 }
 
@@ -52,38 +57,38 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  @brief Hashes inputs to route them into separate sets, which can
  *    be concurrent, or have a separate state-full allocator attached.
  *
- *  @tparam collection_type_ Type of the underlying collection, like @c transactional_std_store.
+ *  @tparam store_type_ Type of the wrapped store, like @c monotonic_store.
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
  *  @tparam shared_mutex_type_ Mutex type to use for partition locking, like @c std::shared_mutex.
- *  @tparam parts_count_ Number of partitions to split the collection into, default 16.
+ *  @tparam partitions_count_ Number of partitions to split the store into, default 16.
  *
  *  @warning Every callback runs with a partition lock held, and the range walks hold all of them at
- *    once. The mutex is not recursive, so a callback that calls back into this collection - or into
+ *    once. The mutex is not recursive, so a callback that calls back into this store - or into
  *    anything that eventually does - deadlocks against itself. Copy out what a callback needs and do
  *    the rest after it returns.
- *  @warning Moving a collection leaves every open transaction pointing at the husk, whose stores are
+ *  @warning Moving a store leaves every open transaction pointing at the husk, whose partitions are
  *    empty and whose mutexes guard nothing, so commits land nowhere and report success. Move only a
- *    collection no transaction is open on and no other thread is touching.
+ *    store no transaction is open on and no other thread is touching.
  */
-template <typename collection_type_, typename hash_type_ = hash<typename collection_type_::identifier_t>,
-          typename shared_mutex_type_ = shared_mutex_t, std::size_t parts_count_ = 16>
-class partitioned_collection {
+template <typename store_type_, typename hash_type_ = hash<typename store_type_::identifier_t>,
+          typename shared_mutex_type_ = spin_shared_mutex, std::size_t partitions_count_ = 16>
+class partitioned_store {
 
   public:
-    static constexpr std::size_t parts_k = parts_count_;
-    using partitioned_t = partitioned_collection;
+    static constexpr std::size_t partitions_k = partitions_count_;
+    using self_t = partitioned_store;
     using hash_t = hash_type_;
-    using part_t = collection_type_;
-    using part_transaction_t = typename part_t::transaction_t;
-    using shared_mutex_t = shared_mutex_type_;
-    using shared_lock_t = shared_lock<shared_mutex_t>;
-    using unique_lock_t = unique_lock<shared_mutex_t>;
+    using inner_store_t = store_type_;
+    using inner_transaction_t = typename inner_store_t::transaction_t;
+    using mutex_t = shared_mutex_type_;
+    using shared_lock_t = shared_lock<mutex_t>;
+    using unique_lock_t = unique_lock<mutex_t>;
 
-    using mutexes_t = std::array<shared_mutex_t, parts_k>;
-    using parts_t = std::array<part_t, parts_k>;
-    using part_transactions_t = std::array<part_transaction_t, parts_k>;
+    using mutexes_t = std::array<mutex_t, partitions_k>;
+    using partitions_t = std::array<inner_store_t, partitions_k>;
+    using partition_transactions_t = std::array<inner_transaction_t, partitions_k>;
 
-    using value_t = typename part_t::value_t;
+    using value_t = typename inner_store_t::value_t;
     using value_type = value_t; // ? STL style
     using key_type = typename mapping_key_type_or_itself<value_t>::type;
     using mapped_type = typename mapped_value_type_or_void<value_t>::type;
@@ -98,54 +103,80 @@ class partitioned_collection {
      *  Sharding caps what a part promises rather than replacing it, so a part weaker than
      *  @c read_committed_k stays the answer.
      */
-    static constexpr isolation_t isolation_k = parts_k == 1 || part_t::isolation_k < isolation_t::read_committed_k
-                                                   ? part_t::isolation_k
-                                                   : isolation_t::read_committed_k;
+    static constexpr isolation_t isolation_k =
+        partitions_k == 1 || inner_store_t::isolation_k < isolation_t::read_committed_k ? inner_store_t::isolation_k
+                                                                                        : isolation_t::read_committed_k;
 
-    using comparator_t = typename part_t::comparator_t;
-    using identifier_t = typename part_t::identifier_t;
-    using generation_t = typename part_t::generation_t;
+    using comparator_t = typename inner_store_t::comparator_t;
+    using identifier_t = typename inner_store_t::identifier_t;
+    using generation_t = typename inner_store_t::generation_t;
+
+    /**
+     *  @brief Whether the partitioned store carries the ordered surface, which an unordered core denies it.
+     *    The forwards below are gated on this, so an unordered store loses them at overload resolution
+     *    rather than deep inside an instantiation.
+     */
+    static constexpr bool inner_is_ordered_k =
+        requires(inner_store_t &store, identifier_t const &key, no_op_t callback) {
+            store.lower_bound(key, callback, callback);
+            store.upper_bound(key, callback, callback);
+            store.range(key, key, callback);
+            store.erase_range(key, key, callback);
+        };
+
+    /** @brief Whether a partition can draw members of a range at random. */
+    static constexpr bool inner_is_samplable_k =
+        requires(inner_store_t const &store, identifier_t const &key, no_op_t callback, std::size_t seen) {
+            store.sample_one(key, key, callback, callback);
+            store.sample_reservoir(key, key, callback, seen, seen, callback);
+        };
+
+    /** @brief Whether an open transaction carries the ordered surface its store does. */
+    static constexpr bool inner_transaction_is_ordered_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.upper_bound(key, callback, callback);
+        };
 
   private:
     /**
-     *  @brief A set of partition indices, one bit each, sized to @c parts_k rather than capped by it.
+     *  @brief A set of partition indices, one bit each, sized to @c partitions_k rather than capped by it.
      *
      *  Iterating set bits rather than scanning every partition is the point: a transaction usually
      *  reaches one or two of them, and only those may be locked.
      */
     struct touched_partitions_t {
         static constexpr std::size_t bits_per_word_k = 64;
-        static constexpr std::size_t words_k = (parts_k + bits_per_word_k - 1) / bits_per_word_k;
+        static constexpr std::size_t words_k = (partitions_k + bits_per_word_k - 1) / bits_per_word_k;
 
         std::array<std::uint64_t, words_k> words {};
 
-        void mark(std::size_t part_index) noexcept {
-            words[part_index / bits_per_word_k] |= std::uint64_t {1} << (part_index % bits_per_word_k);
+        void mark(std::size_t partition_index) noexcept {
+            words[partition_index / bits_per_word_k] |= std::uint64_t {1} << (partition_index % bits_per_word_k);
         }
         void clear() noexcept { words.fill(0); }
 
-        /** @brief The lowest marked partition, or @c parts_k when none is. */
+        /** @brief The lowest marked partition, or @c partitions_k when none is. */
         std::size_t first_set() const noexcept { return scan_from_(0); }
 
-        /** @brief The lowest marked partition above @p part_index, or @c parts_k when none is. */
-        std::size_t next_set(std::size_t part_index) const noexcept { return scan_from_(part_index + 1); }
+        /** @brief The lowest marked partition above @p partition_index, or @c partitions_k when none is. */
+        std::size_t next_set(std::size_t partition_index) const noexcept { return scan_from_(partition_index + 1); }
 
       private:
-        std::size_t scan_from_(std::size_t part_index) const noexcept {
-            for (std::size_t word_index = part_index / bits_per_word_k; word_index < words_k; ++word_index) {
+        std::size_t scan_from_(std::size_t partition_index) const noexcept {
+            for (std::size_t word_index = partition_index / bits_per_word_k; word_index < words_k; ++word_index) {
                 std::uint64_t left = words[word_index];
                 // Mask off the bits below where this scan starts, only in the word it starts in.
-                if (word_index == part_index / bits_per_word_k) {
-                    std::size_t const bit = part_index % bits_per_word_k;
+                if (word_index == partition_index / bits_per_word_k) {
+                    std::size_t const bit = partition_index % bits_per_word_k;
                     left &= bit == 0 ? ~std::uint64_t {0} : ~std::uint64_t {0} << bit;
                 }
                 if (left) return word_index * bits_per_word_k + static_cast<std::size_t>(countr_zero(left));
             }
-            return parts_k;
+            return partitions_k;
         }
     };
 
-    std::size_t bucket_(identifier_t const &id) const noexcept { return hasher_(id) % parts_k; }
+    std::size_t bucket_(identifier_t const &id) const noexcept { return hasher_(id) % partitions_k; }
 
     /**
      *  @brief Holds every partition for its own lifetime, taking them in ascending index order.
@@ -167,15 +198,15 @@ class partitioned_collection {
 
       public:
         explicit every_part_lock(mutexes_t &mutexes) noexcept : mutexes_(mutexes) {
-            for (std::size_t part_index = 0; part_index != parts_k; ++part_index) {
-                if constexpr (exclusive_k) mutexes_[part_index].lock();
-                else mutexes_[part_index].lock_shared();
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                if constexpr (exclusive_k) mutexes_[partition_index].lock();
+                else mutexes_[partition_index].lock_shared();
             }
         }
         ~every_part_lock() noexcept {
-            for (std::size_t part_index = parts_k; part_index != 0; --part_index) {
-                if constexpr (exclusive_k) mutexes_[part_index - 1].unlock();
-                else mutexes_[part_index - 1].unlock_shared();
+            for (std::size_t partition_index = partitions_k; partition_index != 0; --partition_index) {
+                if constexpr (exclusive_k) mutexes_[partition_index - 1].unlock();
+                else mutexes_[partition_index - 1].unlock_shared();
             }
         }
         every_part_lock(every_part_lock const &) = delete;
@@ -183,49 +214,70 @@ class partitioned_collection {
     };
 
     /**
+     *  @brief Which partition holds the next key of an ordered walk, when one of them does.
+     *    @c index is only meaningful once @c presence says a partition claimed it, which is why the
+     *    two travel together rather than as an index with a reserved value.
+     */
+    struct next_partition_t {
+        /** @brief Whether any partition offered a key above the bound. */
+        enum class presence_t : std::uint8_t {
+            /** @brief Every partition ended before the bound, so the walk is over. */
+            none_holds_it_k,
+            /** @brief The partition at @c index holds the smallest key seen above the bound. */
+            one_holds_it_k,
+        };
+
+        /** @brief Whether @c index names a partition at all. */
+        presence_t presence = presence_t::none_holds_it_k;
+        /** @brief The claiming partition, meaningful only under @c one_holds_it_k. */
+        std::size_t index = 0;
+    };
+
+    /**
      * @brief Walks around all the parts, trying to perform operations on them, until all the tasks are exhausted.
      */
-    template <typename lock_type_, typename parts_type_, typename mutexes_type_, typename callable_type_>
-    static status_t for_all(parts_type_ &parts, mutexes_type_ &mutexes, callable_type_ &&callable) noexcept {
+    template <typename lock_type_, typename partitions_type_, typename mutexes_type_, typename callable_type_>
+    static status_t for_all(partitions_type_ &parts, mutexes_type_ &mutexes, callable_type_ &&callable) noexcept {
         status_t status = success_k;
         // Ascending order, one partition at a time, blocking. Taking whichever partitions happen to be
         // free and retrying the rest reads as politer, but it shares no order with `every_part_lock`,
         // and two all-partition operations without a common order are two operations that can wait on
         // each other for good.
-        for (std::size_t part_index = 0; part_index != parts_k; ++part_index) {
-            lock_type_ lock {mutexes[part_index]};
-            status = callable(parts[part_index]);
+        for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+            lock_type_ lock {mutexes[partition_index]};
+            status = callable(parts[partition_index]);
             if (failed(status)) return status;
         }
         return status;
     }
 
-    template <typename parts_type_, typename mutexes_type_, typename comparable_type_, typename callback_found_type_,
-              typename callback_missing_type_>
-    static void for_all_next_lookups(comparator_t const &comparator, parts_type_ &parts, mutexes_type_ &mutexes,
+    template <typename partitions_type_, typename mutexes_type_, typename comparable_type_,
+              typename callback_found_type_, typename callback_missing_type_>
+    static void for_all_next_lookups(comparator_t const &comparator, partitions_type_ &parts, mutexes_type_ &mutexes,
                                      comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                      callback_missing_type_ &&callback_missing) noexcept {
 
-        constexpr std::size_t not_found_index = size_max_k;
         identifier_t smallest_id;
 
         // One pass over every partition, in ascending order - the same order every other all-partition
         // walk here uses, which is what makes them safe to run against each other. The bound arrives as
-        // a const lvalue and reaches all @c parts_k partitions that way, so nothing can move from it;
+        // a const lvalue and reaches all @c partitions_k partitions that way, so nothing can move from it;
         // narrowing it to @c identifier_t first would refuse to compile for any comparable that is not
         // one, and would throw away the heterogeneous lookup the caller asked for.
         auto scan_for_smallest = [&](auto const &bound) noexcept {
-            std::size_t smallest_index = not_found_index;
-            for (std::size_t part_index = 0; part_index != parts_k; ++part_index) {
-                shared_lock_t lock {mutexes[part_index]};
-                parts[part_index].upper_bound(bound, [&](value_t const &element) noexcept {
-                    if (smallest_index != not_found_index && !comparator(mapping_key_or_itself(element), smallest_id))
+            next_partition_t smallest;
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                shared_lock_t lock {mutexes[partition_index]};
+                parts[partition_index].upper_bound(bound, [&](value_t const &element) noexcept {
+                    if (smallest.presence == next_partition_t::presence_t::one_holds_it_k &&
+                        !comparator(mapping_key_or_itself(element), smallest_id))
                         return;
                     smallest_id = identifier_t(element);
-                    smallest_index = part_index;
+                    smallest.presence = next_partition_t::presence_t::one_holds_it_k;
+                    smallest.index = partition_index;
                 });
             }
-            return smallest_index;
+            return smallest;
         };
 
         // Under "Read Committed" isolation the winner may be erased between the scan that found it and
@@ -238,36 +290,36 @@ class partitioned_collection {
         // makes the scan find it and lose it forever. Each rescan raises the bound strictly - the next
         // pass starts above a key just observed absent - so the walk terminates, and skipping a key
         // reinserted behind the cursor is the same thing this level already permits.
-        std::size_t smallest_index = scan_for_smallest(comparable);
-        while (smallest_index != not_found_index) {
+        next_partition_t smallest = scan_for_smallest(comparable);
+        while (smallest.presence == next_partition_t::presence_t::one_holds_it_k) {
             bool vanished = false;
             {
-                shared_lock_t lock {mutexes[smallest_index]};
-                parts[smallest_index].find(smallest_id, callback_found, [&]() noexcept { vanished = true; });
+                shared_lock_t lock {mutexes[smallest.index]};
+                parts[smallest.index].find(smallest_id, callback_found, [&]() noexcept { vanished = true; });
             }
             if (!vanished) return;
             identifier_t const vanished_key = std::move(smallest_id);
-            smallest_index = scan_for_smallest(vanished_key);
+            smallest = scan_for_smallest(vanished_key);
         }
         callback_missing();
     }
 
   public:
     class transaction_t {
-        friend class partitioned_collection;
-        partitioned_collection &store_;
-        part_transactions_t parts_;
+        friend class partitioned_store;
+        partitioned_store &store_;
+        partition_transactions_t partitions_;
         /**
          *  @brief Which partitions this transaction reached, by write or by watch, so an untouched
          *    one is never locked.
          *
          *  A watched-but-unwritten partition is marked too: its read has to be validated at stage
          *  time, so it is as much a participant as a written one. One bit each, in as many words as
-         *  @c parts_k needs, and the walks below visit only the bits that are set - a transaction
+         *  @c partitions_k needs, and the walks below visit only the bits that are set - a transaction
          *  touching two partitions of a hundred pays for two.
          */
         touched_partitions_t touched_ {};
-        static_assert(std::is_nothrow_move_constructible<part_transaction_t>());
+        static_assert(std::is_nothrow_move_constructible<inner_transaction_t>());
 
         /**
          *  @brief Runs @p callable over every partition, in ascending order, and never stops early.
@@ -279,9 +331,9 @@ class partitioned_collection {
         template <typename callable_type_>
         status_t for_parts_(callable_type_ &&callable) noexcept {
             status_t status = success_k;
-            for (std::size_t part_index = 0; part_index != parts_k; ++part_index) {
-                unique_lock_t lock {store_.mutexes_[part_index]};
-                status_t const one = callable(parts_[part_index]);
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                unique_lock_t lock {store_.mutexes_[partition_index]};
+                status_t const one = callable(partitions_[partition_index]);
                 if (failed(one)) status = one;
             }
             return status;
@@ -291,31 +343,31 @@ class partitioned_collection {
         template <typename callable_type_>
         status_t for_touched_parts_(callable_type_ &&callable) noexcept {
             status_t status = success_k;
-            for (std::size_t part_index = touched_.first_set(); part_index != parts_k;
-                 part_index = touched_.next_set(part_index)) {
-                unique_lock_t lock {store_.mutexes_[part_index]};
-                status_t const one = callable(parts_[part_index]);
+            for (std::size_t partition_index = touched_.first_set(); partition_index != partitions_k;
+                 partition_index = touched_.next_set(partition_index)) {
+                unique_lock_t lock {store_.mutexes_[partition_index]};
+                status_t const one = callable(partitions_[partition_index]);
                 if (failed(one)) status = one;
             }
             return status;
         }
 
       public:
-        transaction_t(partitioned_collection &db, part_transactions_t &&unlocked) noexcept
-            : store_(db), parts_(std::move(unlocked)) {}
+        transaction_t(partitioned_store &db, partition_transactions_t &&unlocked) noexcept
+            : store_(db), partitions_(std::move(unlocked)) {}
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
 
         [[nodiscard]] status_t reset() noexcept {
-            // `std::mem_fn(&part_transaction_t::reset)` is cute... but we don't like heavy includes.
-            auto status = for_parts_([](part_transaction_t &part) noexcept { return part.reset(); });
+            // `std::mem_fn(&inner_transaction_t::reset)` is cute... but we don't like heavy includes.
+            auto status = for_parts_([](inner_transaction_t &part) noexcept { return part.reset(); });
             // Every partition was visited whatever it answered, and a reset keeps nothing to retry.
             touched_.clear();
             return status;
         }
         [[nodiscard]] status_t rollback() noexcept {
-            // `std::mem_fn(&part_transaction_t::rollback)` is cute... but we don't like heavy includes.
-            auto status = for_touched_parts_([](part_transaction_t &part) noexcept { return part.rollback(); });
+            // `std::mem_fn(&inner_transaction_t::rollback)` is cute... but we don't like heavy includes.
+            auto status = for_touched_parts_([](inner_transaction_t &part) noexcept { return part.rollback(); });
             // A partition that refused may still hold a reservation, so its bit stays for the next attempt.
             if (succeeded(status)) touched_.clear();
             return status;
@@ -332,19 +384,19 @@ class partitioned_collection {
         [[nodiscard]] status_t stage() noexcept {
             touched_partitions_t staged;
             status_t status = success_k;
-            for (std::size_t part_index = touched_.first_set(); part_index != parts_k;
-                 part_index = touched_.next_set(part_index)) {
-                unique_lock_t lock {store_.mutexes_[part_index]};
-                status = parts_[part_index].stage();
+            for (std::size_t partition_index = touched_.first_set(); partition_index != partitions_k;
+                 partition_index = touched_.next_set(partition_index)) {
+                unique_lock_t lock {store_.mutexes_[partition_index]};
+                status = partitions_[partition_index].stage();
                 if (failed(status)) break;
-                staged.mark(part_index);
+                staged.mark(partition_index);
             }
             if (succeeded(status)) return status;
 
-            for (std::size_t part_index = staged.first_set(); part_index != parts_k;
-                 part_index = staged.next_set(part_index)) {
-                unique_lock_t lock {store_.mutexes_[part_index]};
-                [[maybe_unused]] status_t const unwound = parts_[part_index].rollback();
+            for (std::size_t partition_index = staged.first_set(); partition_index != partitions_k;
+                 partition_index = staged.next_set(partition_index)) {
+                unique_lock_t lock {store_.mutexes_[partition_index]};
+                [[maybe_unused]] status_t const unwound = partitions_[partition_index].rollback();
             }
             return status;
         }
@@ -356,27 +408,27 @@ class partitioned_collection {
          *  the record only on success would let a retry re-commit a partition that already published.
          */
         [[nodiscard]] status_t commit() noexcept {
-            auto status = for_touched_parts_([&](part_transaction_t &part) noexcept { return part.commit(); });
+            auto status = for_touched_parts_([&](inner_transaction_t &part) noexcept { return part.commit(); });
             touched_.clear();
             return status;
         }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
-            std::size_t part_index = store_.bucket_(id);
-            touched_.mark(part_index);
-            shared_lock_t _ {store_.mutexes_[part_index]};
-            return parts_[part_index].watch(id);
+            std::size_t partition_index = store_.bucket_(id);
+            touched_.mark(partition_index);
+            shared_lock_t _ {store_.mutexes_[partition_index]};
+            return partitions_[partition_index].watch(id);
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                   callback_missing_type_ &&callback_missing = {}) const noexcept {
-            std::size_t part_index = store_.bucket_(identifier_t(comparable));
-            shared_lock_t _ {store_.mutexes_[part_index]};
-            parts_[part_index].find(std::forward<comparable_type_>(comparable),
-                                    std::forward<callback_found_type_>(callback_found),
-                                    std::forward<callback_missing_type_>(callback_missing));
+            std::size_t partition_index = store_.bucket_(identifier_t(comparable));
+            shared_lock_t _ {store_.mutexes_[partition_index]};
+            partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
+                                              std::forward<callback_found_type_>(callback_found),
+                                              std::forward<callback_missing_type_>(callback_missing));
         }
 
         /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
@@ -392,117 +444,119 @@ class partitioned_collection {
         /** @brief Whether @p comparable is there, including this transaction's own writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
-            std::size_t part_index = store_.bucket_(identifier_t(comparable));
-            shared_lock_t _ {store_.mutexes_[part_index]};
-            return parts_[part_index].contains(std::forward<comparable_type_>(comparable));
+            std::size_t partition_index = store_.bucket_(identifier_t(comparable));
+            shared_lock_t _ {store_.mutexes_[partition_index]};
+            return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
         }
 
         /**
          *  @brief Finds the member equal to @p comparable and records what it saw into the read set.
          *    The watching counterpart to @c find, and the one that can fail, because a read set is memory.
          */
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                               callback_missing_type_ &&callback_missing = {}) noexcept {
-            std::size_t part_index = store_.bucket_(identifier_t(comparable));
-            shared_lock_t _ {store_.mutexes_[part_index]};
-            return parts_[part_index].find_and_watch(std::forward<comparable_type_>(comparable),
-                                                     std::forward<callback_found_type_>(callback_found),
-                                                     std::forward<callback_missing_type_>(callback_missing));
+            std::size_t partition_index = store_.bucket_(identifier_t(comparable));
+            shared_lock_t _ {store_.mutexes_[partition_index]};
+            return partitions_[partition_index].find_and_watch(std::forward<comparable_type_>(comparable),
+                                                               std::forward<callback_found_type_>(callback_found),
+                                                               std::forward<callback_missing_type_>(callback_missing));
         }
 
-        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-                  typename callback_missing_type_ = no_op_fn_t>
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
         void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                         callback_missing_type_ &&callback_missing = {}) const noexcept {
-            partitioned_t::for_all_next_lookups(store_.comparator_, parts_, store_.mutexes_,
-                                                std::forward<comparable_type_>(comparable),
-                                                std::forward<callback_found_type_>(callback_found),
-                                                std::forward<callback_missing_type_>(callback_missing));
+                         callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ordered_k
+        {
+            self_t::for_all_next_lookups(store_.comparator_, partitions_, store_.mutexes_,
+                                         std::forward<comparable_type_>(comparable),
+                                         std::forward<callback_found_type_>(callback_found),
+                                         std::forward<callback_missing_type_>(callback_missing));
         }
 
         [[nodiscard]] status_t upsert(value_t &&element) noexcept {
-            std::size_t part_index = store_.bucket_(identifier_t(element));
-            touched_.mark(part_index);
-            return parts_[part_index].upsert(std::move(element));
+            std::size_t partition_index = store_.bucket_(identifier_t(element));
+            touched_.mark(partition_index);
+            return partitions_[partition_index].upsert(std::move(element));
         }
 
         [[nodiscard]] status_t erase(identifier_t const &id) noexcept {
-            std::size_t part_index = store_.bucket_(id);
-            touched_.mark(part_index);
-            return parts_[part_index].erase(id);
+            std::size_t partition_index = store_.bucket_(id);
+            touched_.mark(partition_index);
+            return partitions_[partition_index].erase(id);
         }
     };
 
   private:
     mutable mutexes_t mutexes_;
-    parts_t parts_;
+    partitions_t partitions_;
 
     // Held rather than default-constructed per call: a hasher or comparator carrying state answers
-    // differently from a fresh one, so rebuilding either would discard what the collection was given.
+    // differently from a fresh one, so rebuilding either would discard what the store was given.
     ST_NO_UNIQUE_ADDRESS_ hash_t hasher_ {};
     ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
 
     friend class transaction_t;
 
-    partitioned_collection(parts_t &&unlocked, hash_t const &hasher = {}, comparator_t const &comparator = {}) noexcept
-        : parts_(std::move(unlocked)), hasher_(hasher), comparator_(comparator) {}
+    partitioned_store(partitions_t &&unlocked, hash_t const &hasher = {}, comparator_t const &comparator = {}) noexcept
+        : partitions_(std::move(unlocked)), hasher_(hasher), comparator_(comparator) {}
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
-    partitioned_collection &operator=(partitioned_collection &&other) noexcept {
+    partitioned_store &operator=(partitioned_store &&other) noexcept {
         every_part_lock<unique_lock_t> _ {mutexes_};
-        parts_ = std::move(other.parts_);
+        partitions_ = std::move(other.partitions_);
         hasher_ = other.hasher_;
         comparator_ = other.comparator_;
         return *this;
     }
 
-    static expected<parts_t> new_parts() noexcept {
-        return generate_array_safely<part_t, parts_k>([](std::size_t) { return part_t::make(); });
+    static expected<partitions_t> new_parts() noexcept {
+        return generate_array_safely<inner_store_t, partitions_k>([](std::size_t) { return inner_store_t::make(); });
     }
 
-    static expected<parts_t> new_parts(comparator_t const &comparator) noexcept {
+    static expected<partitions_t> new_parts(comparator_t const &comparator) noexcept {
         // Backends differ in whether they also take an allocator here, so the shape is detected rather
         // than assumed - a tree seeds both policies, a `std::set`-backed store only the comparator.
-        return generate_array_safely<part_t, parts_k>([&](std::size_t) {
-            if constexpr (requires { part_t::make(comparator, typename part_t::allocator_t {}); })
-                return part_t::make(comparator, typename part_t::allocator_t {});
-            else return part_t::make(comparator);
+        return generate_array_safely<inner_store_t, partitions_k>([&](std::size_t) {
+            if constexpr (requires { inner_store_t::make(comparator, typename inner_store_t::allocator_t {}); })
+                return inner_store_t::make(comparator, typename inner_store_t::allocator_t {});
+            else return inner_store_t::make(comparator);
         });
     }
 
   public:
-    partitioned_collection() noexcept = default;
+    partitioned_store() noexcept = default;
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
-    partitioned_collection(partitioned_collection &&other) noexcept
-        : parts_(std::move(other.parts_)), hasher_(other.hasher_), comparator_(other.comparator_) {}
+    partitioned_store(partitioned_store &&other) noexcept
+        : partitions_(std::move(other.partitions_)), hasher_(other.hasher_), comparator_(other.comparator_) {}
 
     [[nodiscard]] std::size_t size() const noexcept {
         std::size_t total = 0;
         every_part_lock<shared_lock_t> _ {mutexes_};
-        for (auto const &part : parts_) total += part.size();
+        for (auto const &part : partitions_) total += part.size();
         return total;
     }
 
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-    [[nodiscard]] static expected<partitioned_collection> make() noexcept {
-        expected<partitioned_collection> result;
-        if (expected<parts_t> unlocked = new_parts(); unlocked) result = partitioned_collection {std::move(*unlocked)};
+    [[nodiscard]] static expected<partitioned_store> make() noexcept {
+        expected<partitioned_store> result;
+        if (expected<partitions_t> unlocked = new_parts(); unlocked) result = partitioned_store {std::move(*unlocked)};
         return result;
     }
 
     /**
-     *  @brief Builds a collection whose every partition shares one comparator and one hasher.
+     *  @brief Builds a store whose every partition shares one comparator and one hasher.
      *  @param[in] comparator The instance every comparison consults, in each partition and across them.
      *  @param[in] hasher The instance that maps an identifier to its partition.
      *  @return Collection instance or empty optional on failure.
      */
-    [[nodiscard]] static expected<partitioned_collection> make(comparator_t const &comparator,
-                                                               hash_t const &hasher) noexcept {
-        expected<partitioned_collection> result;
-        if (expected<parts_t> unlocked = new_parts(comparator); unlocked)
-            result = partitioned_collection {std::move(*unlocked), hasher, comparator};
+    [[nodiscard]] static expected<partitioned_store> make(comparator_t const &comparator,
+                                                          hash_t const &hasher) noexcept {
+        expected<partitioned_store> result;
+        if (expected<partitions_t> unlocked = new_parts(comparator); unlocked)
+            result = partitioned_store {std::move(*unlocked), hasher, comparator};
         return result;
     }
 
@@ -513,9 +567,9 @@ class partitioned_collection {
      */
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
         // Ascending order, one lock at a time, like every other all-partition walk here.
-        auto maybe = generate_array_safely<part_transaction_t, parts_k>([&](std::size_t part_index) {
-            unique_lock_t lock {mutexes_[part_index]};
-            return parts_[part_index].transaction();
+        auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
+            unique_lock_t lock {mutexes_[partition_index]};
+            return partitions_[partition_index].transaction();
         });
         if (!maybe) return {};
 
@@ -523,9 +577,9 @@ class partitioned_collection {
     }
 
     [[nodiscard]] status_t upsert(value_t &&element) noexcept {
-        std::size_t part_index = bucket_(identifier_t(element));
-        unique_lock_t _ {mutexes_[part_index]};
-        return parts_[part_index].upsert(std::move(element));
+        std::size_t partition_index = bucket_(identifier_t(element));
+        unique_lock_t _ {mutexes_[partition_index]};
+        return partitions_[partition_index].upsert(std::move(element));
     }
 
     /**
@@ -536,13 +590,13 @@ class partitioned_collection {
      *  @param[in] callback_missing Fires when no such element existed.
      *  @return @c key_not_found_k when absent, so the answer is available without a second probe.
      */
-    template <typename callback_found_type_ = no_op_fn_t, typename callback_missing_type_ = no_op_fn_t>
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
                                  callback_missing_type_ &&callback_missing = {}) noexcept {
-        std::size_t part_index = bucket_(id);
-        unique_lock_t _ {mutexes_[part_index]};
-        return parts_[part_index].erase(id, std::forward<callback_found_type_>(callback_found),
-                                        std::forward<callback_missing_type_>(callback_missing));
+        std::size_t partition_index = bucket_(id);
+        unique_lock_t _ {mutexes_[partition_index]};
+        return partitions_[partition_index].erase(id, std::forward<callback_found_type_>(callback_found),
+                                                  std::forward<callback_missing_type_>(callback_missing));
     }
 
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
@@ -559,23 +613,23 @@ class partitioned_collection {
         return opened->commit();
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
               callback_missing_type_ &&callback_missing = {}) const noexcept {
-        std::size_t part_index = bucket_(identifier_t(comparable));
-        shared_lock_t _ {mutexes_[part_index]};
-        parts_[part_index].find(std::forward<comparable_type_>(comparable),
-                                std::forward<callback_found_type_>(callback_found),
-                                std::forward<callback_missing_type_>(callback_missing));
+        std::size_t partition_index = bucket_(identifier_t(comparable));
+        shared_lock_t _ {mutexes_[partition_index]};
+        partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
+                                          std::forward<callback_found_type_>(callback_found),
+                                          std::forward<callback_missing_type_>(callback_missing));
     }
 
     /** @brief Whether @p comparable is there, asking only the partition that owns it. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
-        std::size_t part_index = bucket_(identifier_t(comparable));
-        shared_lock_t _ {mutexes_[part_index]};
-        return parts_[part_index].contains(std::forward<comparable_type_>(comparable));
+        std::size_t partition_index = bucket_(identifier_t(comparable));
+        shared_lock_t _ {mutexes_[partition_index]};
+        return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
     }
 
     /** @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
@@ -586,9 +640,9 @@ class partitioned_collection {
 
     /** @brief Inserts one element, refusing with @c key_already_exists_k when the key is already present. */
     [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept {
-        std::size_t part_index = bucket_(identifier_t(element));
-        unique_lock_t lock {mutexes_[part_index]};
-        return parts_[part_index].insert_if_missing(std::move(element));
+        std::size_t partition_index = bucket_(identifier_t(element));
+        unique_lock_t lock {mutexes_[partition_index]};
+        return partitions_[partition_index].insert_if_missing(std::move(element));
     }
 
     /**
@@ -600,11 +654,11 @@ class partitioned_collection {
     template <typename callback_inserted_type_, typename callback_existing_type_>
     [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
                                              callback_existing_type_ &&callback_existing) noexcept {
-        std::size_t part_index = bucket_(identifier_t(element));
-        unique_lock_t lock {mutexes_[part_index]};
-        return parts_[part_index].insert_if_missing(std::move(element),
-                                                    std::forward<callback_inserted_type_>(callback_inserted),
-                                                    std::forward<callback_existing_type_>(callback_existing));
+        std::size_t partition_index = bucket_(identifier_t(element));
+        unique_lock_t lock {mutexes_[partition_index]};
+        return partitions_[partition_index].insert_if_missing(std::move(element),
+                                                              std::forward<callback_inserted_type_>(callback_inserted),
+                                                              std::forward<callback_existing_type_>(callback_existing));
     }
 
     /** @brief Inserts a batch, leaving already-present keys untouched. */
@@ -612,18 +666,21 @@ class partitioned_collection {
     [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         for (; begin != end; ++begin) {
             value_t element(*begin);
-            std::size_t part_index = bucket_(identifier_t(element));
-            unique_lock_t _ {mutexes_[part_index]};
-            if (auto status = parts_[part_index].insert_if_missing(std::move(element)); failed(status)) return status;
+            std::size_t partition_index = bucket_(identifier_t(element));
+            unique_lock_t _ {mutexes_[partition_index]};
+            if (auto status = partitions_[partition_index].insert_if_missing(std::move(element)); failed(status))
+                return status;
         }
         return success_k;
     }
 
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept {
-        for_all_next_lookups(comparator_, parts_, mutexes_, std::forward<comparable_type_>(comparable),
+                     callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires inner_is_ordered_k
+    {
+        for_all_next_lookups(comparator_, partitions_, mutexes_, std::forward<comparable_type_>(comparable),
                              std::forward<callback_found_type_>(callback_found),
                              std::forward<callback_missing_type_>(callback_missing));
     }
@@ -635,10 +692,12 @@ class partitioned_collection {
      *    across them, so this is not atomic even against a single partition. A key erased between the
      *    two is answered by its successor, and one inserted between them is skipped.
      */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_fn_t,
-              typename callback_missing_type_ = no_op_fn_t>
+    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+              typename callback_missing_type_ = no_op_t>
     void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept {
+                     callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires inner_is_ordered_k
+    {
         bool found_exact = false;
         find(
             comparable,
@@ -664,7 +723,9 @@ class partitioned_collection {
 
     /** @brief Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
+        requires inner_is_ordered_k
+    {
         expected<value_t> result {status_t::key_not_found_k};
         lower_bound(
             std::forward<comparable_type_>(comparable),
@@ -674,7 +735,9 @@ class partitioned_collection {
 
     /** @brief Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
+        requires inner_is_ordered_k
+    {
         expected<value_t> result {status_t::key_not_found_k};
         upper_bound(
             std::forward<comparable_type_>(comparable),
@@ -683,20 +746,24 @@ class partitioned_collection {
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_fn_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+              typename callback_type_ = no_op_t>
+    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+        requires inner_is_ordered_k
+    {
         every_part_lock<shared_lock_t> _ {mutexes_};
-        for (auto const &part : parts_) part.range(lower, upper, callback);
+        for (auto const &part : partitions_) part.range(lower, upper, callback);
     }
 
     /** @brief Erases the half-open range from every partition, reporting the last refusal. */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-              typename callback_type_ = no_op_fn_t>
+              typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
-                                       callback_type_ &&callback = {}) noexcept {
+                                       callback_type_ &&callback = {}) noexcept
+        requires inner_is_ordered_k
+    {
         every_part_lock<unique_lock_t> _ {mutexes_};
         status_t status = success_k;
-        for (auto &part : parts_)
+        for (auto &part : partitions_)
             if (status_t const one = part.erase_range(lower, upper, callback); failed(one)) status = one;
         return status;
     }
@@ -708,14 +775,16 @@ class partitioned_collection {
      *    entries, and it takes one lock. The reservoir overload below walks all of them instead, so a
      *    call site that needs the whole range weighted correctly wants that one.
      */
-    template <typename lower_type_, typename upper_type_, typename generator_type_,
-              typename callback_type_ = no_op_fn_t>
+    template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                    callback_type_ &&callback) const noexcept {
-        std::size_t part_index = generator() % parts_k;
-        shared_lock_t _ {mutexes_[part_index]};
-        parts_[part_index].sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                      std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
+                    callback_type_ &&callback) const noexcept
+        requires inner_is_samplable_k
+    {
+        std::size_t partition_index = generator() % partitions_k;
+        shared_lock_t _ {mutexes_[partition_index]};
+        partitions_[partition_index].sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                                std::forward<generator_type_>(generator),
+                                                std::forward<callback_type_>(callback));
     }
 
     /**
@@ -727,11 +796,13 @@ class partitioned_collection {
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
+                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
+        requires inner_is_samplable_k
+    {
         // Ascending order, blocking, like every other all-partition walk here.
-        for (std::size_t part_index = 0; part_index != parts_k; ++part_index) {
-            shared_lock_t lock {mutexes_[part_index]};
-            parts_[part_index].sample_reservoir(lower, upper, generator, seen, reservoir_capacity, reservoir);
+        for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+            shared_lock_t lock {mutexes_[partition_index]};
+            partitions_[partition_index].sample_reservoir(lower, upper, generator, seen, reservoir_capacity, reservoir);
         }
     }
 
@@ -743,14 +814,36 @@ class partitioned_collection {
      *  comparator and allocator the partition was given.
      */
     [[nodiscard]] status_t clear() noexcept {
-        return for_all<unique_lock_t>(parts_, mutexes_, [](part_t &part) noexcept { return part.clear(); });
+        return for_all<unique_lock_t>(partitions_, mutexes_, [](inner_store_t &part) noexcept { return part.clear(); });
     }
 
     [[nodiscard]] status_t reserve(std::size_t size) noexcept {
-        return for_all<unique_lock_t>(parts_, mutexes_, [size](part_t &part) noexcept { //
-            return part.reserve(size / parts_k);
+        return for_all<unique_lock_t>(partitions_, mutexes_, [size](inner_store_t &part) noexcept { //
+            return part.reserve(size / partitions_k);
         });
     }
 };
+
+#pragma region Aliases
+
+/**
+ *  @brief A set-shaped store sharded across independently locked partitions, spelled
+ *    @c partitioned_set<monotonic_avl_set<key_t>>.
+ *    The element type comes from the store being wrapped, so this alias and @c partitioned_map build
+ *    the same thing; what they add is the shape at the point of use, which the store families already name.
+ */
+template <typename set_store_type_, typename hash_type_ = hash<typename set_store_type_::identifier_t>,
+          typename shared_mutex_type_ = spin_shared_mutex, std::size_t partitions_count_ = 16>
+using partitioned_set = partitioned_store<set_store_type_, hash_type_, shared_mutex_type_, partitions_count_>;
+
+/**
+ *  @brief A map-shaped store sharded across independently locked partitions, spelled
+ *    @c partitioned_map<monotonic_avl_map<key_t, value_t>>.
+ */
+template <typename map_store_type_, typename hash_type_ = hash<typename map_store_type_::identifier_t>,
+          typename shared_mutex_type_ = spin_shared_mutex, std::size_t partitions_count_ = 16>
+using partitioned_map = partitioned_store<map_store_type_, hash_type_, shared_mutex_type_, partitions_count_>;
+
+#pragma endregion Aliases
 
 } // namespace ashvardanian::smashtable

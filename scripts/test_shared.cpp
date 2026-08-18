@@ -19,9 +19,9 @@
 #include <utility>    // `std::pair`
 #include <vector>     // `std::vector`
 
+#include <smashtable/reference_store.hpp>
 #include <smashtable/shared.hpp>
-#include <smashtable/transactional_std_store.hpp>
-#include <smashtable/transactional_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
 
@@ -268,7 +268,7 @@ static void allocator_refuses_overflowing_counts() {
 
 /** @brief Exclusion holds: a writer never overlaps a reader or another writer. */
 static void shared_mutex_excludes() {
-    shared_mutex_t mutex;
+    spin_shared_mutex mutex;
     std::atomic<int> readers_inside {0};
     std::atomic<int> writers_inside {0};
     std::atomic<bool> violated {false};
@@ -282,7 +282,7 @@ static void shared_mutex_excludes() {
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         threads.emplace_back([&]() noexcept {
             for (std::size_t iteration = 0; iteration != writes_per_writer_k; ++iteration) {
-                unique_lock<shared_mutex_t> guard {mutex};
+                unique_lock<spin_shared_mutex> guard {mutex};
                 if (writers_inside.fetch_add(1) != 0 || readers_inside.load() != 0) violated.store(true);
                 ++guarded_left;
                 ++guarded_right;
@@ -294,7 +294,7 @@ static void shared_mutex_excludes() {
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         threads.emplace_back([&]() noexcept {
             while (reading.load(std::memory_order_relaxed)) {
-                shared_lock<shared_mutex_t> guard {mutex};
+                shared_lock<spin_shared_mutex> guard {mutex};
                 readers_inside.fetch_add(1);
                 if (writers_inside.load() != 0) violated.store(true);
                 if (guarded_left != guarded_right) violated.store(true);
@@ -317,7 +317,7 @@ static void shared_mutex_excludes() {
  *    stream slips back in and parks them forever.
  */
 static void shared_mutex_admits_every_writer() {
-    shared_mutex_t mutex;
+    spin_shared_mutex mutex;
     std::atomic<bool> reading {true};
     std::atomic<std::size_t> finished_writers {0};
 
@@ -334,7 +334,7 @@ static void shared_mutex_admits_every_writer() {
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         readers.emplace_back([&]() noexcept {
             while (reading.load(std::memory_order_relaxed)) {
-                shared_lock<shared_mutex_t> guard {mutex};
+                shared_lock<spin_shared_mutex> guard {mutex};
                 for (int spin = 0; spin != reader_hold_spins_k; ++spin)
                     std::atomic_signal_fence(std::memory_order_seq_cst);
             }
@@ -345,7 +345,7 @@ static void shared_mutex_admits_every_writer() {
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         writers.emplace_back([&]() noexcept {
             for (std::size_t iteration = 0; iteration != acquisitions_per_writer_k; ++iteration) {
-                unique_lock<shared_mutex_t> guard {mutex};
+                unique_lock<spin_shared_mutex> guard {mutex};
                 for (int spin = 0; spin != 2000; ++spin) std::atomic_signal_fence(std::memory_order_seq_cst);
             }
             finished_writers.fetch_add(1);
@@ -485,9 +485,9 @@ static void versioned_comparator_orders_by_key_then_generation() {
 
     // A watch dates an entry without naming one, so it is never an ordering operand.
     static_assert(carries_generation<watch_t>, "a watch does carry a generation");
-    static_assert(!carries_dated_key<watch_t>, "but it names no key, so it cannot be ordered");
-    static_assert(carries_dated_key<versioned_t>, "an entry carries both");
-    static_assert(carries_dated_key<dated_identifier_t>, "and so does a dated identifier");
+    static_assert(!orderable_per_version<watch_t>, "but it names no key, so it cannot be ordered");
+    static_assert(orderable_per_version<versioned_t>, "an entry carries both");
+    static_assert(orderable_per_version<dated_identifier_t>, "and so does a dated identifier");
 }
 
 #pragma endregion Ordering Tests
@@ -607,9 +607,9 @@ static void validate_watches_catches_drift() {
 }
 
 /** @brief A bare key matches every version of it, while a dated identifier matches exactly one. */
-static void dated_equals_separates_versions() {
-    dated_equals<std::equal_to<std::size_t>> const equals;
-    versioned_hasher<std::hash<std::size_t>> const hasher;
+static void per_version_equals_separates_versions() {
+    per_version_equals<std::equal_to<std::size_t>> const equals;
+    per_key_hasher<std::hash<std::size_t>> const hasher;
 
     versioned_t older {std::size_t {5}}, newer {std::size_t {5}}, other {std::size_t {6}};
     older.generation = 1, newer.generation = 2, other.generation = 1;
@@ -634,14 +634,14 @@ static void dated_equals_separates_versions() {
     st_verify_eq_(hasher(older), hasher(std::size_t {5}));
     st_verify_eq_(hasher(dated), hasher(std::size_t {5}));
 
-    // Untouched by the widening: `versioned_equals` still collapses the versions of a key.
-    versioned_equals<std::equal_to<std::size_t>> const collapsing;
+    // Untouched by the widening: `per_key_equals` still collapses the versions of a key.
+    per_key_equals<std::equal_to<std::size_t>> const collapsing;
     st_verify_(collapsing(older, newer));
 }
 
 // Both shipped stores are optimistically concurrent, and the seams they are read through exist.
-using avl_store_t = transactional_avl_set<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
-using std_store_t = transactional_std_store<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
+using avl_store_t = monotonic_avl_set<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
+using std_store_t = reference_store<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
 
 static_assert(optimistically_concurrent_store<avl_store_t>, "the tree-backed store validates and stages");
 static_assert(optimistically_concurrent_store<std_store_t>, "and so does the `std::set`-backed one");
@@ -672,7 +672,7 @@ int main() {
     failures += run_test(filter, "occ.commit_stamp_visibility", commit_stamp_visibility_matrix);
     failures += run_test(filter, "occ.isolation_strength", isolation_levels_compare_by_strength);
     failures += run_test(filter, "occ.validate_watches", validate_watches_catches_drift);
-    failures += run_test(filter, "occ.dated_equals", dated_equals_separates_versions);
+    failures += run_test(filter, "occ.per_version_equals", per_version_equals_separates_versions);
 
     return report_test_failures(failures);
 }

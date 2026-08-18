@@ -1,22 +1,22 @@
 /**
- *  @brief Device-side suites for the pinned lock-free hash table, over one table in managed memory.
+ *  @brief Device-side suites for the pinned atomic hash table, over one table in managed memory.
  *  @author Ash Vardanian
- *  @file scripts/test_concurrent_cuda.cu
+ *  @file scripts/test_atomic_cuda.cu
  *  @date August 17, 2026
  *
- *  @section test_concurrent_cuda_what_is_tested What Is Tested
+ *  @section test_atomic_cuda_what_is_tested What Is Tested
  *
- *  The point is not that @c concurrent_hash_table compiles for a device - it is that one table, in one
+ *  The point is not that @c atomic_hash_table compiles for a device - it is that one table, in one
  *  allocation, stays correct while a kernel and the host both operate on it. So every suite writes
  *  through one side and verifies through the other, and the last one has both running at once.
  *
- *  @section test_concurrent_cuda_helpers What The Caller Supplies
+ *  @section test_atomic_cuda_helpers What The Caller Supplies
  *
  *  The library's defaults reach @c std::hash and @c std::allocator, neither of which a device has, so
  *  the helpers below stand in. They are ordinary @c constexpr callables rather than annotated device
  *  functions, which is the same rule the headers follow.
  *
- *  @section test_concurrent_cuda_scheduling Hardware Requirements
+ *  @section test_atomic_cuda_scheduling Hardware Requirements
  *
  *  The slot spin needs independent thread scheduling, so @c sm_70 and newer. The mixed host-and-device
  *  suite additionally needs concurrent managed access, which the runtime is asked about rather than
@@ -30,7 +30,7 @@
 #include <thread> // `std::thread`
 #include <vector> // `std::vector`
 
-#include <smashtable/concurrent_hash_table.hpp>
+#include <smashtable/atomic_hash_table.hpp>
 
 #include "test.hpp"
 
@@ -97,7 +97,7 @@ struct managed_allocator_t {
     void deallocate(std::byte *pointer, std::size_t) noexcept { st_verify_cuda_(cudaFree(pointer)); }
 };
 
-using table_t = concurrent_hash_map<user_id_t, session_id_t, user_id_hash_t, user_id_equals_t, managed_allocator_t>;
+using table_t = atomic_hash_map<user_id_t, session_id_t, user_id_hash_t, user_id_equals_t, managed_allocator_t>;
 using storage_t = table_t::storage_type;
 
 /**
@@ -169,7 +169,7 @@ __global__ void find_kernel(table_t *table, user_id_t const *users, std::size_t 
 __global__ void erase_kernel(table_t *table, user_id_t const *users, std::size_t count) {
     for (std::size_t index = blockIdx.x * blockDim.x + threadIdx.x; index < count; index += gridDim.x * blockDim.x)
         [[maybe_unused]]
-        bool const erased = table->erase(users[index]);
+        status_t const erased = table->erase(users[index]);
 }
 
 /** @brief Threads per block, one warp's multiple, so a block covers whole buckets. */
@@ -204,7 +204,14 @@ static void number_users(managed<user_id_t> const &users, std::size_t count, std
 /** @brief Verifies on the host that @p user maps to its expected session. */
 static void verify_present(managed<table_t> const &table, user_id_t user) noexcept {
     session_id_t session = session_id_t::missing_k;
-    bool const found = table->find(user, [&](auto const &slot) noexcept { session = slot.value(); });
+    bool found = false;
+    table->find(
+        user,
+        [&](auto const &slot) noexcept {
+            session = slot.value();
+            found = true;
+        },
+        [&]() noexcept { found = false; });
     st_verify_(found && "Key missing from the table");
     st_verify_eq_(session, session_of(user));
 }

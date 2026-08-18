@@ -8,13 +8,13 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
-#include <smashtable/transactional_std_store.hpp>
+#include <smashtable/reference_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
-#include "test_std_store_defects.hpp"
+#include "test_reference_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -23,35 +23,34 @@ using namespace ashvardanian::smashtable::scripts;
 
 /** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack */
 using transactional_trivial_set_t =
-    transactional_std_store<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+    reference_store<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
 /** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked */
-using transactional_tracking_set_t =
-    transactional_std_store<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using transactional_tracking_set_t = reference_store<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
 /** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack */
 using transactional_composite_set_t =
-    transactional_std_store<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
+    reference_store<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
 /** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap */
-using transactional_heavy_set_t = transactional_std_store<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
+using transactional_heavy_set_t = reference_store<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
 /** Value: int | Copy: Trivial (key & value) | Memory: Stack */
-using transactional_trivial_map_t = transactional_std_store<mapping<trivial_key_t, int>, std::less<trivial_key_t>,
-                                                            std::allocator<mapping<trivial_key_t, int>>>;
+using transactional_trivial_map_t =
+    reference_store<mapping<trivial_key_t, int>, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /** Value: int | Copy: Trivial (key & value) | Memory: Tracked */
 using transactional_tracking_map_t =
-    transactional_std_store<mapping<trivial_key_t, int>, stateful_comparator_t, stateful_allocator_t>;
+    reference_store<mapping<trivial_key_t, int>, stateful_comparator_t, stateful_allocator_t>;
 
 /** Value: guarded_payload_t | Copy: Key trivial, value .copy() | Memory: Heap (value) */
 using transactional_composite_map_t =
-    transactional_std_store<mapping<composite_key_t, guarded_payload_t>, composite_key_compare_t,
-                            std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
+    reference_store<mapping<composite_key_t, guarded_payload_t>, composite_key_compare_t,
+                    std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
 /** Value: guarded_payload_t | Copy: .copy() on key & value | Memory: Heap (both) */
-using transactional_heavy_map_t = transactional_std_store<mapping<heavy_key_t, guarded_payload_t>, std::less<void>,
-                                                          std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
+using transactional_heavy_map_t = reference_store<mapping<heavy_key_t, guarded_payload_t>, std::less<void>,
+                                                  std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 /** @brief Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {

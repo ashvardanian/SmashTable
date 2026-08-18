@@ -9,6 +9,49 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 
 ![SmashTable Thumbnail](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/SmashTable.jpg?raw=true)
 
+## What's Inside
+
+```bash
+  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash
+  atomic_*           → pinned, GPU-capable        hash
+       ↑ ::adopt() moves one allocation between the two, no rehash, no copy
+
+  *_store            → transactions over a core   monotonic · snapshot · reference
+       ↓ wrap any of those for thread safety
+  locked_store       → one lock per transaction
+  partitioned_store  → one lock per partition, 16 by default
+
+  transaction_group  → one commit spanning several stores
+```
+
+Every store publishes what it promises as a compile-time `isolation_k`, and the suite checks that constant against behaviour rather than against itself — a container that quietly changes level fails.
+
+|                        | Read Committed | Monotonic Atomic View |   Snapshot   | Concurrency       | Transactions |        Ordered         |
+| ---------------------- | :------------: | :-------------------: | :----------: | ----------------- | :----------: | :--------------------: |
+| `basic_vector`         |       —        |           —           |      —       | one thread        |      —       |           —            |
+| `basic_avl_tree`       |       —        |           —           |      —       | one thread        |      —       |           ✓            |
+| `basic_wb_tree`        |       —        |           —           |      —       | one thread        |      —       |  ✓ `rank` · `select`   |
+| `basic_hash_table`     |       —        |           —           |      —       | one thread        |      —       |           —            |
+| `atomic_hash_table`    |       —        |           —           |      —       | per operation ⁴   |      —       |           —            |
+| `monotonic_store`      |       ✓        |           ✓           |      ✗       | one thread        |      ✓       | ✓ over an ordered core |
+| `snapshot_store`       |       ✓        |           ✓           |      ✓       | one thread        |      ✓       |          ✓ ²           |
+| `reference_store` ⁵    |       ✓        |           ✓           |      ✗       | one thread        |      ✓       |           ✓            |
+| `locked_store<S>`      |  inherits `S`  |     inherits `S`      | inherits `S` | whole transaction |      ✓       |      inherits `S`      |
+| `partitioned_store<S>` |       ✓        |          ✗ ¹          |     ✗ ¹      | per partition     |      ✓       |          ✓ ³           |
+
+> ¹ Above a single partition only Read Committed survives, because a commit takes and releases one partition lock at a time, so a reader crossing partitions can catch it half-applied.
+> With `partitions_k == 1` the inner store's level passes through intact, and a weaker inner level is never promoted.
+> ² `select` and `rank` descend on a maintained count and are exact at the newest published commit.
+> A reader holding an older snapshot gets a merged walk instead, because one number per node cannot answer for an unbounded parameter.
+> `clear` refuses while a reader is open rather than dropping versions out from under it.
+> ³ `lower_bound` is two separately locked probes, so it is not atomic even within one partition.
+> ⁴ Per-operation atomicity through per-slot spin locks — no global lock and no reallocation, but not a progress guarantee: a thread descheduled holding a slot blocks the others probing it.
+> It offers no transactions by design, which is why it declares no isolation at all.
+> ⁵ A `std::set`-backed reference implementation, kept as the oracle the other stores are tested against rather than as a production choice.
+
+None of them promises strict serializability, and none of them pretends to.
+A transaction never sees another's partial update at any of these levels; what varies is whether your own reads hold still while you work.
+
 ## Python Quick Start
 
 ```bash
@@ -179,13 +222,13 @@ The same shape as the Python example, with no threads in sight:
 
 ```cpp
 #include <smashtable/basic_avl_tree.hpp>
-#include <smashtable/transactional_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 namespace st = ashvardanian::smashtable;
 
 using id_t = std::uint64_t;
-using by_id_t = st::transactional_avl_map<id_t, record_t>;      // id   → record
-using by_name_t = st::transactional_avl_map<name_t, id_t>;      // name → id
+using by_id_t = st::monotonic_avl_map<id_t, record_t>;      // id   → record
+using by_name_t = st::monotonic_avl_map<name_t, id_t>;      // name → id
 
 auto by_id = *by_id_t::make();
 auto by_name = *by_name_t::make();
@@ -271,46 +314,45 @@ Terminology first, since both words are overloaded:
 Headers group as:
 
 ```bash
-  basic_*               → Core structures. Own memory, no transactions, one thread.
+  basic_*               → Cores. Own their memory, no transactions, one thread.
     ├─ basic_vector<T, Alloc>
     ├─ basic_avl_tree<T, Comparator, Alloc>
-    ├─ basic_wb_tree<T, Comparator, Alloc>        # also `rank` and `select`
-    └─ basic_hash_table<T, Hash, Equals, Alloc>   # grows, iterates, rehashes
+    ├─ basic_wb_tree<T, Comparator, Alloc>          # also `rank` and `select`
+    └─ basic_hash_table<T, Hash, Equals, Alloc>     # grows, iterates, rehashes
 
-  concurrent_*          → Pinned cores. Fixed capacity, lock-free, callback reads.
-    └─ concurrent_hash_table<T, Hash, Equals, Alloc>
-       ↑ ::adopt(std::move(growable).release())   ↓ ::adopt(std::move(pinned).release())
+  atomic_*              → Pinned core. Fixed capacity, atomic per operation, callback reads.
+    └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
+       ↑ ::adopt(std::move(growable).release())     ↓ ::adopt(std::move(pinned).release())
 
-  transactional_*       → 2-phase commit, watch and CAS
-    ├─ transactional_store<Collection>            # one visible version per key
-    ├─ transactional_snapshot_store<Collection>   # every version a live reader can still name
-    └─ transactional_std_store<T, Comparator, Alloc>
-
-  *_collection          → Serialized transactions across threads
-    ├─ locked_collection<Collection, Mutex>
-    └─ partitioned_collection<Collection, Hash, Mutex, PartsCount>
+  *_store               → 2-phase commit, watch and CAS.
+    ├─ monotonic_store<Core>                        # one visible version per key
+    ├─ snapshot_store<Core>                         # every version a live reader can still name
+    └─ reference_store<T, Comparator, Alloc>        # the same contract over `std::set`, kept as the oracle
+       ↓ either of the first two wraps a core; either of these wraps a store
+    ├─ locked_store<Store, Mutex>                   # one lock spans a whole commit
+    └─ partitioned_store<Store, Hash, Mutex, N>     # one lock per partition, Read Committed above one
 
   transaction_group<Stores...>  → One 2-phase commit spanning several stores
 ```
 
-The two tiers are two independent axes, not one ladder.
-A `*_collection` serializes whole __transactions__, so its unit of exclusion is a two-phase commit.
-`locked_collection` takes one lock across the whole commit and keeps whatever its inner store promises, while `partitioned_collection` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives above a single partition.
+Transactions and thread-safety are two independent axes, not one ladder.
+A wrapper serializes whole __transactions__, so its unit of exclusion is a two-phase commit.
+`locked_store` takes one lock across the whole commit and keeps whatever its inner store promises, while `partitioned_store` takes and releases one partition lock at a time, so a reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives above a single partition.
 Every container publishes what it promises as `isolation_k`, so the level is checkable rather than folklore.
-`concurrent_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_collection`.
+`atomic_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_store`.
 
 `status_t` reports `out_of_memory_heap_k == ENOMEM`, `invalid_argument_k == EINVAL`, `key_not_found_k == ENOENT` and others, and is `[[nodiscard]]` on every mutating API.
 
 ### Making `std::set` Transactional
 
-> `smashtable/transactional_std_store.hpp`
+> `smashtable/reference_store.hpp`
 
 The baseline reference design, and the yardstick the tree containers are held against — it runs the same test suites they do.
 Updates group into transactions that stage and roll back before committing, which is what lets inter-dependent updates span several collections.
 
 Reads are consistent at the [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) level, so a transaction never sees another's partial update.
 That is weaker than strict serializability: there is no guarantee that every read within one transaction sees the same snapshot.
-`transactional_snapshot_store` is the sibling that does make that guarantee, and the section below states what it costs.
+`snapshot_store` is the sibling that does make that guarantee, and the section below states what it costs.
 
 ### Adelson-Velsky and Landis Trees
 
@@ -339,11 +381,11 @@ Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amor
 
 ### Transactional Stores
 
-> `smashtable/transactional_store.hpp`
+> `smashtable/monotonic_store.hpp`
 
-`transactional_store<Collection>` adds two-phase commit, watches and CAS on top of any key-addressable core.
-`transactional_avl_set`, `transactional_avl_map`, `transactional_wb_set` and `transactional_wb_map` are the aliases you'll name directly.
-`transactional_hash_set` and `transactional_hash_map` back the same store with the open-addressed table, which supplies no ordering, so bounds, ranges and order statistics are gated out of those instantiations at compile time.
+`monotonic_store<Collection>` adds two-phase commit, watches and CAS on top of any key-addressable core.
+`monotonic_avl_set`, `monotonic_avl_map`, `monotonic_wb_set` and `monotonic_wb_map` are the aliases you'll name directly.
+`monotonic_hash_set` and `monotonic_hash_map` back the same store with the open-addressed table, which supplies no ordering, so bounds, ranges and order statistics are gated out of those instantiations at compile time.
 
 Which version a reader sees is decided by one number, stamped when a transaction commits.
 A version that has not committed carries no stamp, so it is invisible to readers and cannot make anyone else's validation fail — a transaction that stages and then rolls back costs its peers nothing.
@@ -366,10 +408,10 @@ expected<std::size_t> const window = store.vacuum(lower, upper); // ordered core
 
 ### Snapshot Isolation
 
-> `smashtable/transactional_snapshot_store.hpp`
+> `smashtable/snapshot_store.hpp`
 
-`transactional_snapshot_store<Collection>` is the sibling that fixes a transaction's reads to one instant.
-It rebinds the same cores, exports `transactional_snapshot_avl_set`, `_avl_map`, `_wb_set`, `_wb_map`, `_hash_set` and `_hash_map`, and publishes `isolation_k == snapshot_k`.
+`snapshot_store<Collection>` is the sibling that fixes a transaction's reads to one instant.
+It rebinds the same cores, exports `snapshot_avl_set`, `_avl_map`, `_wb_set`, `_wb_map`, `_hash_set` and `_hash_map`, and publishes `isolation_k == snapshot_k`.
 A repeated read returns what it first saw, a repeated range admits no phantoms, and neither holds in its sibling.
 
 Versions are kept as ordinary entries keyed by `(key, generation)` rather than chained off one entry, on ordered and unordered cores alike.
@@ -386,11 +428,11 @@ Range writes publish under one stamp, so a reader on an older snapshot sees all 
 
 What it costs, on an AVL core over `mapping<key, int>`:
 
-|                               | `transactional_store` | `transactional_snapshot_store` |
-| ----------------------------- | --------------------- | ------------------------------ |
-| Resident per key, one version | 80 B                  | 72 B                           |
-| Each retained older version   | 48 B chain node       | 72 B, a full entry             |
-| Read of one key               | one chain head        | the key's whole run            |
+|                               | `monotonic_store` | `snapshot_store`    |
+| ----------------------------- | ----------------- | ------------------- |
+| Resident per key, one version | 80 B              | 72 B                |
+| Each retained older version   | 48 B chain node   | 72 B, a full entry  |
+| Read of one key               | one chain head    | the key's whole run |
 
 At rest it is the cheaper of the two, because a key carries no chain-head pointer and no per-entry allocator.
 It becomes the more expensive one exactly when a long-lived reader pins history — and on the hash core a pinned version occupies a real slot, so it lengthens the probe runs of its neighbours as well.
@@ -410,12 +452,12 @@ Sixty-four bits is the widest atomic every target supports, which is what lets a
 Growing repoints the key, value and header regions that every live slot reference has cached, so a table that can grow can never be read concurrently.
 That used to be a sentence here that nothing enforced.
 It is now two types, neither of which includes the other's header.
-`basic_hash_table` grows, iterates and rehashes; `concurrent_hash_table` is pinned and lock-free.
+`basic_hash_table` grows, iterates and rehashes; `atomic_hash_table` is pinned and atomic per operation.
 What passes between them is the allocation itself — a `hash_storage` — so the hand-off is a move of a value rather than one table reaching into the other:
 
 ```cpp
 _ = growable.reserve(1u << 20);                                          // pin the capacity first
-auto pinned = concurrent_hash_map<key_t, value_t>::adopt(std::move(growable).release());
+auto pinned = atomic_hash_map<key_t, value_t>::adopt(std::move(growable).release());
 
 pinned.find(key, [](auto const &slot) noexcept { use(slot.value()); });
 if (!pinned.emplace(key, value)) report_full();                          // a pinned table can fill up
@@ -423,7 +465,9 @@ if (!pinned.emplace(key, value)) report_full();                          // a pi
 auto compacted = hash_map<key_t, value_t>::adopt(std::move(pinned).release());   // iterators return
 ```
 
-Every operation on the pinned table is lock-free: it takes a slot by setting both its bits with a `fetch_or` and releases it with a `fetch_xor` of the difference to the desired state, so neither path needs a compare-and-swap loop.
+Every operation on the pinned table is atomic over the slot it touches: it takes that slot by setting both its bits with a `fetch_or` and releases it with a `fetch_xor` of the difference to the desired state, so neither path needs a compare-and-swap loop.
+It is not lock-free, though — `fetch_or` spins until it wins the slot, so a thread descheduled while holding one blocks every other prober that walks onto it.
+No global lock and no reallocation is what the pinning buys; a stalled thread stalling its neighbours is what it does not.
 Reads take a callback rather than returning a reference or an iterator, since both would dangle the moment another thread erased the slot.
 Tombstones only accumulate while pinned, because compaction needs a rehash — `deleted_count()` is what says it is time to hand the storage back.
 

@@ -715,7 +715,7 @@ void test_repeated_range_matches_isolation() {
     // would be a question about the store rather than about the transaction's view, and would hold at
     // every isolation level including serializable - which is why the earlier shape of this test could
     // not fail. It is spelled with `find` rather than a range scan because that is the one ordered-free
-    // surface every transaction type here offers, `partitioned_collection`'s included.
+    // surface every transaction type here offers, `partitioned_store`'s included.
     auto count_present = [&]() noexcept {
         std::size_t present = 0;
         for (std::size_t candidate = 0; candidate != 10; ++candidate)

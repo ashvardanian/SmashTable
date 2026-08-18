@@ -11,9 +11,9 @@
 #include <shared_mutex> // `std::shared_mutex`, to keep the substitution path covered
 
 #include <smashtable/basic_avl_tree.hpp>
-#include <smashtable/locked_collection.hpp>
-#include <smashtable/partitioned_collection.hpp>
-#include <smashtable/transactional_store.hpp>
+#include <smashtable/locked_store.hpp>
+#include <smashtable/partitioned_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
@@ -25,24 +25,23 @@ using namespace ashvardanian::smashtable::scripts;
 
 #pragma region Type Aliases
 
-using tree_trivial_set_t =
-    transactional_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+using tree_trivial_set_t = monotonic_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 using tree_composite_set_t =
-    transactional_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
+    monotonic_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 using tree_trivial_map_t =
-    transactional_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
-using tree_composite_map_t = transactional_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
-                                                   std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
+    monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+using tree_composite_map_t = monotonic_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
+                                               std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
 /** Sharded across sixteen independently locked partitions. */
-using transactional_trivial_set_t = partitioned_collection<tree_trivial_set_t>;
-using transactional_composite_set_t = partitioned_collection<tree_composite_set_t>;
-using transactional_trivial_map_t = partitioned_collection<tree_trivial_map_t>;
-using transactional_composite_map_t = partitioned_collection<tree_composite_map_t>;
+using transactional_trivial_set_t = partitioned_set<tree_trivial_set_t>;
+using transactional_composite_set_t = partitioned_store<tree_composite_set_t>;
+using transactional_trivial_map_t = partitioned_map<tree_trivial_map_t>;
+using transactional_composite_map_t = partitioned_store<tree_composite_map_t>;
 
 /** Sharded, and built around a comparator instance rather than a default-constructed one. */
-using tree_tracking_set_t = transactional_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
-using partitioned_tracking_set_t = partitioned_collection<tree_tracking_set_t>;
+using tree_tracking_set_t = monotonic_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using self_tracking_set_t = partitioned_store<tree_tracking_set_t>;
 
 /**
  *  Sharded on @c std::shared_mutex rather than the library's own.
@@ -50,12 +49,41 @@ using partitioned_tracking_set_t = partitioned_collection<tree_tracking_set_t>;
  *  The mutex is a template parameter, so the default is a choice and not the only thing that fits;
  *  running the concurrency suites against the standard one is what keeps the substitution honest.
  */
-using standard_mutex_set_t = partitioned_collection<tree_composite_set_t, hash<composite_key_t>, std::shared_mutex, 16>;
-using standard_mutex_map_t = partitioned_collection<tree_composite_map_t, hash<composite_key_t>, std::shared_mutex, 16>;
+using standard_mutex_set_t = partitioned_store<tree_composite_set_t, hash<composite_key_t>, std::shared_mutex, 16>;
+using standard_mutex_map_t = partitioned_store<tree_composite_map_t, hash<composite_key_t>, std::shared_mutex, 16>;
 
-/** One shared mutex over the whole collection. */
-using transactional_tracking_set_t = locked_collection<tree_trivial_set_t>;
-using transactional_tracking_map_t = locked_collection<tree_trivial_map_t>;
+/**
+ *  Wrapped around a hash-backed store, which offers no ordering at all.
+ *
+ *  The wrappers forward the ordered surface, so an unordered inner store must lose it at overload
+ *  resolution rather than inside an instantiation of a body that cannot compile.
+ */
+using hash_store_t = monotonic_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
+
+template <typename store_type_>
+constexpr bool offers_ordered_surface_k =
+    requires(store_type_ &store, typename store_type_::identifier_t const &key, no_op_t callback) {
+        store.lower_bound(key, callback, callback);
+        store.upper_bound(key, callback, callback);
+        store.range(key, key, callback);
+        store.erase_range(key, key, callback);
+    };
+
+static_assert(offers_ordered_surface_k<tree_trivial_set_t>, "the tree-backed store is ordered");
+static_assert(offers_ordered_surface_k<locked_store<tree_trivial_set_t>>,
+              "wrapping an ordered store must keep the ordered surface");
+static_assert(offers_ordered_surface_k<partitioned_store<tree_trivial_set_t>>,
+              "sharding an ordered store must keep the ordered surface");
+
+static_assert(!offers_ordered_surface_k<hash_store_t>, "a hash-backed store has no ordering to offer");
+static_assert(!offers_ordered_surface_k<locked_store<hash_store_t>>,
+              "the lock wrapper must not claim an ordering its inner store denies");
+static_assert(!offers_ordered_surface_k<partitioned_store<hash_store_t>>,
+              "the partitioned wrapper must not claim an ordering its inner store denies");
+
+/** One shared mutex over the whole collection, reached through the shape-naming aliases. */
+using transactional_tracking_set_t = locked_set<tree_trivial_set_t>;
+using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
 
 /** @brief Walkers crossing a sharded map while an eraser churns it, with heap-owning keys. */
 static void sharded_concurrency_walks_never_race_erasures() {
@@ -284,7 +312,7 @@ static void transactional_consistency_reset_clears_transaction_state() {
 #pragma endregion Type Aliases
 
 static void transactional_consistency_stateful_comparator_is_consulted() {
-    test_stateful_comparator_is_consulted<partitioned_tracking_set_t>();
+    test_stateful_comparator_is_consulted<self_tracking_set_t>();
 }
 
 static void transactional_consistency_group_commits_participants_together() {

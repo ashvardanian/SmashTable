@@ -1,6 +1,6 @@
 /**
  *  @brief Test instantiations for AVL tree containers. Covers basic_avl_tree (non-transactional) and
- *      transactional_store<basic_avl_tree> (transactional). Includes AVL-specific algorithms
+ *      monotonic_store<basic_avl_tree> (transactional). Includes AVL-specific algorithms
  *      (merge/split/join) and transaction architecture tests.
  *  @author Ash Vardanian
  *  @file scripts/test_avl_tree.cpp
@@ -18,15 +18,15 @@
 #include <vector>   // `std::vector`
 
 #include <smashtable/basic_avl_tree.hpp>
-#include <smashtable/transactional_store.hpp>
-#include <smashtable/transactional_std_store.hpp>
+#include <smashtable/reference_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
 #include "test_fixture_coverage.hpp"
-#include "test_transactional_store_defects.hpp"
+#include "test_monotonic_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -89,55 +89,53 @@ using heavy_map_t =
  *  Tests: Baseline transactional correctness, isolation levels
  */
 using transactional_trivial_set_t =
-    transactional_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
+    monotonic_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
  *  Tests: Transaction resource accounting, OOM during stage/commit
  */
-using transactional_tracking_set_t = transactional_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
+using transactional_tracking_set_t = monotonic_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
  *  Tests: Heterogeneous watch/find in transactions
  */
 using transactional_composite_set_t =
-    transactional_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
+    monotonic_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✓
  *  Tests: Watch copy OOM, transaction rollback with heap types
  */
-using transactional_heavy_set_t = transactional_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
+using transactional_heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
  *  Value: int | Tests: Transactional map operations, value overwrites
  */
 using transactional_trivial_map_t =
-    transactional_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+    monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
 /**
  *  Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
  *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA
  */
-using transactional_tracking_map_t =
-    transactional_avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
+using transactional_tracking_map_t = monotonic_avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values
  */
-using transactional_composite_map_t =
-    transactional_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
-                          std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
+using transactional_composite_map_t = monotonic_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
+                                                        std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap rollback
  */
-using transactional_heavy_map_t = transactional_avl_map<heavy_key_t, guarded_payload_t, std::less<void>,
-                                                        std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
+using transactional_heavy_map_t = monotonic_avl_map<heavy_key_t, guarded_payload_t, std::less<void>,
+                                                    std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
 #pragma endregion Type Aliases
 
@@ -805,6 +803,38 @@ static void test_bulk_upsert_reports_allocation_failure() {
     verify_invariants(tree);
 }
 
+/**
+ *  @brief An upsert must name which of its three outcomes happened.
+ *
+ *  A node that was made, one that was already there, and an allocation that never came back are
+ *  three answers, and none of them should have to be read off a null check.
+ */
+static void test_upsert_reports_placement() {
+    using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
+    using placement_t = typename budget_set_t::node_t::node_placement_t;
+    allocation_ledger_t ledger;
+    ledger.allow(1);
+    budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
+
+    auto const made = tree.upsert(trivial_key_t(1));
+    st_verify_((made.placement == placement_t::made_k) && "a fresh key must report a node of its own");
+    st_verify_(succeeded(made));
+    st_verify_((made.node != nullptr));
+
+    auto const matched = tree.upsert(trivial_key_t(1));
+    st_verify_((matched.placement == placement_t::matched_k) && "a key already there must report a match");
+    st_verify_(succeeded(matched) && "an overwrite is not a failure");
+    st_verify_((matched.node != nullptr));
+
+    // The budget is spent, so the second key has no node to live in - the outcome that shares a
+    // null match with nothing else.
+    auto const refused = tree.upsert(trivial_key_t(2));
+    st_verify_((refused.placement == placement_t::refused_k) && "a refused allocation must say so");
+    st_verify_(failed(refused));
+    st_verify_((refused.node == nullptr));
+    st_verify_eq_(tree.size(), 1u);
+}
+
 /** @brief Move-only entries must survive the assignment operator of an upsert result. */
 static void test_move_only_upsert_assignment() {
     struct move_only_key_t {
@@ -822,7 +852,7 @@ static void test_move_only_upsert_assignment() {
     avl_set<move_only_key_t> tree;
     auto result = tree.upsert(move_only_key_t(5));
     st_verify_(static_cast<bool>(result));
-    result = move_only_key_t(5); // ! Instantiates `upsert_result_t::operator=`
+    result = move_only_key_t(5); // ! Instantiates `upserted_node_t::operator=`
     st_verify_eq_(tree.size(), 1);
 }
 
@@ -935,7 +965,7 @@ static void fixture_coverage_container_balances_counted_keys() {
 }
 
 static void fixture_coverage_rollback_balances_counted_keys() {
-    test_rollback_balances_counted_keys<transactional_avl_map<counted_key_t, int>>();
+    test_rollback_balances_counted_keys<monotonic_avl_map<counted_key_t, int>>();
 }
 
 #pragma endregion Fixture Coverage
@@ -954,7 +984,7 @@ static void structure_erase_const_iterator() {
     verify_invariants(tree);
 }
 
-using overaligned_set_t = transactional_avl_set<overaligned_key_t>;
+using overaligned_set_t = monotonic_avl_set<overaligned_key_t>;
 
 static void fixture_coverage_container_honours_over_alignment() {
     test_container_honours_over_alignment<overaligned_set_t>();
@@ -1047,6 +1077,7 @@ int main() {
     failures += run_test(filter, "structure.bulk_upsert_reports_allocation_failure",
                          test_bulk_upsert_reports_allocation_failure);
     failures += run_test(filter, "structure.move_only_upsert_assignment", test_move_only_upsert_assignment);
+    failures += run_test(filter, "structure.upsert_reports_placement", test_upsert_reports_placement);
 
     failures += run_test(filter, "transactional_defects.direct_write_spares_staged_version",
                          transactional_defects_direct_write_spares_staged_version);

@@ -3,20 +3,20 @@
  *      point-access surface - insert, upsert, update, erase, find, watch and the two-phase commit - since an
  *      unordered core supplies no bounds, ranges, or order statistics.
  *  @author Ash Vardanian
- *  @file scripts/test_transactional_hash.cpp
+ *  @file scripts/test_monotonic_hash.cpp
  *  @date August 17, 2026
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
-#include <smashtable/transactional_store.hpp>
+#include <smashtable/monotonic_store.hpp>
 
 #include "test.hpp"
 #include "test_basic.hpp"
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
 #include "test_fixture_coverage.hpp"
-#include "test_transactional_store_defects.hpp"
+#include "test_monotonic_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -27,31 +27,31 @@ using namespace ashvardanian::smashtable::scripts;
  *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
  *  Tests: Baseline transactional correctness over the cheapest possible key
  */
-using transactional_trivial_set_t = transactional_hash_set<trivial_key_t>;
+using transactional_trivial_set_t = monotonic_hash_set<trivial_key_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✓
  *  Tests: Watch copy OOM, rollback with a heap-allocating key
  */
-using transactional_heavy_set_t = transactional_hash_set<heavy_key_t>;
+using transactional_heavy_set_t = monotonic_hash_set<heavy_key_t>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
  *  Value: int | Tests: Transactional map operations, value overwrites
  */
-using transactional_trivial_map_t = transactional_hash_map<trivial_key_t, int>;
+using transactional_trivial_map_t = monotonic_hash_map<trivial_key_t, int>;
 
 /**
  *  Heterogeneous lookup: ✗ | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Rollback with non-trivial values
  */
-using transactional_composite_map_t = transactional_hash_map<composite_key_t, guarded_payload_t>;
+using transactional_composite_map_t = monotonic_hash_map<composite_key_t, guarded_payload_t>;
 
 /**
  *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✓
  *  Value: guarded_payload_t | Tests: Dual-heap staging and rollback
  */
-using transactional_heavy_map_t = transactional_hash_map<heavy_key_t, guarded_payload_t>;
+using transactional_heavy_map_t = monotonic_hash_map<heavy_key_t, guarded_payload_t>;
 
 #pragma endregion Type Aliases
 
@@ -439,24 +439,24 @@ static void transactional_defects_second_stage_is_rejected() {
 #pragma region Fixture Coverage
 
 static void fixture_coverage_container_balances_counted_keys() {
-    test_container_balances_counted_keys<transactional_hash_map<counted_key_t, int>>();
+    test_container_balances_counted_keys<monotonic_hash_map<counted_key_t, int>>();
 }
 
 static void fixture_coverage_rollback_balances_counted_keys() {
-    test_rollback_balances_counted_keys<transactional_hash_map<counted_key_t, int>>();
+    test_rollback_balances_counted_keys<monotonic_hash_map<counted_key_t, int>>();
 }
 
 static void fixture_coverage_container_walks_collision_runs() {
-    test_container_walks_collision_runs<transactional_hash_map<colliding_key_t, int>>();
+    test_container_walks_collision_runs<monotonic_hash_map<colliding_key_t, int>>();
 }
 
 static void fixture_coverage_transaction_walks_collision_runs() {
-    test_transaction_walks_collision_runs<transactional_hash_map<colliding_key_t, int>>();
+    test_transaction_walks_collision_runs<monotonic_hash_map<colliding_key_t, int>>();
 }
 
 #pragma endregion Fixture Coverage
 
-using budgeted_transactional_set_t = transactional_hash_set<budgeted_key_t>;
+using budgeted_transactional_set_t = monotonic_hash_set<budgeted_key_t>;
 
 static void fixture_coverage_find_copy_reports_a_refused_copy() {
     test_find_copy_reports_a_refused_copy<budgeted_transactional_set_t>();
