@@ -376,9 +376,24 @@ static PyObject *View_update(PyObject *self, PyObject *const *args, Py_ssize_t c
     Py_ssize_t const total = PySequence_Fast_GET_SIZE(fast);
     for (Py_ssize_t index = 0; index != total; ++index) {
         PyObject *pair = PySequence_Fast_GET_ITEM(fast, index);
-        PyObject *key = nullptr;
-        PyObject *value = nullptr;
-        if (!PyArg_ParseTuple(pair, "OO", &key, &value) || View_assign_subscript(self, key, value) != 0) {
+        // Read as a sequence rather than parsed as a tuple, so a list pair is accepted as `dict`
+        // accepts it instead of answering `SystemError`.
+        PyObject *unpacked = PySequence_Fast(pair, "update() needs a mapping or an iterable of pairs");
+        if (!unpacked) {
+            Py_DECREF(fast);
+            return nullptr;
+        }
+        if (PySequence_Fast_GET_SIZE(unpacked) != 2) {
+            PyErr_Format(PyExc_ValueError, "update() needs pairs, got a sequence of length %zd",
+                         PySequence_Fast_GET_SIZE(unpacked));
+            Py_DECREF(unpacked);
+            Py_DECREF(fast);
+            return nullptr;
+        }
+        int const assigned = View_assign_subscript(self, PySequence_Fast_GET_ITEM(unpacked, 0),
+                                                   PySequence_Fast_GET_ITEM(unpacked, 1));
+        Py_DECREF(unpacked);
+        if (assigned != 0) {
             Py_DECREF(fast);
             return nullptr;
         }

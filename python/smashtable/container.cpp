@@ -542,13 +542,26 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
     Py_ssize_t const total = PySequence_Fast_GET_SIZE(fast);
     for (Py_ssize_t index = 0; index != total; ++index) {
         PyObject *pair = PySequence_Fast_GET_ITEM(fast, index);
-        PyObject *key = nullptr;
-        PyObject *value = nullptr;
-        if (!PyArg_ParseTuple(pair, "OO", &key, &value)) {
+        // Read as a sequence rather than parsed as a tuple: a pair may be any two-element sequence,
+        // and `PyArg_ParseTuple` answers a list with `SystemError`, which names the library as the
+        // culprit for what is an ordinary input.
+        PyObject *unpacked = PySequence_Fast(pair, "update() needs a mapping or an iterable of pairs");
+        if (!unpacked) {
             Py_DECREF(fast);
             return nullptr;
         }
-        if (Map_assign_subscript(self, key, value) != 0) {
+        if (PySequence_Fast_GET_SIZE(unpacked) != 2) {
+            PyErr_Format(PyExc_ValueError, "update() needs pairs, got a sequence of length %zd",
+                         PySequence_Fast_GET_SIZE(unpacked));
+            Py_DECREF(unpacked);
+            Py_DECREF(fast);
+            return nullptr;
+        }
+        PyObject *key = PySequence_Fast_GET_ITEM(unpacked, 0);
+        PyObject *value = PySequence_Fast_GET_ITEM(unpacked, 1);
+        int const assigned = Map_assign_subscript(self, key, value);
+        Py_DECREF(unpacked);
+        if (assigned != 0) {
             Py_DECREF(fast);
             return nullptr;
         }
@@ -761,15 +774,19 @@ static bool keeps_member(algebra_t operation, membership_t membership, side_t si
  *
  *  @return True when the result was filled; false with an exception set.
  */
-static bool set_algebra_natively(container_object_t *mine, container_object_t *theirs, container_object_t *result,
-                                 algebra_t operation) noexcept {
-    bool failed = false;
+static status_t set_algebra_natively(container_object_t *mine, container_object_t *theirs, container_object_t *result,
+                                     algebra_t operation) noexcept {
+    status_t outcome = success_k;
     store_ops_t const *table = mine->store_ops;
 
     auto absorb = [&](key_variant_t const &member, membership_t membership, side_t side) noexcept {
-        if (failed || !keeps_member(operation, membership, side)) return;
+        if (failed(outcome) || !keeps_member(operation, membership, side)) return;
         auto copied = member.copy();
-        if (!copied || !succeeded(table->upsert(result->store, std::move(*copied), nullptr))) failed = true;
+        if (!copied) {
+            outcome = copied.status();
+            return;
+        }
+        outcome = table->upsert(result->store, std::move(*copied), nullptr);
     };
 
     for_each_in_order(mine, [&](key_variant_t const &member, value_variant_t const &) noexcept {
@@ -784,8 +801,9 @@ static bool set_algebra_natively(container_object_t *mine, container_object_t *t
                    side_t::theirs_k);
         });
 
-    if (failed) PyErr_NoMemory();
-    return !failed;
+    // The status is threaded out rather than collapsed into a memory error: a table that ran out of
+    // probe slots is not a heap that ran out of memory, and the two want different remedies.
+    return outcome;
 }
 
 static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operation) noexcept {
@@ -797,7 +815,8 @@ static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operatio
     if (auto *twin = same_layout_set(self, other)) {
         auto *mine = object_as<container_object_t>(self);
         auto *filled = object_as<container_object_t>(result);
-        if (!set_algebra_natively(mine, twin, filled, operation)) {
+        status_t const outcome = set_algebra_natively(mine, twin, filled, operation);
+        if (raise_for(state_of_type(self), outcome) != 0) {
             Py_DECREF(result);
             return nullptr;
         }
@@ -814,7 +833,17 @@ static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operatio
     while ((member = PyIter_Next(iterator)) != nullptr) {
         int const shared = PySequence_Contains(other, member);
         bool keep = false;
-        if (shared < 0) PyErr_Clear(); // A member the other side cannot even hold is simply not shared
+        // A member the other side cannot even hold is simply not shared. Anything else - a failing
+        // `__eq__`, an interrupt, a memory error - is a real failure and must not be swallowed.
+        if (shared < 0) {
+            if (!PyErr_ExceptionMatches(PyExc_TypeError)) {
+                Py_DECREF(member);
+                Py_DECREF(iterator);
+                Py_DECREF(result);
+                return nullptr;
+            }
+            PyErr_Clear();
+        }
         switch (operation) {
         case algebra_t::union_k: keep = true; break;
         case algebra_t::intersection_k: keep = shared == 1; break;
@@ -848,7 +877,15 @@ static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operatio
         }
         while ((member = PyIter_Next(other_iterator)) != nullptr) {
             int const mine = PySequence_Contains(self, member);
-            if (mine < 0) PyErr_Clear();
+            if (mine < 0) {
+                if (!PyErr_ExceptionMatches(PyExc_TypeError)) {
+                    Py_DECREF(member);
+                    Py_DECREF(other_iterator);
+                    Py_DECREF(result);
+                    return nullptr;
+                }
+                PyErr_Clear();
+            }
             bool const keep = operation == algebra_t::union_k || mine != 1;
             if (keep) {
                 PyObject *added = Set_add(result, member);
@@ -923,18 +960,31 @@ static PyObject *Set_isdisjoint(PyObject *self, PyObject *const *args, Py_ssize_
         return PyBool_FromLong(disjoint ? 1 : 0);
     }
 
+    auto const *container = object_as<container_object_t>(self);
     PyObject *iterator = PyObject_GetIter(args[0]);
     if (!iterator) return nullptr;
     PyObject *member = nullptr;
     bool disjoint = true;
     while (disjoint && (member = PyIter_Next(iterator)) != nullptr) {
-        int const mine = container_contains(self, member);
+        // Converted here rather than asked through `__contains__`, which answers False for anything
+        // it cannot hold and clears the reason. A member of a foreign type is genuinely not in this
+        // set, but a failing `__hash__` or an interrupt is not an answer and must not read as one.
+        key_variant_t needle;
+        bool const convertible = key_from_python(member, container->ops, needle);
         Py_DECREF(member);
-        if (mine < 0) {
-            Py_DECREF(iterator);
-            return nullptr;
+        if (!convertible) {
+            if (!PyErr_ExceptionMatches(PyExc_TypeError) && !PyErr_ExceptionMatches(PyExc_OverflowError)) {
+                Py_DECREF(iterator);
+                return nullptr;
+            }
+            PyErr_Clear();
+            continue; // Nothing this set can hold, so it shares nothing with it
         }
-        disjoint = mine == 0;
+        bool found = false;
+        Py_BEGIN_ALLOW_THREADS;
+        found = container->store_ops->contains(container->store, needle);
+        Py_END_ALLOW_THREADS;
+        disjoint = !found;
     }
     Py_DECREF(iterator);
     if (PyErr_Occurred()) return nullptr;
@@ -1017,6 +1067,12 @@ static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_
                 if (value != Py_None) {
                     limit = PyNumber_AsSsize_t(value, PyExc_OverflowError);
                     if (limit == -1 && PyErr_Occurred()) return nullptr;
+                    // Negative is the cursor's own spelling for uncounted, so a caller passing one
+                    // would silently receive the whole container rather than nothing.
+                    if (limit < 0) {
+                        PyErr_SetString(PyExc_ValueError, "limit cannot be negative");
+                        return nullptr;
+                    }
                 }
             }
             else {
@@ -1084,7 +1140,12 @@ static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept
     PyObject *parts = PyList_New(0);
     if (!parts) return nullptr;
 
-    PyObject *cursor = cursor_new(state_of_type(self), self, yields, nullptr, nullptr, repr_limit_k);
+    module_state_t *state = state_of_type(self);
+    if (!state) {
+        Py_DECREF(parts);
+        return nullptr;
+    }
+    PyObject *cursor = cursor_new(state, self, yields, nullptr, nullptr, repr_limit_k);
     if (!cursor) {
         Py_DECREF(parts);
         return nullptr;
@@ -1239,7 +1300,14 @@ static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept
     while (subset && (member = PyIter_Next(iterator)) != nullptr) {
         int const shared = PySequence_Contains(other, member);
         Py_DECREF(member);
-        if (shared < 0) PyErr_Clear(), subset = false;
+        if (shared < 0) {
+            if (!PyErr_ExceptionMatches(PyExc_TypeError)) {
+                Py_DECREF(iterator);
+                return -1;
+            }
+            PyErr_Clear();
+            subset = false;
+        }
         else subset = shared == 1;
     }
     Py_DECREF(iterator);

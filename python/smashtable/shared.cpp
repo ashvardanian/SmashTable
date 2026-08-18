@@ -164,6 +164,24 @@ bool value_mode_from_python(PyObject *specification, value_mode_t &mode) noexcep
 
 #pragma region Converting Values In
 
+/**
+ *  @brief Copies bytes into an owned string, reporting exhaustion rather than aborting on it.
+ *
+ *  These conversions are @c noexcept because they sit in a C-API frame with nowhere for an
+ *  exception to go, and a @c std::string built from user data is exactly where allocation fails.
+ *  Without this the process ends instead of raising, which is not a failure a caller can handle.
+ */
+static bool own_bytes(char const *source, Py_ssize_t length, std::string &result) noexcept {
+    try {
+        result.assign(source, static_cast<std::size_t>(length));
+        return true;
+    }
+    catch (...) {
+        PyErr_NoMemory();
+        return false;
+    }
+}
+
 bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &result) noexcept {
     // `bool` is a `PyLong` subclass, so it has to be tested first or it disappears into `int`.
     if (PyBool_Check(object)) {
@@ -198,14 +216,18 @@ bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &res
         Py_ssize_t length = 0;
         char const *utf8 = PyUnicode_AsUTF8AndSize(object, &length);
         if (!utf8) return false;
-        result = value_variant_t {utf8_t {std::string(utf8, static_cast<std::size_t>(length))}};
+        utf8_t owned;
+        if (!own_bytes(utf8, length, owned.text)) return false;
+        result = value_variant_t {std::move(owned)};
         return true;
     }
     if (PyBytes_Check(object)) {
         char *buffer = nullptr;
         Py_ssize_t length = 0;
         if (PyBytes_AsStringAndSize(object, &buffer, &length) != 0) return false;
-        result = value_variant_t {bytes_t {std::string(buffer, static_cast<std::size_t>(length))}};
+        bytes_t owned;
+        if (!own_bytes(buffer, length, owned.data)) return false;
+        result = value_variant_t {std::move(owned)};
         return true;
     }
 
@@ -270,7 +292,9 @@ bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &resu
         Py_ssize_t length = 0;
         char const *utf8 = PyUnicode_AsUTF8AndSize(object, &length);
         if (!utf8) return false;
-        result = key_variant_t {utf8_t {std::string(utf8, static_cast<std::size_t>(length))}};
+        utf8_t owned;
+        if (!own_bytes(utf8, length, owned.text)) return false;
+        result = key_variant_t {std::move(owned)};
         return true;
     }
     case key_type_t::bytes_k: {
@@ -278,7 +302,9 @@ bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &resu
         char *buffer = nullptr;
         Py_ssize_t length = 0;
         if (PyBytes_AsStringAndSize(object, &buffer, &length) != 0) return false;
-        result = key_variant_t {bytes_t {std::string(buffer, static_cast<std::size_t>(length))}};
+        bytes_t owned;
+        if (!own_bytes(buffer, length, owned.data)) return false;
+        result = key_variant_t {std::move(owned)};
         return true;
     }
     }

@@ -144,14 +144,13 @@ struct store_bridge {
         else {
             auto copied = key.copy();
             if (!copied) return copied.status();
-            status_t const status =
-                store_of(store).insert_if_missing(value_t {std::move(*copied), std::move(value)});
-            if (failed(status)) return status;
-            // The key is present either way now, so one read settles which value won without either
-            // store having to report whether this call is what put it there.
-            [[maybe_unused]] bool const present = find(store, key, winner);
-            assert(present && "insert_if_missing left the key absent");
-            return status;
+            // One store call rather than an insert followed by a read: between two calls another
+            // thread can erase the key, leaving the read with nothing and the caller with a value
+            // nobody stored. Whichever branch the store takes reports the winner from inside it.
+            return store_of(store).insert_if_missing(
+                value_t {std::move(*copied), std::move(value)},
+                [&](value_t const &inserted) noexcept { winner = inserted.mapped; },
+                [&](value_t const &existing) noexcept { winner = existing.mapped; });
         }
     }
 

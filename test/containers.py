@@ -23,6 +23,7 @@ from .base import (
     populate,
     set_class_names,
     sizes,
+    sorted_map_names,
     value_types,
 )
 
@@ -401,3 +402,75 @@ def test_a_view_names_its_container(populated):
 
 
 # endregion Views
+
+
+# region Input handling
+
+
+@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_update_accepts_any_two_element_sequence(container):
+    """`dict.update` takes pairs of any sequence type, and so must this.
+
+    Regression: the pair was parsed with `PyArg_ParseTuple`, which answers a list with
+    `SystemError` - a name that blames the library for an ordinary input.
+    """
+    container.update([[1, "list"]])
+    container.update(((2, "tuple"),))
+    assert container[1] == "list" and container[2] == "tuple"
+
+
+@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("bad", [pytest.param([[1, 2, 3]], id="triple"), pytest.param([[1]], id="single")])
+def test_update_refuses_a_sequence_that_is_not_a_pair(container, bad):
+    """A pair has two elements, and anything else is the caller's error rather than a crash."""
+    with pytest.raises(ValueError):
+        container.update(bad)
+
+
+@pytest.mark.parametrize("class_name", sorted_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_scan_refuses_a_negative_limit(container):
+    """A negative limit is the cursor's own spelling for uncounted, so it must not reach it.
+
+    Regression: `scan(limit=-5)` returned the whole container, which is the opposite of what a
+    caller passing a negative bound could possibly mean.
+    """
+    with pytest.raises(ValueError):
+        container.scan(limit=-1)
+
+
+@pytest.mark.parametrize("class_name", sorted_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_scan_limit_zero_yields_nothing(container, keygen):
+    """Zero is a real bound, not a sentinel, and is the boundary the negative case sits beside."""
+    for index, key in enumerate(keygen(4)):
+        container[key] = index
+    assert container.scan(limit=0) == []
+    assert len(container.scan(limit=2)) == 2
+
+
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_set_algebra_propagates_a_real_error(container):
+    """A failure inside a caller's `__eq__` is not an answer and must not read as one.
+
+    A member of a foreign type genuinely is not in this set, so that stays tolerated; anything
+    else - an interrupt, a memory error - has to reach the caller.
+    """
+    container.update([1, 2, 3])
+
+    class Angry:
+        def __eq__(self, other):
+            raise MemoryError("propagate me")
+
+        def __hash__(self):
+            return 1
+
+    with pytest.raises(MemoryError):
+        container.union([Angry()])
+    assert container.isdisjoint(["not an int"]) is True, "a foreign member is simply not shared"
+
+
+# endregion Input handling
