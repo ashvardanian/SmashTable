@@ -63,7 +63,7 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
 static bool isolation_from_python(PyObject *specification, isolation_choice_t &choice) noexcept {
     if (!specification || specification == Py_None) return true;
     if (!PyUnicode_Check(specification)) {
-        PyErr_SetString(PyExc_TypeError, "isolation must be 'monotonic_atomic_view' or 'snapshot'");
+        PyErr_SetString(PyExc_TypeError, "isolation must be 'monotonic_atomic_view', 'snapshot' or 'serializable'");
         return false;
     }
     if (PyUnicode_CompareWithASCIIString(specification, "monotonic_atomic_view") == 0) {
@@ -74,11 +74,16 @@ static bool isolation_from_python(PyObject *specification, isolation_choice_t &c
         choice = isolation_choice_t::snapshot_k;
         return true;
     }
+    if (PyUnicode_CompareWithASCIIString(specification, "serializable") == 0) {
+        choice = isolation_choice_t::serializable_k;
+        return true;
+    }
     // A sharded store reports a level weaker than any that can be asked for, so a caller feeding
     // `isolation` back in deserves to be told why rather than shown its own string again.
-    PyErr_Format(PyExc_ValueError,                                                                  //
-                 "isolation must be 'monotonic_atomic_view' or 'snapshot', not %R; a weaker level " //
-                 "such as 'read_committed' is delivered by sharding rather than requested",         //
+    PyErr_Format(PyExc_ValueError,                                                               //
+                 "isolation must be 'monotonic_atomic_view', 'snapshot' or 'serializable', not " //
+                 "%R; a weaker level such as 'read_committed' is delivered by sharding rather "  //
+                 "than requested",                                                               //
                  specification);
     return false;
 }
@@ -98,11 +103,7 @@ static bool sharing_from_python(PyObject *specification, sharing_choice_t &choic
         choice = sharing_choice_t::partitioned_k;
         return true;
     }
-    PyErr_Format(PyExc_ValueError,                                                            //
-                 "isolation must be 'monotonic_atomic_view' or 'snapshot', not %R; a weaker " //
-                 "level such as 'read_committed' is delivered by sharding rather than "       //
-                 "requested",                                                                 //
-                 specification);
+    PyErr_Format(PyExc_ValueError, "sharing must be 'locked' or 'partitioned', not %R", specification);
     return false;
 }
 
@@ -251,10 +252,17 @@ static int container_contains(PyObject *self, PyObject *key) noexcept {
         return 0;
     }
 
-    bool found = false;
+    expected<bool> held;
     Py_BEGIN_ALLOW_THREADS;
-    found = container->store_ops->contains(container->store, needle);
+    held = container->store_ops->contains(container->store, needle);
     Py_END_ALLOW_THREADS;
+    status_t const status = held.status();
+    bool const found = held && *held;
+    // A read that could not record itself is a refusal, and the protocol's error answer is -1.
+    if (failed(status)) {
+        [[maybe_unused]] int const raised = raise_for(state_of_type(self), status);
+        return -1;
+    }
     return found ? 1 : 0;
 }
 
@@ -465,7 +473,14 @@ static PyObject *Map_popmin(PyObject *self, PyObject *) noexcept {
         // is the one the erase actually took, not the one the seek saw, so a key that vanished in
         // between reads as absent rather than as a pair nobody removed. A key inserted below it in
         // between is still missed, which is what a `pop_smallest` on the store would close.
-        if (!container->store_ops->lower_bound(container->store, floor, smallest_key, nullptr)) return;
+        bool found = false;
+        if (status_t const sought =
+                container->store_ops->lower_bound(container->store, floor, smallest_key, nullptr, found);
+            failed(sought)) {
+            removed = expected<value_variant_t> {sought};
+            return;
+        }
+        if (!found) return;
         removed = container->store_ops->erase(container->store, smallest_key);
     });
 
@@ -704,7 +719,10 @@ static PyObject *Set_popmin(PyObject *self, PyObject *) noexcept {
     key_variant_t floor;
     container->ops->least(floor);
     // See the map's popmin: the member reported is the one the erase took, not the one the seek saw.
-    if (container->store_ops->lower_bound(container->store, floor, smallest, nullptr)) {
+    bool found = false;
+    status_t const sought = container->store_ops->lower_bound(container->store, floor, smallest, nullptr, found);
+    if (failed(sought)) status = sought;
+    else if (found) {
         expected<value_variant_t> const removed = container->store_ops->erase(container->store, smallest);
         present = static_cast<bool>(removed);
         status = removed.status();
@@ -845,16 +863,20 @@ static status_t set_algebra_natively(container_object_t *mine, container_object_
         outcome = table->upsert(result->store, std::move(*copied), nullptr);
     };
 
+    auto membership_in = [&](void *store, key_variant_t const &member) noexcept {
+        expected<bool> const held = table->contains(store, member);
+        if (!held) outcome = held.status();
+        return held && *held ? membership_t::shared_k : membership_t::absent_k;
+    };
+
     for_each_in_order(mine, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-        absorb(member, table->contains(theirs->store, member) ? membership_t::shared_k : membership_t::absent_k,
-               side_t::mine_k);
+        absorb(member, membership_in(theirs->store, member), side_t::mine_k);
     });
 
     // Union and symmetric difference also need what only the other side holds.
     if (operation == algebra_t::union_k || operation == algebra_t::symmetric_difference_k)
         for_each_in_order(theirs, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-            absorb(member, table->contains(mine->store, member) ? membership_t::shared_k : membership_t::absent_k,
-                   side_t::theirs_k);
+            absorb(member, membership_in(mine->store, member), side_t::theirs_k);
         });
 
     // The status is threaded out rather than collapsed into a memory error: a table that ran out of
@@ -1009,10 +1031,14 @@ static PyObject *Set_isdisjoint(PyObject *self, PyObject *const *args, Py_ssize_
         // Probing the smaller side keeps this O(min(n, m) log max(n, m)) rather than always O(n log m).
         auto const *smaller = table->size(mine->store) <= table->size(twin->store) ? mine : twin;
         auto const *larger = smaller == mine ? twin : mine;
+        status_t asked = success_k;
         for_each_in_order(smaller, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-            disjoint = !table->contains(larger->store, member);
+            expected<bool> const held = table->contains(larger->store, member);
+            if (!held) asked = held.status();
+            disjoint = !(held && *held);
             return disjoint;
         });
+        if (failed(asked)) return raise_for(state_of_type(self), asked), nullptr;
         return PyBool_FromLong(disjoint ? 1 : 0);
     }
 
@@ -1036,10 +1062,18 @@ static PyObject *Set_isdisjoint(PyObject *self, PyObject *const *args, Py_ssize_
             PyErr_Clear();
             continue; // Nothing this set can hold, so it shares nothing with it
         }
-        bool found = false;
+        expected<bool> held;
         Py_BEGIN_ALLOW_THREADS;
-        found = container->store_ops->contains(container->store, needle);
+        held = container->store_ops->contains(container->store, needle);
         Py_END_ALLOW_THREADS;
+        status_t const asked = held.status();
+        bool const found = held && *held;
+        if (failed(asked)) {
+            Py_DECREF(member);
+            Py_DECREF(iterator);
+            [[maybe_unused]] int const raised = raise_for(state_of_type(self), asked);
+            return nullptr;
+        }
         disjoint = !found;
     }
     Py_DECREF(iterator);
@@ -1340,11 +1374,15 @@ static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept
             auto *mine = object_as<container_object_t>(self);
             store_ops_t const *table = mine->store_ops;
             bool subset = table->size(mine->store) <= table->size(twin->store);
+            status_t asked = success_k;
             if (subset)
                 for_each_in_order(mine, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-                    subset = table->contains(twin->store, member);
+                    expected<bool> const held = table->contains(twin->store, member);
+                    if (!held) asked = held.status();
+                    subset = held && *held;
                     return subset;
                 });
+            if (failed(asked)) return raise_for(state, asked);
             *answer = subset;
             return 0;
         }

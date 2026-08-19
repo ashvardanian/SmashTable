@@ -73,7 +73,11 @@ transaction_styles = [pytest.param("context", id="with"), pytest.param("explicit
 
 # What a reader is promised, and how the store is shared between threads. Two independent axes: the
 # level is asked for at construction, while the sharing decides how far up it actually survives.
-isolation_levels = [pytest.param("monotonic_atomic_view", id="monotonic"), pytest.param("snapshot", id="snapshot")]
+isolation_levels = [
+    pytest.param("monotonic_atomic_view", id="monotonic"),
+    pytest.param("snapshot", id="snapshot"),
+    pytest.param("serializable", id="serializable"),
+]
 sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
 # endregion Matrices
@@ -184,16 +188,16 @@ def make(
 def effective_isolation(isolation: str, sharing: str) -> str:
     """What a container actually promises, which is not always what was asked for.
 
-    A snapshot container carries its level across partitions, because visibility there is a stamp
-    comparison and every partition draws from one clock. A monotonic one cannot: its reader holds no
-    stamp to answer at, so a walk across partitions can catch a commit half-applied and only Read
-    Committed survives above a single key.
+    A stamp-based container - snapshot or serializable - carries its level across partitions,
+    because visibility there is a stamp comparison and every partition draws from one clock. A
+    monotonic one cannot: its reader holds no stamp to answer at, so a walk across partitions can
+    catch a commit half-applied and only Read Committed survives above a single key.
 
     The single place the cap is spelled, so a core that changes what it can carry is one edit here
     rather than a sweep through the suite.
     """
-    if isolation == "snapshot":
-        return "snapshot"
+    if isolation in ("snapshot", "serializable"):
+        return isolation
     return "read_committed" if sharing == "partitioned" else "monotonic_atomic_view"
 
 

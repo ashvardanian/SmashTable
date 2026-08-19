@@ -160,5 +160,157 @@ def test_monotonic_does_not_repeat_its_reads(keygen):
     container[key] = "second"
     assert view[key] == "second"
 
-
 # endregion Guarantees
+
+# region Write Skew
+
+
+def _doctors_on_call(isolation: str, keygen) -> tuple[bool, int]:
+    """Runs the two-doctors schedule and reports whether the second commit was refused.
+
+    Two transactions each read the *other* doctor, find them on call, and take themselves off.
+    Neither writes what the other wrote, so a write-set check alone sees no conflict - only a
+    reader that validates what it read can catch this.
+    """
+    alice, bob = keygen(2)
+    container = make(st.SortedMap, "int", isolation=isolation, sharing="locked")
+    container[alice] = 1
+    container[bob] = 1
+
+    hers = st.transaction(container)
+    (her_view,) = hers.begin()
+    his = st.transaction(container)
+    (his_view,) = his.begin()
+
+    her_view[bob]  # each checks that the other is covering
+    his_view[alice]
+    her_view[alice] = 0  # and so goes off call
+    his_view[bob] = 0
+
+    hers.stage()
+    hers.commit()
+    try:
+        his.stage()
+        his.commit()
+        refused = False
+    except st.ConflictError:
+        refused = True
+    return refused, container[alice] + container[bob]
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_snapshot_admits_write_skew(keygen):
+    """Snapshot validates only what a transaction wrote, so disjoint writes never conflict.
+
+    Asserted as an anomaly the level permits rather than left untested, because it is the whole
+    reason the level above it exists. Berenson lists A5B as possible under Snapshot.
+    """
+    refused, on_call = _doctors_on_call("snapshot", keygen)
+    assert not refused, "disjoint write sets give a snapshot commit nothing to conflict on"
+    assert on_call == 0, "both doctors went off call, which is the anomaly"
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_serializable_refuses_write_skew(keygen):
+    """Serializable validates what was read too, which is exactly what catches this.
+
+    The acceptance criterion for the level: the same schedule that slips through a snapshot
+    container is refused here, and the invariant the two transactions were each relying on holds.
+    """
+    refused, on_call = _doctors_on_call("serializable", keygen)
+    assert refused, "a key this transaction read was written under it, so the commit must refuse"
+    assert on_call == 1, "one doctor stays on call, which is the invariant write skew broke"
+
+
+# endregion Write Skew
+
+# region Refusal Causes
+
+
+def _refusal_of(schedule, keygen) -> BaseException:
+    """Runs a two-transaction schedule at `serializable` and returns what refused the second."""
+    container = make(st.SortedMap, "int", isolation="serializable", sharing="locked")
+    with pytest.raises(st.ConflictError) as refusal:
+        schedule(container, keygen)
+    return refusal.value
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_written_key_refuses_by_write_conflict(keygen):
+    """Both transactions write one key, so the write set alone catches it."""
+
+    def schedule(container, keygen):
+        key, = keygen(1)
+        container[key] = 0
+        hers = st.transaction(container)
+        (her_view,) = hers.begin()
+        his = st.transaction(container)
+        (his_view,) = his.begin()
+        her_view[key] = 10
+        his_view[key] = 20
+        hers.stage()
+        hers.commit()
+        his.stage()
+        his.commit()
+
+    refusal = _refusal_of(schedule, keygen)
+    assert isinstance(refusal, st.WriteConflictError)
+    assert isinstance(refusal, st.ConflictError), "a caller catching the base must still catch this"
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_read_key_refuses_by_read_conflict(keygen):
+    """One transaction reads a key the other then writes, and writes elsewhere itself.
+
+    The write sets are disjoint, so only validating what was read can refuse this - which is the
+    difference `serializable` buys over `snapshot`.
+    """
+
+    def schedule(container, keygen):
+        read_key, written_key = keygen(2)
+        container[read_key] = 0
+        container[written_key] = 0
+        hers = st.transaction(container)
+        (her_view,) = hers.begin()
+        his = st.transaction(container)
+        (his_view,) = his.begin()
+        his_view[read_key]  # he reads it
+        his_view[written_key] = 5  # and writes somewhere else entirely
+        her_view[read_key] = 10  # she writes what he read
+        hers.stage()
+        hers.commit()
+        his.stage()
+        his.commit()
+
+    refusal = _refusal_of(schedule, keygen)
+    assert isinstance(refusal, st.ReadConflictError)
+    assert isinstance(refusal, st.ConflictError), "a caller catching the base must still catch this"
+
+
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_every_refusal_cause_is_catchable_as_one(keygen):
+    """The three causes subclass `ConflictError`, so a retry loop need not know which it got."""
+    for cause in (st.WriteConflictError, st.ReadConflictError, st.PhantomConflictError):
+        assert issubclass(cause, st.ConflictError)
+        assert issubclass(cause, st.SmashTableError)
+        assert issubclass(cause, RuntimeError)
+
+
+# A phantom refusal has no Python test yet, and cannot have one: provoking it needs an ordered read
+# inside a transaction, and the participant view offers only point access - `store_ops_t` carries no
+# `transaction_lower_bound`, `transaction_range` or `transaction_for_each`. `PhantomConflictError`
+# is reachable from C++ today and becomes reachable from here once those slots exist.
+
+# endregion Refusal Causes

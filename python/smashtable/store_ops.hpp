@@ -118,13 +118,18 @@ struct store_bridge {
         return store_of(store).clear();
     }
 
-    static bool contains(void *store, key_variant_t const &key) noexcept { return store_of(store).contains(key); }
+    static expected<bool> contains(void *store, key_variant_t const &key) noexcept {
+        return store_of(store).contains(key);
+    }
 
     static expected<value_variant_t> find(void *store, key_variant_t const &key) noexcept {
         deferring_store_call_t deferral;
         expected<value_variant_t> answer {key_not_found_k};
         if constexpr (associative_k)
-            store_of(store).find(key, [&](value_t const &entry) noexcept { answer = entry.mapped.copy(); }, no_op_t {});
+            if (status_t const read = store_of(store).find(
+                    key, [&](value_t const &entry) noexcept { answer = entry.mapped.copy(); }, no_op_t {});
+                failed(read))
+                return expected<value_variant_t> {read};
         return answer;
     }
 
@@ -193,24 +198,24 @@ struct store_bridge {
             if (value) *value = element.mapped;
     }
 
-    static bool lower_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept
+    static status_t lower_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
+                                bool &found) noexcept
         requires ordered_k
     {
         deferring_store_call_t deferral;
-        bool found = false;
-        store_of(store).lower_bound(
+        found = false;
+        return store_of(store).lower_bound(
             from, [&](value_t const &element) noexcept { take(element, key, value), found = true; }, no_op_t {});
-        return found;
     }
 
-    static bool upper_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept
+    static status_t upper_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
+                                bool &found) noexcept
         requires ordered_k
     {
         deferring_store_call_t deferral;
-        bool found = false;
-        store_of(store).upper_bound(
+        found = false;
+        return store_of(store).upper_bound(
             from, [&](value_t const &element) noexcept { take(element, key, value), found = true; }, no_op_t {});
-        return found;
     }
 
     /**
@@ -249,7 +254,7 @@ struct store_bridge {
         delete static_cast<transaction_t *>(transaction);
     }
 
-    static bool transaction_contains(void *transaction, key_variant_t const &key) noexcept {
+    static expected<bool> transaction_contains(void *transaction, key_variant_t const &key) noexcept {
         return transaction_of(transaction).contains(key);
     }
 
@@ -257,8 +262,12 @@ struct store_bridge {
         deferring_store_call_t deferral;
         expected<value_variant_t> answer {key_not_found_k};
         if constexpr (associative_k)
-            transaction_of(transaction)
-                .find(key, [&](value_t const &entry) noexcept { answer = entry.mapped.copy(); }, no_op_t {});
+            if (status_t const read =
+                    transaction_of(transaction)
+                        .find(
+                            key, [&](value_t const &entry) noexcept { answer = entry.mapped.copy(); }, no_op_t {});
+                failed(read))
+                return expected<value_variant_t> {read};
         return answer;
     }
 
@@ -304,7 +313,11 @@ struct store_bridge {
         requires(enumerable_k && associative_k)
     {
         int outcome = 0;
-        store_of(store).for_each([&](value_t const &element) noexcept {
+        // The walk's own status is dropped here, and this is the one slot where that is right:
+        // `tp_traverse` answers the collector with an `int` that means "keep going" or "stop", and
+        // has no room for a reason. A walk that could not complete reports nothing rather than
+        // fewer objects, so the collector simply sees what was reachable at that moment.
+        [[maybe_unused]] status_t const walked = store_of(store).for_each([&](value_t const &element) noexcept {
             if (outcome != 0) return;
             auto const *held = std::get_if<object_t>(&element.mapped.value);
             if (held && held->held) outcome = visit(held->held, arg);

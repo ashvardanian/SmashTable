@@ -503,7 +503,14 @@ struct store_ops_t {
 
     std::size_t (*size)(void *store) noexcept;
     status_t (*clear)(void *store) noexcept;
-    bool (*contains)(void *store, key_variant_t const &key) noexcept;
+    /**
+     *  @brief Whether @p key is held, reported through @p present.
+     *
+     *  The answer is an out-parameter for the same reason the bounds use one: membership is a read,
+     *  and at a serializable level a read records itself and can therefore refuse. "Not held" and
+     *  "could not be answered" are different facts.
+     */
+    expected<bool> (*contains)(void *store, key_variant_t const &key) noexcept;
     /** @brief Reads a mapped value, or reports @c key_not_found_k. Null on a set, which has none. */
     expected<value_variant_t> (*find)(void *store, key_variant_t const &key) noexcept;
     /** @brief Inserts or overwrites. @p value is null for a set, which stores the key alone. */
@@ -548,10 +555,20 @@ struct store_ops_t {
     // element is a key and a value, a set's is a key alone. Both reasons end when the cursor comes
     // from C++ and hands its key and value back separately.
 
-    /** @brief First element at or after @p from. Null on an unordered core. */
-    bool (*lower_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept;
-    /** @brief First element strictly after @p from. Null on an unordered core. */
-    bool (*upper_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept;
+    /**
+     *  @brief First element at or after @p from, reporting through @p found whether there was one.
+     *
+     *  The answer is an out-parameter because the return carries the read's own status: a bound is a
+     *  read, and a read that records itself can refuse, so "nothing was there" and "the store could
+     *  not answer" are different facts that a lone @c bool would collapse.
+     *
+     *  Null on an unordered core.
+     */
+    status_t (*lower_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
+                            bool &found) noexcept;
+    /** @brief First element strictly after @p from, reporting through @p found. Null on an unordered core. */
+    status_t (*upper_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
+                            bool &found) noexcept;
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept;
 
@@ -567,7 +584,7 @@ struct store_ops_t {
     /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
     expected<void *> (*transaction_make)(void *store) noexcept;
     void (*transaction_destroy)(void *transaction) noexcept;
-    bool (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
+    expected<bool> (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
     expected<value_variant_t> (*transaction_find)(void *transaction, key_variant_t const &key) noexcept;
     status_t (*transaction_upsert)(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept;
     status_t (*transaction_erase)(void *transaction, key_variant_t const &key) noexcept;
@@ -588,7 +605,7 @@ struct store_ops_t {
 enum class core_t : std::uint8_t { sorted_k, hashed_k };
 
 /** @brief What a reader is promised, as the constructor's @c isolation argument names it. */
-enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k };
+enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k, serializable_k };
 
 /** @brief How a store is shared between threads, as the constructor's @c sharing argument names it. */
 enum class sharing_choice_t : std::uint8_t { locked_k, partitioned_k };
@@ -601,7 +618,6 @@ enum class sharing_choice_t : std::uint8_t { locked_k, partitioned_k };
  */
 constexpr char const *isolation_name_of(isolation_t level) noexcept {
     switch (level) {
-    case isolation_t::read_uncommitted_k: return "read_uncommitted";
     case isolation_t::read_committed_k: return "read_committed";
     case isolation_t::monotonic_atomic_view_k: return "monotonic_atomic_view";
     case isolation_t::snapshot_k: return "snapshot";
@@ -801,8 +817,12 @@ void for_each_in_order(container_object_t const *container, callback_type_ &&cal
     value_variant_t found_value;
     bool fresh = true;
     while (true) {
-        bool const advanced = fresh ? table->lower_bound(container->store, cursor, found_key, &found_value)
-                                    : table->upper_bound(container->store, cursor, found_key, &found_value);
+        bool advanced = false;
+        // A step the store could not answer ends the walk, the way an exhausted one does: this
+        // returns nothing to the caller, so there is nowhere to put a reason.
+        [[maybe_unused]] status_t const stepped =
+            fresh ? table->lower_bound(container->store, cursor, found_key, &found_value, advanced)
+                  : table->upper_bound(container->store, cursor, found_key, &found_value, advanced);
         fresh = false;
         if (!advanced) break;
         cursor = found_key;
@@ -861,7 +881,7 @@ struct participant_t {
     /** @brief Whether this participant stores values as well as keys. */
     [[nodiscard]] bool is_associative() const noexcept { return table->is_associative; }
 
-    [[nodiscard]] bool contains(key_variant_t const &key) noexcept {
+    [[nodiscard]] expected<bool> contains(key_variant_t const &key) noexcept {
         return table->transaction_contains(transaction, key);
     }
 
@@ -972,6 +992,9 @@ struct module_state_t {
     PyTypeObject *items_view_type;
     PyObject *error;
     PyObject *conflict_error;
+    PyObject *write_conflict_error;
+    PyObject *read_conflict_error;
+    PyObject *phantom_conflict_error;
     PyObject *duplicate_key_error;
     PyObject *state_error;
 };

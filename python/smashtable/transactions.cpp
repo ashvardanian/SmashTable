@@ -180,8 +180,18 @@ static int View_contains(PyObject *self, PyObject *key) noexcept {
         return 0;
     }
     bool found = false;
-    if (run_over_participant(view, state, [&](participant_t &part) noexcept { found = part.contains(needle); }) != 0)
+    status_t asked = success_k;
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept {
+            expected<bool> const held = part.contains(needle);
+            asked = held.status();
+            found = held && *held;
+        }) != 0)
         return -1;
+    // A read that could not record itself is a refusal, and the protocol's error answer is -1.
+    if (failed(asked)) {
+        [[maybe_unused]] int const raised = raise_for(state, asked);
+        return -1;
+    }
     return found ? 1 : 0;
 }
 
@@ -281,11 +291,12 @@ static PyObject *View_discard(PyObject *self, PyObject *const *args, Py_ssize_t 
     // `erase` on a map destroys the stored value, so this is a value operation even though its
     // argument is only a key.
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
-            present = part.contains(stored);
-            if (present) status = part.erase(stored);
+            expected<bool> const held = part.contains(stored);
+            status = held.status();
+            if (held && *held) status = part.erase(stored);
         }) != 0)
         return nullptr;
-    if (present && raise_for(state, status, args[0]) != 0) return nullptr;
+    if (failed(status) && raise_for(state, status, args[0]) != 0) return nullptr;
     return PyBool_FromLong(present ? 1 : 0);
 }
 

@@ -357,6 +357,17 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
     case status_t::consistency_k:
         PyErr_SetString(state->conflict_error, "a watched key changed since this transaction began");
         break;
+    // The three below say which of a validation's checks turned the transaction away, so a retry
+    // loop can tell a race it will win next time from a read window it should narrow first.
+    case status_t::write_conflict_k:
+        PyErr_SetString(state->write_conflict_error, "a key this transaction wrote was published over");
+        break;
+    case status_t::read_conflict_k:
+        PyErr_SetString(state->read_conflict_error, "a key this transaction read was published over");
+        break;
+    case status_t::phantom_conflict_k:
+        PyErr_SetString(state->phantom_conflict_error, "a window this transaction read gained or lost a member");
+        break;
     case status_t::out_of_memory_heap_k: PyErr_NoMemory(); break;
     case status_t::key_not_found_k:
         if (key) PyErr_SetObject(PyExc_KeyError, key);
@@ -396,9 +407,13 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
 static bool cursor_step(cursor_object_t *self, container_object_t const *container, key_variant_t &found_key,
                         value_variant_t *found_value) noexcept {
     store_ops_t const *table = container->store_ops;
-    bool const advanced = self->state == cursor_state_t::fresh_k
-                              ? table->lower_bound(container->store, self->position, found_key, found_value)
-                              : table->upper_bound(container->store, self->position, found_key, found_value);
+    bool advanced = false;
+    // A step that could not be answered ends the walk rather than reporting, because a cursor's
+    // `__next__` has only "a key" or "no more" to say. The store keeps the reason for the commit.
+    [[maybe_unused]] status_t const stepped =
+        self->state == cursor_state_t::fresh_k
+            ? table->lower_bound(container->store, self->position, found_key, found_value, advanced)
+            : table->upper_bound(container->store, self->position, found_key, found_value, advanced);
     if (!advanced) return false;
 
     // A stop bound is exclusive, so a key that is not below it ends the walk without yielding.

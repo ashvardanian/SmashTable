@@ -121,6 +121,28 @@ static int module_exec(PyObject *module) noexcept {
     Py_DECREF(conflict_bases);
     if (!state->conflict_error) return -1;
 
+    // Each names one way an optimistic validation turned a transaction away, and each subclasses
+    // `ConflictError`, so a caller that only wants to retry keeps catching the base and one that
+    // wants to know whether retrying can help catches the leaf.
+    PyObject *write_conflict_bases = PyTuple_Pack(1, state->conflict_error);
+    if (!write_conflict_bases) return -1;
+    state->write_conflict_error = PyErr_NewException("smashtable.WriteConflictError", write_conflict_bases, nullptr);
+    Py_DECREF(write_conflict_bases);
+    if (!state->write_conflict_error) return -1;
+
+    PyObject *read_conflict_bases = PyTuple_Pack(1, state->conflict_error);
+    if (!read_conflict_bases) return -1;
+    state->read_conflict_error = PyErr_NewException("smashtable.ReadConflictError", read_conflict_bases, nullptr);
+    Py_DECREF(read_conflict_bases);
+    if (!state->read_conflict_error) return -1;
+
+    PyObject *phantom_conflict_bases = PyTuple_Pack(1, state->conflict_error);
+    if (!phantom_conflict_bases) return -1;
+    state->phantom_conflict_error =
+        PyErr_NewException("smashtable.PhantomConflictError", phantom_conflict_bases, nullptr);
+    Py_DECREF(phantom_conflict_bases);
+    if (!state->phantom_conflict_error) return -1;
+
     PyObject *duplicate_bases = PyTuple_Pack(2, state->error, PyExc_KeyError);
     if (!duplicate_bases) return -1;
     state->duplicate_key_error = PyErr_NewException("smashtable.DuplicateKeyError", duplicate_bases, nullptr);
@@ -167,6 +189,9 @@ static int module_exec(PyObject *module) noexcept {
 
     if (PyModule_AddObjectRef(module, "SmashTableError", state->error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "ConflictError", state->conflict_error) < 0) return -1;
+    if (PyModule_AddObjectRef(module, "WriteConflictError", state->write_conflict_error) < 0) return -1;
+    if (PyModule_AddObjectRef(module, "ReadConflictError", state->read_conflict_error) < 0) return -1;
+    if (PyModule_AddObjectRef(module, "PhantomConflictError", state->phantom_conflict_error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "DuplicateKeyError", state->duplicate_key_error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "StateError", state->state_error) < 0) return -1;
     if (PyModule_AddObjectRef(module, "SortedMap", reinterpret_cast<PyObject *>(state->sorted_map_type)) < 0) return -1;
@@ -196,6 +221,9 @@ static int module_traverse(PyObject *module, visitproc visit, void *arg) noexcep
     Py_VISIT(state->items_view_type);
     Py_VISIT(state->error);
     Py_VISIT(state->conflict_error);
+    Py_VISIT(state->write_conflict_error);
+    Py_VISIT(state->read_conflict_error);
+    Py_VISIT(state->phantom_conflict_error);
     Py_VISIT(state->duplicate_key_error);
     Py_VISIT(state->state_error);
     return 0;
@@ -215,6 +243,9 @@ static int module_clear(PyObject *module) noexcept {
     Py_CLEAR(state->items_view_type);
     Py_CLEAR(state->error);
     Py_CLEAR(state->conflict_error);
+    Py_CLEAR(state->write_conflict_error);
+    Py_CLEAR(state->read_conflict_error);
+    Py_CLEAR(state->phantom_conflict_error);
     Py_CLEAR(state->duplicate_key_error);
     Py_CLEAR(state->state_error);
     return 0;
