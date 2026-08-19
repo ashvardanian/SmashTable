@@ -14,6 +14,8 @@
  *  Every optional slot is therefore probed with @c requires before it is named.
  */
 #pragma once
+#include <iterator> // `std::make_move_iterator`
+
 #include "shared.hpp"
 
 #include <smashtable/locked_store.hpp>
@@ -129,6 +131,22 @@ struct store_bridge {
     static status_t upsert(void *store, key_variant_t &&key, value_variant_t *value) noexcept {
         deferring_store_call_t deferral;
         return store_of(store).upsert(element_of(std::move(key), value));
+    }
+
+    static status_t upsert_many(void *store, entry_t *entries, std::size_t count) noexcept {
+        deferring_store_call_t deferral;
+        // Moved rather than copied, which is the shape the store's batch form takes: it forwards
+        // each element into one transaction it opens, stages, and commits.
+        if constexpr (associative_k)
+            return store_of(store).upsert(std::make_move_iterator(entries), std::make_move_iterator(entries + count));
+        else return operation_not_permitted_k;
+    }
+
+    static status_t add_many(void *store, key_variant_t *members, std::size_t count) noexcept {
+        deferring_store_call_t deferral;
+        if constexpr (!associative_k)
+            return store_of(store).upsert(std::make_move_iterator(members), std::make_move_iterator(members + count));
+        else return operation_not_permitted_k;
     }
 
     static expected<value_variant_t> erase(void *store, key_variant_t const &key) noexcept {
@@ -312,6 +330,8 @@ struct store_bridge {
         built.contains = &contains;
         built.find = associative_k ? &find : nullptr;
         built.upsert = &upsert;
+        built.upsert_many = associative_k ? &upsert_many : nullptr;
+        built.add_many = associative_k ? nullptr : &add_many;
         built.erase = &erase;
         built.insert_if_missing = associative_k ? &insert_if_missing : nullptr;
 

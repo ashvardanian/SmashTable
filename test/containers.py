@@ -474,3 +474,41 @@ def test_set_algebra_propagates_a_real_error(container):
 
 
 # endregion Input handling
+
+# region Batched writes
+
+
+@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_map_update_applies_as_one_unit(container, keygen):
+    """A batch that cannot be applied whole applies nothing.
+
+    The store opens one transaction for the batch, stages it and commits it once, so a bad pair
+    part-way through leaves the store as it was. `dict` applies pairs one at a time and would keep
+    the prefix.
+    """
+    keys = keygen(3)
+    container[keys[0]] = "kept"
+    with pytest.raises(TypeError):
+        container.update([(keys[1], "a"), (keys[2], "b"), (object(), "never")])
+    assert dict(container) == {keys[0]: "kept"} if hasattr(container, "keys") else len(container) == 1
+
+    container.update([(keys[1], "a"), (keys[2], "b")])
+    assert len(container) == 3
+
+
+@pytest.mark.parametrize("class_name", set_class_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_set_update_applies_as_one_unit(container, keygen):
+    """The same for a set, so the two do not disagree on what a batch means."""
+    keys = keygen(3)
+    container.add(keys[0])
+    with pytest.raises(TypeError):
+        container.update([keys[1], keys[2], object()])
+    assert len(container) == 1, "a refused batch added members"
+
+    container.update([keys[1], keys[2]])
+    assert len(container) == 3
+
+
+# endregion Batched writes

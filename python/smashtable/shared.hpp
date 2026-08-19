@@ -510,6 +510,17 @@ struct store_ops_t {
     status_t (*upsert)(void *store, key_variant_t &&key, value_variant_t *value) noexcept;
 
     /**
+     *  @brief Applies a whole batch, staged once and committed once rather than element by element.
+     *
+     *  The store opens one transaction for the batch, so the batch lands whole or not at all. A loop
+     *  of single writes is neither: it takes the lock once per element and leaves a failure halfway
+     *  through half-applied.
+     */
+    status_t (*upsert_many)(void *store, entry_t *entries, std::size_t count) noexcept;
+
+    /** @brief The same for a set, whose elements are bare keys. Null on a map. */
+    status_t (*add_many)(void *store, key_variant_t *members, std::size_t count) noexcept;
+    /**
      *  @brief Removes a key, answering with what it held or with why it could not.
      *
      *  One locked span rather than a probe beside the removal: a @c find followed by an @c erase is

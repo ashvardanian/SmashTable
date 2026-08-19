@@ -524,15 +524,19 @@ static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_
     return value_to_python(*winner);
 }
 
-static char const doc_map_update[] =                                              //
-    "update(other, /)\n"                                                          //
-    "\n"                                                                          //
-    "Apply every pair of a mapping or an iterable of pairs.\n"                    //
-    "\n"                                                                          //
-    "Not atomic, matching dict. Open a transaction when the batch must land as\n" //
-    "one unit.\n";                                                                //
+static char const doc_map_update[] =                                               //
+    "update(other, /)\n"                                                           //
+    "\n"                                                                           //
+    "Apply every pair of a mapping or an iterable of pairs.\n"                     //
+    "\n"                                                                           //
+    "The batch lands as one unit: the store stages it and commits it once, so a\n" //
+    "failure part-way leaves nothing applied. This is stronger than dict, which\n" //
+    "applies pairs one at a time.\n";                                              //
 
 static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
+    auto *container = object_as<container_object_t>(self);
+    module_state_t *state = state_of_type(self);
+    if (!state) return nullptr;
     if (count != 1) {
         PyErr_SetString(PyExc_TypeError, "update() takes exactly one argument");
         return nullptr;
@@ -545,12 +549,18 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
     Py_DECREF(pairs);
     if (!fast) return nullptr;
 
+    // Converted in full before anything is written, so the store sees one batch and a bad pair
+    // half-way through leaves the store untouched rather than half-updated. This is marshalling,
+    // not a workaround: turning Python objects into stored ones is the binding's own job.
     Py_ssize_t const total = PySequence_Fast_GET_SIZE(fast);
+    auto staged = basic_vector<entry_t>::make(static_cast<std::size_t>(total));
+    if (!staged) {
+        Py_DECREF(fast);
+        return PyErr_NoMemory();
+    }
+
     for (Py_ssize_t index = 0; index != total; ++index) {
         PyObject *pair = PySequence_Fast_GET_ITEM(fast, index);
-        // Read as a sequence rather than parsed as a tuple: a pair may be any two-element sequence,
-        // and `PyArg_ParseTuple` answers a list with `SystemError`, which names the library as the
-        // culprit for what is an ordinary input.
         PyObject *unpacked = PySequence_Fast(pair, "update() needs a mapping or an iterable of pairs");
         if (!unpacked) {
             Py_DECREF(fast);
@@ -563,16 +573,28 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
             Py_DECREF(fast);
             return nullptr;
         }
-        PyObject *key = PySequence_Fast_GET_ITEM(unpacked, 0);
-        PyObject *value = PySequence_Fast_GET_ITEM(unpacked, 1);
-        int const assigned = Map_assign_subscript(self, key, value);
+
+        key_variant_t key;
+        value_variant_t value;
+        bool const read = key_from_python(PySequence_Fast_GET_ITEM(unpacked, 0), container->ops, key) &&
+                          value_from_python(PySequence_Fast_GET_ITEM(unpacked, 1), container->mode, value);
         Py_DECREF(unpacked);
-        if (assigned != 0) {
+        if (!read) {
             Py_DECREF(fast);
             return nullptr;
         }
+        if (failed((*staged).push_back(assume_reserved, entry_t {std::move(key), std::move(value)}))) {
+            Py_DECREF(fast);
+            return PyErr_NoMemory();
+        }
     }
     Py_DECREF(fast);
+
+    status_t status = success_k;
+    run_over_values(container->mode, [&]() noexcept {
+        status = container->store_ops->upsert_many(container->store, (*staged).data(), (*staged).size());
+    });
+    if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
 }
 
@@ -697,30 +719,53 @@ static PyObject *Set_popmin(PyObject *self, PyObject *) noexcept {
     return key_to_python(smallest);
 }
 
-static char const doc_set_update[] = //
-    "update(other, /)\n"             //
-    "\n"                             //
-    "Add every member of an iterable. Not atomic, matching set.\n";
+static char const doc_set_update[] =                                               //
+    "update(other, /)\n"                                                           //
+    "\n"                                                                           //
+    "Add every member of an iterable.\n"                                           //
+    "\n"                                                                           //
+    "The batch lands as one unit: the store stages it and commits it once, so a\n" //
+    "failure part-way leaves nothing applied. This is stronger than set, which\n"  //
+    "adds members one at a time.\n";                                               //
 
 static PyObject *Set_update(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
+    auto *container = object_as<container_object_t>(self);
+    module_state_t *state = state_of_type(self);
+    if (!state) return nullptr;
     if (count != 1) {
         PyErr_SetString(PyExc_TypeError, "update() takes exactly one argument");
         return nullptr;
     }
-    PyObject *iterator = PyObject_GetIter(args[0]);
-    if (!iterator) return nullptr;
-    PyObject *member = nullptr;
-    while ((member = PyIter_Next(iterator)) != nullptr) {
-        PyObject *outcome = Set_add(self, member);
-        Py_DECREF(member);
-        if (!outcome) {
-            Py_DECREF(iterator);
+
+    PyObject *fast = PySequence_Fast(args[0], "update() needs an iterable of members");
+    if (!fast) return nullptr;
+    Py_ssize_t const total = PySequence_Fast_GET_SIZE(fast);
+
+    // Converted in full first, so a member the store cannot hold leaves it untouched rather than
+    // partly grown. Marshalling Python objects into stored ones is the binding's own work.
+    auto staged = basic_vector<key_variant_t>::make(static_cast<std::size_t>(total));
+    if (!staged) {
+        Py_DECREF(fast);
+        return PyErr_NoMemory();
+    }
+    for (Py_ssize_t index = 0; index != total; ++index) {
+        key_variant_t member;
+        if (!key_from_python(PySequence_Fast_GET_ITEM(fast, index), container->ops, member)) {
+            Py_DECREF(fast);
             return nullptr;
         }
-        Py_DECREF(outcome);
+        if (failed((*staged).push_back(assume_reserved, std::move(member)))) {
+            Py_DECREF(fast);
+            return PyErr_NoMemory();
+        }
     }
-    Py_DECREF(iterator);
-    if (PyErr_Occurred()) return nullptr;
+    Py_DECREF(fast);
+
+    status_t status = success_k;
+    Py_BEGIN_ALLOW_THREADS;
+    status = container->store_ops->add_many(container->store, (*staged).data(), (*staged).size());
+    Py_END_ALLOW_THREADS;
+    if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
 }
 
