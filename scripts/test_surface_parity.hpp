@@ -302,16 +302,6 @@ constexpr bool waives_surface_k<visible_cursor_surface_t, partitioned_wrapper_t>
 template <>
 constexpr bool waives_surface_k<shard_protocol_surface_t, partitioned_wrapper_t> = true;
 
-/**
- *  @brief An exact match lives in one partition, but the key after it can live in any of them, so a
- *    transaction's inclusive bound is a merge of every partition's own bound over staged writes as
- *    well as the snapshot. The store-level @c lower_bound answers by probing then stepping, which is
- *    not atomic and is not what a transaction may promise. Until that merged walk exists the surface
- *    stays absent rather than sometimes right.
- */
-template <>
-constexpr bool waives_surface_k<transaction_lower_bound_surface_t, partitioned_wrapper_t> = true;
-
 #pragma endregion Waivers
 
 #pragma region Parity Fold
@@ -322,7 +312,7 @@ constexpr bool waives_surface_k<transaction_lower_bound_surface_t, partitioned_w
  *    quo is an overload-resolution error at the call site, which names none of them.
  */
 template <typename surface_, typename wrapper_, typename store_type_>
-struct parity_witness_t {
+struct parity_witness {
     static_assert(!surface_::template offered_k<store_type_> ||
                       surface_::template offered_k<typename wrapper_::template wrapped<store_type_>> ||
                       waives_surface_k<surface_, typename wrapper_::waiver_group_t>,
@@ -332,7 +322,7 @@ struct parity_witness_t {
 
 /** @brief Every named surface against one wrapper and one store, folded into a single value. */
 template <typename wrapper_, typename store_type_, typename... surfaces_>
-constexpr bool every_surface_survives_k = (parity_witness_t<surfaces_, wrapper_, store_type_>::checked_k && ...);
+constexpr bool every_surface_survives_k = (parity_witness<surfaces_, wrapper_, store_type_>::checked_k && ...);
 
 /** @brief The whole public store surface against one wrapper. */
 template <typename wrapper_, typename store_type_>
@@ -411,5 +401,238 @@ template <typename store_type_>
 constexpr bool offers_enumeration_k = for_each_surface_t::offered_k<store_type_>;
 
 #pragma endregion Parity Fold
+
+#pragma region Level Pairs
+
+/**
+ *  @brief One surface asked of a store and of the transaction that store opens.
+ *
+ *  The wrapper fold above asks whether a wrapper kept what its inner store offers, which is vacuously
+ *  true for a method absent from both. That blind spot hid every entry in @c unimplemented_at_transaction_k
+ *  below, so this family asks the other question: a store surface should have a transaction counterpart
+ *  unless there is a reason it cannot.
+ */
+struct count_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k =
+        requires(store_type_ const &store, typename store_type_::identifier_t const &key) { store.count(key); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction,
+                 typename store_type_::identifier_t const &key) { transaction.count(key); };
+};
+struct vacuum_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ &store) { store.vacuum(); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t &transaction) { transaction.vacuum(); };
+};
+struct clear_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ &store) { store.clear(); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t &transaction) { transaction.clear(); };
+};
+struct erase_range_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                                no_op_t callback) { store.erase_range(key, key, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.erase_range(key, key, callback); };
+};
+struct erase_from_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                                no_op_t callback) { store.erase_from(key, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.erase_from(key, callback); };
+};
+struct erase_up_to_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                                no_op_t callback) { store.erase_up_to(key, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.erase_up_to(key, callback); };
+};
+struct update_range_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                                no_op_t callback) { store.update_range(key, key, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.update_range(key, key, callback); };
+};
+struct sample_one_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                                no_op_t callback) { store.sample_one(key, key, callback, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.sample_one(key, key, callback, callback); };
+};
+struct sample_reservoir_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k =
+        requires(store_type_ const &store, typename store_type_::identifier_t const &key, no_op_t callback,
+                 std::size_t seen) { store.sample_reservoir(key, key, callback, seen, seen, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k = requires(
+        typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+        no_op_t callback, std::size_t seen) { transaction.sample_reservoir(key, key, callback, seen, seen, callback); };
+};
+struct lower_bound_copy_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(
+        store_type_ const &store, typename store_type_::identifier_t const &key) { store.lower_bound_copy(key); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction,
+                 typename store_type_::identifier_t const &key) { transaction.lower_bound_copy(key); };
+};
+struct upper_bound_copy_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(
+        store_type_ const &store, typename store_type_::identifier_t const &key) { store.upper_bound_copy(key); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction,
+                 typename store_type_::identifier_t const &key) { transaction.upper_bound_copy(key); };
+};
+
+/** @brief Present at both levels already, so the fold has something that must stay passing. */
+struct find_copy_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k =
+        requires(store_type_ const &store, typename store_type_::identifier_t const &key) { store.find_copy(key); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction,
+                 typename store_type_::identifier_t const &key) { transaction.find_copy(key); };
+};
+struct select_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ const &store, std::size_t ordinal, no_op_t callback) {
+        store.select(ordinal, callback, callback);
+    };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction, std::size_t ordinal, no_op_t callback) {
+            transaction.select(ordinal, callback, callback);
+        };
+};
+struct rank_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store_k = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                                no_op_t callback) { store.rank(key, callback, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction_k =
+        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.rank(key, callback, callback); };
+};
+
+#pragma endregion Level Pairs
+
+#pragma region Transaction Refusals
+
+/**
+ *  @brief The store surfaces a transaction refuses on purpose, each with the reason it cannot carry.
+ *    These are decisions. Anything absent for want of an implementation belongs in the list below,
+ *    which is a to-do rather than a refusal, and the two must never be read as the same thing.
+ */
+template <typename pair_>
+constexpr bool refuses_at_transaction_k = false;
+
+/**
+ *  @brief Reclamation frees versions no live reader can still name, which is a fact about the store
+ *    and every reader open on it rather than about one transaction. A transaction cannot know what
+ *    its peers still hold, so a transaction-level sweep would either free what somebody reads or
+ *    free nothing, and both are worse than asking the store.
+ */
+template <>
+constexpr bool refuses_at_transaction_k<vacuum_pair_t> = true;
+
+/**
+ *  @brief Emptying the store refuses while any snapshot is open, so a transaction calling it would be
+ *    refusing itself: its own snapshot is the one standing in the way.
+ */
+template <>
+constexpr bool refuses_at_transaction_k<clear_pair_t> = true;
+
+/**
+ *  @brief Store surfaces a transaction @b should carry and does not yet.
+ *
+ *  Every entry here is work outstanding, not a decision, and each should be deleted from this list by
+ *  the change that implements it rather than by anyone judging it unnecessary. The fold below counts
+ *  them, so removing a method without removing its entry leaves the count wrong and fails.
+ */
+template <typename pair_>
+constexpr bool unimplemented_at_transaction_k = false;
+
+#pragma endregion Transaction Refusals
+
+#pragma region Level Parity Fold
+
+/**
+ *  @brief One assertion: a surface a store offers should be reachable from its transaction too.
+ *    Named the same way the wrapper witness is, so a failure prints the surface and the store.
+ */
+template <typename pair_, typename store_type_>
+struct level_witness {
+    static_assert(!pair_::template at_store_k<store_type_> || pair_::template at_transaction_k<store_type_> ||
+                      refuses_at_transaction_k<pair_> || unimplemented_at_transaction_k<pair_>,
+                  "a store surface must reach its transaction, be refused by name, or be listed as outstanding");
+    static constexpr bool checked_k = true;
+};
+
+/** @brief Every paired surface against one store. */
+template <typename store_type_, typename... pairs_>
+constexpr bool every_pair_reaches_a_transaction_k = (level_witness<pairs_, store_type_>::checked_k && ...);
+
+/** @brief The whole paired surface, so a new store cannot quietly miss a whole level. */
+template <typename store_type_>
+constexpr bool transaction_mirrors_the_store_k =
+    every_pair_reaches_a_transaction_k<store_type_, count_pair_t, vacuum_pair_t, clear_pair_t, erase_range_pair_t,
+                                       erase_from_pair_t, erase_up_to_pair_t, update_range_pair_t, sample_one_pair_t,
+                                       sample_reservoir_pair_t, lower_bound_copy_pair_t, upper_bound_copy_pair_t,
+                                       find_copy_pair_t, select_pair_t, rank_pair_t>;
+
+/**
+ *  @brief A wrapper reporting serializable must forward the reads that carry the protection.
+ *
+ *  At @c serializable_k every read records the window it crossed, so phantom protection rides on the
+ *  ordinary ordered reads rather than on a separate opt-in surface. A wrapper that reports the level
+ *  without forwarding them advertises a guarantee nothing on it can honour.
+ */
+template <typename store_type_>
+constexpr bool offers_recording_reads_k = requires(typename store_type_::transaction_t &transaction,
+                                                   typename store_type_::identifier_t const &key, no_op_t callback) {
+    transaction.range(key, key, callback);
+    transaction.for_each(callback);
+};
+
+template <typename store_type_, typename wrapper_>
+struct level_surface_witness {
+    using wrapped_t = typename wrapper_::template wrapped<store_type_>;
+    static_assert(wrapped_t::isolation_k < isolation_t::serializable_k || offers_recording_reads_k<wrapped_t>,
+                  "a wrapper reporting serializable must forward the reads that record what they read");
+    static constexpr bool checked_k = true;
+};
+
+/** @brief Both wrappers over one store, for the surfaces its level is defined by. */
+template <typename store_type_>
+constexpr bool wrappers_honour_the_level_k = level_surface_witness<store_type_, locked_wrapper_t>::checked_k &&
+                                             level_surface_witness<store_type_, partitioned_wrapper_t>::checked_k;
+
+#pragma endregion Level Parity Fold
 
 } // namespace ashvardanian::smashtable::scripts
