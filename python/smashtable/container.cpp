@@ -263,16 +263,14 @@ static PyObject *Map_subscript(PyObject *self, PyObject *key) noexcept {
     key_variant_t needle;
     if (!key_from_python(key, container->ops, needle)) return nullptr;
 
-    value_variant_t found;
-    bool present = false;
-    run_over_values(container->mode,
-                    [&]() noexcept { present = container->store_ops->find(container->store, needle, found); });
+    expected<value_variant_t> found {key_not_found_k};
+    run_over_values(container->mode, [&]() noexcept { found = container->store_ops->find(container->store, needle); });
 
-    if (!present) {
+    if (!found) {
         PyErr_SetObject(PyExc_KeyError, key);
         return nullptr;
     }
-    return value_to_python(found);
+    return value_to_python(*found);
 }
 
 static char const doc_get[] =                                 //
@@ -367,8 +365,9 @@ static int Map_assign_subscript(PyObject *self, PyObject *key, PyObject *value) 
         // there, so absence needs no separate probe and two threads racing on the same key cannot
         // both believe they removed it.
         status_t status = success_k;
-        run_over_values(container->mode,
-                        [&]() noexcept { status = container->store_ops->erase(container->store, stored_key); });
+        run_over_values(container->mode, [&]() noexcept {
+            status = container->store_ops->erase(container->store, stored_key).status();
+        });
         return raise_for(state, status, key);
     }
 
@@ -424,21 +423,20 @@ static PyObject *Map_pop(PyObject *self, PyObject *const *args, Py_ssize_t count
         return nullptr;
     }
 
-    value_variant_t found;
-    bool present = false;
-    status_t status = success_k;
-    run_over_values(container->mode, [&]() noexcept {
-        present = container->store_ops->find(container->store, needle, found);
-        if (present) status = container->store_ops->erase(container->store, needle);
-    });
+    expected<value_variant_t> removed {key_not_found_k};
+    run_over_values(container->mode,
+                    [&]() noexcept { removed = container->store_ops->erase(container->store, needle); });
+    bool const present = static_cast<bool>(removed);
 
     if (!present) {
+        // Absence is `key_not_found_k`, which is the caller's answer rather than a failure; anything
+        // else genuinely went wrong and is raised.
+        if (removed.status() != key_not_found_k && raise_for(state, removed.status(), args[0]) != 0) return nullptr;
         if (count == 2) return Py_NewRef(args[1]);
         PyErr_SetObject(PyExc_KeyError, args[0]);
         return nullptr;
     }
-    if (raise_for(state, status, args[0]) != 0) return nullptr;
-    return value_to_python(found);
+    return value_to_python(*removed);
 }
 
 static char const doc_popmin[] =                                                   //
@@ -459,25 +457,29 @@ static PyObject *Map_popmin(PyObject *self, PyObject *) noexcept {
     if (!state) return nullptr;
 
     key_variant_t smallest_key;
-    value_variant_t smallest_value;
-    bool present = false;
-    status_t status = success_k;
+    expected<value_variant_t> removed {key_not_found_k};
     run_over_values(container->mode, [&]() noexcept {
         key_variant_t floor;
         container->ops->least(floor);
-        present = container->store_ops->lower_bound(container->store, floor, smallest_key, &smallest_value);
-        if (present) status = container->store_ops->erase(container->store, smallest_key);
+        // Two locked spans, because no store offers "remove the smallest" as one. The pair reported
+        // is the one the erase actually took, not the one the seek saw, so a key that vanished in
+        // between reads as absent rather than as a pair nobody removed. A key inserted below it in
+        // between is still missed, which is what a `pop_smallest` on the store would close.
+        if (!container->store_ops->lower_bound(container->store, floor, smallest_key, nullptr)) return;
+        removed = container->store_ops->erase(container->store, smallest_key);
     });
 
-    if (!present) {
+    if (!removed) {
+        // The seek found nothing, or the key it found was taken before the erase reached it. Either
+        // way there is no pair to hand back, and only a genuine failure is worth raising.
+        if (removed.status() != key_not_found_k && raise_for(state, removed.status()) != 0) return nullptr;
         PyErr_SetString(PyExc_KeyError, "popmin(): store is empty");
         return nullptr;
     }
-    if (raise_for(state, status) != 0) return nullptr;
 
     PyObject *key_object = key_to_python(smallest_key);
     if (!key_object) return nullptr;
-    PyObject *value_object = value_to_python(smallest_value);
+    PyObject *value_object = value_to_python(*removed);
     if (!value_object) {
         Py_DECREF(key_object);
         return nullptr;
@@ -511,16 +513,15 @@ static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_
     value_variant_t stored_value;
     if (!value_from_python(fallback, container->mode, stored_value)) return nullptr;
 
-    value_variant_t winner;
-    status_t status = success_k;
+    expected<value_variant_t> winner {key_not_found_k};
     run_over_values(container->mode, [&]() noexcept {
         // One strict insert that leaves the winner readable. A key arriving concurrently keeps its own
         // value, and what comes back is that winner rather than what we tried to store.
-        status = container->store_ops->insert_if_missing(container->store, stored_key, std::move(stored_value), winner);
+        winner = container->store_ops->insert_if_missing(container->store, stored_key, std::move(stored_value));
     });
 
-    if (raise_for(state, status, args[0]) != 0) return nullptr;
-    return value_to_python(winner);
+    if (!winner && raise_for(state, winner.status(), args[0]) != 0) return nullptr;
+    return value_to_python(*winner);
 }
 
 static char const doc_map_update[] =                                              //
@@ -612,8 +613,9 @@ static int set_erase(PyObject *self, PyObject *member, bool *was_present) noexce
     status_t status = success_k;
     bool present = false;
     Py_BEGIN_ALLOW_THREADS;
-    present = container->store_ops->contains(container->store, stored);
-    if (present) status = container->store_ops->erase(container->store, stored);
+    expected<value_variant_t> const removed = container->store_ops->erase(container->store, stored);
+    present = static_cast<bool>(removed);
+    status = removed.status();
     Py_END_ALLOW_THREADS;
 
     *was_present = present;
@@ -679,8 +681,12 @@ static PyObject *Set_popmin(PyObject *self, PyObject *) noexcept {
     Py_BEGIN_ALLOW_THREADS;
     key_variant_t floor;
     container->ops->least(floor);
-    present = container->store_ops->lower_bound(container->store, floor, smallest, nullptr);
-    if (present) status = container->store_ops->erase(container->store, smallest);
+    // See the map's popmin: the member reported is the one the erase took, not the one the seek saw.
+    if (container->store_ops->lower_bound(container->store, floor, smallest, nullptr)) {
+        expected<value_variant_t> const removed = container->store_ops->erase(container->store, smallest);
+        present = static_cast<bool>(removed);
+        status = removed.status();
+    }
     Py_END_ALLOW_THREADS;
 
     if (!present) {
@@ -1248,7 +1254,9 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
             PyObject *their_value = nullptr;
             if (twin) {
                 // Same layout, so the key stays a stored scalar and never becomes a Python object.
-                present = twin->store_ops->find(twin->store, key, theirs);
+                auto probed = twin->store_ops->find(twin->store, key);
+                present = static_cast<bool>(probed);
+                if (present) theirs = std::move(*probed);
             }
             else {
                 PyObject *key_object = key_to_python(key);

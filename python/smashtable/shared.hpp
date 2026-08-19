@@ -504,20 +504,38 @@ struct store_ops_t {
     std::size_t (*size)(void *store) noexcept;
     status_t (*clear)(void *store) noexcept;
     bool (*contains)(void *store, key_variant_t const &key) noexcept;
-    /** @brief Reads a mapped value. Null on a set, which has none. */
-    bool (*find)(void *store, key_variant_t const &key, value_variant_t &value) noexcept;
+    /** @brief Reads a mapped value, or reports @c key_not_found_k. Null on a set, which has none. */
+    expected<value_variant_t> (*find)(void *store, key_variant_t const &key) noexcept;
     /** @brief Inserts or overwrites. @p value is null for a set, which stores the key alone. */
     status_t (*upsert)(void *store, key_variant_t &&key, value_variant_t *value) noexcept;
-    status_t (*erase)(void *store, key_variant_t const &key) noexcept;
+
     /**
-     *  @brief Inserts only when absent, and reports the value that ended up stored.
+     *  @brief Removes a key, answering with what it held or with why it could not.
+     *
+     *  One locked span rather than a probe beside the removal: a @c find followed by an @c erase is
+     *  two spans, so another writer between them makes the pair report a value nobody removed, or a
+     *  miss for a key this call did delete. Absence is @c key_not_found_k, which is how the store
+     *  itself reports it, so nothing here repeats the answer in a second place.
+     *
+     *  A set has no value to give back and answers with a default one; only its status means anything.
+     */
+    expected<value_variant_t> (*erase)(void *store, key_variant_t const &key) noexcept;
+    /**
+     *  @brief Inserts only when absent, answering with the value that ended up stored.
      *
      *  The winner rather than who wrote it, because that is all @c setdefault needs and it is the one
-     *  answer both stores can give: a key arriving concurrently keeps its own value, and reading the
-     *  result back is what makes two threads racing on one key agree on what it holds.
+     *  answer both stores can give: a key arriving concurrently keeps its own value, and reporting the
+     *  result is what makes two threads racing on one key agree on what it holds.
      */
-    status_t (*insert_if_missing)(void *store, key_variant_t const &key, value_variant_t &&value,
-                                  value_variant_t &winner) noexcept;
+    expected<value_variant_t> (*insert_if_missing)(void *store, key_variant_t const &key,
+                                                   value_variant_t &&value) noexcept;
+
+    // The two bounds answer through out-parameters rather than an `expected`, which is the idiom
+    // everywhere else here. They are the walk, and a walk reuses one key across every step: assigning
+    // into an existing `key_variant_t` reuses its string buffer, while returning a fresh one allocates
+    // once per element for the text layouts. The composite also has no honest erased type - a map's
+    // element is a key and a value, a set's is a key alone. Both reasons end when the cursor comes
+    // from C++ and hands its key and value back separately.
 
     /** @brief First element at or after @p from. Null on an unordered core. */
     bool (*lower_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value) noexcept;
@@ -539,7 +557,7 @@ struct store_ops_t {
     expected<void *> (*transaction_make)(void *store) noexcept;
     void (*transaction_destroy)(void *transaction) noexcept;
     bool (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
-    bool (*transaction_find)(void *transaction, key_variant_t const &key, value_variant_t &value) noexcept;
+    expected<value_variant_t> (*transaction_find)(void *transaction, key_variant_t const &key) noexcept;
     status_t (*transaction_upsert)(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept;
     status_t (*transaction_erase)(void *transaction, key_variant_t const &key) noexcept;
     status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
@@ -837,9 +855,9 @@ struct participant_t {
     }
 
     /** @brief Reads a mapped value. Only ever called on a map; callers check @c is_associative first. */
-    [[nodiscard]] bool find(key_variant_t const &key, value_variant_t &value) noexcept {
+    [[nodiscard]] expected<value_variant_t> find(key_variant_t const &key) noexcept {
         assert(is_associative() && "find on a set participant; callers check is_associative first");
-        return table->transaction_find(transaction, key, value);
+        return table->transaction_find(transaction, key);
     }
 
     /** @brief Inserts or overwrites a key and value. Only ever called on a map. */

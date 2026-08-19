@@ -122,17 +122,15 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
     key_variant_t needle;
     if (!key_from_python(key, part->ops, needle)) return nullptr;
 
-    value_variant_t found;
-    bool present = false;
-    if (run_over_participant(view, state, [&](participant_t &part) noexcept { present = part.find(needle, found); }) !=
-        0)
+    expected<value_variant_t> found {key_not_found_k};
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept { found = part.find(needle); }) != 0)
         return nullptr;
 
-    if (!present) {
+    if (!found) {
         PyErr_SetObject(PyExc_KeyError, key);
         return nullptr;
     }
-    return value_to_python(found);
+    return value_to_python(*found);
 }
 
 static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value) noexcept {

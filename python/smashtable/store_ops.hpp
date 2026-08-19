@@ -118,13 +118,12 @@ struct store_bridge {
 
     static bool contains(void *store, key_variant_t const &key) noexcept { return store_of(store).contains(key); }
 
-    static bool find(void *store, key_variant_t const &key, value_variant_t &value) noexcept {
+    static expected<value_variant_t> find(void *store, key_variant_t const &key) noexcept {
         deferring_store_call_t deferral;
-        bool found = false;
+        expected<value_variant_t> answer {key_not_found_k};
         if constexpr (associative_k)
-            store_of(store).find(
-                key, [&](value_t const &entry) noexcept { value = entry.mapped, found = true; }, no_op_t {});
-        return found;
+            store_of(store).find(key, [&](value_t const &entry) noexcept { answer = entry.mapped.copy(); }, no_op_t {});
+        return answer;
     }
 
     static status_t upsert(void *store, key_variant_t &&key, value_variant_t *value) noexcept {
@@ -132,25 +131,36 @@ struct store_bridge {
         return store_of(store).upsert(element_of(std::move(key), value));
     }
 
-    static status_t erase(void *store, key_variant_t const &key) noexcept {
+    static expected<value_variant_t> erase(void *store, key_variant_t const &key) noexcept {
         deferring_store_call_t deferral;
-        return store_of(store).erase(key);
+        expected<value_variant_t> removed {value_variant_t {}, success_k};
+        status_t const status = store_of(store).erase(
+            key,
+            [&](value_t const &element) noexcept {
+                if constexpr (associative_k) removed = element.mapped.copy();
+            },
+            no_op_t {});
+        if (failed(status)) return expected<value_variant_t> {status};
+        return removed;
     }
 
-    static status_t insert_if_missing(void *store, key_variant_t const &key, value_variant_t &&value,
-                                      value_variant_t &winner) noexcept {
+    static expected<value_variant_t> insert_if_missing(void *store, key_variant_t const &key,
+                                                       value_variant_t &&value) noexcept {
         deferring_store_call_t deferral;
-        if constexpr (!associative_k) return operation_not_permitted_k;
+        if constexpr (!associative_k) return expected<value_variant_t> {operation_not_permitted_k};
         else {
             auto copied = key.copy();
-            if (!copied) return copied.status();
+            if (!copied) return expected<value_variant_t> {copied.status()};
+            expected<value_variant_t> winner {value_variant_t {}, success_k};
             // One store call rather than an insert followed by a read: between two calls another
             // thread can erase the key, leaving the read with nothing and the caller with a value
             // nobody stored. Whichever branch the store takes reports the winner from inside it.
-            return store_of(store).insert_if_missing(
+            status_t const status = store_of(store).insert_if_missing(
                 value_t {std::move(*copied), std::move(value)},
-                [&](value_t const &inserted) noexcept { winner = inserted.mapped; },
-                [&](value_t const &existing) noexcept { winner = existing.mapped; });
+                [&](value_t const &inserted) noexcept { winner = inserted.mapped.copy(); },
+                [&](value_t const &existing) noexcept { winner = existing.mapped.copy(); });
+            if (failed(status)) return expected<value_variant_t> {status};
+            return winner;
         }
     }
 
@@ -225,13 +235,13 @@ struct store_bridge {
         return transaction_of(transaction).contains(key);
     }
 
-    static bool transaction_find(void *transaction, key_variant_t const &key, value_variant_t &value) noexcept {
+    static expected<value_variant_t> transaction_find(void *transaction, key_variant_t const &key) noexcept {
         deferring_store_call_t deferral;
-        bool found = false;
+        expected<value_variant_t> answer {key_not_found_k};
         if constexpr (associative_k)
             transaction_of(transaction)
-                .find(key, [&](value_t const &entry) noexcept { value = entry.mapped, found = true; }, no_op_t {});
-        return found;
+                .find(key, [&](value_t const &entry) noexcept { answer = entry.mapped.copy(); }, no_op_t {});
+        return answer;
     }
 
     static status_t transaction_upsert(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept {
