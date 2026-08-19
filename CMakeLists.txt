@@ -33,7 +33,7 @@
 #     when no device is, so a GPU-less machine still configures and tests green.
 #
 # The Python extension is not built here: `setup.py` compiles the translation units under
-# `python/smashtable/` directly, as a wheel build has no use for the test and install machinery below.
+# `python/` directly, as a wheel build has no use for the test and install machinery below.
 cmake_minimum_required(VERSION 3.21)
 project(
     smashtable

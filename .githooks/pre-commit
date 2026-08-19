@@ -314,7 +314,7 @@ while IFS= read -r -d '' file; do
     added=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' || true)
     [ -n "$added" ] || continue
     case "$file" in
-    python/smashtable/*)
+    python/*.cpp | python/*.hpp)
         check_binding_owns_no_containers
         ;;&
     *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh)

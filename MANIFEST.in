@@ -1,0 +1,5 @@
+# The extension's sources and headers are already carried by their `Extension` entry. The stub is
+# nobody's build input, so it has to be named here or a wheel built from the sdist would ship
+# without the types.
+include python/smashtable.pyi
+include python/py.typed

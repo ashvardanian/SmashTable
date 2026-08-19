@@ -44,6 +44,11 @@ testpaths = ["test"]
 python_files = ["*.py"]
 markers = ["slow: the long threading soaks; deselect with -m 'not slow'"]
 
+# The stub sits beside the sources rather than inside a package, so a checker run against this
+# repository is pointed at the directory holding it.
+[tool.mypy]
+mypy_path = "python"
+
 [tool.black]
 line-length = 120
 

@@ -32,7 +32,7 @@ jobs:
             pyproject.toml:^version = "(\d+\.\d+\.\d+)"
             setup.py:version="(\d+\.\d+\.\d+)"
             CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
-            python/smashtable/module.cpp:"__version__", "(\d+\.\d+\.\d+)"
+            python/module.cpp:"__version__", "(\d+\.\d+\.\d+)"
           dry-run: "false"
           push: "true"
           create-release: "true"
