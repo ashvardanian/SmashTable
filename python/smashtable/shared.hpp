@@ -589,6 +589,24 @@ struct store_ops_t {
     status_t (*transaction_upsert)(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept;
     status_t (*transaction_erase)(void *transaction, key_variant_t const &key) noexcept;
     status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
+
+    /**
+     *  @brief Collects the half-open window into @p collected, in key order. Null on an unordered core.
+     *
+     *  A whole window in one locked span rather than a resumable cursor: a cursor over a transaction
+     *  would have to stay open across arbitrary Python code, and the walk is what records the read
+     *  the level is validated against, so it may not be interleaved with anything else the caller does.
+     *
+     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements are
+     *  copied rather than referenced, because a Python object is built from them after the lock drops.
+     *  A set participant leaves every @c mapped default-constructed.
+     */
+    status_t (*transaction_scan)(void *transaction, key_variant_t const *lower, key_variant_t const *upper,
+                                 std::size_t limit, basic_vector<entry_t> &collected) noexcept;
+    /** @brief Erases that same window, staging a tombstone per member. Null on an unordered core. */
+    status_t (*transaction_erase_range)(void *transaction, key_variant_t const *lower,
+                                        key_variant_t const *upper) noexcept;
+
     status_t (*transaction_stage)(void *transaction) noexcept;
     status_t (*transaction_commit)(void *transaction) noexcept;
     status_t (*transaction_rollback)(void *transaction) noexcept;
@@ -605,7 +623,7 @@ struct store_ops_t {
 enum class core_t : std::uint8_t { sorted_k, hashed_k };
 
 /** @brief What a reader is promised, as the constructor's @c isolation argument names it. */
-enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k, serializable_k };
+enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k, serializable_k, strict_serializable_k };
 
 /** @brief How a store is shared between threads, as the constructor's @c sharing argument names it. */
 enum class sharing_choice_t : std::uint8_t { locked_k, partitioned_k };
@@ -622,6 +640,7 @@ constexpr char const *isolation_name_of(isolation_t level) noexcept {
     case isolation_t::monotonic_atomic_view_k: return "monotonic_atomic_view";
     case isolation_t::snapshot_k: return "snapshot";
     case isolation_t::serializable_k: return "serializable";
+    case isolation_t::strict_serializable_k: return "strict_serializable";
     }
     return "unknown";
 }
@@ -909,6 +928,20 @@ struct participant_t {
     [[nodiscard]] status_t watch(key_variant_t const &key) noexcept {
         return table->transaction_watch(transaction, key);
     }
+
+    /** @brief Whether this participant orders its keys, which is what the two windowed calls rest on. */
+    [[nodiscard]] bool is_ordered() const noexcept { return table->is_ordered; }
+
+    [[nodiscard]] status_t scan(key_variant_t const *lower, key_variant_t const *upper, std::size_t limit,
+                                basic_vector<entry_t> &collected) noexcept {
+        assert(is_ordered() && "scan on an unordered participant; callers check is_ordered first");
+        return table->transaction_scan(transaction, lower, upper, limit, collected);
+    }
+
+    [[nodiscard]] status_t erase_range(key_variant_t const *lower, key_variant_t const *upper) noexcept {
+        assert(is_ordered() && "erase_range on an unordered participant; callers check is_ordered first");
+        return table->transaction_erase_range(transaction, lower, upper);
+    }
     [[nodiscard]] status_t stage() noexcept { return table->transaction_stage(transaction); }
     [[nodiscard]] status_t commit() noexcept { return table->transaction_commit(transaction); }
     [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(transaction); }
@@ -1045,6 +1078,17 @@ bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &resu
  *  @brief Builds a new Python object from a stored key.
  *  @return A new reference, or @c nullptr with an exception set.
  */
+/**
+ *  @brief Reads the @c (start, stop, limit) a windowed call takes, in both spellings.
+ *  @param[in] called The method's name, which every message here quotes.
+ *  @param[out] start Borrowed bound object, or null; @c Py_None counts as null.
+ *  @param[out] stop The same for the upper end.
+ *  @param[out] limit How many elements at most, or -1 for uncounted.
+ *  @return True on success; false with a @c TypeError or @c ValueError set.
+ */
+bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
+                        PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept;
+
 PyObject *key_to_python(key_variant_t const &key) noexcept;
 
 /**

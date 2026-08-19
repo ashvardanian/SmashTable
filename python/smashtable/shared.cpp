@@ -670,4 +670,56 @@ PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yi
 
 #pragma endregion View Type
 
+#pragma region Windowed Arguments
+
+bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
+                        PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept {
+    if (count > 2) {
+        PyErr_Format(PyExc_TypeError, "%s() takes at most two positional arguments", called);
+        return false;
+    }
+    start = count > 0 ? args[0] : nullptr;
+    stop = count > 1 ? args[1] : nullptr;
+    limit = -1;
+    if (!keywords) return true;
+
+    Py_ssize_t const named = PyTuple_GET_SIZE(keywords);
+    for (Py_ssize_t index = 0; index != named; ++index) {
+        PyObject *name = PyTuple_GET_ITEM(keywords, index);
+        PyObject *value = args[count + index];
+        if (PyUnicode_CompareWithASCIIString(name, "start") == 0) {
+            if (start) {
+                PyErr_Format(PyExc_TypeError, "%s() got multiple values for 'start'", called);
+                return false;
+            }
+            start = value;
+        }
+        else if (PyUnicode_CompareWithASCIIString(name, "stop") == 0) {
+            if (stop) {
+                PyErr_Format(PyExc_TypeError, "%s() got multiple values for 'stop'", called);
+                return false;
+            }
+            stop = value;
+        }
+        else if (PyUnicode_CompareWithASCIIString(name, "limit") == 0) {
+            if (value == Py_None) continue;
+            limit = PyNumber_AsSsize_t(value, PyExc_OverflowError);
+            if (limit == -1 && PyErr_Occurred()) return false;
+            // Negative is the walk's own spelling for uncounted, so a caller passing one would
+            // silently receive the whole window rather than nothing.
+            if (limit < 0) {
+                PyErr_SetString(PyExc_ValueError, "limit cannot be negative");
+                return false;
+            }
+        }
+        else {
+            PyErr_Format(PyExc_TypeError, "%s() got an unexpected keyword argument '%U'", called, name);
+            return false;
+        }
+    }
+    return true;
+}
+
+#pragma endregion Windowed Arguments
+
 } // namespace ashvardanian::smashtable::py

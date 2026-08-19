@@ -21,6 +21,7 @@
  *  other. The views handed back to Python stay in the caller's argument order regardless.
  */
 #include <algorithm> // `std::sort`
+#include <limits>    // `std::numeric_limits`
 
 #include "shared.hpp"
 
@@ -133,12 +134,64 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
     return value_to_python(*found);
 }
 
+/**
+ *  @brief Stages a tombstone for every member of a window named by a slice, with either end optional.
+ *
+ *  Nothing is visible until the transaction commits, which is the whole difference from the store's
+ *  own slice delete: a window erased here is a window this transaction read, so a key another
+ *  transaction commits into it is a phantom the commit refuses over.
+ *
+ *  @return 0 on success, -1 with an exception set.
+ */
+static int view_delete_slice(PyObject *self, PyObject *slice) noexcept {
+    auto *view = object_as<view_object_t>(self);
+    module_state_t *state = state_of_type(self);
+    if (!state) return -1;
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return -1;
+
+    auto const *bounds = reinterpret_cast<PySliceObject *>(slice);
+    if (bounds->step != Py_None) {
+        PyErr_SetString(PyExc_ValueError, "a step has no meaning over a range of keys");
+        return -1;
+    }
+
+    key_variant_t lower;
+    key_variant_t upper;
+    bool const has_lower = bounds->start != Py_None;
+    bool const has_upper = bounds->stop != Py_None;
+    if (has_lower && !key_from_python(bounds->start, part->ops, lower)) return -1;
+    if (has_upper && !key_from_python(bounds->stop, part->ops, upper)) return -1;
+
+    status_t status = success_k;
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept {
+            status = part.erase_range(has_lower ? &lower : nullptr, has_upper ? &upper : nullptr);
+        }) != 0)
+        return -1;
+    return raise_for(state, status);
+}
+
 static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return -1;
     participant_t *part = part_of_or_raise(view, state);
     if (!part) return -1;
+
+    // A slice names a window rather than a key, and only ever arrives at a delete, exactly as it
+    // does on the store. An unordered participant has no window to name and says so here, since one
+    // view type speaks for every core and the refusal cannot come from the type.
+    if (PySlice_Check(key)) {
+        if (!part->is_ordered()) {
+            PyErr_SetString(PyExc_TypeError, "this participant has no ordering, so it cannot be sliced");
+            return -1;
+        }
+        if (value) {
+            PyErr_SetString(PyExc_TypeError, "a slice of this participant cannot be assigned to");
+            return -1;
+        }
+        return view_delete_slice(self, key);
+    }
 
     key_variant_t stored_key;
     if (!key_from_python(key, part->ops, stored_key)) return -1;
@@ -293,7 +346,8 @@ static PyObject *View_discard(PyObject *self, PyObject *const *args, Py_ssize_t 
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
             expected<bool> const held = part.contains(stored);
             status = held.status();
-            if (held && *held) status = part.erase(stored);
+            present = held && *held;
+            if (present) status = part.erase(stored);
         }) != 0)
         return nullptr;
     if (failed(status) && raise_for(state, status, args[0]) != 0) return nullptr;
@@ -391,6 +445,92 @@ static PyObject *View_update(PyObject *self, PyObject *const *args, Py_ssize_t c
     Py_RETURN_NONE;
 }
 
+static char const doc_View_scan[] =                                                                //
+    "scan(start=None, stop=None, *, limit=None)\n"                                                 //
+    "\n"                                                                                           //
+    "List of (key, value) pairs in key order over [start, stop), or of members for a set.\n"       //
+    "\n"                                                                                           //
+    "Sees this transaction's own staged writes, and otherwise the state as of when it\n"           //
+    "opened. Materialized in one span rather than lazily, because a walk records the\n"            //
+    "window it read and nothing else may run inside that record.\n"                                //
+    "\n"                                                                                           //
+    "Under 'serializable' or stricter, a key another transaction commits into that\n"              //
+    "window makes this transaction's commit raise PhantomConflictError, rather than\n"             //
+    "let a repeat of the walk answer differently.\n"                                               //
+    "\n"                                                                                           //
+    "Raises:\n"                                                                                    //
+    "  TypeError: If a bound is not of this store's key type, or this participant is unordered.\n" //
+    "  StateError: If the transaction has already finished.\n";                                    //
+
+static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
+    auto *view = object_as<view_object_t>(self);
+    module_state_t *state = state_of_type(self);
+    if (!state) return nullptr;
+    participant_t *part = part_of_or_raise(view, state);
+    if (!part) return nullptr;
+    if (!part->is_ordered()) {
+        PyErr_SetString(PyExc_TypeError, "this participant has no ordering, so it cannot be scanned");
+        return nullptr;
+    }
+
+    PyObject *start_object = nullptr;
+    PyObject *stop_object = nullptr;
+    Py_ssize_t limit = -1;
+    if (!window_from_python("scan", args, count, keywords, start_object, stop_object, limit)) return nullptr;
+
+    key_variant_t lower;
+    key_variant_t upper;
+    bool const has_stop = stop_object && stop_object != Py_None;
+    bool has_start = start_object && start_object != Py_None;
+    if (has_start && !key_from_python(start_object, part->ops, lower)) return nullptr;
+    if (has_stop && !key_from_python(stop_object, part->ops, upper)) return nullptr;
+    // A closed window is one merged walk and records exactly itself, while an open lower end has no
+    // floor to start one from. Only the layout knows its smallest key, so it is spelled here rather
+    // than left to the walk, which would otherwise read the whole keyspace to answer a bounded ask.
+    if (has_stop && !has_start) {
+        part->ops->least(lower);
+        has_start = true;
+    }
+
+    basic_vector<entry_t> collected;
+    status_t status = success_k;
+    std::size_t const wanted = limit < 0 ? std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(limit);
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept {
+            status = part.scan(has_start ? &lower : nullptr, has_stop ? &upper : nullptr, wanted, collected);
+        }) != 0)
+        return nullptr;
+    if (raise_for(state, status) != 0) return nullptr;
+
+    bool const associative = part->is_associative();
+    PyObject *listed = PyList_New(static_cast<Py_ssize_t>(collected.size()));
+    if (!listed) return nullptr;
+    for (std::size_t index = 0; index != collected.size(); ++index) {
+        PyObject *key_object = key_to_python(collected[index].key);
+        if (!key_object) {
+            Py_DECREF(listed);
+            return nullptr;
+        }
+        PyObject *element = key_object;
+        if (associative) {
+            PyObject *value_object = value_to_python(collected[index].mapped);
+            if (!value_object) {
+                Py_DECREF(key_object);
+                Py_DECREF(listed);
+                return nullptr;
+            }
+            element = PyTuple_Pack(2, key_object, value_object);
+            Py_DECREF(key_object);
+            Py_DECREF(value_object);
+            if (!element) {
+                Py_DECREF(listed);
+                return nullptr;
+            }
+        }
+        PyList_SET_ITEM(listed, static_cast<Py_ssize_t>(index), element);
+    }
+    return listed;
+}
+
 template <typename function_type_>
 static PyCFunction as_pycfunction(function_type_ function) noexcept {
     return reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(function));
@@ -402,6 +542,7 @@ static PyMethodDef View_methods[] = {
     {"discard", as_pycfunction(View_discard), METH_FASTCALL, doc_View_discard},
     {"watch", as_pycfunction(View_watch), METH_FASTCALL, doc_View_watch},
     {"update", as_pycfunction(View_update), METH_FASTCALL, doc_View_update},
+    {"scan", as_pycfunction(View_scan), ST_METHOD_FLAGS_, doc_View_scan},
     {nullptr, nullptr, 0, nullptr},
 };
 

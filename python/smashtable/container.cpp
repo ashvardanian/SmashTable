@@ -63,7 +63,9 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
 static bool isolation_from_python(PyObject *specification, isolation_choice_t &choice) noexcept {
     if (!specification || specification == Py_None) return true;
     if (!PyUnicode_Check(specification)) {
-        PyErr_SetString(PyExc_TypeError, "isolation must be 'monotonic_atomic_view', 'snapshot' or 'serializable'");
+        PyErr_SetString(
+            PyExc_TypeError,
+            "isolation must be 'monotonic_atomic_view', 'snapshot', 'serializable' or 'strict_serializable'");
         return false;
     }
     if (PyUnicode_CompareWithASCIIString(specification, "monotonic_atomic_view") == 0) {
@@ -78,12 +80,16 @@ static bool isolation_from_python(PyObject *specification, isolation_choice_t &c
         choice = isolation_choice_t::serializable_k;
         return true;
     }
+    if (PyUnicode_CompareWithASCIIString(specification, "strict_serializable") == 0) {
+        choice = isolation_choice_t::strict_serializable_k;
+        return true;
+    }
     // A sharded store reports a level weaker than any that can be asked for, so a caller feeding
     // `isolation` back in deserves to be told why rather than shown its own string again.
-    PyErr_Format(PyExc_ValueError,                                                               //
-                 "isolation must be 'monotonic_atomic_view', 'snapshot' or 'serializable', not " //
-                 "%R; a weaker level such as 'read_committed' is delivered by sharding rather "  //
-                 "than requested",                                                               //
+    PyErr_Format(PyExc_ValueError,                                                                      //
+                 "isolation must be 'monotonic_atomic_view', 'snapshot', 'serializable' or "            //
+                 "'strict_serializable', not %R; a weaker level such as 'read_committed' is delivered " //
+                 "by sharding rather than requested",                                                   //
                  specification);
     return false;
 }
@@ -1126,51 +1132,11 @@ static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_
     auto const *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (count > 2) {
-        PyErr_SetString(PyExc_TypeError, "scan() takes at most two positional arguments");
-        return nullptr;
-    }
 
-    PyObject *start_object = count > 0 ? args[0] : nullptr;
-    PyObject *stop_object = count > 1 ? args[1] : nullptr;
+    PyObject *start_object = nullptr;
+    PyObject *stop_object = nullptr;
     Py_ssize_t limit = -1;
-    if (keywords) {
-        Py_ssize_t const named = PyTuple_GET_SIZE(keywords);
-        for (Py_ssize_t index = 0; index != named; ++index) {
-            PyObject *name = PyTuple_GET_ITEM(keywords, index);
-            PyObject *value = args[count + index];
-            if (PyUnicode_CompareWithASCIIString(name, "start") == 0) {
-                if (start_object) {
-                    PyErr_SetString(PyExc_TypeError, "scan() got multiple values for 'start'");
-                    return nullptr;
-                }
-                start_object = value;
-            }
-            else if (PyUnicode_CompareWithASCIIString(name, "stop") == 0) {
-                if (stop_object) {
-                    PyErr_SetString(PyExc_TypeError, "scan() got multiple values for 'stop'");
-                    return nullptr;
-                }
-                stop_object = value;
-            }
-            else if (PyUnicode_CompareWithASCIIString(name, "limit") == 0) {
-                if (value != Py_None) {
-                    limit = PyNumber_AsSsize_t(value, PyExc_OverflowError);
-                    if (limit == -1 && PyErr_Occurred()) return nullptr;
-                    // Negative is the cursor's own spelling for uncounted, so a caller passing one
-                    // would silently receive the whole container rather than nothing.
-                    if (limit < 0) {
-                        PyErr_SetString(PyExc_ValueError, "limit cannot be negative");
-                        return nullptr;
-                    }
-                }
-            }
-            else {
-                PyErr_Format(PyExc_TypeError, "scan() got an unexpected keyword argument '%U'", name);
-                return nullptr;
-            }
-        }
-    }
+    if (!window_from_python("scan", args, count, keywords, start_object, stop_object, limit)) return nullptr;
 
     key_variant_t start_key;
     key_variant_t stop_key;
@@ -1477,14 +1443,20 @@ static char const doc_sharing[] =                                             //
     "\n"                                                                      //
     "What was asked for, unlike isolation, which reports what is delivered."; //
 
-static char const doc_isolation[] =                                                     //
-    "What this store actually promises a reader, as Jepsen names it.\n"                 //
-    "\n"                                                                                //
-    "The effective level rather than the one asked for. A snapshot store keeps its\n"   //
-    "level across partitions, since visibility there is a comparison against a stamp\n" //
-    "rather than a lock somebody holds. A monotonic one sharded across partitions\n"    //
-    "reports 'read_committed', because a reader holding no stamp can catch a commit\n"  //
-    "half-applied.";                                                                    //
+static char const doc_isolation[] =                                                        //
+    "What this store actually promises a reader, as Jepsen names it.\n"                    //
+    "\n"                                                                                   //
+    "Four levels may be asked for, in ascending strength: 'monotonic_atomic_view',\n"      //
+    "'snapshot', 'serializable' and 'strict_serializable'. The last two both refuse a\n"   //
+    "schedule no serial order explains; the stricter one additionally waits for every\n"   //
+    "earlier commit to become visible, so a transaction opening after a commit returns\n"  //
+    "cannot be ordered before it.\n"                                                       //
+    "\n"                                                                                   //
+    "The effective level rather than the one asked for. A stamped store keeps its level\n" //
+    "across partitions, since visibility there is a comparison against a stamp rather\n"   //
+    "than a lock somebody holds. A monotonic one sharded across partitions reports\n"      //
+    "'read_committed', because a reader holding no stamp can catch a commit\n"             //
+    "half-applied.";                                                                       //
 
 static PyGetSetDef map_getset[] = {
     {"value_mode", container_value_mode, nullptr, const_cast<char *>(doc_value_mode), nullptr},
@@ -1505,27 +1477,27 @@ static PyGetSetDef set_getset[] = {
 
 #pragma region Type Definitions
 
-static char const doc_SortedMap[] =                                                      //
-    "SortedMap(*, key, value='scalar', isolation='monotonic', sharing='locked')\n"       //
-    "\n"                                                                                 //
-    "An ordered mapping whose writes can be grouped into transactions.\n"                //
-    "\n"                                                                                 //
-    "Keys are homogeneous and their type is fixed at construction, which is what lets\n" //
-    "every comparison skip type dispatch. Floats and booleans may be values but never\n" //
-    "keys.\n"                                                                            //
-    "\n"                                                                                 //
-    "Args:\n"                                                                            //
-    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"   //
-    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"     //
-    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"        //
-    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n"              //
-    "\n"                                                                                 //
-    "Raises:\n"                                                                          //
-    "  TypeError: If key is missing, or names float or bool.\n"                          //
-    "  ValueError: If key, value, isolation or sharing names an unknown choice.\n";      //
+static char const doc_SortedMap[] =                                                            //
+    "SortedMap(*, key, value='scalar', isolation='monotonic_atomic_view', sharing='locked')\n" //
+    "\n"                                                                                       //
+    "An ordered mapping whose writes can be grouped into transactions.\n"                      //
+    "\n"                                                                                       //
+    "Keys are homogeneous and their type is fixed at construction, which is what lets\n"       //
+    "every comparison skip type dispatch. Floats and booleans may be values but never\n"       //
+    "keys.\n"                                                                                  //
+    "\n"                                                                                       //
+    "Args:\n"                                                                                  //
+    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"         //
+    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"           //
+    "  isolation (str): One of the four levels the isolation property names.\n"                //
+    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n"                    //
+    "\n"                                                                                       //
+    "Raises:\n"                                                                                //
+    "  TypeError: If key is missing, or names float or bool.\n"                                //
+    "  ValueError: If key, value, isolation or sharing names an unknown choice.\n";            //
 
 static char const doc_SortedSet[] =                                                    //
-    "SortedSet(*, key, isolation='monotonic', sharing='locked')\n"                     //
+    "SortedSet(*, key, isolation='monotonic_atomic_view', sharing='locked')\n"         //
     "\n"                                                                               //
     "An ordered set whose writes can be grouped into transactions.\n"                  //
     "\n"                                                                               //
@@ -1534,7 +1506,7 @@ static char const doc_SortedSet[] =                                             
     "\n"                                                                               //
     "Args:\n"                                                                          //
     "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n" //
-    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"      //
+    "  isolation (str): One of the four levels the isolation property names.\n"        //
     "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";           //
 
 static PyMethodDef SortedMap_methods[] = {
@@ -1615,24 +1587,24 @@ static PyType_Slot sorted_set_slots[] = {
     {0, nullptr},
 };
 
-static char const doc_HashMap[] =                                                          //
-    "HashMap(*, key, value='scalar', isolation='monotonic', sharing='locked')\n"           //
-    "\n"                                                                                   //
-    "An unordered mapping whose writes can be grouped into transactions.\n"                //
-    "\n"                                                                                   //
-    "Point access only. The open-addressed core supplies no ordering, so this class has\n" //
-    "no iteration, no keys/values/items, no scan and no range erase - reaching for one\n"  //
-    "is an AttributeError rather than an empty result. Use SortedMap when order or\n"      //
-    "enumeration matters.\n"                                                               //
-    "\n"                                                                                   //
-    "Args:\n"                                                                              //
-    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"     //
-    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"       //
-    "  isolation (str): 'monotonic' or 'snapshot'. See the isolation property.\n"          //
-    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";               //
+static char const doc_HashMap[] =                                                            //
+    "HashMap(*, key, value='scalar', isolation='monotonic_atomic_view', sharing='locked')\n" //
+    "\n"                                                                                     //
+    "An unordered mapping whose writes can be grouped into transactions.\n"                  //
+    "\n"                                                                                     //
+    "Point access only. The open-addressed core supplies no ordering, so this class has\n"   //
+    "no iteration, no keys/values/items, no scan and no range erase - reaching for one\n"    //
+    "is an AttributeError rather than an empty result. Use SortedMap when order or\n"        //
+    "enumeration matters.\n"                                                                 //
+    "\n"                                                                                     //
+    "Args:\n"                                                                                //
+    "  key (type or str): One of int, str, bytes, or 'int', 'uint', 'str', 'bytes'.\n"       //
+    "  value (str): 'scalar' to store copies, 'object' to hold arbitrary objects.\n"         //
+    "  isolation (str): One of the four levels the isolation property names.\n"              //
+    "  sharing (str): 'locked' for one mutex, 'partitioned' for sixteen.\n";                 //
 
 static char const doc_HashSet[] =                                                           //
-    "HashSet(*, key, isolation='monotonic', sharing='locked')\n"                            //
+    "HashSet(*, key, isolation='monotonic_atomic_view', sharing='locked')\n"                //
     "\n"                                                                                    //
     "An unordered set whose writes can be grouped into transactions.\n"                     //
     "\n"                                                                                    //

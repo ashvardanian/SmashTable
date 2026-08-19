@@ -308,9 +308,61 @@ def test_every_refusal_cause_is_catchable_as_one(keygen):
         assert issubclass(cause, RuntimeError)
 
 
-# A phantom refusal has no Python test yet, and cannot have one: provoking it needs an ordered read
-# inside a transaction, and the participant view offers only point access - `store_ops_t` carries no
-# `transaction_lower_bound`, `transaction_range` or `transaction_for_each`. `PhantomConflictError`
-# is reachable from C++ today and becomes reachable from here once those slots exist.
+def _phantom_at(level: str, keygen):
+    """Runs the phantom schedule at `level`, returning what refused the scanner and what it saw.
+
+    One transaction scans a window that comes back empty, and another commits a key into that
+    window. Nothing overlaps: the write sets are disjoint and the scan recorded no key, because
+    there was none to record. Only validating the window itself can refuse this.
+    """
+    container = make(st.SortedMap, "int", isolation=level, sharing="locked")
+    lower, inside, upper, written_key = keygen(4)
+
+    hers = st.transaction(container)
+    (her_view,) = hers.begin()
+    seen = her_view.scan(lower, upper)
+
+    his = st.transaction(container)
+    (his_view,) = his.begin()
+    his_view[inside] = "phantom"
+    his.stage()
+    his.commit()
+
+    her_view[written_key] = "elsewhere"
+    try:
+        hers.stage()
+        hers.commit()
+        return None, seen
+    except st.ConflictError as refusal:
+        return refusal, seen
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("level", ["serializable", "strict_serializable"])
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_scanned_window_refuses_by_phantom_conflict(keygen, level):
+    """A key committed into a window this transaction read is what the third cause names."""
+    refusal, seen = _phantom_at(level, keygen)
+    assert seen == [], "the window was empty, so no key was read and only the window itself was"
+    assert isinstance(refusal, st.PhantomConflictError)
+    assert isinstance(refusal, st.ConflictError), "a caller catching the base must still catch this"
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_snapshot_admits_a_phantom(keygen):
+    """Snapshot validates only what a transaction wrote, so a window it read can gain a member.
+
+    Asserted as an anomaly the level permits rather than left untested, for the same reason write
+    skew is: it is what the level above it exists to refuse. Berenson's A3 under a snapshot read.
+    """
+    refusal, seen = _phantom_at("snapshot", keygen)
+    assert seen == []
+    assert refusal is None, "disjoint write sets give a snapshot commit nothing to conflict on"
+
 
 # endregion Refusal Causes

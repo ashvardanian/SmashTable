@@ -285,6 +285,104 @@ struct store_bridge {
         return transaction_of(transaction).watch(key);
     }
 
+    /** @brief Copies one element into @p into, reporting what the copy could not do. */
+    static status_t collect(value_t const &element, basic_vector<entry_t> &into) noexcept {
+        auto key = mapping_key_or_itself<value_t>(element).copy();
+        if (!key) return key.status();
+        entry_t taken;
+        taken.key = std::move(*key);
+        if constexpr (associative_k) {
+            auto held = element.mapped.copy();
+            if (!held) return held.status();
+            taken.mapped = std::move(*held);
+        }
+        return into.push_back(std::move(taken));
+    }
+
+    /**
+     *  @brief Collects the half-open window, which is the read a phantom is detected against.
+     *
+     *  Which walk answers depends on which ends are named, because each records a different read and
+     *  the level is validated against exactly what was recorded: a closed window records that window,
+     *  an open upper end is stepped so each step records its own, and a window with no ends at all is
+     *  the whole keyspace and says so. An upper bound arrives with a lower one, since only the caller
+     *  can spell a layout's floor.
+     */
+    static status_t transaction_scan(void *transaction, key_variant_t const *lower, key_variant_t const *upper,
+                                     std::size_t limit, basic_vector<entry_t> &collected) noexcept
+        requires ordered_k
+    {
+        assert((lower || !upper) && "an upper bound needs a lower one; the caller supplies the layout's floor");
+        deferring_store_call_t deferral;
+        auto &self = transaction_of(transaction);
+        status_t collecting = success_k;
+        auto step = [&](value_t const &element) noexcept {
+            if (failed(collecting) || collected.size() == limit) return;
+            collecting = collect(element, collected);
+        };
+
+        if (lower && upper) {
+            status_t const walked = self.range(*lower, *upper, step);
+            return failed(walked) ? walked : collecting;
+        }
+        if (lower) {
+            // An open upper end has no key to halt a merged walk at, so the window is stepped instead -
+            // `lower_bound` once and `upper_bound` after, which is the loop the store's own cursor runs.
+            // The step's key is copied out rather than aliased, because the next call reads the bound it
+            // was handed while the walk that produced it is already gone.
+            key_variant_t position;
+            key_variant_t reached;
+            bool landed = false;
+            auto seed = [&](value_t const &element) noexcept {
+                auto seen = mapping_key_or_itself<value_t>(element).copy();
+                if (!seen) {
+                    collecting = seen.status();
+                    return;
+                }
+                reached = std::move(*seen);
+                landed = true;
+                step(element);
+            };
+            status_t walked = self.lower_bound(*lower, seed, no_op_t {});
+            while (succeeded(walked) && succeeded(collecting) && landed && collected.size() != limit) {
+                position = std::move(reached);
+                landed = false;
+                walked = self.upper_bound(position, seed, no_op_t {});
+            }
+            return failed(walked) ? walked : collecting;
+        }
+
+        status_t const walked = self.for_each(step);
+        return failed(walked) ? walked : collecting;
+    }
+
+    /** @brief Stages a tombstone for every member of that same window. */
+    static status_t transaction_erase_range(void *transaction, key_variant_t const *lower,
+                                            key_variant_t const *upper) noexcept
+        requires ordered_k
+    {
+        deferring_store_call_t deferral;
+        auto &self = transaction_of(transaction);
+        if (lower && upper) return self.erase_range(*lower, *upper, no_op_t {});
+        if (lower) return self.erase_from(*lower, no_op_t {});
+        if (upper) return self.erase_up_to(*upper, no_op_t {});
+
+        // A transaction has no `clear`: erasing through one means staging a tombstone per member, and
+        // the members are collected before any of them is staged, because a tombstone moves what the
+        // merged walk answers underneath the walk that produced it.
+        basic_vector<entry_t> doomed;
+        status_t collecting = success_k;
+        if (status_t const walked = self.for_each([&](value_t const &element) noexcept {
+                if (succeeded(collecting)) collecting = collect(element, doomed);
+            });
+            failed(walked))
+            return walked;
+        if (failed(collecting)) return collecting;
+        for (std::size_t index = 0; index != doomed.size(); ++index)
+            if (status_t const staged = self.erase(doomed[index].key); failed(staged)) return staged;
+        return success_k;
+    }
+
     static status_t transaction_stage(void *transaction) noexcept {
         deferring_store_call_t deferral;
         return transaction_of(transaction).stage();
@@ -363,6 +461,10 @@ struct store_bridge {
         built.transaction_upsert = &transaction_upsert;
         built.transaction_erase = &transaction_erase;
         built.transaction_watch = &transaction_watch;
+        if constexpr (ordered_k) {
+            built.transaction_scan = &transaction_scan;
+            built.transaction_erase_range = &transaction_erase_range;
+        }
         built.transaction_stage = &transaction_stage;
         built.transaction_commit = &transaction_commit;
         built.transaction_rollback = &transaction_rollback;

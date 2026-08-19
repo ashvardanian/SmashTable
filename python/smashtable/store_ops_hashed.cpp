@@ -27,6 +27,8 @@ template <typename value_type_>
 using hashed_snapshot = snapshot_store<hashed_core<value_type_>>;
 template <typename value_type_>
 using hashed_serializable = serializable_store<hashed_core<value_type_>>;
+template <typename value_type_>
+using hashed_strict_serializable = strict_serializable_store<hashed_core<value_type_>>;
 
 template <typename store_type_>
 using shared_by_lock = locked_store<store_type_>;
@@ -57,6 +59,15 @@ constexpr store_ops_t hash_set_serializable_locked =
 constexpr store_ops_t hash_set_serializable_partitioned =
     store_bridge<shared_by_partition<hashed_serializable<key_variant_t>>>::table();
 
+constexpr store_ops_t hash_map_strict_serializable_locked =
+    store_bridge<shared_by_lock<hashed_strict_serializable<entry_t>>>::table();
+constexpr store_ops_t hash_map_strict_serializable_partitioned =
+    store_bridge<shared_by_partition<hashed_strict_serializable<entry_t>>>::table();
+constexpr store_ops_t hash_set_strict_serializable_locked =
+    store_bridge<shared_by_lock<hashed_strict_serializable<key_variant_t>>>::table();
+constexpr store_ops_t hash_set_strict_serializable_partitioned =
+    store_bridge<shared_by_partition<hashed_strict_serializable<key_variant_t>>>::table();
+
 #pragma endregion Instantiations
 
 #pragma region Resolution
@@ -64,9 +75,13 @@ constexpr store_ops_t hash_set_serializable_partitioned =
 store_ops_t const *hashed_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
                                         bool associative) noexcept {
     bool const partitioned = sharing == sharing_choice_t::partitioned_k;
-    // A switch rather than a pair of flags: three levels do not fit in one boolean, and naming
+    // A switch rather than a pair of flags: four levels do not fit in one boolean, and naming
     // each arm keeps a configuration that does not exist from being spelled by accident.
     switch (isolation) {
+    case isolation_choice_t::strict_serializable_k:
+        if (associative)
+            return partitioned ? &hash_map_strict_serializable_partitioned : &hash_map_strict_serializable_locked;
+        return partitioned ? &hash_set_strict_serializable_partitioned : &hash_set_strict_serializable_locked;
     case isolation_choice_t::serializable_k:
         if (associative) return partitioned ? &hash_map_serializable_partitioned : &hash_map_serializable_locked;
         return partitioned ? &hash_set_serializable_partitioned : &hash_set_serializable_locked;

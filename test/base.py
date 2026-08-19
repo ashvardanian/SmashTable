@@ -41,6 +41,7 @@ all_class_names = map_class_names + set_class_names
 sorted_map_names = [map_class_names[0]]
 sorted_set_names = [set_class_names[0]]
 sorted_class_names = [map_class_names[0], set_class_names[0]]
+hash_map_names = [map_class_names[1]]
 
 # Classes whose contents can be walked, which is what the structural oracle needs: it compares
 # against `dict` and `set`, and cannot run against a container it cannot enumerate.
@@ -77,6 +78,7 @@ isolation_levels = [
     pytest.param("monotonic_atomic_view", id="monotonic"),
     pytest.param("snapshot", id="snapshot"),
     pytest.param("serializable", id="serializable"),
+    pytest.param("strict_serializable", id="strict"),
 ]
 sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
@@ -188,7 +190,7 @@ def make(
 def effective_isolation(isolation: str, sharing: str) -> str:
     """What a container actually promises, which is not always what was asked for.
 
-    A stamp-based container - snapshot or serializable - carries its level across partitions,
+    A stamp-based container - snapshot upwards - carries its level across partitions,
     because visibility there is a stamp comparison and every partition draws from one clock. A
     monotonic one cannot: its reader holds no stamp to answer at, so a walk across partitions can
     catch a commit half-applied and only Read Committed survives above a single key.
@@ -196,7 +198,7 @@ def effective_isolation(isolation: str, sharing: str) -> str:
     The single place the cap is spelled, so a core that changes what it can carry is one edit here
     rather than a sweep through the suite.
     """
-    if isolation in ("snapshot", "serializable"):
+    if isolation in ("snapshot", "serializable", "strict_serializable"):
         return isolation
     return "read_committed" if sharing == "partitioned" else "monotonic_atomic_view"
 

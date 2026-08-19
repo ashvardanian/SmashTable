@@ -25,6 +25,8 @@ template <typename value_type_>
 using sorted_snapshot = snapshot_store<sorted_core<value_type_>>;
 template <typename value_type_>
 using sorted_serializable = serializable_store<sorted_core<value_type_>>;
+template <typename value_type_>
+using sorted_strict_serializable = strict_serializable_store<sorted_core<value_type_>>;
 
 template <typename store_type_>
 using shared_by_lock = locked_store<store_type_>;
@@ -63,6 +65,15 @@ constexpr store_ops_t sorted_set_serializable_locked =
 constexpr store_ops_t sorted_set_serializable_partitioned =
     store_bridge<shared_by_partition<sorted_serializable<key_variant_t>>>::table();
 
+constexpr store_ops_t sorted_map_strict_serializable_locked =
+    store_bridge<shared_by_lock<sorted_strict_serializable<entry_t>>>::table();
+constexpr store_ops_t sorted_map_strict_serializable_partitioned =
+    store_bridge<shared_by_partition<sorted_strict_serializable<entry_t>>>::table();
+constexpr store_ops_t sorted_set_strict_serializable_locked =
+    store_bridge<shared_by_lock<sorted_strict_serializable<key_variant_t>>>::table();
+constexpr store_ops_t sorted_set_strict_serializable_partitioned =
+    store_bridge<shared_by_partition<sorted_strict_serializable<key_variant_t>>>::table();
+
 #pragma endregion Instantiations
 
 #pragma region Resolution
@@ -70,9 +81,13 @@ constexpr store_ops_t sorted_set_serializable_partitioned =
 store_ops_t const *sorted_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
                                         bool associative) noexcept {
     bool const partitioned = sharing == sharing_choice_t::partitioned_k;
-    // A switch rather than a pair of flags: three levels do not fit in one boolean, and naming
+    // A switch rather than a pair of flags: four levels do not fit in one boolean, and naming
     // each arm keeps a configuration that does not exist from being spelled by accident.
     switch (isolation) {
+    case isolation_choice_t::strict_serializable_k:
+        if (associative)
+            return partitioned ? &sorted_map_strict_serializable_partitioned : &sorted_map_strict_serializable_locked;
+        return partitioned ? &sorted_set_strict_serializable_partitioned : &sorted_set_strict_serializable_locked;
     case isolation_choice_t::serializable_k:
         if (associative) return partitioned ? &sorted_map_serializable_partitioned : &sorted_map_serializable_locked;
         return partitioned ? &sorted_set_serializable_partitioned : &sorted_set_serializable_locked;
