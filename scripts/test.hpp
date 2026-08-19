@@ -102,7 +102,7 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
  *  Stringifying the two expressions says which comparison broke and neither of the values it
  *  compared, which for a status is the whole of what a reader needs.
  */
-#define st_verify_eq_(first, second)                                                \
+#define st_verify_eq_(first, second, ...)                                           \
     do {                                                                            \
         auto const &st_left_ = (first);                                             \
         auto const &st_right_ = (second);                                           \
@@ -110,13 +110,14 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
             std::fprintf(stderr, "Verification failed: %s == %s", #first, #second); \
             st_print_operand_("left", st_left_);                                    \
             st_print_operand_("right", st_right_);                                  \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
             std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
             std::abort();                                                           \
         }                                                                           \
     } while (0)
 
 /** @brief Verification that two values differ, naming both when they do not. */
-#define st_verify_ne_(first, second)                                                \
+#define st_verify_ne_(first, second, ...)                                           \
     do {                                                                            \
         auto const &st_left_ = (first);                                             \
         auto const &st_right_ = (second);                                           \
@@ -124,6 +125,7 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
             std::fprintf(stderr, "Verification failed: %s != %s", #first, #second); \
             st_print_operand_("left", st_left_);                                    \
             st_print_operand_("right", st_right_);                                  \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
             std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
             std::abort();                                                           \
         }                                                                           \

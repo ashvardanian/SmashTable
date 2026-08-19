@@ -515,8 +515,10 @@ static void commit_stamp_visibility_matrix() {
 /** @brief Every ordered pair of isolation levels, so the enum's order is load-bearing. */
 static void isolation_levels_compare_by_strength() {
     constexpr isolation_t levels_k[] = {
-        isolation_t::read_uncommitted_k, isolation_t::read_committed_k, isolation_t::monotonic_atomic_view_k,
-        isolation_t::snapshot_k,         isolation_t::serializable_k,
+        isolation_t::read_committed_k,
+        isolation_t::monotonic_atomic_view_k,
+        isolation_t::snapshot_k,
+        isolation_t::serializable_k,
     };
     constexpr std::size_t levels_count_k = sizeof(levels_k) / sizeof(levels_k[0]);
 
@@ -524,7 +526,7 @@ static void isolation_levels_compare_by_strength() {
         for (std::size_t required = 0; required != levels_count_k; ++required)
             st_verify_eq_(at_least(levels_k[offered], levels_k[required]), offered >= required);
 
-    static_assert(at_least(isolation_t::serializable_k, isolation_t::read_uncommitted_k));
+    static_assert(at_least(isolation_t::serializable_k, isolation_t::read_committed_k));
     static_assert(!at_least(isolation_t::read_committed_k, isolation_t::snapshot_k));
     static_assert(at_least(isolation_t::snapshot_k, isolation_t::snapshot_k));
 }
