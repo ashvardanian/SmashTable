@@ -942,10 +942,11 @@ void test_empty_container_operations() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     container_t container;
 
     // Operations on empty container should not crash
-    st_verify_(!(container.contains(trivial_id_to_key<member_t>(1))));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), false);
     erase_range_of(container, trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(10));
     st_verify_eq_(container.size(), 0);
 }
@@ -958,12 +959,13 @@ void test_single_element_operations() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     container_t container;
 
     auto new_member = trivial_id_to_member<member_t>(42);
     st_verify_(container.upsert(std::move(new_member)));
     st_verify_eq_(container.size(), 1);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(42)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(42)), true);
     erase_range_of(container, trivial_id_to_key<member_t>(42), trivial_id_to_key<member_t>(43));
     st_verify_eq_(container.size(), 0);
 }
@@ -976,13 +978,14 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     container_t container;
 
     // Test 1: Ascending insertion
     for (std::size_t index = 0; index < size; ++index) {
         auto new_member = trivial_id_to_member<member_t>(index);
         st_verify_(container.upsert(std::move(new_member)));
-        st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
         st_verify_eq_(container.size(), index + 1);
     }
     st_verify_eq_(container.size(), size);
@@ -993,7 +996,7 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
     for (std::size_t index = size; index > 0; --index) {
         auto new_member = trivial_id_to_member<member_t>(index);
         st_verify_(container.upsert(std::move(new_member)));
-        st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
     }
     st_verify_eq_(container.size(), size);
     clear_container(container);
@@ -1005,7 +1008,7 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
         trivial_id_t random_id = static_cast<trivial_id_t>(std::rand());
         auto new_member = trivial_id_to_member<member_t>(random_id);
         st_verify_(container.upsert(std::move(new_member)));
-        st_verify_(container.contains(trivial_id_to_key<member_t>(random_id)));
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(random_id)), true);
     }
 }
 
@@ -1017,6 +1020,7 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     container_t container;
 
     std::vector<member_t> members;
@@ -1026,19 +1030,20 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
     st_verify_(
         container.insert_if_missing(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
     st_verify_eq_(container.size(), size);
-    for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 0; index < size; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
     clear_container(container);
     st_verify_eq_(container.size(), 0);
 
     // Lets do the same with update-or-insert semantics, on entries the first pass has not emptied
     members.clear();
     for (std::size_t index = 0; index < size; ++index) members.push_back(trivial_id_to_member<member_t>(index));
-    st_verify_(
-        succeeded(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end()))));
+    st_verify_(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
     st_verify_eq_(container.size(), size);
-    for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 0; index < size; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
     clear_container(container);
     st_verify_eq_(container.size(), 0);
 }
@@ -1070,7 +1075,7 @@ void test_bulk_upsert_with_duplicates() {
     st_verify_eq_(container.size(), 10);
 
     // Verify initial values exist
-    st_verify_(container.contains(trivial_id_to_key<member_t>(5)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(5)), true);
 
     // Now bulk insert with overlapping keys but different values
     std::vector<member_t> members;
@@ -1080,8 +1085,7 @@ void test_bulk_upsert_with_duplicates() {
         members.push_back(std::move(new_member));
     }
 
-    st_verify_(
-        succeeded(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end()))));
+    st_verify_(container.upsert(std::make_move_iterator(members.begin()), std::make_move_iterator(members.end())));
 
     // Size should be 15 (0-14), not 20
     st_verify_eq_(container.size(), 15);
@@ -1094,11 +1098,14 @@ void test_bulk_upsert_with_duplicates() {
     }
 
     // Verify new keys (10-14) were inserted
-    for (std::size_t index = 10; index < 15; ++index)
-        st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 10; index < 15; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
 
     // Verify old keys (0-4) still exist
-    for (std::size_t index = 0; index < 5; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 0; index < 5; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
 }
 
 /**
@@ -1122,12 +1129,12 @@ void test_range_query_head_state(std::size_t size = 100) {
         std::size_t count = 0;
         auto min_key = trivial_id_to_key<member_t>(size);
         auto max_key = trivial_id_to_key<member_t>(0);
-        container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 9),
-                        [&](member_t const &member) noexcept {
-                            min_key = std::min(min_key, mapping_key_or_itself<member_t>(member));
-                            max_key = std::max(max_key, mapping_key_or_itself<member_t>(member));
-                            count++;
-                        });
+        st_verify_(container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 9),
+                                   [&](member_t const &member) noexcept {
+                                       min_key = std::min(min_key, mapping_key_or_itself<member_t>(member));
+                                       max_key = std::max(max_key, mapping_key_or_itself<member_t>(member));
+                                       count++;
+                                   }));
         st_verify_((count) > (0));
         if (count > 0) {
             st_verify_((min_key) >= (trivial_id_to_key<member_t>(index)));
@@ -1158,6 +1165,7 @@ void test_erase_range_head_state(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     container_t container;
 
     for (std::size_t index = 0; index < size; ++index)
@@ -1167,8 +1175,9 @@ void test_erase_range_head_state(std::size_t size = 100) {
         auto start_key = trivial_id_to_key<member_t>(index);
         auto end_key = trivial_id_to_key<member_t>(index + 10);
         erase_range_of(container, start_key, end_key);
-        for (std::size_t i = index; i < index + 10; ++i)
-            st_verify_(!(container.contains(trivial_id_to_key<member_t>(i))));
+        for (std::size_t i = index; i < index + 10; ++i) {
+            st_verify_eq_(container.contains(trivial_id_to_key<member_t>(i)), false);
+        }
     }
 }
 

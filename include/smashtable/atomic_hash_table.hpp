@@ -121,7 +121,6 @@ class atomic_hash_table {
 
     // Traits the transactional adapters dispatch on.
     using is_associative = std::bool_constant<has_values_k>;
-    using callback_reads = std::true_type;
     using is_transactional = std::false_type;
 
   private:
@@ -196,15 +195,22 @@ class atomic_hash_table {
      *    invalidate anything handed back.
      */
     template <typename comparable_key_type_, typename callback_found_type_, typename callback_missing_type_ = no_op_t>
-    constexpr void find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
-                        callback_missing_type_ &&callback_missing = {}) const noexcept {
+    [[nodiscard]] constexpr status_t find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
+                                          callback_missing_type_ &&callback_missing = {}) const noexcept {
         if (!probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted),
                                               std::forward<callback_found_type_>(callback_found)))
             callback_missing();
+        return success_k;
     }
 
+    /**
+     *  @brief Reports whether a key equivalent to @p wanted is present.
+     *  @param[in] wanted Key to probe for.
+     *  @param[out] present Set to whether the key is here.
+     *  @return Always success; the probe takes each slot's lock and never allocates.
+     */
     template <typename comparable_key_type_>
-    constexpr bool contains(comparable_key_type_ &&wanted) const noexcept {
+    [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted) const noexcept {
         return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted), no_op_t {});
     }
 

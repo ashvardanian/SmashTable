@@ -29,9 +29,9 @@ void api() {
     // Head state
     auto container = *container_type_::make();
     _ = container.upsert(value_t {});
-    container.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
-    container.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
-    container.range(identifier_t {}, identifier_t {}, [](value_t const &) noexcept {});
+    _ = container.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
+    _ = container.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
+    _ = container.range(identifier_t {}, identifier_t {}, [](value_t const &) noexcept {});
     _ = container.erase_range(identifier_t {}, identifier_t {}, [](value_t const &) noexcept {});
     _ = container.clear();
     _ = container.size();
@@ -41,8 +41,8 @@ void api() {
     _ = transaction.upsert(value_t {});
     _ = transaction.watch(identifier_t {});
     _ = transaction.erase(identifier_t {});
-    transaction.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
-    transaction.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
+    _ = transaction.find(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
+    _ = transaction.upper_bound(identifier_t {}, [](value_t const &) noexcept {}, []() noexcept {});
     _ = transaction.stage();
     _ = transaction.rollback();
     _ = transaction.commit();
@@ -51,17 +51,17 @@ void api() {
     // Machine Learning
     std::random_device random_device;
     std::mt19937 random_generator(random_device());
-    container.sample_one( //
-        identifier_t {}, identifier_t {}, random_generator, [](value_t const &) noexcept {});
+    _ = (container.sample_one( //
+        identifier_t {}, identifier_t {}, random_generator, [](value_t const &) noexcept {}));
 
     std::size_t count_seen = 0;
     std::array<value_t, 16> reservoir;
-    container.sample_reservoir( //
-        identifier_t {}, identifier_t {}, random_generator, count_seen, reservoir.size(), reservoir.data());
+    _ = (container.sample_reservoir( //
+        identifier_t {}, identifier_t {}, random_generator, count_seen, reservoir.size(), reservoir.data()));
 
     // Exports
     value_t result;
-    container.find(identifier_t {}, copy_to(result), no_op_t {});
+    _ = container.find(identifier_t {}, copy_to(result), no_op_t {});
 }
 
 using pair_t = mapping<std::size_t, std::size_t>;

@@ -1006,7 +1006,6 @@ class basic_wb_tree {
     using mapped_type = mapped_t; // ? STL compatibility
 
     // Trait to indicate this container uses iterator-based reads (not callbacks)
-    using callback_reads = std::false_type;
 
     using is_associative = std::bool_constant<is_mapping<value_t>>;
 
@@ -1160,16 +1159,28 @@ class basic_wb_tree {
 
 #pragma region Lookup
 
-    /** @brief Existence check, heterogeneous when the comparator declares @c is_transparent. */
+    /**
+     *  @brief Existence check, heterogeneous when the comparator declares @c is_transparent.
+     *  @param[in] comparable Object comparable to @c value_t.
+     *  @param[out] present Set to whether an element equal to @p comparable is here.
+     *  @return Always success; a lookup over owned nodes has nothing to refuse.
+     */
     template <typename comparable_type_ = value_t>
-    [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         return find(std::forward<comparable_type_>(comparable)) != end();
     }
 
-    /** @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
+    /**
+     *  @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys.
+     *  @param[in] comparable Object comparable to @c value_t.
+     *  @param[out] matches Set to how many elements equal @p comparable.
+     *  @return Always success; a lookup over owned nodes has nothing to refuse.
+     */
     template <typename comparable_type_ = value_t>
-    [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
-        return contains(std::forward<comparable_type_>(comparable)) ? 1u : 0u;
+    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
+        if (!present) return present.status();
+        return *present ? std::size_t {1} : std::size_t {0};
     }
 
 #pragma endregion Lookup
@@ -1255,8 +1266,9 @@ class basic_wb_tree {
      *  @param[in] callback Callback to invoke for each fruit. Must be @c noexcept.
      */
     template <typename callback_type_>
-    void for_each(callback_type_ &&callback) noexcept {
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
         node_t::for_each_left_right(root_, [&](node_t *node) noexcept { callback(node->fruit); });
+        return success_k;
     }
 
     /** @brief Sum of absolute subtree-size differences, used by the tests to watch balance quality. */
@@ -1529,16 +1541,18 @@ class basic_wb_tree {
 
     /** @brief Visits every element in [lower, upper) in sorted order. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
+        return success_k;
     }
 
     /** @brief Same range walk, but the callback may modify each element in place. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
+        return success_k;
     }
 
     /** @brief Copies out the element equal to @p comparable, or reports @c key_not_found_k. */

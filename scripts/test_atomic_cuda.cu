@@ -161,7 +161,8 @@ __global__ void insert_kernel(table_t *table, user_id_t const *users, std::size_
 __global__ void find_kernel(table_t *table, user_id_t const *users, std::size_t count, session_id_t *found) {
     for (std::size_t index = blockIdx.x * blockDim.x + threadIdx.x; index < count; index += gridDim.x * blockDim.x) {
         session_id_t session = session_id_t::missing_k;
-        table->find(users[index], [&](auto const &slot) noexcept { session = slot.value(); });
+        [[maybe_unused]] status_t const answered =
+            table->find(users[index], [&](auto const &slot) noexcept { session = slot.value(); });
         found[index] = session;
     }
 }
@@ -205,7 +206,7 @@ static void number_users(managed<user_id_t> const &users, std::size_t count, std
 static void verify_present(managed<table_t> const &table, user_id_t user) noexcept {
     session_id_t session = session_id_t::missing_k;
     bool found = false;
-    table->find(
+    [[maybe_unused]] status_t const answered = table->find(
         user,
         [&](auto const &slot) noexcept {
             session = slot.value();
@@ -265,8 +266,9 @@ static void cuda_device_insert_find_erase_cycle() {
     st_verify_eq_(table->size(), count - erased_count);
     st_verify_eq_(table->deleted_count(), erased_count);
 
-    for (std::size_t index = 0; index != erased_count; ++index)
-        st_verify_(!table->contains(users[index]) && "Erased key still present");
+    for (std::size_t index = 0; index != erased_count; ++index) {
+        st_verify_((table->contains(users[index]) == false) && "Erased key still present");
+    }
     for (std::size_t index = erased_count; index != count; ++index) verify_present(table, users[index]);
 }
 

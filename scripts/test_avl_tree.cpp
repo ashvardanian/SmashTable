@@ -507,6 +507,13 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_lost_update_matches_isolation() {
+    test_lost_update_matches_isolation<transactional_trivial_map_t>();
+    test_lost_update_matches_isolation<transactional_tracking_map_t>();
+    test_lost_update_matches_isolation<transactional_composite_map_t>();
+    test_lost_update_matches_isolation<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_trivial_map_t>();
     test_repeated_read_matches_isolation<transactional_tracking_map_t>();
@@ -559,13 +566,13 @@ static subtree_shape_t verify_subtree(typename tree_type_::node_t const *node,
                                       typename tree_type_::node_t const *parent,
                                       typename tree_type_::comparator_t const &comparator) {
     if (!node) return {};
-    st_verify_(node->parent == parent && "every node points back at its parent");
+    st_verify_eq_(node->parent, parent, "every node points back at its parent");
 
     subtree_shape_t const left = verify_subtree<tree_type_>(node->left, node, comparator);
     subtree_shape_t const right = verify_subtree<tree_type_>(node->right, node, comparator);
     std::ptrdiff_t const height = 1 + (left.height > right.height ? left.height : right.height);
     std::ptrdiff_t const balance = left.height - right.height;
-    st_verify_(node->height == height && "the stored height matches the walked one");
+    st_verify_eq_(node->height, height, "the stored height matches the walked one");
     st_verify_(balance >= -1 && balance <= 1 && "AVL balance never exceeds one");
 
     if (node->left)
@@ -650,8 +657,9 @@ static void test_range_excludes_upper_bound() {
         st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::vector<trivial_id_t> seen;
-    tree.range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(4),
-               [&](auto const &member) noexcept { seen.push_back(mapping_key_or_itself(member).unique_id); });
+    st_verify_(
+        tree.range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(4),
+                   [&](auto const &member) noexcept { seen.push_back(mapping_key_or_itself(member).unique_id); }));
 
     st_verify_eq_(seen.size(), 2);
     st_verify_eq_(seen[0], 2);
@@ -785,6 +793,7 @@ static void test_node_equal_range() {
 /** @brief A bulk upsert pays for its nodes while staging them, and the merge that follows cannot fail. */
 static void test_bulk_upsert_pays_only_while_staging() {
     using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
+
     allocation_ledger_t ledger;
     ledger.allow(64);
     budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
@@ -795,14 +804,14 @@ static void test_bulk_upsert_pays_only_while_staging() {
     ledger.reset();
     ledger.allow(2);
     st_verify_eq_(tree.upsert(members.begin(), members.end()), status_t::out_of_memory_heap_k);
-    st_verify_(!tree.contains(trivial_key_t(99)));
+    st_verify_eq_(tree.contains(trivial_key_t(99)), false);
     st_verify_eq_(tree.size(), 2u);
 
     // Exactly enough for the temporary, and the merge relinks its nodes rather than asking for more.
     ledger.reset();
     ledger.allow(3);
     st_verify_(tree.upsert(members.begin(), members.end()));
-    st_verify_(tree.contains(trivial_key_t(99)));
+    st_verify_eq_(tree.contains(trivial_key_t(99)), true);
     st_verify_eq_(ledger.granted_count, std::size_t {3});
     st_verify_eq_(ledger.refused_count, std::size_t {0});
     verify_invariants(tree);
@@ -822,19 +831,19 @@ static void test_upsert_reports_placement() {
     budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
 
     auto const made = tree.upsert(trivial_key_t(1));
-    st_verify_((made.placement == placement_t::made_k) && "a fresh key must report a node of its own");
+    st_verify_eq_(made.placement, placement_t::made_k, "a fresh key must report a node of its own");
     st_verify_(made);
     st_verify_((made.node != nullptr));
 
     auto const matched = tree.upsert(trivial_key_t(1));
-    st_verify_((matched.placement == placement_t::matched_k) && "a key already there must report a match");
+    st_verify_eq_(matched.placement, placement_t::matched_k, "a key already there must report a match");
     st_verify_(succeeded(matched) && "an overwrite is not a failure");
     st_verify_((matched.node != nullptr));
 
     // The budget is spent, so the second key has no node to live in - the outcome that shares a
     // null match with nothing else.
     auto const refused = tree.upsert(trivial_key_t(2));
-    st_verify_((refused.placement == placement_t::refused_k) && "a refused allocation must say so");
+    st_verify_eq_(refused.placement, placement_t::refused_k, "a refused allocation must say so");
     st_verify_(failed(refused));
     st_verify_((refused.node == nullptr));
     st_verify_eq_(tree.size(), 1u);
@@ -977,6 +986,7 @@ static void fixture_coverage_rollback_balances_counted_keys() {
 
 /** @brief Erasing through a const iterator must instantiate; nothing in the tree called it before. */
 static void structure_erase_const_iterator() {
+
     trivial_set_t tree;
     for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
 
@@ -984,7 +994,7 @@ static void structure_erase_const_iterator() {
     st_verify_(position != tree.end());
     auto const erased = tree.erase(position);
     st_verify_(erased.status);
-    st_verify_(!tree.contains(trivial_key_t(2)));
+    st_verify_eq_(tree.contains(trivial_key_t(2)), false);
     st_verify_eq_(tree.size(), 2u);
     verify_invariants(tree);
 }
@@ -1034,7 +1044,7 @@ static void allocation_failure_insert_probes_before_allocating() {
         ledger.refuse_everything();
         traced_key_t duplicate(1);
         auto const matched = tree.insert(std::move(duplicate));
-        st_verify_((matched.status() == status_t::key_already_exists_k) && "presence is not exhaustion");
+        st_verify_eq_(matched.status(), status_t::key_already_exists_k, "presence is not exhaustion");
         st_verify_(!duplicate.moved_from && "a refused entry stays with its caller");
         st_verify_eq_(ledger.refused_count, std::size_t {0});
         st_verify_eq_(tree.size(), 1u);
@@ -1103,6 +1113,8 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation",
+                         transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",

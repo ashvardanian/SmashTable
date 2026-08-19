@@ -291,7 +291,6 @@ class basic_hash_table {
 
     // Traits the transactional adapters dispatch on.
     using is_associative = std::bool_constant<has_values_k>;
-    using callback_reads = std::true_type;
     using is_transactional = std::false_type;
 
     /**
@@ -738,13 +737,19 @@ class basic_hash_table {
         return storage_.slots_count - slot.slot_;
     }
 
-    /** @brief Reports whether a key equivalent to @p wanted is present. */
+    /**
+     *  @brief Reports whether a key equivalent to @p wanted is present.
+     *  @param[in] wanted Key to probe for.
+     *  @param[out] present Set to whether the key is here. Named before the tags, which are a pack.
+     *  @param[in] tags Dispatch tags the probe understands.
+     *  @return Always success; a probe over owned slots has nothing to refuse.
+     */
     template <typename comparable_key_type_, typename... tags_types_>
-    bool contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
-        bool result = false;
+    [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
+        bool present = false;
         probe_to_find(
-            std::forward<comparable_key_type_>(wanted), [&result](auto const &) noexcept { result = true; }, tags...);
-        return result;
+            std::forward<comparable_key_type_>(wanted), [&present](auto const &) noexcept { present = true; }, tags...);
+        return present;
     }
 
     /**
@@ -831,8 +836,10 @@ class basic_hash_table {
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/count
      */
     template <typename comparable_key_type_ = key_t const &>
-    std::size_t count(comparable_key_type_ &&key) const noexcept {
-        return contains(std::forward<comparable_key_type_>(key));
+    [[nodiscard]] expected<std::size_t> count(comparable_key_type_ &&key) const noexcept {
+        expected<bool> const present = contains(std::forward<comparable_key_type_>(key));
+        if (!present) return present.status();
+        return *present ? std::size_t {1} : std::size_t {0};
     }
 
 #pragma endregion Lookups
@@ -873,7 +880,7 @@ class basic_hash_table {
 
     /** @brief Invokes the callback for every populated slot, bucket by bucket. */
     template <typename callback_type_ = no_op<slot_ref_t>>
-    void for_each(callback_type_ &&callback) noexcept {
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
         slot_ref_t slot;
         unsafe_retarget(slot, 0);
         offset_t const buckets = bucket_count();
@@ -881,11 +888,12 @@ class basic_hash_table {
             slot.slot_ = bucket_index * hash_bucket_capacity_k;
             for_each_in_hash_bucket(slot, callback);
         }
+        return success_k;
     }
 
     /** @brief Invokes the callback for every populated slot, bucket by bucket. */
     template <typename callback_type_ = no_op<const_slot_ref_t>>
-    void for_each(callback_type_ &&callback) const noexcept {
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         const_slot_ref_t slot;
         unsafe_retarget(slot, 0);
         offset_t const buckets = bucket_count();
@@ -893,6 +901,7 @@ class basic_hash_table {
             slot.slot_ = bucket_index * hash_bucket_capacity_k;
             for_each_in_hash_bucket(slot, callback);
         }
+        return success_k;
     }
 
 #pragma endregion Scans
@@ -1274,7 +1283,7 @@ class basic_hash_table {
         if (!target.storage_.is_allocated()) return target;
         assert(target.capacity() >= size() && "Not enough space in the new Hash-Table!");
 
-        for_each([&target](slot_ref_t const &source_slot) noexcept {
+        [[maybe_unused]] status_t const visited = for_each([&target](slot_ref_t const &source_slot) noexcept {
             if constexpr (has_values_k)
                 target.emplace(std::move(source_slot.key_ref()), std::move(source_slot.value_ref()),
                                assume_reserved_t {}, assume_unique_t {});
@@ -1299,8 +1308,8 @@ class basic_hash_table {
             target.storage_.populated_count = storage_.populated_count;
             target.storage_.deleted_count = storage_.deleted_count;
         }
-        else
-            for_each([&target](const_slot_ref_t const &source_slot) noexcept {
+        else [[maybe_unused]]
+            status_t const visited = for_each([&target](const_slot_ref_t const &source_slot) noexcept {
                 if constexpr (has_values_k)
                     target.emplace(source_slot.key(), *source_slot, assume_reserved_t {}, assume_unique_t {});
                 else target.emplace(source_slot.key(), assume_reserved_t {}, assume_unique_t {});
@@ -1313,7 +1322,7 @@ class basic_hash_table {
     basic_hash_table copy_to_new(hash_slots_count_t slots_count) const noexcept {
         basic_hash_table target(slots_count, hasher_, equals_, get_allocator());
         if (!target.storage_.is_allocated()) return target;
-        for_each([&target](const_slot_ref_t const &source_slot) noexcept {
+        [[maybe_unused]] status_t const visited = for_each([&target](const_slot_ref_t const &source_slot) noexcept {
             if constexpr (has_values_k)
                 target.emplace(source_slot.key(), *source_slot, assume_reserved_t {}, assume_unique_t {});
             else target.emplace(source_slot.key(), assume_reserved_t {}, assume_unique_t {});

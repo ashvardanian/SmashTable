@@ -504,6 +504,13 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_lost_update_matches_isolation() {
+    test_lost_update_matches_isolation<transactional_trivial_map_t>();
+    test_lost_update_matches_isolation<transactional_tracking_map_t>();
+    test_lost_update_matches_isolation<transactional_composite_map_t>();
+    test_lost_update_matches_isolation<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_trivial_map_t>();
     test_repeated_read_matches_isolation<transactional_tracking_map_t>();
@@ -590,7 +597,7 @@ static void verify_against_oracle(ordered_set_t &tree, std::set<int> const &orac
     st_verify_eq_(tree.size(), oracle.size());
 
     std::vector<int> walked;
-    tree.for_each([&](int const &element) noexcept { walked.push_back(element); });
+    st_verify_(tree.for_each([&](int const &element) noexcept { walked.push_back(element); }));
     st_verify_eq_(walked.size(), oracle.size());
     st_verify_(std::equal(walked.begin(), walked.end(), oracle.begin()));
 }
@@ -673,13 +680,13 @@ static void weight_balance_range_is_half_open() {
     }
 
     std::vector<int> visited;
-    tree.range(2, 5, [&](int const &element) noexcept { visited.push_back(element); });
+    st_verify_(tree.range(2, 5, [&](int const &element) noexcept { visited.push_back(element); }));
     std::vector<int> const expected {2, 3, 4};
     st_verify_(visited == expected);
 
     // An empty window yields nothing, rather than the single element at its edge.
     visited.clear();
-    tree.range(4, 4, [&](int const &element) noexcept { visited.push_back(element); });
+    st_verify_(tree.range(4, 4, [&](int const &element) noexcept { visited.push_back(element); }));
     st_verify_(visited.empty());
 }
 
@@ -1055,19 +1062,19 @@ static void upsert_reports_placement() {
     traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
 
     auto const made = tree.upsert(traced_key_t(1));
-    st_verify_((made.placement == placement_t::made_k) && "a fresh key must report a node of its own");
+    st_verify_eq_(made.placement, placement_t::made_k, "a fresh key must report a node of its own");
     st_verify_(made);
     st_verify_ne_(made.node, nullptr);
 
     auto const matched = tree.upsert(traced_key_t(1));
-    st_verify_((matched.placement == placement_t::matched_k) && "a key already there must report a match");
+    st_verify_eq_(matched.placement, placement_t::matched_k, "a key already there must report a match");
     st_verify_(succeeded(matched) && "an overwrite is not a failure");
     st_verify_ne_(matched.node, nullptr);
 
     // The budget is spent, so the second key has no node to live in - the outcome that shares a
     // null match with nothing else.
     auto const refused = tree.upsert(traced_key_t(2));
-    st_verify_((refused.placement == placement_t::refused_k) && "a refused allocation must say so");
+    st_verify_eq_(refused.placement, placement_t::refused_k, "a refused allocation must say so");
     st_verify_(failed(refused));
     st_verify_eq_(refused.node, nullptr);
     st_verify_eq_(tree.size(), 1u);
@@ -1087,12 +1094,12 @@ static void allocation_failure_is_distinct_from_presence() {
     }
 
     auto const on_present = tree.insert_if_missing(traced_key_t(1));
-    st_verify_((on_present.placement == placement_t::matched_k) && "an incumbent is not a refusal");
+    st_verify_eq_(on_present.placement, placement_t::matched_k, "an incumbent is not a refusal");
     st_verify_ne_(on_present.position, tree.end());
 
     ledger.refuse_everything();
     auto const on_exhausted = tree.insert_if_missing(traced_key_t(2));
-    st_verify_((on_exhausted.placement == placement_t::refused_k) && "no node means no insertion");
+    st_verify_eq_(on_exhausted.placement, placement_t::refused_k, "no node means no insertion");
     st_verify_eq_(on_exhausted.position, tree.end());
     st_verify_eq_(tree.size(), 1u);
 }
@@ -1220,6 +1227,8 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation",
+                         transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",

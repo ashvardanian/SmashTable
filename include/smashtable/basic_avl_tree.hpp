@@ -417,7 +417,7 @@ class basic_avl_node {
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
         static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
-        range(node, low, high, comparator, [&](node_t *node) noexcept {
+        [[maybe_unused]] status_t const walked = range(node, low, high, comparator, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
 
             if (seen < reservoir_capacity) { reservoir[seen] = node; }
@@ -1158,7 +1158,6 @@ class basic_avl_tree {
     using mapped_type = mapped_t; // ? STL compatibility
 
     // Trait to indicate this container uses iterator-based reads (not callbacks)
-    using callback_reads = std::false_type;
 
     // Allocator propagation requirement for exception-free move assignment
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
@@ -1718,10 +1717,11 @@ class basic_avl_tree {
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @return True if element found, false otherwise.
+     *  @param[out] present Set to whether an element equal to @p comparable is here.
+     *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_>
-    bool contains(comparable_type_ &&comparable) const noexcept {
+    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         return node_t::find(root_, std::forward<comparable_type_>(comparable), comparator_) != nullptr;
     }
 
@@ -1780,11 +1780,12 @@ class basic_avl_tree {
      *    For unique-key containers like this, returns either 0 or 1.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to search key.
-     *  @return Number of elements with key equal to @p comparable (0 or 1).
+     *  @param[out] matches Set to how many elements equal @p comparable, which is zero or one.
+     *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_>
-    std::size_t count(comparable_type_ &&comparable) const noexcept {
-        return find(std::forward<comparable_type_>(comparable)) != end() ? 1 : 0;
+    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+        return find(std::forward<comparable_type_>(comparable)) != end() ? std::size_t {1} : std::size_t {0};
     }
 
     /**
@@ -1835,9 +1836,10 @@ class basic_avl_tree {
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
     template <typename comparable_type_ = value_t, typename callback_type_ = no_op_t>
-    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto it = find(std::forward<comparable_type_>(comparable));
         if (it != end()) { callback(*it); }
+        return success_k;
     }
 
     /**
@@ -1849,9 +1851,10 @@ class basic_avl_tree {
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
      */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
+        return success_k;
     }
 
     /**
@@ -1863,9 +1866,10 @@ class basic_avl_tree {
      *  @param[inout] callback Callback invoked for each mutable element in range. Must be @c noexcept.
      */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { callback(node->fruit); });
+        return success_k;
     }
 
 #pragma endregion Lookup
@@ -2533,8 +2537,9 @@ class basic_avl_tree {
     }
 
     template <typename callback_type_>
-    void for_each(callback_type_ &&callback) noexcept {
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
         node_t::for_each_left_right(root_, [&](node_t *node) noexcept { callback(node->fruit); });
+        return success_k;
     }
 
 #pragma endregion Observers

@@ -100,15 +100,17 @@ void test_container_walks_collision_runs(std::size_t groups = 4) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     std::size_t const size = groups * colliding_key_t::collision_run_length_k;
 
     container_t container;
     for (std::size_t identifier = 0; identifier != size; ++identifier)
         st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
-    for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_((container.contains(trivial_id_to_key<member_t>(identifier))) &&
-                   "every key in a shared probe run must stay reachable");
+    for (std::size_t identifier = 0; identifier != size; ++identifier) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true,
+                      "every key in a shared probe run must stay reachable");
+    }
 
     // Erasing from the middle of each run is what leaves a tombstone the survivors must be found past.
     for (std::size_t identifier = 1; identifier < size; identifier += colliding_key_t::collision_run_length_k)
@@ -117,8 +119,8 @@ void test_container_walks_collision_runs(std::size_t groups = 4) {
 
     for (std::size_t identifier = 0; identifier != size; ++identifier) {
         bool const erased = identifier % colliding_key_t::collision_run_length_k == 1;
-        st_verify_((container.contains(trivial_id_to_key<member_t>(identifier)) != erased) &&
-                   "a tombstone must hide its own key and no other");
+        st_verify_ne_(container.contains(trivial_id_to_key<member_t>(identifier)), erased,
+                      "a tombstone must hide its own key and no other");
     }
 }
 
@@ -128,6 +130,7 @@ void test_transaction_walks_collision_runs(std::size_t groups = 4) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+
     std::size_t const size = groups * colliding_key_t::collision_run_length_k;
 
     container_t container;
@@ -139,15 +142,17 @@ void test_transaction_walks_collision_runs(std::size_t groups = 4) {
         st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier)));
     st_verify_(transaction->stage());
 
-    for (std::size_t identifier = size; identifier != size + groups; ++identifier)
-        st_verify_((!container.contains(trivial_id_to_key<member_t>(identifier))) &&
-                   "a staged key must stay invisible however long its probe run is");
+    for (std::size_t identifier = size; identifier != size + groups; ++identifier) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), false,
+                      "a staged key must stay invisible however long its probe run is");
+    }
 
     st_verify_(transaction->commit());
 
-    for (std::size_t identifier = 0; identifier != size + groups; ++identifier)
-        st_verify_((container.contains(trivial_id_to_key<member_t>(identifier))) &&
-                   "every key must be reachable once the transaction publishes");
+    for (std::size_t identifier = 0; identifier != size + groups; ++identifier) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true,
+                      "every key must be reachable once the transaction publishes");
+    }
 }
 
 #pragma endregion Probe Runs
@@ -173,7 +178,7 @@ void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
     std::size_t worst_equalities = 0;
     for (std::size_t identifier = 0; identifier < size; identifier += 97) {
         call_tally_t::reset();
-        st_verify_(container.contains(trivial_id_to_key<member_t>(identifier)));
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
         std::size_t const equalities = call_tally_t::equalities_count();
         worst_equalities = equalities > worst_equalities ? equalities : worst_equalities;
     }
@@ -199,13 +204,13 @@ void test_container_honours_over_alignment(std::size_t size = 64) {
         st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     for (std::size_t identifier = 0; identifier != size; ++identifier)
-        container.find(
+        st_verify_(container.find(
             trivial_id_to_key<member_t>(identifier),
             [](member_t const &member) noexcept {
                 st_verify_((mapping_key_or_itself(member).is_correctly_aligned()) &&
                            "an over-aligned key must not be handed under-aligned storage");
             },
-            []() noexcept { st_verify_(false && "every stored key must be findable"); });
+            []() noexcept { st_verify_(false && "every stored key must be findable"); }));
 }
 
 /**
