@@ -1372,6 +1372,29 @@ struct transaction_refusing_set_t : tree_trivial_set_t {
     [[nodiscard]] expected<transaction_t> transaction() noexcept { return status_t::out_of_memory_heap_k; }
 };
 
+/** @brief A store that cannot be built at all, so a wrapper's factory has a reason to carry outward. */
+struct construction_refusing_set_t : tree_trivial_set_t {
+    using base_t = tree_trivial_set_t;
+    using transaction_t = typename base_t::transaction_t;
+
+    construction_refusing_set_t() noexcept = default;
+    construction_refusing_set_t(construction_refusing_set_t &&) noexcept = default;
+    construction_refusing_set_t &operator=(construction_refusing_set_t &&) noexcept = default;
+
+    [[nodiscard]] static expected<construction_refusing_set_t> make() noexcept {
+        return status_t::capacity_exhausted_k;
+    }
+};
+
+/** @brief A wrapper that cannot build its store reports why, rather than a default-constructed reason. */
+template <typename wrapper_type_>
+static void test_make_reports_why_it_could_not_build() {
+    expected<wrapper_type_> made = wrapper_type_::make();
+    st_verify_((!made) && "the inner store refused to be built, so the wrapper must refuse too");
+    st_verify_eq_(made.status(), status_t::capacity_exhausted_k,
+                  "the wrapper must relay the reason rather than lose it to a default");
+}
+
 /** @brief A wrapper that cannot open a transaction reports why, rather than a default-constructed reason. */
 template <typename wrapper_type_>
 static void test_transaction_reports_why_it_could_not_open() {
@@ -1386,6 +1409,38 @@ static void test_transaction_reports_why_it_could_not_open() {
 static void sharded_ops_transaction_reports_its_reason() {
     test_transaction_reports_why_it_could_not_open<partitioned_store<transaction_refusing_set_t>>();
     test_transaction_reports_why_it_could_not_open<locked_store<transaction_refusing_set_t>>();
+    test_make_reports_why_it_could_not_build<partitioned_store<construction_refusing_set_t>>();
+    test_make_reports_why_it_could_not_build<locked_store<construction_refusing_set_t>>();
+}
+
+/**
+ *  @brief A wrapper hands back the reason a read could not be recorded rather than answering success.
+ *
+ *  A validated read is written down before it can be validated, and writing it down allocates. The
+ *  wrapper sits between the caller and the engine that lost the record, so a wrapper answering
+ *  @c success_k over a refusal is the same defect one frame higher.
+ */
+static void sharded_ops_read_reports_what_it_could_not_record() {
+    using inner_t = serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>,
+                                         stateful_allocator<mapping<trivial_key_t, int>>>;
+    using store_t = locked_store<inner_t>;
+    using member_t = typename store_t::value_type;
+
+    allocation_ledger_t ledger;
+    expected<store_t> made = store_t::make(typename inner_t::allocator_t(ledger));
+    st_verify_(made);
+    store_t &store = *made;
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+
+    auto reader = store.transaction();
+    st_verify_(reader);
+
+    // Everything the transaction needed is already allocated, so the next request is the read set's.
+    ledger.refuse_everything();
+    status_t const answered = reader->find(trivial_key_t {1}, no_op_t {}, no_op_t {});
+    st_verify_eq_(answered, status_t::out_of_memory_heap_k, "a wrapper must relay what the read could not record");
+    ledger.reset();
+    st_verify_(reader->reset());
 }
 
 static void sharded_concurrency_commit_is_visible_to_what_opens_after_it() {
@@ -1422,6 +1477,8 @@ int main() {
     failures += run_test(filter, "failure_policy.relayed_causes", failure_policy_relayed_causes);
     failures +=
         run_test(filter, "sharded_ops.transaction_reports_its_reason", sharded_ops_transaction_reports_its_reason);
+    failures += run_test(filter, "sharded_ops.read_reports_what_it_could_not_record",
+                         sharded_ops_read_reports_what_it_could_not_record);
     failures +=
         run_test(filter, "sharded_ops.commit_publishes_all_or_nothing", sharded_ops_commit_publishes_all_or_nothing);
     failures += run_test(filter, "failure_policy.bulk_methods", failure_policy_bulk_methods);

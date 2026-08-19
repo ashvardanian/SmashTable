@@ -680,33 +680,25 @@ class snapshot_store {
         }
 
         /**
-         *  @brief Whether every watched key is untouched since this transaction's snapshot.
-         *    Asked twice - once when staging, once when publishing - because a commit landing in between
-         *    is the only thing that can invalidate a read after it was validated.
-         *
-         *  Dated against the snapshot rather than matched against the version the read saw, and the same
-         *  predicate a written key is checked with. Comparing versions would let a key be inserted and
-         *  erased again under a watch on its absence: both ends resolve to missing, so the two watches
-         *  match while two commits the transaction never saw sit between them.
-         */
-        /**
          *  @brief Records that this transaction read @p comparable, where the level says reads are validated.
          *
-         *  A read cannot report a refusal - @c find hands its answer to a callback and returns nothing -
-         *  so a record that will not fit marks the read set unnameable instead, and the commit refuses
-         *  rather than passing a validation it could not perform.
+         *  Answers where the read happened as well as latching, because the caller may discard the status
+         *  and the commit still has to refuse rather than pass a validation it could not perform. The
+         *  latch is the safety net; the return is what lets a caller retry the read it just lost.
          */
         template <typename comparable_type_>
-        void record_read_(comparable_type_ const &comparable) const noexcept {
-            if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return;
-
-            auto owned = copy_safely<identifier_t>(identifier_t {comparable});
-            if (!owned) {
-                read_set_ = read_set_t::unrecorded_k;
-                return;
+        [[nodiscard]] status_t record_read_(comparable_type_ const &comparable) const noexcept {
+            if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return success_k;
+            else {
+                auto owned = copy_safely<identifier_t>(identifier_t {comparable});
+                if (!owned) {
+                    read_set_ = read_set_t::unrecorded_k;
+                    return owned.status();
+                }
+                status_t const recorded = accesses_.push_back({std::move(*owned), access_t::read_k});
+                if (failed(recorded)) read_set_ = read_set_t::unrecorded_k;
+                return recorded;
             }
-            if (failed(accesses_.push_back({std::move(*owned), access_t::read_k})))
-                read_set_ = read_set_t::unrecorded_k;
         }
 
         /**
@@ -716,43 +708,68 @@ class snapshot_store {
          *  which side, if either, runs off the end of the keyspace - an ordinal read depends on every
          *  key before the one it lands on, and there is no smallest key to name - in which case the
          *  identifier stored on that side is kept only so the pair stays a pair.
+         *
+         *  @return Success, or the reason the window could not be written down, which latches as well.
          */
         template <typename lower_type_, typename upper_type_>
-        void record_window_read_(lower_type_ const &lower, upper_type_ const &upper, access_t ends) const noexcept {
-            if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return;
-
-            auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
-            if (!lower_copy) {
-                read_set_ = read_set_t::unrecorded_k;
-                return;
+        [[nodiscard]] status_t record_window_read_(lower_type_ const &lower, upper_type_ const &upper,
+                                                   access_t ends) const noexcept {
+            if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return success_k;
+            else {
+                auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
+                if (!lower_copy) {
+                    read_set_ = read_set_t::unrecorded_k;
+                    return lower_copy.status();
+                }
+                auto upper_copy = copy_safely<identifier_t>(identifier_t {upper});
+                if (!upper_copy) {
+                    read_set_ = read_set_t::unrecorded_k;
+                    return upper_copy.status();
+                }
+                if (status_t const reserved = accesses_.reserve(accesses_.size() + 2); failed(reserved)) {
+                    read_set_ = read_set_t::unrecorded_k;
+                    return reserved;
+                }
+                access_t const opens = holds(ends, access_t::from_the_lowest_k)
+                                           ? access_t::opens_k | access_t::from_the_lowest_k
+                                           : access_t::opens_k;
+                access_t const closes = holds(ends, access_t::to_the_highest_k)
+                                            ? access_t::closes_k | access_t::to_the_highest_k
+                                            : access_t::closes_k;
+                [[maybe_unused]] status_t const opened =
+                    accesses_.push_back(assume_reserved, {std::move(*lower_copy), opens});
+                [[maybe_unused]] status_t const closed =
+                    accesses_.push_back(assume_reserved, {std::move(*upper_copy), closes});
+                return success_k;
             }
-            auto upper_copy = copy_safely<identifier_t>(identifier_t {upper});
-            if (!upper_copy) {
-                read_set_ = read_set_t::unrecorded_k;
-                return;
-            }
-            if (failed(accesses_.reserve(accesses_.size() + 2))) {
-                read_set_ = read_set_t::unrecorded_k;
-                return;
-            }
-            access_t const opens = holds(ends, access_t::from_the_lowest_k)
-                                       ? access_t::opens_k | access_t::from_the_lowest_k
-                                       : access_t::opens_k;
-            access_t const closes = holds(ends, access_t::to_the_highest_k)
-                                        ? access_t::closes_k | access_t::to_the_highest_k
-                                        : access_t::closes_k;
-            [[maybe_unused]] status_t const opened =
-                accesses_.push_back(assume_reserved, {std::move(*lower_copy), opens});
-            [[maybe_unused]] status_t const closed =
-                accesses_.push_back(assume_reserved, {std::move(*upper_copy), closes});
         }
 
-        /** @brief Records that this transaction read every key, which no pair of bounds can name. */
-        void record_whole_keyspace_read_() const noexcept {
+        /**
+         *  @brief Records that this transaction read every key, which no pair of bounds can name.
+         *    Cannot fail - it names nothing, so there is nothing to allocate - and answers only so that
+         *    every recorder reads the same at its call sites.
+         */
+        [[nodiscard]] status_t record_whole_keyspace_read_() const noexcept {
             if constexpr (at_least(isolation_k, isolation_t::serializable_k))
                 read_set_ = read_set_t::covers_everything_k;
+            return success_k;
         }
 
+        /** @brief Keeps the first refusal of a walk that records more than once, so the reason travels. */
+        static status_t first_failure_(status_t recorded, status_t next) noexcept {
+            return failed(recorded) ? recorded : next;
+        }
+
+        /**
+         *  @brief Whether every key this transaction read is untouched since its snapshot.
+         *    Asked twice - once when staging, once when publishing - because a commit landing in between
+         *    is the only thing that can invalidate a read after it was validated.
+         *
+         *  Dated against the snapshot rather than matched against the version the read saw, and the same
+         *  predicate a written key is checked with. Comparing versions would let a key be inserted and
+         *  erased again under a read of its absence: both ends resolve to missing, so the two match
+         *  while two commits the transaction never saw sit between them.
+         */
         [[nodiscard]] status_t validate_accesses_() const noexcept {
             auto const &store = store_ref();
 
@@ -992,25 +1009,26 @@ class snapshot_store {
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept {
-            record_read_(comparable);
+            status_t const recorded = record_read_(comparable);
             if (auto iterator = changes_.find(comparable); iterator != changes_.end()) {
                 if ((*iterator).presence == presence_t::present_k) callback_found((*iterator).payload);
                 else callback_missing();
-                return success_k;
+                return recorded;
             }
             store_ref().find_at_(std::forward<comparable_type_>(comparable), snapshot_,
                                  std::forward<callback_found_type_>(callback_found),
                                  std::forward<callback_missing_type_>(callback_missing));
-            return success_k;
+            return recorded;
         }
 
         /** @brief Copies out the member equal to @p comparable, this transaction's own writes included. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const looked_up = find(
+            status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(looked_up)) return looked_up;
             return result;
         }
 
@@ -1038,19 +1056,22 @@ class snapshot_store {
             requires ordered_core_k
         {
             bool landed = false;
+            status_t recorded = success_k;
             bounded_(
                 changes_.lower_bound(comparable), store_ref().visible_at_(comparable, snapshot_),
                 [&](value_t const &value) noexcept {
                     landed = true;
                     identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    record_window_read_(comparable, key, access_t::none_k);
-                    record_read_(key);
+                    recorded = first_failure_(recorded, record_window_read_(comparable, key, access_t::none_k));
+                    recorded = first_failure_(recorded, record_read_(key));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
             // Nothing at or above the bound, so the read depended on everything above it.
-            if (!landed) record_window_read_(comparable, comparable, access_t::to_the_highest_k);
-            return success_k;
+            if (!landed)
+                recorded =
+                    first_failure_(recorded, record_window_read_(comparable, comparable, access_t::to_the_highest_k));
+            return recorded;
         }
 
         /**
@@ -1069,19 +1090,20 @@ class snapshot_store {
             requires ordered_core_k
         {
             bool landed = false;
+            status_t recorded = success_k;
             bounded_(
                 changes_.begin(), store_ref().visible_from_(store_ref().entries_.begin(), snapshot_),
                 [&](value_t const &value) noexcept {
                     landed = true;
                     identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    record_window_read_(key, key, access_t::from_the_lowest_k);
-                    record_read_(key);
+                    recorded = first_failure_(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
+                    recorded = first_failure_(recorded, record_read_(key));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
             // Nothing readable at all, so the answer rests on the whole keyspace being empty.
-            if (!landed) record_whole_keyspace_read_();
-            return success_k;
+            if (!landed) recorded = first_failure_(recorded, record_whole_keyspace_read_());
+            return recorded;
         }
 
         /** @brief Finds the first member @b strictly greater than @p comparable at this snapshot. */
@@ -1092,19 +1114,22 @@ class snapshot_store {
             requires ordered_core_k
         {
             bool landed = false;
+            status_t recorded = success_k;
             bounded_(
                 changes_.upper_bound(comparable),
                 store_ref().visible_from_(store_ref().entries_.upper_bound(comparable), snapshot_),
                 [&](value_t const &value) noexcept {
                     landed = true;
                     identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    record_window_read_(comparable, key, access_t::none_k);
-                    record_read_(key);
+                    recorded = first_failure_(recorded, record_window_read_(comparable, key, access_t::none_k));
+                    recorded = first_failure_(recorded, record_read_(key));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
-            if (!landed) record_window_read_(comparable, comparable, access_t::to_the_highest_k);
-            return success_k;
+            if (!landed)
+                recorded =
+                    first_failure_(recorded, record_window_read_(comparable, comparable, access_t::to_the_highest_k));
+            return recorded;
         }
 
         /**
@@ -1120,14 +1145,14 @@ class snapshot_store {
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
-            record_window_read_(lower, upper, access_t::none_k);
+            status_t const recorded = record_window_read_(lower, upper, access_t::none_k);
             auto const ordering = changes_.key_comp();
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
                 if (version.presence == presence_t::present_k) callback(version.payload);
                 return probe_control_t::resume_k;
             });
-            return success_k;
+            return recorded;
         }
 
         /**
@@ -1146,7 +1171,7 @@ class snapshot_store {
             static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                           "callback must be noexcept invocable with value_t const &");
 
-            record_whole_keyspace_read_();
+            status_t const recorded = record_whole_keyspace_read_();
             if constexpr (ordered_core_k) {
                 merge_all_([&](versioned_t const &version) noexcept {
                     if (version.presence == presence_t::present_k) callback(version.payload);
@@ -1163,7 +1188,7 @@ class snapshot_store {
                     if (changes_.find(mapping_key_or_itself<value_t>(value)) == changes_.end()) callback(value);
                 });
             }
-            return success_k;
+            return recorded;
         }
 
         /**
@@ -1195,6 +1220,7 @@ class snapshot_store {
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
             bool found = false;
+            status_t recorded = success_k;
             merge_all_([&](versioned_t const &version) noexcept {
                 if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
                 if (ordinal != 0) {
@@ -1204,17 +1230,17 @@ class snapshot_store {
                 identifier_t const &key = mapping_key_or_itself<value_t>(version.payload);
                 // An ordinal is decided by how many keys precede it, so the window is everything
                 // below the one it lands on - a key appearing above cannot move it.
-                record_window_read_(key, key, access_t::from_the_lowest_k);
-                record_read_(key);
+                recorded = first_failure_(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
+                recorded = first_failure_(recorded, record_read_(key));
                 callback_found(version.payload);
                 found = true;
                 return probe_control_t::halt_k;
             });
             if (!found) {
-                record_whole_keyspace_read_();
+                recorded = first_failure_(recorded, record_whole_keyspace_read_());
                 callback_missing();
             }
-            return success_k;
+            return recorded;
         }
 
         /**
@@ -1241,7 +1267,7 @@ class snapshot_store {
                 callback_missing();
                 return success_k;
             }
-            record_window_read_(comparable, comparable, access_t::from_the_lowest_k);
+            status_t const recorded = record_window_read_(comparable, comparable, access_t::from_the_lowest_k);
             auto const ordering = changes_.key_comp();
             std::size_t counted = 0;
             merge_all_([&](versioned_t const &version) noexcept {
@@ -1250,7 +1276,7 @@ class snapshot_store {
                 return probe_control_t::resume_k;
             });
             callback_found(counted);
-            return success_k;
+            return recorded;
         }
 
 #pragma region Transaction Range Operations
@@ -1269,9 +1295,10 @@ class snapshot_store {
             requires ordered_core_k
         {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const answered = lower_bound(
+            status_t const answered = lower_bound(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(answered)) return answered;
             return result;
         }
 
@@ -1281,9 +1308,10 @@ class snapshot_store {
             requires ordered_core_k
         {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const answered = upper_bound(
+            status_t const answered = upper_bound(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(answered)) return answered;
             return result;
         }
 
@@ -1312,12 +1340,12 @@ class snapshot_store {
         {
             return erase_walked_(
                 [&](auto &&step) noexcept {
-                    record_window_read_(lower, lower, access_t::to_the_highest_k);
+                    status_t const recorded = record_window_read_(lower, lower, access_t::to_the_highest_k);
                     merge_from_(lower, [&](versioned_t const &version) noexcept {
                         if (version.presence == presence_t::present_k) step(version.payload);
                         return probe_control_t::resume_k;
                     });
-                    return success_k;
+                    return recorded;
                 },
                 std::forward<callback_type_>(callback));
         }
@@ -1329,14 +1357,14 @@ class snapshot_store {
         {
             return erase_walked_(
                 [&](auto &&step) noexcept {
-                    record_window_read_(upper, upper, access_t::from_the_lowest_k);
+                    status_t const recorded = record_window_read_(upper, upper, access_t::from_the_lowest_k);
                     auto const ordering = changes_.key_comp();
                     merge_all_([&](versioned_t const &version) noexcept {
                         if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
                         if (version.presence == presence_t::present_k) step(version.payload);
                         return probe_control_t::resume_k;
                     });
-                    return success_k;
+                    return recorded;
                 },
                 std::forward<callback_type_>(callback));
         }

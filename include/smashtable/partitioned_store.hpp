@@ -641,18 +641,22 @@ class partitioned_store {
      *
      *  @param[in] seed_front Fills one partition's front with the first key that partition contributes.
      *  @param[in] step Receives the partition index and the key, and says whether to carry on.
+     *  @return Success, or the first refusal a refill met - a validated read has to be recorded before
+     *    it can be validated, and recording allocates, so a walk can fail without the keys running out.
+     *    What @p seed_front and @p step could not do is theirs to report; neither answers here.
      *  @warning Every partition must already be held for the length of the walk, and @p step runs
      *    under all of them - so a step reaching back into this store deadlocks against a mutex that
      *    does not recurse.
      */
     template <typename parts_type_, typename seed_type_, typename step_type_>
-    static void walk_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
-                             step_type_ &&step) noexcept {
+    static status_t walk_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
+                                 step_type_ &&step) noexcept {
         static_assert(identifier_survives_a_walk_k,
                       "a merged walk remembers one key per partition, so the identifier must be copyable");
 
         fronts_t fronts;
         front_states_t states {};
+        status_t walked = success_k;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
             seed_front(partition_index, [&](value_t const &element) noexcept {
                 fronts[partition_index] = identifier_t(element);
@@ -661,18 +665,23 @@ class partitioned_store {
 
         while (true) {
             marked_partition_t const smallest = smallest_front_(comparator, fronts, states);
-            if (smallest.presence != marked_presence_t::one_marked_k) return;
-            if (step(smallest.index, fronts[smallest.index]) == merge_control_t::halt_k) return;
+            if (smallest.presence != marked_presence_t::one_marked_k) return walked;
+            if (step(smallest.index, fronts[smallest.index]) == merge_control_t::halt_k) return walked;
 
             // The bound outlives the front it came from, since refilling the front is what overwrites it.
             identifier_t const consumed = std::move(fronts[smallest.index]);
             states[smallest.index] = front_state_t::exhausted_k;
-            [[maybe_unused]] status_t const refilled =
-                parts[smallest.index].upper_bound(consumed, [&](value_t const &element) noexcept {
-                    fronts[smallest.index] = identifier_t(element);
-                    states[smallest.index] = front_state_t::holds_a_key_k;
-                });
+            walked = first_failure_(walked,
+                                    parts[smallest.index].upper_bound(consumed, [&](value_t const &element) noexcept {
+                                        fronts[smallest.index] = identifier_t(element);
+                                        states[smallest.index] = front_state_t::holds_a_key_k;
+                                    }));
         }
+    }
+
+    /** @brief Keeps the first refusal of a walk that touches several partitions, so the reason travels. */
+    static status_t first_failure_(status_t recorded, status_t next) noexcept {
+        return failed(recorded) ? recorded : next;
     }
 
     /** @brief Whether a partition names its smallest member without being given a bound to beat. */
@@ -708,18 +717,21 @@ class partitioned_store {
      */
     template <typename parts_type_, typename mutexes_type_, typename seed_type_, typename callback_found_type_,
               typename callback_missing_type_>
-    static void first_merged_(comparator_t const &comparator, parts_type_ &parts, mutexes_type_ &mutexes,
-                              seed_type_ &&seed_front, callback_found_type_ &&callback_found,
-                              callback_missing_type_ &&callback_missing) noexcept {
+    static status_t first_merged_(comparator_t const &comparator, parts_type_ &parts, mutexes_type_ &mutexes,
+                                  seed_type_ &&seed_front, callback_found_type_ &&callback_found,
+                                  callback_missing_type_ &&callback_missing) noexcept {
 
         every_part_lock<shared_lock_t> _ {mutexes};
         bool delivered = false;
-        walk_merged_(comparator, parts, seed_front, [&](std::size_t partition_index, identifier_t const &key) noexcept {
-            [[maybe_unused]] status_t const answered = parts[partition_index].find(key, callback_found, no_op_t {});
-            delivered = true;
-            return merge_control_t::halt_k;
-        });
+        status_t answered = success_k;
+        status_t const walked = walk_merged_(
+            comparator, parts, seed_front, [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                answered = parts[partition_index].find(key, callback_found, no_op_t {});
+                delivered = true;
+                return merge_control_t::halt_k;
+            });
         if (!delivered) callback_missing();
+        return first_failure_(walked, answered);
     }
 
   public:
@@ -1167,9 +1179,10 @@ class partitioned_store {
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const looked_up = find(
+            status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(looked_up)) return looked_up;
             return result;
         }
 
@@ -1206,15 +1219,16 @@ class partitioned_store {
             requires inner_transaction_lower_bounds_k
         {
             settle_snapshot_();
-            store_t::first_merged_(
+            status_t seeded = success_k;
+            status_t const merged = store_t::first_merged_(
                 store_->comparator_, partitions_, store_->mutexes_,
                 [&](std::size_t partition_index, auto &&fill) noexcept {
-                    [[maybe_unused]] status_t const seeded =
-                        partitions_[partition_index].lower_bound(comparable, fill, no_op_t {});
+                    seeded =
+                        first_failure_(seeded, partitions_[partition_index].lower_bound(comparable, fill, no_op_t {}));
                 },
                 std::forward<callback_found_type_>(callback_found),
                 std::forward<callback_missing_type_>(callback_missing));
-            return success_k;
+            return first_failure_(seeded, merged);
         }
 
         /** @brief The first member this transaction reads strictly after @p comparable, from any partition. */
@@ -1225,15 +1239,16 @@ class partitioned_store {
             requires inner_transaction_is_ordered_k
         {
             settle_snapshot_();
-            store_t::first_merged_(
+            status_t seeded = success_k;
+            status_t const merged = store_t::first_merged_(
                 store_->comparator_, partitions_, store_->mutexes_,
                 [&](std::size_t partition_index, auto &&fill) noexcept {
-                    [[maybe_unused]] status_t const seeded =
-                        partitions_[partition_index].upper_bound(comparable, fill, no_op_t {});
+                    seeded =
+                        first_failure_(seeded, partitions_[partition_index].upper_bound(comparable, fill, no_op_t {}));
                 },
                 std::forward<callback_found_type_>(callback_found),
                 std::forward<callback_missing_type_>(callback_missing));
-            return success_k;
+            return first_failure_(seeded, merged);
         }
 
         /**
@@ -1251,19 +1266,19 @@ class partitioned_store {
         {
             settle_snapshot_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
-            store_t::walk_merged_(
+            status_t reached = success_k;
+            status_t const walked = store_t::walk_merged_(
                 store_->comparator_, partitions_,
                 [&](std::size_t partition_index, auto &&fill) noexcept {
-                    [[maybe_unused]] status_t const seeded =
-                        partitions_[partition_index].lower_bound(lower, fill, no_op_t {});
+                    reached =
+                        first_failure_(reached, partitions_[partition_index].lower_bound(lower, fill, no_op_t {}));
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
                     if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
-                    [[maybe_unused]] status_t const answered =
-                        partitions_[partition_index].find(key, callback, no_op_t {});
+                    reached = first_failure_(reached, partitions_[partition_index].find(key, callback, no_op_t {}));
                     return merge_control_t::resume_k;
                 });
-            return success_k;
+            return first_failure_(reached, walked);
         }
 
         [[nodiscard]] status_t upsert(value_t &&element) noexcept {
@@ -1375,9 +1390,10 @@ class partitioned_store {
             requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
         {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const answered = lower_bound(
+            status_t const answered = lower_bound(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(answered)) return answered;
             return result;
         }
 
@@ -1387,9 +1403,10 @@ class partitioned_store {
             requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
         {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const answered = upper_bound(
+            status_t const answered = upper_bound(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(answered)) return answered;
             return result;
         }
 
@@ -1612,9 +1629,9 @@ class partitioned_store {
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
     [[nodiscard]] static expected<partitioned_store> make() noexcept {
-        expected<partitioned_store> result;
-        if (expected<partitions_t> parts = new_parts(); parts) result = partitioned_store {std::move(*parts)};
-        return result;
+        expected<partitions_t> parts = new_parts();
+        if (!parts) return parts.status();
+        return partitioned_store {std::move(*parts)};
     }
 
     /**
@@ -1625,10 +1642,9 @@ class partitioned_store {
      */
     [[nodiscard]] static expected<partitioned_store> make(comparator_t const &comparator,
                                                           hash_t const &hasher) noexcept {
-        expected<partitioned_store> result;
-        if (expected<partitions_t> parts = new_parts(comparator); parts)
-            result = partitioned_store {std::move(*parts), hasher, comparator};
-        return result;
+        expected<partitions_t> parts = new_parts(comparator);
+        if (!parts) return parts.status();
+        return partitioned_store {std::move(*parts), hasher, comparator};
     }
 
     /**
@@ -1847,9 +1863,10 @@ class partitioned_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const looked_up = find(
+        status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(looked_up)) return looked_up;
         return result;
     }
 
@@ -1859,9 +1876,10 @@ class partitioned_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = lower_bound(
+        status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -1871,9 +1889,10 @@ class partitioned_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = upper_bound(
+        status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 

@@ -43,6 +43,14 @@ using snapshot_avl_map_t =
 using serializable_avl_map_t =
     serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
+/** @brief Serializable over an allocator that can be told to refuse, so a read can be made to fail. */
+using budgeted_serializable_avl_map_t =
+    serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, stateful_allocator<mapping<trivial_key_t, int>>>;
+
+/** @brief The same members one rung down, where nothing is recorded and so nothing can fail to be. */
+using budgeted_snapshot_avl_map_t =
+    snapshot_avl_map<trivial_key_t, int, std::less<trivial_key_t>, stateful_allocator<mapping<trivial_key_t, int>>>;
+
 /** @brief Serializable and real-time ordered, so it must refuse everything the rung below refuses. */
 using strict_serializable_avl_map_t = strict_serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>,
                                                                   std::allocator<mapping<trivial_key_t, int>>>;
@@ -2455,6 +2463,66 @@ static void test_unbounded_read_refuses_any_commit() {
 }
 
 /**
+ *  @brief A read that cannot be recorded reports it where it happened, not only at the commit.
+ *
+ *  A validated read has to be written down before it can be validated, and writing it down allocates.
+ *  Latching the failure and answering success left the caller an answer it had no reason to distrust and
+ *  a transaction that could never commit, so the reason now travels out of the read that lost it. The
+ *  latch stays as well, because a caller may discard the status and the commit still has to refuse.
+ */
+static void test_a_read_reports_what_it_could_not_record() {
+    using store_t = budgeted_serializable_avl_map_t;
+    using member_t = typename store_t::value_type;
+
+    allocation_ledger_t ledger;
+    store_t store {typename store_t::allocator_t(ledger)};
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(2, 1)));
+
+    auto reader = store.transaction();
+    st_verify_(reader);
+
+    // Everything the transaction needed is already allocated, so the next request is the read set's.
+    ledger.refuse_everything();
+    std::size_t seen = 0;
+    status_t const answered = reader->find(
+        trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
+        no_op_t {});
+    st_verify_eq_(answered, status_t::out_of_memory_heap_k,
+                  "a read that could not be recorded must say so at the read");
+    st_verify_eq_(seen, 1u, "and it must still answer, because what it read is not in doubt");
+
+    // A commit lands, so validation has to consult the read set rather than take its fast path.
+    ledger.reset();
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(3, 1)));
+    st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 5)));
+    st_verify_eq_(reader->stage(), status_t::read_conflict_k,
+                  "a read it cannot name is a read it cannot prove untouched");
+    st_verify_(reader->reset());
+}
+
+/** @brief One rung down nothing is recorded, so the same refused allocator leaves the read untouched. */
+static void test_an_unvalidated_read_records_nothing_to_lose() {
+    using store_t = budgeted_snapshot_avl_map_t;
+    using member_t = typename store_t::value_type;
+
+    allocation_ledger_t ledger;
+    store_t store {typename store_t::allocator_t(ledger)};
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+
+    auto reader = store.transaction();
+    st_verify_(reader);
+
+    ledger.refuse_everything();
+    std::size_t seen = 0;
+    st_verify_(reader->find(
+        trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
+        no_op_t {}));
+    st_verify_eq_(seen, 1u);
+    ledger.reset();
+}
+
+/**
  *  @brief A transaction reset after a whole-keyspace read can commit again.
  *
  *  Reading everything records that the read set names no key, which refuses any commit that saw a newer
@@ -2749,6 +2817,10 @@ int main(int, char **) {
                          test_lost_update_matches_isolation<snapshot_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation.serializable",
                          test_lost_update_matches_isolation<serializable_avl_map_t>);
+    failures += run_test(filter, "serializable.a_read_reports_what_it_could_not_record",
+                         test_a_read_reports_what_it_could_not_record);
+    failures += run_test(filter, "snapshot.an_unvalidated_read_records_nothing_to_lose",
+                         test_an_unvalidated_read_records_nothing_to_lose);
     failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.snapshot",
                          test_write_skew_matches_isolation<snapshot_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.serializable",

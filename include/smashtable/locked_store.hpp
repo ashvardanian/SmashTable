@@ -666,11 +666,9 @@ class locked_store {
      */
     template <typename... arguments_type_>
     [[nodiscard]] static expected<locked_store> make(arguments_type_ &&...arguments) noexcept {
-        expected<locked_store> result;
-        if (expected<inner_store_t> inner_store = inner_store_t::make(std::forward<arguments_type_>(arguments)...);
-            inner_store)
-            result = locked_store {std::move(*inner_store)};
-        return result;
+        expected<inner_store_t> inner_store = inner_store_t::make(std::forward<arguments_type_>(arguments)...);
+        if (!inner_store) return inner_store.status();
+        return locked_store {std::move(*inner_store)};
     }
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
