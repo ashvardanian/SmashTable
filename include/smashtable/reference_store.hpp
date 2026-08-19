@@ -753,7 +753,6 @@ class reference_store {
                                          if (local_state == changes_.end()) callback(external_element);
                                          // If modified locally, we already processed it above
                                      });
-            return success_k;
         }
 
         /**
@@ -843,7 +842,6 @@ class reference_store {
             return store_ref().for_each([&](value_t const &external_element) noexcept {
                 if (changes_.find(external_element) == changes_.end()) callback(external_element);
             });
-            return success_k;
         }
 
 #pragma region Transaction Range Operations

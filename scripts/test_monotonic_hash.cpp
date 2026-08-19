@@ -411,6 +411,16 @@ static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_heavy_map_t>();
 }
 
+// Only the map with an arithmetic value: both anomalies total the mapped values to see whether the
+// invariant survived, which `guarded_payload_t` cannot answer.
+static void transactional_consistency_write_skew_matches_isolation() {
+    test_write_skew_matches_isolation<transactional_trivial_map_t>();
+}
+
+static void transactional_consistency_read_conflict_matches_isolation() {
+    test_read_conflict_matches_isolation<transactional_trivial_map_t>();
+}
+
 static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_trivial_map_t>();
     test_reset_clears_transaction_state<transactional_composite_map_t>();
@@ -689,6 +699,10 @@ int main() {
                          transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation",
+                         transactional_consistency_write_skew_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation",
+                         transactional_consistency_read_conflict_matches_isolation);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
                          transactional_consistency_reset_clears_transaction_state);
 

@@ -1042,6 +1042,13 @@ class partitioned_store {
             clock.end_commit(in_flight);
             held.release();
 
+            // Held is released first on purpose: the wait blocks on another thread finishing its own
+            // publication, and a partition lock carried into it would block that thread in turn. What
+            // it costs is the tail of whatever older commit is still writing itself out, so it is a
+            // property of how much the commits overlap rather than a constant.
+            if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
+                clock.await_published(in_flight.stamp());
+
             // The claim on the old snapshot goes back at once, so a long-lived transaction committing
             // in a loop stops pinning the very versions it is superseding. Where this transaction
             // reads moves separately, in `settle_snapshot_`, once its own commit is whole - and every

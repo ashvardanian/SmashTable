@@ -43,6 +43,10 @@ using snapshot_avl_map_t =
 using serializable_avl_map_t =
     serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
+/** @brief Serializable and real-time ordered, so it must refuse everything the rung below refuses. */
+using strict_serializable_avl_map_t = strict_serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>,
+                                                                  std::allocator<mapping<trivial_key_t, int>>>;
+
 /**
  *  Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
  *  Tests: The same suites over the weight-balanced core
@@ -2745,6 +2749,18 @@ int main(int, char **) {
                          test_lost_update_matches_isolation<snapshot_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation.serializable",
                          test_lost_update_matches_isolation<serializable_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.snapshot",
+                         test_write_skew_matches_isolation<snapshot_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.serializable",
+                         test_write_skew_matches_isolation<serializable_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation.snapshot",
+                         test_read_conflict_matches_isolation<snapshot_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation.serializable",
+                         test_read_conflict_matches_isolation<serializable_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.strict",
+                         test_write_skew_matches_isolation<strict_serializable_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation.strict",
+                         test_read_conflict_matches_isolation<strict_serializable_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.avl",
                          test_repeated_read_matches_isolation<snapshot_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.wb",

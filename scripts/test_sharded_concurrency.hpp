@@ -13,6 +13,7 @@
 #include <cstdint> // `std::uint64_t`, `std::uintptr_t`
 
 #include <atomic>      // `std::atomic`
+#include <chrono>      // `std::chrono::milliseconds`
 #include <iterator>    // `std::make_move_iterator`
 #include <set>         // `std::set`
 #include <string>      // `std::string`
@@ -670,6 +671,148 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
                "every walker must complete a walk begun after the writer started, or this proves nothing");
     st_verify_eq_(stable_misses.load(), 0, "an element present for the whole walk was missed or seen twice");
     st_verify_eq_(repeat_visits.load(), 0, "one walk handed the same key to the callback twice");
+}
+
+/**
+ *  @brief Pauses one comparison so a commit can be caught between drawing its stamp and publishing it.
+ *
+ *  A commit's stamp holds the watermark down for every commit drawn after it, and the only injectable
+ *  thing called between @c begin_commit and @c end_commit is the comparator the publish walk uses. So
+ *  the gate lives here: whichever thread compares @c gated_key_k stops until it is let go, and its
+ *  stamp stays in flight meanwhile.
+ */
+struct publication_gate_t {
+    static constexpr std::int64_t gated_key_k = 777;
+
+    static inline std::atomic<bool> armed {false};
+    static inline std::atomic<bool> reached {false};
+    static inline std::atomic<bool> holding {false};
+
+    static void arm() noexcept {
+        reached.store(false, std::memory_order_release);
+        holding.store(true, std::memory_order_release);
+        armed.store(true, std::memory_order_release);
+    }
+    static void release() noexcept {
+        holding.store(false, std::memory_order_release);
+        armed.store(false, std::memory_order_release);
+    }
+    static void wait_until_reached() noexcept {
+        while (!reached.load(std::memory_order_acquire)) std::this_thread::yield();
+    }
+    static void pass(std::int64_t key) noexcept {
+        if (key != gated_key_k || !armed.load(std::memory_order_acquire)) return;
+        reached.store(true, std::memory_order_release);
+        while (holding.load(std::memory_order_acquire)) std::this_thread::yield();
+    }
+};
+
+/** @brief Orders keys as @c less_t does, and stops on the gated one so a commit can be held open. */
+struct gated_less_t {
+    using is_transparent = void;
+    template <typename first_type_, typename second_type_>
+    bool operator()(first_type_ const &first, second_type_ const &second) const noexcept {
+        publication_gate_t::pass(static_cast<std::int64_t>(first));
+        return first < second;
+    }
+};
+
+/**
+ *  @brief A transaction opening after a commit returned must see that commit.
+ *
+ *  Serializability alone does not promise it: a commit drawn earlier and still writing itself out holds
+ *  the watermark below the stamp just published, so a transaction opening afterwards can read at a
+ *  snapshot that predates a commit which has already answered its caller. The gate makes that window
+ *  deliberate rather than hoped for, by stopping an earlier commit inside its own publication.
+ */
+template <typename container_type_>
+void test_commit_is_visible_to_what_opens_after_it() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    constexpr bool waits_k = at_least(container_t::isolation_k, isolation_t::strict_serializable_k);
+
+    auto made = container_t::make(gated_less_t {}, hash<std::int64_t> {});
+    st_verify_(made);
+    container_t &store = *made;
+
+    st_verify_(store.upsert(member_t {publication_gate_t::gated_key_k, 0}));
+
+    // The second key must land in another partition, or the later commit waits on the mutex the held
+    // one owns and the test times the wrong wait.
+    std::size_t const gated_partition =
+        hash<std::int64_t> {}(publication_gate_t::gated_key_k) % container_t::partitions_k;
+    std::int64_t later_key = 1;
+    while (hash<std::int64_t> {}(later_key) % container_t::partitions_k == gated_partition) ++later_key;
+
+    // Opened before the gate arms, because opening a transaction takes every partition lock in turn:
+    // one of them belongs to the held commit, so a transaction opened during the hold would be waiting
+    // on a mutex rather than on the watermark, which is not the wait under test.
+    auto opened = store.transaction();
+    st_verify_(opened);
+    auto writer = std::move(*opened);
+
+    // The earlier commit, stopped inside its own publication, so its stamp stays in flight and pins the
+    // watermark one below itself for as long as the gate holds.
+    auto holder = store.transaction();
+    st_verify_(holder);
+    st_verify_(holder->upsert(member_t {publication_gate_t::gated_key_k, 1}));
+    st_verify_(holder->stage());
+
+    publication_gate_t::arm();
+    std::thread earlier {[&]() noexcept { [[maybe_unused]] status_t const answered = holder->commit(); }};
+    publication_gate_t::wait_until_reached();
+
+    std::atomic<bool> reached_commit {false};
+    std::atomic<bool> answered_commit {false};
+    std::atomic<bool> saw_its_own_commit {false};
+    std::thread later {[&]() noexcept {
+        [[maybe_unused]] status_t const wrote = writer.upsert(member_t {later_key, 42});
+        [[maybe_unused]] status_t const staged = writer.stage();
+        reached_commit.store(true, std::memory_order_release);
+        [[maybe_unused]] status_t const committed = writer.commit();
+        answered_commit.store(true, std::memory_order_release);
+
+        // Opening this one is itself the question: a strict commit has already waited by the time it
+        // returns, so nothing is held and the snapshot it draws covers its own write.
+        auto reader = store.transaction();
+        if (!reader) return;
+        bool found = false;
+        [[maybe_unused]] status_t const read =
+            reader->find(later_key, [&](member_t const &member) noexcept { found = member.mapped == 42; }, no_op_t {});
+        saw_its_own_commit.store(found, std::memory_order_release);
+    }};
+
+    while (!reached_commit.load(std::memory_order_acquire)) std::this_thread::yield();
+
+    // Nothing below races. The gate holds an older stamp in flight, so the watermark cannot reach the
+    // later one, and a strict commit has no state in which it is allowed to answer - the sleep only
+    // keeps the check from passing vacuously. That the cheaper level answers sooner is a measurement,
+    // not something a second thread can assert.
+    if constexpr (waits_k) {
+        std::this_thread::sleep_for(std::chrono::milliseconds {50});
+        st_verify_((!answered_commit.load(std::memory_order_acquire)) &&
+                   "a strict commit cannot answer while an earlier commit still pins the watermark");
+    }
+
+    publication_gate_t::release();
+    later.join();
+    earlier.join();
+
+    if constexpr (waits_k)
+        st_verify_(saw_its_own_commit.load(std::memory_order_acquire) &&
+                   "a transaction opened after a strict commit returned must see it");
+
+    // Both writes land at either level; only when they become visible differs.
+    bool gated_is_current = false;
+    bool later_is_current = false;
+    st_verify_(store.find(
+        publication_gate_t::gated_key_k,
+        [&](member_t const &member) noexcept { gated_is_current = member.mapped == 1; }, no_op_t {}));
+    st_verify_(store.find(
+        later_key, [&](member_t const &member) noexcept { later_is_current = member.mapped == 42; }, no_op_t {}));
+    st_verify_(gated_is_current);
+    st_verify_(later_is_current);
 }
 
 #pragma endregion Sharded Concurrency

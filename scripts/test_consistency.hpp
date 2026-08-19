@@ -68,6 +68,16 @@ inline constexpr isolation_t stable_predicates_from_k = isolation_t::snapshot_k;
 inline constexpr isolation_t first_committer_wins_from_k = isolation_t::snapshot_k;
 
 /**
+ *  @brief The level at which what a transaction @b read is validated, not only what it wrote.
+ *
+ *  Below it only the write set is checked, so two transactions that each read what the other writes
+ *  and then write disjointly both land - the anomaly Berenson numbers A5B, which Snapshot Isolation
+ *  permits by construction because no two writes ever collide. From here up the read set is validated
+ *  too, which is what separates a serializable history from a merely snapshot-isolated one.
+ */
+inline constexpr isolation_t validated_reads_from_k = isolation_t::serializable_k;
+
+/**
  *  @brief What an optimistic refusal answers with on @p container_type_, which depends on the level.
  *
  *  A stamp-based store names which of the three ways a transaction lost, because a retry loop reads
@@ -875,6 +885,143 @@ void test_lost_update_matches_isolation() {
     else {
         st_verify_(answered);
         st_verify_eq_((held->mapped), (20), "below snapshot the later write wins and the earlier one is lost");
+    }
+}
+
+/**
+ *  @brief Write skew lands below the level that validates reads, and is refused from there up.
+ *
+ *  Two transactions open together over a pair of keys holding an invariant - here that at least one of
+ *  them stays set. Each reads both, sees the other one covering the invariant, and clears its own. The
+ *  write sets are disjoint, so nothing a write-set validator compares ever collides.
+ *
+ *  Timeline:
+ *    A, B open together, both keys set
+ *    A:  reads 1 and 2, sees the invariant held by 2
+ *    B:  reads 1 and 2, sees the invariant held by 1
+ *    A:  upsert(1, 0), commit    → lands
+ *    B:  upsert(2, 0), commit    → lands below the threshold, refused from it up
+ *
+ *  Below the threshold both land and the invariant is broken with neither transaction at fault - the
+ *  anomaly Snapshot Isolation permits, and a promise this level makes rather than an outcome left open.
+ *  From the threshold up B's read of key 1 is validated against what A published, so B is refused.
+ */
+template <typename container_type_>
+void test_write_skew_matches_isolation() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 1)));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(2, 1)));
+
+    auto earlier = container.transaction();
+    st_verify_(earlier);
+    auto later = container.transaction();
+    st_verify_(later);
+
+    // Each reads the pair and concludes the other key covers the invariant.
+    std::size_t earlier_total = 0, later_total = 0;
+    for (trivial_id_t key = 1; key != 3; ++key) {
+        st_verify_(earlier->find(
+            trivial_id_to_key<member_t>(key),
+            [&](member_t const &held) noexcept { earlier_total += static_cast<std::size_t>(held.mapped); },
+            no_op_t {}));
+        st_verify_(later->find(
+            trivial_id_to_key<member_t>(key),
+            [&](member_t const &held) noexcept { later_total += static_cast<std::size_t>(held.mapped); }, no_op_t {}));
+    }
+    st_verify_eq_(earlier_total, 2u, "both keys must be set before either transaction clears one");
+    st_verify_eq_(later_total, 2u, "both keys must be set before either transaction clears one");
+
+    // Disjoint writes, so a validator comparing only written keys sees no collision at all.
+    st_verify_(earlier->upsert(trivial_id_to_member<member_t>(1, 0)));
+    st_verify_(later->upsert(trivial_id_to_member<member_t>(2, 0)));
+
+    st_verify_(earlier->stage());
+    st_verify_(earlier->commit());
+
+    status_t const staged = later->stage();
+    status_t const answered = succeeded(staged) ? later->commit() : staged;
+
+    auto first_held = container.find_copy(trivial_id_to_key<member_t>(1));
+    auto second_held = container.find_copy(trivial_id_to_key<member_t>(2));
+    st_verify_(first_held.has_value());
+    st_verify_(second_held.has_value());
+    std::size_t const remaining =
+        static_cast<std::size_t>(first_held->mapped) + static_cast<std::size_t>(second_held->mapped);
+
+    if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
+        st_verify_eq_(answered, status_t::read_conflict_k);
+        st_verify_eq_(remaining, 1u, "validating the read set is what keeps the invariant standing");
+    }
+    else {
+        st_verify_(answered);
+        st_verify_eq_(remaining, 0u, "below validated reads both writes land and the invariant is gone");
+    }
+}
+
+/**
+ *  @brief A key read by one transaction and written by another refuses only where reads are validated.
+ *
+ *  The narrower half of the same property. One transaction reads a key it never writes, another writes
+ *  that key and commits, and the first then writes somewhere else entirely. Nothing the two of them
+ *  wrote overlaps, so only a validator that remembers the read can object.
+ *
+ *  Timeline:
+ *    A, B open together
+ *    A:  find(1)                 → records the read where the level validates reads
+ *    B:  upsert(1, 99), commit   → lands
+ *    A:  upsert(2, 5), commit    → lands below the threshold, refused from it up
+ */
+template <typename container_type_>
+void test_read_conflict_matches_isolation() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 1)));
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(2, 1)));
+
+    auto reader = container.transaction();
+    st_verify_(reader);
+    auto writer = container.transaction();
+    st_verify_(writer);
+
+    std::size_t seen = 0;
+    st_verify_(reader->find(
+        trivial_id_to_key<member_t>(1),
+        [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); }, no_op_t {}));
+    st_verify_eq_(seen, 1u);
+
+    st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 99)));
+    st_verify_(writer->stage());
+    st_verify_(writer->commit());
+
+    // A key the reader never touched, so the write sets are disjoint by construction.
+    st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 5)));
+
+    status_t const staged = reader->stage();
+    status_t const answered = succeeded(staged) ? reader->commit() : staged;
+
+    auto second_held = container.find_copy(trivial_id_to_key<member_t>(2));
+    st_verify_(second_held.has_value());
+
+    if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
+        st_verify_eq_(answered, status_t::read_conflict_k);
+        st_verify_eq_((second_held->mapped), (1), "a refused transaction must leave its own write behind");
+    }
+    else {
+        st_verify_(answered);
+        st_verify_eq_((second_held->mapped), (5), "below validated reads a stale read does not refuse a commit");
     }
 }
 

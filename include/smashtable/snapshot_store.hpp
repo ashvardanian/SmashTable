@@ -425,8 +425,9 @@ class snapshot_clock_t {
  */
 template <typename collection_type_, isolation_t isolation_ = isolation_t::snapshot_k>
 class snapshot_store {
-    static_assert(isolation_ == isolation_t::snapshot_k || isolation_ == isolation_t::serializable_k,
-                  "this engine answers at a snapshot; the choice is whether reads are validated too");
+    static_assert(isolation_ == isolation_t::snapshot_k || isolation_ == isolation_t::serializable_k ||
+                      isolation_ == isolation_t::strict_serializable_k,
+                  "this engine answers at a snapshot; the choice is whether reads are validated and waited for");
 
   public:
 #pragma region Type Definitions
@@ -446,6 +447,16 @@ class snapshot_store {
     /** @brief Every read of a transaction is answered at the stamp the transaction opened on. */
     static constexpr isolation_t isolation_k = isolation_;
 
+    /**
+     *  @brief Whether a write waits for its own publication before returning to its caller.
+     *
+     *  Without the wait a commit can return while an older commit still writing itself out holds the
+     *  watermark below the stamp just drawn, so a transaction opening afterwards reads at a snapshot
+     *  that predates it - serializable, but not in real time. The wait is what closes that, and it
+     *  costs however long the older commit takes, which is unrelated work by another thread.
+     */
+    static constexpr bool awaits_publication_k = isolation_ == isolation_t::strict_serializable_k;
+
     /** @brief Where stamps and snapshots come from, which a shard set shares across its partitions. */
     using clock_t = snapshot_clock_t;
 
@@ -458,7 +469,6 @@ class snapshot_store {
     using versioning_t = typename storage_shape_t::versioning_t;
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
-    using watch_t = typename versioning_t::watch_t;
     using accessed_identifier_t = typename versioning_t::accessed_identifier_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
 
@@ -688,7 +698,7 @@ class snapshot_store {
          */
         template <typename comparable_type_>
         void record_read_(comparable_type_ const &comparable) const noexcept {
-            if constexpr (isolation_k != isolation_t::serializable_k) return;
+            if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return;
 
             auto owned = copy_safely<identifier_t>(identifier_t {comparable});
             if (!owned) {
@@ -709,7 +719,7 @@ class snapshot_store {
          */
         template <typename lower_type_, typename upper_type_>
         void record_window_read_(lower_type_ const &lower, upper_type_ const &upper, access_t ends) const noexcept {
-            if constexpr (isolation_k != isolation_t::serializable_k) return;
+            if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return;
 
             auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
             if (!lower_copy) {
@@ -739,7 +749,8 @@ class snapshot_store {
 
         /** @brief Records that this transaction read every key, which no pair of bounds can name. */
         void record_whole_keyspace_read_() const noexcept {
-            if constexpr (isolation_k == isolation_t::serializable_k) read_set_ = read_set_t::covers_everything_k;
+            if constexpr (at_least(isolation_k, isolation_t::serializable_k))
+                read_set_ = read_set_t::covers_everything_k;
         }
 
         [[nodiscard]] status_t validate_accesses_() const noexcept {
@@ -2210,12 +2221,18 @@ class snapshot_store {
         }
     }
 
-    /** @brief Stamps a group that lives entirely in this store, drawing its stamp and publishing it. */
+    /**
+     *  @brief Stamps a group that lives entirely in this store, drawing its stamp and publishing it.
+     *
+     *  This is the path a direct write and a publication both take, so it is where they inherit whether
+     *  the level waits for its own publication before answering its caller.
+     */
     void stamp_as_one_commit_(identifier_t const *identifiers, std::size_t count, generation_t generation) noexcept {
         snapshot_clock_t::commit_in_flight_t in_flight;
         clock_->begin_commit(in_flight);
         stamp_under_(identifiers, count, generation, in_flight.stamp());
         clock_->end_commit(in_flight);
+        if constexpr (awaits_publication_k) clock_->await_published(in_flight.stamp());
     }
 
     /** @brief Frees every version of every identifier in @p identifiers that no snapshot can still reach. */
@@ -3341,6 +3358,53 @@ template <typename key_type_, typename value_type_, typename hasher_type_ = hash
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using serializable_hash_map =
     serializable_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+
+/**
+ *  @brief Serializable, and ordered in real time as well: a transaction opening after a commit returned
+ *    sees that commit.
+ *
+ *  Refuses exactly what @c serializable_store refuses - the two differ only in when a commit becomes
+ *  visible. A commit here waits for its own publication before answering, which costs however long an
+ *  older overlapping commit takes to finish writing itself out.
+ */
+template <typename collection_type_>
+using strict_serializable_store = snapshot_store<collection_type_, isolation_t::strict_serializable_k>;
+
+/** @brief Strictly serializable transactional set backed by an AVL tree. */
+template <typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<value_type_>>
+using strict_serializable_avl_set =
+    strict_serializable_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
+
+/** @brief Strictly serializable transactional map backed by an AVL tree. */
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+using strict_serializable_avl_map =
+    strict_serializable_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+
+/** @brief Strictly serializable transactional set backed by a weight-balanced tree, so it answers ordinals. */
+template <typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<value_type_>>
+using strict_serializable_wb_set =
+    strict_serializable_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+
+/** @brief Strictly serializable transactional map backed by a weight-balanced tree, so it answers ordinals. */
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+using strict_serializable_wb_map = strict_serializable_store<
+    basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+
+/** @brief Strictly serializable transactional set backed by an open-addressed table, so it keeps no ordering. */
+template <typename value_type_, typename hasher_type_ = hash<value_type_>, typename equals_type_ = equal_to_t,
+          typename allocator_type_ = std::allocator<std::byte>>
+using strict_serializable_hash_set =
+    strict_serializable_store<basic_hash_table<value_type_, hasher_type_, equals_type_, allocator_type_>>;
+
+/** @brief Strictly serializable transactional map backed by an open-addressed table, so it keeps no ordering. */
+template <typename key_type_, typename value_type_, typename hasher_type_ = hash<key_type_>,
+          typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
+using strict_serializable_hash_map = strict_serializable_store<
+    basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 #pragma endregion Aliases
 

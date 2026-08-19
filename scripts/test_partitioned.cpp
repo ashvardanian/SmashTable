@@ -440,6 +440,16 @@ static void transactional_consistency_lost_update_matches_isolation() {
     test_lost_update_matches_isolation<transactional_composite_map_t>();
 }
 
+static void transactional_consistency_write_skew_matches_isolation() {
+    test_write_skew_matches_isolation<transactional_trivial_map_t>();
+    test_write_skew_matches_isolation<transactional_tracking_map_t>();
+}
+
+static void transactional_consistency_read_conflict_matches_isolation() {
+    test_read_conflict_matches_isolation<transactional_trivial_map_t>();
+    test_read_conflict_matches_isolation<transactional_tracking_map_t>();
+}
+
 static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_trivial_map_t>();
     test_repeated_read_matches_isolation<transactional_tracking_map_t>();
@@ -1378,6 +1388,21 @@ static void sharded_ops_transaction_reports_its_reason() {
     test_transaction_reports_why_it_could_not_open<locked_store<transaction_refusing_set_t>>();
 }
 
+static void sharded_concurrency_commit_is_visible_to_what_opens_after_it() {
+    using gated_map_t = mapping<std::int64_t, std::int64_t>;
+    // Pinned, because the test picks what it asserts from this level: a wrapper that dropped the rung
+    // would leave the strict instantiation asserting nothing and still reporting a pass.
+    static_assert(partitioned_store<strict_serializable_store<basic_avl_tree<gated_map_t, less_t>>,
+                                    hash<std::int64_t>>::isolation_k == isolation_t::strict_serializable_k,
+                  "a shard set over a strict store is strict");
+    using serializable_gated_t =
+        serializable_store<basic_avl_tree<gated_map_t, gated_less_t, std::allocator<gated_map_t>>>;
+    using strict_gated_t =
+        strict_serializable_store<basic_avl_tree<gated_map_t, gated_less_t, std::allocator<gated_map_t>>>;
+    test_commit_is_visible_to_what_opens_after_it<partitioned_store<serializable_gated_t, hash<std::int64_t>>>();
+    test_commit_is_visible_to_what_opens_after_it<partitioned_store<strict_gated_t, hash<std::int64_t>>>();
+}
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
@@ -1406,6 +1431,8 @@ int main() {
     failures += run_test(filter, "sharded_ops.move_only_key_reaches_a_partition",
                          sharded_ops_move_only_key_reaches_a_partition);
     failures += run_test(filter, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);
+    failures += run_test(filter, "sharded_concurrency.commit_is_visible_to_what_opens_after_it",
+                         sharded_concurrency_commit_is_visible_to_what_opens_after_it);
     failures += run_test(filter, "sharded_concurrency.standard_mutex_substitutes",
                          sharded_concurrency_standard_mutex_substitutes);
     failures += run_test(filter, "sharded_concurrency.stage_unwinds_on_partial_failure",
@@ -1463,6 +1490,10 @@ int main() {
                          transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation",
+                         transactional_consistency_write_skew_matches_isolation);
+    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation",
+                         transactional_consistency_read_conflict_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",
                          transactional_consistency_repeated_range_matches_isolation);
     failures +=

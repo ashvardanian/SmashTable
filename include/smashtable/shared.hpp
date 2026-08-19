@@ -759,6 +759,12 @@ constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(st
 
 /**
  *  @brief What a reader is promised, named as Jepsen names it and ordered by strength.
+ *
+ *  The top two differ only in when a commit becomes visible, never in what they refuse: both validate
+ *  every read, so neither admits write skew or a phantom. @c strict_serializable_k additionally waits
+ *  for its own publication before returning, so a transaction opening after a commit returned cannot
+ *  be ordered before it - which @c serializable_k permits, and which costs whatever the wait costs.
+ *
  *  @see https://jepsen.io/consistency
  */
 enum class isolation_t : std::uint8_t {
@@ -766,6 +772,7 @@ enum class isolation_t : std::uint8_t {
     monotonic_atomic_view_k = 1,
     snapshot_k = 2,
     serializable_k = 3,
+    strict_serializable_k = 4,
 };
 
 /** @brief Whether @p offered is at least as strong a promise as @p required. */
