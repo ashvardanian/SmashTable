@@ -38,14 +38,15 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
     type_ *raw_parts = reinterpret_cast<type_ *>(raw_parts_mem);
     for (std::size_t partition_index = 0; partition_index != count_; ++partition_index) {
 
-        if (auto new_part = generator(partition_index); new_part)
-            new (raw_parts + partition_index) type_(std::move(*new_part));
-        else {
-            // Destruct all the previous parts.
+        auto new_part = generator(partition_index);
+        if (!new_part) {
+            // The prefix goes back before the reason does, so no half-populated array is observable -
+            // and the reason travels, because a default-constructed `expected` says only `unknown_k`.
             for (std::size_t destructed_index = 0; destructed_index != partition_index; ++destructed_index)
                 raw_parts[destructed_index].~type_();
-            return {};
+            return new_part.status();
         }
+        new (raw_parts + partition_index) type_(std::move(*new_part));
     }
 
     std::array<type_, count_> moved = move_to_array(raw_parts, std::make_index_sequence<count_> {});
@@ -155,6 +156,19 @@ class partitioned_store {
         requires(inner_store_t const &store, identifier_t const &key, no_op_t callback, std::size_t seen) {
             store.sample_reservoir(key, key, callback, seen, seen, callback);
         };
+
+    /**
+     *  @brief Whether an open transaction can be asked to commit in two steps rather than one.
+     *
+     *  A commit spanning partitions has to learn that every one of them may proceed before any of
+     *  them writes. An engine that only offers a single @c commit decides and writes in the same
+     *  call, so the wrapper cannot ask first, and a refusal from a later partition arrives over
+     *  writes an earlier one already published.
+     */
+    static constexpr bool inner_transaction_splits_commit_k = requires(inner_transaction_t &transaction) {
+        { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
+        transaction.publish_under();
+    };
 
     /** @brief Whether an open transaction carries the ordered surface its store does. */
     static constexpr bool inner_transaction_is_ordered_k =
@@ -968,6 +982,32 @@ class partitioned_store {
         }
 
         /**
+         *  @brief Publishes every reached partition, having first learned that all of them may.
+         *
+         *  The engines behind this path stamp their own versions, so there is no shared clock and no
+         *  one stamp to draw - but a partition can still refuse after its neighbours have written,
+         *  because each re-checks its watches as it commits. Asking all of them while holding all of
+         *  them is what keeps a refusal honest.
+         */
+        status_t commit_together_() noexcept
+            requires(!inner_shares_clock_k && inner_transaction_splits_commit_k)
+        {
+            touched_parts_lock held {store_->mutexes_, store_->epochs_, touched_};
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                if (status_t const refused = partitions_[reached.index].validate_for_commit(); failed(refused))
+                    return refused;
+
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                partitions_[reached.index].publish_under();
+            held.release();
+
+            touched_.clear();
+            return success_k;
+        }
+
+        /**
          *  @brief Publishes every reached partition under one stamp drawn for the whole commit.
          *
          *  The stamp is drawn before the first partition is written and the watermark is only moved
@@ -1083,20 +1123,17 @@ class partitioned_store {
             return status;
         }
         /**
-         *  @brief Publishes every reached partition, and reports the last refusal without stopping.
+         *  @brief Publishes every reached partition, or none of them.
          *
-         *  A commit consumes this transaction's generation in every partition it reaches, so the walk
-         *  cannot be resumed - stopping halfway would leave the rest staged with no owner, and clearing
-         *  the record only on success would let a retry re-commit a partition that already published.
+         *  Both paths ask every reached partition whether it may commit before any of them writes, so
+         *  a refusal is reported over nothing and the transaction stays staged and retryable. They
+         *  differ only in where the stamp comes from: one clock shared across the partitions, or each
+         *  engine stamping its own versions.
          */
         [[nodiscard]] status_t commit() noexcept {
             settle_snapshot_();
             if constexpr (inner_shares_clock_k) return commit_under_one_stamp_();
-            else {
-                auto status = for_touched_parts_([&](inner_transaction_t &part) noexcept { return part.commit(); });
-                touched_.clear();
-                return status;
-            }
+            else return commit_together_();
         }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {

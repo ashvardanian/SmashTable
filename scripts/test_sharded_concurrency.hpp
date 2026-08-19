@@ -543,6 +543,38 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
     std::vector<std::thread> threads;
     threads.reserve(sharded_threads_count_k);
 
+    // Counts one refusal and looks for the marker it staged, which must be nowhere in the container.
+    auto note_refusal = [&](std::size_t marker) noexcept {
+        ++commit_refusals;
+        bool published = false;
+        for (std::size_t identifier = 0; identifier != keys_count && !published; ++identifier)
+            st_verify_(container.find(
+                trivial_id_to_key<member_t>(identifier),
+                [&](auto const &member) noexcept {
+                    published = published || static_cast<std::size_t>(member.mapped) == marker;
+                },
+                []() noexcept {}));
+        if (published) ++published_refusals;
+    };
+
+    // Two writers staged over one key and committed in order: first-committer-wins refuses the
+    // second, so the suite proves its point on every schedule rather than on a lucky interleaving.
+    // The racing threads below widen the interleavings it proves it over.
+    {
+        auto first = container.transaction();
+        auto second = container.transaction();
+        st_verify_(first);
+        st_verify_(second);
+        st_verify_(first->upsert(trivial_id_to_member<member_t>(0, 1)));
+        st_verify_(second->upsert(trivial_id_to_member<member_t>(0, 2)));
+        st_verify_(first->stage());
+        st_verify_(second->stage());
+        st_verify_(first->commit());
+        st_verify_ne_(second->commit(), success_k, "a second writer over one key must be refused");
+        note_refusal(2);
+        [[maybe_unused]] status_t const undone = second->reset();
+    }
+
     // Every attempt writes a value no other attempt writes, so finding one after a refusal is proof
     // that the refused commit published something.
     for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
@@ -563,23 +595,14 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
                     }
                     if (succeeded(writer->commit())) break;
 
-                    ++commit_refusals;
-                    bool published = false;
-                    for (std::size_t identifier = 0; identifier != keys_count && !published; ++identifier)
-                        st_verify_(container.find(
-                            trivial_id_to_key<member_t>(identifier),
-                            [&](auto const &member) noexcept {
-                                published = published || static_cast<std::size_t>(member.mapped) == marker;
-                            },
-                            []() noexcept {}));
-                    if (published) ++published_refusals;
+                    note_refusal(marker);
                     [[maybe_unused]] status_t const undone = writer->reset();
                 }
         });
 
     for (auto &thread : threads) thread.join();
     st_verify_eq_(published_refusals.load(), 0, "a commit that refused had already published its writes");
-    // The refusals themselves are the point of the suite, not a defect - but without any, it proved nothing.
+    // The staged pair above guarantees one, so this can only trip if a refusal stopped being counted.
     st_verify_ne_(commit_refusals.load(), 0, "no commit ever refused, so nothing here was exercised");
 }
 

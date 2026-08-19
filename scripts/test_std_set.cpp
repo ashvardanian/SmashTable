@@ -15,6 +15,7 @@
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
 #include "test_reference_store_defects.hpp"
+#include "test_monotonic_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -373,9 +374,9 @@ static void std_store_defects_vacuum_leaves_staged_entries() {
 }
 
 static void std_store_defects_commit_reports_lost_versions() {
-    test_commit_reports_lost_versions<transactional_trivial_map_t>();
-    test_commit_reports_lost_versions<transactional_composite_map_t>();
-    test_commit_reports_lost_versions<transactional_heavy_map_t>();
+    test_staged_versions_survive_a_clear<transactional_trivial_map_t>();
+    test_staged_versions_survive_a_clear<transactional_composite_map_t>();
+    test_staged_versions_survive_a_clear<transactional_heavy_map_t>();
 }
 
 static void std_store_defects_commit_reports_success_when_published() {
@@ -443,9 +444,9 @@ static void std_store_defects_stage_refuses_when_already_staged() {
 }
 
 static void std_store_defects_rollback_reports_lost_versions() {
-    test_rollback_reports_lost_versions<transactional_trivial_map_t>();
-    test_rollback_reports_lost_versions<transactional_composite_map_t>();
-    test_rollback_reports_lost_versions<transactional_heavy_map_t>();
+    test_rollback_recovers_what_it_staged<transactional_trivial_map_t>();
+    test_rollback_recovers_what_it_staged<transactional_composite_map_t>();
+    test_rollback_recovers_what_it_staged<transactional_heavy_map_t>();
 }
 
 static void std_store_defects_transaction_bounds_skip_locally_erased() {
@@ -561,9 +562,15 @@ int main() {
                          std_store_defects_insert_reports_the_stored_element);
     failures += run_test(filter, "std_store_defects.insert_after_local_erase_succeeds",
                          std_store_defects_insert_after_local_erase_succeeds);
+    failures += run_test(filter, "std_store_defects.validate_refuses_before_publishing",
+                         [] { test_validate_refuses_before_publishing<transactional_trivial_map_t>(); });
+    failures += run_test(filter, "std_store_defects.publish_cannot_refuse",
+                         [] { test_publish_cannot_refuse<transactional_trivial_map_t>(); });
+    failures += run_test(filter, "std_store_defects.clear_refuses_while_staged",
+                         [] { test_clear_refuses_while_staged<transactional_trivial_map_t>(); });
     failures += run_test(filter, "std_store_defects.stage_refuses_when_already_staged",
                          std_store_defects_stage_refuses_when_already_staged);
-    failures += run_test(filter, "std_store_defects.rollback_reports_lost_versions",
+    failures += run_test(filter, "std_store_defects.rollback_recovers_what_it_staged",
                          std_store_defects_rollback_reports_lost_versions);
     failures += run_test(filter, "std_store_defects.transaction_bounds_skip_locally_erased",
                          std_store_defects_transaction_bounds_skip_locally_erased);

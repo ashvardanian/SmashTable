@@ -255,6 +255,18 @@ class locked_store {
         transaction.reset_at(stamp);
     };
 
+    /**
+     *  @brief Whether the wrapped transaction decides and writes in two steps, stamping its own versions.
+     *
+     *  The engines keeping no shared clock split their commit the same way, but publish without being
+     *  handed a stamp - each orders its own versions. A shard set spanning them still has to learn that
+     *  every partition may commit before any of them writes, so this surface has to travel too.
+     */
+    static constexpr bool inner_transaction_splits_commit_k = requires(inner_transaction_t &transaction) {
+        { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
+        transaction.publish_under();
+    };
+
     class transaction_t {
         friend class locked_store;
         /**
@@ -572,7 +584,7 @@ class locked_store {
          *  two orders never cross, since a partition lock is always taken first.
          */
         [[nodiscard]] status_t validate_for_commit() const noexcept
-            requires inner_transaction_shards_k
+            requires(inner_transaction_shards_k || inner_transaction_splits_commit_k)
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.validate_for_commit();
@@ -584,6 +596,14 @@ class locked_store {
         {
             unique_lock _ {store_->mutex_};
             inner_transaction_.publish_under(stamp);
+        }
+
+        /** @brief Publishes everything staged, the wrapped store stamping its own versions. */
+        void publish_under() noexcept
+            requires inner_transaction_splits_commit_k
+        {
+            unique_lock _ {store_->mutex_};
+            inner_transaction_.publish_under();
         }
 
         /** @brief Moves where this part reads, which is transaction-local and touches no store. */
@@ -654,10 +674,10 @@ class locked_store {
     }
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
-        expected<transaction_t> result;
         unique_lock _ {mutex_};
-        if (auto opened = inner_store_.transaction(); opened) result = transaction_t {*this, std::move(*opened)};
-        return result;
+        auto opened = inner_store_.transaction();
+        if (!opened) return opened.status();
+        return transaction_t {*this, std::move(*opened)};
     }
 
     [[nodiscard]] status_t upsert(value_t &&element) noexcept {

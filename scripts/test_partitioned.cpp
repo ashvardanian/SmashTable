@@ -1293,6 +1293,91 @@ static void sharded_ops_move_only_key_reaches_a_partition() {
     st_verify_eq_(store.size(), 63u);
 }
 
+/**
+ *  @brief A commit spanning partitions publishes all of them or none, whatever a watch answers.
+ *
+ *  Each engine behind the unstamped path re-checks its watches when it commits, because another
+ *  transaction may have published over a watched key while this one sat staged. Asking one partition
+ *  at a time meant a later refusal arrived over writes an earlier partition had already made visible -
+ *  a reader could name values from a transaction that told its caller it had not committed, which is
+ *  weaker than the level this configuration reports.
+ */
+static void sharded_ops_commit_publishes_all_or_nothing() {
+    using store_t = transactional_trivial_map_t;
+    using member_t = typename store_t::value_type;
+
+    store_t store;
+
+    // Two keys the hash sends to different partitions, so one can refuse after the other would publish.
+    trivial_id_t written = 0, watched = 0;
+    hash<trivial_key_t> const hasher;
+    std::size_t const parts = partitions_of_v<store_t>;
+    for (trivial_id_t candidate = 1; candidate != 512 && !watched; ++candidate) {
+        std::size_t const part = hasher(trivial_id_to_key<member_t>(candidate)) % parts;
+        if (!written) written = candidate;
+        else if (part != hasher(trivial_id_to_key<member_t>(written)) % parts) watched = candidate;
+    }
+    st_verify_((written && watched) && "the fixture needs two keys in different partitions");
+
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(watched, 1)));
+
+    auto writer = store.transaction();
+    st_verify_(writer);
+    st_verify_(writer->watch(trivial_id_to_key<member_t>(watched)));
+    st_verify_(writer->upsert(trivial_id_to_member<member_t>(written, 42)));
+    st_verify_(writer->stage());
+
+    // The watch is invalidated after staging, which is the window the engines re-check for.
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(watched, 2)));
+
+    st_verify_eq_(writer->commit(), status_t::consistency_k);
+
+    // Nothing this transaction wrote may be readable, since its caller was told it did not commit.
+    expected<bool> const landed = store.contains(trivial_id_to_key<member_t>(written));
+    st_verify_(landed);
+    st_verify_eq_(*landed, false, "a refused commit must leave none of its writes readable");
+}
+
+/**
+ *  @brief A store that refuses to open a transaction, naming a reason a wrapper must carry outward.
+ *
+ *  Only @c reference_store can refuse this for real, and only when its own allocation throws, which is
+ *  not schedulable from a test. Refusing on demand is what makes the wrapper's relay observable.
+ */
+struct transaction_refusing_set_t : tree_trivial_set_t {
+    using base_t = tree_trivial_set_t;
+    using transaction_t = typename base_t::transaction_t;
+
+    transaction_refusing_set_t() noexcept = default;
+    transaction_refusing_set_t(base_t &&other) noexcept : base_t(std::move(other)) {}
+    transaction_refusing_set_t(transaction_refusing_set_t &&) noexcept = default;
+    transaction_refusing_set_t &operator=(transaction_refusing_set_t &&) noexcept = default;
+
+    [[nodiscard]] static expected<transaction_refusing_set_t> make() noexcept {
+        expected<base_t> built = base_t::make();
+        if (!built) return built.status();
+        return transaction_refusing_set_t {std::move(*built)};
+    }
+
+    [[nodiscard]] expected<transaction_t> transaction() noexcept { return status_t::out_of_memory_heap_k; }
+};
+
+/** @brief A wrapper that cannot open a transaction reports why, rather than a default-constructed reason. */
+template <typename wrapper_type_>
+static void test_transaction_reports_why_it_could_not_open() {
+    expected<wrapper_type_> made = wrapper_type_::make();
+    st_verify_(made);
+    expected<typename wrapper_type_::transaction_t> opened = made->transaction();
+    st_verify_((!opened) && "the inner store refused, so the wrapper must refuse too");
+    st_verify_eq_(opened.status(), status_t::out_of_memory_heap_k,
+                  "the wrapper must relay the reason rather than lose it to a default");
+}
+
+static void sharded_ops_transaction_reports_its_reason() {
+    test_transaction_reports_why_it_could_not_open<partitioned_store<transaction_refusing_set_t>>();
+    test_transaction_reports_why_it_could_not_open<locked_store<transaction_refusing_set_t>>();
+}
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
@@ -1310,6 +1395,10 @@ int main() {
     failures += run_test(filter, "ordered_cursor.hands_every_key_once", ordered_cursor_hands_every_key_once);
     failures += run_test(filter, "failure_policy.distinct_causes", failure_policy_distinct_causes);
     failures += run_test(filter, "failure_policy.relayed_causes", failure_policy_relayed_causes);
+    failures +=
+        run_test(filter, "sharded_ops.transaction_reports_its_reason", sharded_ops_transaction_reports_its_reason);
+    failures +=
+        run_test(filter, "sharded_ops.commit_publishes_all_or_nothing", sharded_ops_commit_publishes_all_or_nothing);
     failures += run_test(filter, "failure_policy.bulk_methods", failure_policy_bulk_methods);
     failures += run_test(filter, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
     failures += run_test(filter, "sharded_concurrency.walks_never_race_erasures",

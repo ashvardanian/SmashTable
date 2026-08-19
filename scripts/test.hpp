@@ -72,8 +72,18 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
     using bare_t = std::remove_cvref_t<type_>;
     if constexpr (std::is_same_v<bare_t, ::ashvardanian::smashtable::status_t>)
         std::fprintf(stderr, ", %s = %s", label, ::ashvardanian::smashtable::name_of(value));
-    else if constexpr (requires { value.status(); })
-        std::fprintf(stderr, ", %s = %s", label, ::ashvardanian::smashtable::name_of(value.status()));
+    else if constexpr (std::is_same_v<bare_t, bool>) std::fprintf(stderr, ", %s = %s", label, value ? "true" : "false");
+    else if constexpr (requires {
+                           value.status();
+                           value.has_value();
+                           *value;
+                       }) {
+        // A result that holds something was compared for what it holds, so that is what a reader needs;
+        // the status is the answer only when there is no value to have compared.
+        if (!value.has_value())
+            std::fprintf(stderr, ", %s = %s", label, ::ashvardanian::smashtable::name_of(value.status()));
+        else st_print_operand_(label, *value);
+    }
     else if constexpr (std::is_integral_v<bare_t>)
         std::fprintf(stderr, ", %s = %lld", label, static_cast<long long>(value));
 }

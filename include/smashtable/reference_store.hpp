@@ -1088,37 +1088,60 @@ class reference_store {
         }
 
         /**
-         *  @brief Commits a previously staged transaction, making all changes permanently visible.
-         *    Can only be called on staged transactions. Removes older versions of modified entries.
+         *  @brief Whether this transaction may still publish what it staged, refusing before it writes anything.
          *
-         *  @return Success, @c operation_not_permitted_k if the transaction is not staged, or
-         *    @c consistency_k if a staged key vanished before the commit reached it.
-         *  @note Every key that is still there is published even when another one is gone, so the
-         *    status reports the loss rather than deciding what to do about it.
+         *  A watch is asked again here as well as at staging: another transaction may have committed
+         *  over a watched key while this one sat staged, and publishing on top of it would be the lost
+         *  update the watch was taken to prevent. Nothing is written until this answers, so a refusal
+         *  leaves the transaction staged and retryable - and a caller spreading one commit across
+         *  several stores asks every one of them before any of them writes.
+         *
+         *  @return Success, @c consistency_k when a watched key moved under this transaction, or
+         *    @c operation_not_permitted_k when nothing was staged.
          */
-        [[nodiscard]] status_t commit() noexcept {
+        [[nodiscard]] status_t validate_for_commit() const noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+            return validate_watches_();
+        }
 
-            // A watch is re-checked here as well as at staging: another transaction may have
-            // committed over a watched key while this one sat staged, and publishing on top of it
-            // would be the lost update the watch was taken to prevent.
+        /**
+         *  @brief Makes every staged version visible, which cannot fail and cannot refuse.
+         *
+         *  The second half of a commit, split out because a caller spanning several stores has to know
+         *  that once the first of them writes, none of the rest can turn back. It draws its own stamp
+         *  rather than taking one, because these stores keep no shared clock - each orders its own
+         *  versions, and a caller spanning several of them is buying atomicity of the decision, not one
+         *  instant across all of them.
+         *
+         *  Unmasking cannot report a missing version here. Every path that removes an entry leaves a
+         *  staged one alone: an erase retires only the published version, reclamation passes over any
+         *  entry still carrying one, another transaction's unmasking walks only visible versions, and
+         *  @c clear refuses outright while one is outstanding. So a version staged by this transaction
+         *  is still where staging put it, and the outcome is an assertion rather than a status.
+         *
+         *  @warning Only ever called after @c validate_for_commit answered success, with nothing since.
+         */
+        void publish_under() noexcept {
+            assert(staging_ == staging_t::staged_k && "publishing what was never staged");
             auto &store = store_ref();
-            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
-
-            // Once we make an entry visible,
-            // if there are more than one with the same key,
-            // the older generation must die.
             commit_stamp_t const stamp = store.next_commit_stamp_();
-            status_t result = success_k;
             for (auto const &identifier : changed_identifiers_) {
                 auto range = store.entries_.equal_range(identifier);
-                auto const outcome = store.unmask_and_compact_(range.first, range.second, generation_, stamp);
-                if (outcome == unmask_outcome_t::version_missing_k) result = status_t::consistency_k;
+                [[maybe_unused]] auto const outcome =
+                    store.unmask_and_compact_(range.first, range.second, generation_, stamp);
+                assert(outcome != unmask_outcome_t::version_missing_k &&
+                       "a staged version vanished before it published");
             }
 
             changed_identifiers_.clear();
             staging_ = staging_t::pending_k;
-            return result;
+        }
+
+        /** @brief Validates and then publishes, which is the whole commit for a caller spanning one store. */
+        [[nodiscard]] status_t commit() noexcept {
+            if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
+            publish_under();
+            return success_k;
         }
     };
 
@@ -2043,6 +2066,12 @@ class reference_store {
      *    transaction a number an open one already carries, and both are compared by value.
      */
     [[nodiscard]] status_t clear() noexcept {
+        // Refused while anything is staged, because dropping a version an open transaction is about to
+        // publish would make that publication fail - and the second half of a commit is the one step a
+        // caller spanning several stores is promised cannot turn back.
+        for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor)
+            if (!visible_now(cursor->committed)) return operation_not_permitted_k;
+
         entries_.clear();
         visible_count_ = 0;
         visible_deleted_count_ = 0;

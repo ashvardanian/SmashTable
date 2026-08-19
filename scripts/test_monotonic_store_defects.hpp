@@ -502,6 +502,101 @@ void test_second_stage_is_rejected() {
     st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), true);
 }
 
+/**
+ *  @brief A refused validation writes nothing, so a caller spanning several stores can still turn back.
+ *
+ *  The half a commit can refuse and the half that applies are separate calls, because a wrapper
+ *  committing across partitions has to ask every one of them before any of them writes. Asking after
+ *  the first has written is how a refusal ends up reported over writes a reader can already see.
+ */
+template <typename container_type_>
+void test_validate_refuses_before_publishing() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
+
+    auto writer = container.transaction();
+    st_verify_(writer.has_value());
+    st_verify_(writer->watch(trivial_id_to_key<member_t>(1)));
+    st_verify_(writer->upsert(trivial_id_to_member<member_t>(2, 200)));
+    st_verify_(writer->stage());
+
+    // Somebody moves the watched key while this transaction sits staged.
+    auto outsider = container.transaction();
+    st_verify_(outsider.has_value());
+    st_verify_(outsider->upsert(trivial_id_to_member<member_t>(1, 999)));
+    st_verify_(outsider->stage());
+    st_verify_(outsider->commit());
+
+    st_verify_eq_(writer->validate_for_commit(), status_t::consistency_k);
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), false);
+}
+
+/**
+ *  @brief Publishing after a validation that passed shows every staged key, and cannot refuse.
+ *
+ *  Every path that removes an entry leaves a staged version alone - an erase retires only the
+ *  published one, reclamation passes over a chain still carrying one, and another transaction's
+ *  unmasking walks only visible versions. This drives all three under a staged transaction and then
+ *  publishes, so the second phase is exercised against the cases that could have emptied it.
+ */
+template <typename container_type_>
+void test_publish_cannot_refuse() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    for (trivial_id_t identifier = 1; identifier != 5; ++identifier)
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+
+    auto writer = container.transaction();
+    st_verify_(writer.has_value());
+    for (trivial_id_t identifier = 1; identifier != 5; ++identifier)
+        st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, identifier * 10)));
+    st_verify_(writer->stage());
+
+    // Another transaction publishes over two of the same keys.
+    auto peer = container.transaction();
+    st_verify_(peer.has_value());
+    st_verify_(peer->upsert(trivial_id_to_member<member_t>(1, 7)));
+    st_verify_(peer->upsert(trivial_id_to_member<member_t>(2, 7)));
+    st_verify_(peer->stage());
+    st_verify_(peer->commit());
+
+    // A direct erase retires the published version of a third, and reclamation sweeps behind it.
+    [[maybe_unused]] status_t const erased = container.erase(trivial_id_to_key<member_t>(3));
+    [[maybe_unused]] auto const reclaimed = container.vacuum();
+
+    st_verify_(writer->validate_for_commit());
+    writer->publish_under();
+
+    for (trivial_id_t identifier = 1; identifier != 5; ++identifier)
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
+}
+
+/** @brief Emptying the store is refused while a transaction still has something staged to publish. */
+template <typename container_type_>
+void test_clear_refuses_while_staged() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    auto writer = container.transaction();
+    st_verify_(writer.has_value());
+    st_verify_(writer->upsert(trivial_id_to_member<member_t>(5, 500)));
+    st_verify_(writer->stage());
+
+    st_verify_eq_(container.clear(), status_t::operation_not_permitted_k);
+
+    st_verify_(writer->rollback());
+    st_verify_(container.clear());
+}
+
 #pragma endregion Status Reporting
 
 } // namespace ashvardanian::smashtable::scripts

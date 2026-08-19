@@ -147,9 +147,15 @@ void test_vacuum_leaves_staged_entries() {
 
 #pragma region Commit Reporting
 
-/** @brief A commit whose staged versions were wiped out from under it must say so. */
+/**
+ *  @brief Staged versions cannot be wiped out from under the transaction that is about to publish them.
+ *
+ *  Dropping one would make publishing fallible, and a publish that can refuse is how a commit spanning
+ *  several stores ends up reporting a refusal over writes an earlier store already made visible. Emptying
+ *  is the only path that could reach a staged version, so it is refused while one exists.
+ */
 template <typename container_type_>
-void test_commit_reports_lost_versions() {
+void test_staged_versions_survive_a_clear() {
     using member_t = typename container_type_::value_type;
     auto maybe_container = container_type_::make();
     st_verify_(maybe_container.has_value());
@@ -160,9 +166,10 @@ void test_commit_reports_lost_versions() {
     st_verify_(transaction->upsert(trivial_id_to_member<member_t>(5)));
     st_verify_(transaction->stage());
 
+    st_verify_eq_(container.clear(), status_t::operation_not_permitted_k);
+    st_verify_(transaction->commit());
+    st_verify_eq_(container.size(), 1u);
     st_verify_(container.clear());
-    st_verify_eq_(transaction->commit(), status_t::consistency_k);
-    st_verify_eq_(container.size(), 0u);
 }
 
 /** @brief A commit that publishes what it staged still reports plain success. */
@@ -374,9 +381,15 @@ void test_stage_refuses_when_already_staged() {
     st_verify_eq_(container.size(), 1u);
 }
 
-/** @brief A rollback that cannot recover what it staged reports the loss instead of dropping it. */
+/**
+ *  @brief A rollback recovers what it staged, because nothing can take those versions away from it.
+ *
+ *  @note Emptying the store is refused while anything is staged, so it cannot provoke the loss that
+ *    @c rollback reports with @c consistency_k. Nothing else in the suite provokes it either, so that
+ *    path is uncovered - worth knowing rather than assuming otherwise.
+ */
 template <typename container_type_>
-void test_rollback_reports_lost_versions() {
+void test_rollback_recovers_what_it_staged() {
     using member_t = typename container_type_::value_type;
     auto maybe_container = container_type_::make();
     st_verify_(maybe_container.has_value());
@@ -387,8 +400,10 @@ void test_rollback_reports_lost_versions() {
     st_verify_(transaction->upsert(trivial_id_to_member<member_t>(5)));
     st_verify_(transaction->stage());
 
+    st_verify_eq_(container.clear(), status_t::operation_not_permitted_k);
+    st_verify_(transaction->rollback());
+    st_verify_eq_(container.size(), 0u);
     st_verify_(container.clear());
-    st_verify_eq_(transaction->rollback(), status_t::consistency_k);
 }
 
 #pragma endregion Staging Discipline

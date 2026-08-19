@@ -692,6 +692,12 @@ int main() {
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",
                          transactional_consistency_reset_clears_transaction_state);
 
+    failures += run_test(filter, "transactional_defects.validate_refuses_before_publishing",
+                         [] { test_validate_refuses_before_publishing<transactional_trivial_map_t>(); });
+    failures += run_test(filter, "transactional_defects.publish_cannot_refuse",
+                         [] { test_publish_cannot_refuse<transactional_trivial_map_t>(); });
+    failures += run_test(filter, "transactional_defects.clear_refuses_while_staged",
+                         [] { test_clear_refuses_while_staged<transactional_trivial_map_t>(); });
     failures += run_test(filter, "transactional_defects.direct_write_spares_staged_version",
                          transactional_defects_direct_write_spares_staged_version);
     failures += run_test(filter, "transactional_defects.direct_erase_spares_staged_version",
