@@ -592,7 +592,7 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert_many(container->store, (*staged).data(), (*staged).size());
+        status = container->store_ops->upsert_entries(container->store, (*staged).data(), (*staged).size());
     });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -763,7 +763,7 @@ static PyObject *Set_update(PyObject *self, PyObject *const *args, Py_ssize_t co
 
     status_t status = success_k;
     Py_BEGIN_ALLOW_THREADS;
-    status = container->store_ops->add_many(container->store, (*staged).data(), (*staged).size());
+    status = container->store_ops->upsert_members(container->store, (*staged).data(), (*staged).size());
     Py_END_ALLOW_THREADS;
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;

@@ -31,9 +31,13 @@ case "$subject" in
 Merge*) ;;
 "fixup!"* | "squash!"*) ;;
 *)
-    if ! printf '%s\n' "$subject" | grep -qE '^(Add|Chore|Docs|Fix|Improve|Make): [A-Z]'; then
+    # Capitalized, unless the summary opens with a code identifier - `update()`, `snake_case`,
+    # `SortedMap` - which carries its own case and must not be title-cased into something that no
+    # longer names the symbol. A backtick may precede it, since a symbol is quoted as one.
+    if ! printf '%s\n' "$subject" |
+        grep -qE '^(Add|Chore|Docs|Fix|Improve|Make): `?([A-Z]|[a-z_][a-z0-9_]*(\(\)|_[a-z0-9_]+))'; then
         echo "commit-msg: the subject must be '<Verb>: <Capitalized summary>' with an approved verb -"
-        echo "            Add Chore Docs Fix Improve Make."
+        echo "            Add Chore Docs Fix Improve Make. A leading code identifier keeps its own case."
         echo "            Got: ${subject:-<empty>}"
         failed=1
     fi
@@ -48,6 +52,35 @@ if [ -n "$offenders" ]; then
     printf '%s\n' "$offenders" | head -5
     failed=1
 fi
+
+# 3. A subject that names a change rather than gesturing at one. Two tells, both cheap to spot and
+# both responsible for real titles in this history that said nothing on their own:
+#
+#   - The predicate compares to something else instead of stating what changed. "Unwind a refused
+#     stage the way the C++ group does" needs the diff to mean anything, while "A refused stage
+#     keeps the caller's pending writes" does not.
+#   - A vague quantifier stands in for the subject. "One vocabulary across both layers" and
+#     "Various fixes" name a mood, not a change.
+#
+# Deliberately narrow. Vagueness is a judgement call and a regex approximating it would reject more
+# good titles than bad ones; these two shapes are mechanical enough to catch without arguing.
+case "$subject" in
+Merge* | "fixup!"* | "squash!"*) ;;
+*)
+    if printf '%s\n' "$subject" | grep -qiE '\b(the way|as|like) [^,]+ (does|did|would|says)\b'; then
+        echo "commit-msg: the subject compares to something else rather than naming what changed."
+        echo "            Say what the code now does, not who it now resembles."
+        echo "            Got: $subject"
+        failed=1
+    fi
+    if printf '%s\n' "$subject" | grep -qiE '^(Add|Chore|Docs|Fix|Improve|Make): (One|Some|Several|Various|Assorted|Misc|Multiple|A few|Many)\b'; then
+        echo "commit-msg: the subject opens with a quantifier where the subject of the change belongs."
+        echo "            Name the thing that changed, or split the commit."
+        echo "            Got: $subject"
+        failed=1
+    fi
+    ;;
+esac
 
 if [ "$failed" -ne 0 ]; then
     echo ""

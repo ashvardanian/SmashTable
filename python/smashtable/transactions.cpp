@@ -161,7 +161,7 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
     value_variant_t stored_value;
     if (!value_from_python(value, part->mode, stored_value)) return -1;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
-            status = part.upsert(std::move(stored_key), std::move(stored_value));
+            status = part.upsert(std::move(stored_key), &stored_value);
         }) != 0)
         return -1;
     return raise_for(state, status, key);
@@ -239,8 +239,8 @@ static PyObject *View_add(PyObject *self, PyObject *member) noexcept {
     key_variant_t stored;
     if (!key_from_python(member, part->ops, stored)) return nullptr;
     status_t status = success_k;
-    if (run_over_participant(view, state,
-                             [&](participant_t &part) noexcept { status = part.add(std::move(stored)); }) != 0)
+    if (run_over_participant(
+            view, state, [&](participant_t &part) noexcept { status = part.upsert(std::move(stored), nullptr); }) != 0)
         return nullptr;
     if (raise_for(state, status, member) != 0) return nullptr;
     Py_RETURN_NONE;

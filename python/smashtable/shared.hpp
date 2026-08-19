@@ -516,10 +516,10 @@ struct store_ops_t {
      *  of single writes is neither: it takes the lock once per element and leaves a failure halfway
      *  through half-applied.
      */
-    status_t (*upsert_many)(void *store, entry_t *entries, std::size_t count) noexcept;
+    status_t (*upsert_entries)(void *store, entry_t *entries, std::size_t count) noexcept;
 
-    /** @brief The same for a set, whose elements are bare keys. Null on a map. */
-    status_t (*add_many)(void *store, key_variant_t *members, std::size_t count) noexcept;
+    /** @brief The same for a set, whose elements are bare keys rather than pairs. Null on a map. */
+    status_t (*upsert_members)(void *store, key_variant_t *members, std::size_t count) noexcept;
     /**
      *  @brief Removes a key, answering with what it held or with why it could not.
      *
@@ -871,16 +871,16 @@ struct participant_t {
         return table->transaction_find(transaction, key);
     }
 
-    /** @brief Inserts or overwrites a key and value. Only ever called on a map. */
-    [[nodiscard]] status_t upsert(key_variant_t &&key, value_variant_t &&value) noexcept {
-        assert(is_associative() && "upsert on a set participant; callers check is_associative first");
-        return table->transaction_upsert(transaction, std::move(key), &value);
-    }
-
-    /** @brief Inserts a bare member. Only ever called on a set, which needs no value. */
-    [[nodiscard]] status_t add(key_variant_t &&key) noexcept {
-        assert(!is_associative() && "add on a map participant; callers check is_associative first");
-        return table->transaction_upsert(transaction, std::move(key), nullptr);
+    /**
+     *  @brief Inserts or overwrites. @p value is null for a set, which stores the key alone.
+     *
+     *  One verb, because it is one operation: @c insert in this library is the strict form that
+     *  refuses an occupied key, and this never refuses. Only the element shape differs, and that
+     *  is what the null says.
+     */
+    [[nodiscard]] status_t upsert(key_variant_t &&key, value_variant_t *value) noexcept {
+        assert(is_associative() == (value != nullptr) && "a map upsert carries a value and a set's does not");
+        return table->transaction_upsert(transaction, std::move(key), value);
     }
 
     [[nodiscard]] status_t erase(key_variant_t const &key) noexcept {

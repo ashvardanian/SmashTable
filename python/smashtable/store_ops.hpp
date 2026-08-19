@@ -133,7 +133,7 @@ struct store_bridge {
         return store_of(store).upsert(element_of(std::move(key), value));
     }
 
-    static status_t upsert_many(void *store, entry_t *entries, std::size_t count) noexcept {
+    static status_t upsert_entries(void *store, entry_t *entries, std::size_t count) noexcept {
         deferring_store_call_t deferral;
         // Moved rather than copied, which is the shape the store's batch form takes: it forwards
         // each element into one transaction it opens, stages, and commits.
@@ -142,7 +142,7 @@ struct store_bridge {
         else return operation_not_permitted_k;
     }
 
-    static status_t add_many(void *store, key_variant_t *members, std::size_t count) noexcept {
+    static status_t upsert_members(void *store, key_variant_t *members, std::size_t count) noexcept {
         deferring_store_call_t deferral;
         if constexpr (!associative_k)
             return store_of(store).upsert(std::make_move_iterator(members), std::make_move_iterator(members + count));
@@ -330,8 +330,8 @@ struct store_bridge {
         built.contains = &contains;
         built.find = associative_k ? &find : nullptr;
         built.upsert = &upsert;
-        built.upsert_many = associative_k ? &upsert_many : nullptr;
-        built.add_many = associative_k ? nullptr : &add_many;
+        built.upsert_entries = associative_k ? &upsert_entries : nullptr;
+        built.upsert_members = associative_k ? nullptr : &upsert_members;
         built.erase = &erase;
         built.insert_if_missing = associative_k ? &insert_if_missing : nullptr;
 
