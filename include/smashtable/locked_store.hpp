@@ -47,7 +47,6 @@ class locked_store {
     using mapped_type = typename mapped_value_type_or_void<value_t>::type;
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
-    using callback_reads = std::true_type;
 
     /** @brief One mutex serializes whole transactions, so the inner store's promise carries over intact. */
     static constexpr isolation_t isolation_k = inner_store_t::isolation_k;
@@ -204,6 +203,34 @@ class locked_store {
             transaction.range(key, key, callback);
         };
 
+    /** @brief Whether the wrapped transaction counts the members matching a key. */
+    static constexpr bool inner_transaction_counts_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key) { transaction.count(key); };
+    /** @brief Whether the wrapped transaction copies out the member at a bound. */
+    static constexpr bool inner_transaction_copies_bounds_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key) {
+            transaction.lower_bound_copy(key);
+            transaction.upper_bound_copy(key);
+        };
+    /** @brief Whether the wrapped transaction erases a window of its own keys. */
+    static constexpr bool inner_transaction_erases_range_k =
+        requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.erase_range(key, key, callback);
+            transaction.erase_from(key, callback);
+            transaction.erase_up_to(key, callback);
+        };
+    /** @brief Whether the wrapped transaction revises a window of its own members. */
+    static constexpr bool inner_transaction_revises_range_k =
+        requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.update_range(key, key, callback);
+        };
+    /** @brief Whether the wrapped transaction draws members from a window. */
+    static constexpr bool inner_transaction_samples_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback, std::size_t seen) {
+            transaction.sample_one(key, key, callback, callback);
+            transaction.sample_reservoir(key, key, callback, seen, seen, callback);
+        };
+
     /** @brief Whether an open transaction answers every member equal to a key. */
     static constexpr bool inner_transaction_matches_equals_k =
         requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
@@ -316,19 +343,19 @@ class locked_store {
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                  callback_missing_type_ &&callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
             shared_lock _ {store_->mutex_};
-            inner_transaction_.find(std::forward<comparable_type_>(comparable),
-                                    std::forward<callback_found_type_>(callback_found),
-                                    std::forward<callback_missing_type_>(callback_missing));
+            return inner_transaction_.find(std::forward<comparable_type_>(comparable),
+                                           std::forward<callback_found_type_>(callback_found),
+                                           std::forward<callback_missing_type_>(callback_missing));
         }
 
         /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            find(
+            [[maybe_unused]] status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
             return result;
@@ -336,7 +363,7 @@ class locked_store {
 
         /** @brief Whether @p comparable is there, including this transaction's own writes. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+        [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.contains(std::forward<comparable_type_>(comparable));
         }
@@ -357,57 +384,57 @@ class locked_store {
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                         callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
             requires inner_transaction_is_ordered_k
         {
             shared_lock _ {store_->mutex_};
-            inner_transaction_.upper_bound(std::forward<comparable_type_>(comparable),
-                                           std::forward<callback_found_type_>(callback_found),
-                                           std::forward<callback_missing_type_>(callback_missing));
+            return inner_transaction_.upper_bound(std::forward<comparable_type_>(comparable),
+                                                  std::forward<callback_found_type_>(callback_found),
+                                                  std::forward<callback_missing_type_>(callback_missing));
         }
 
         /** @brief Hands @p callback_found the first member at or after @p comparable, or reports none. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                         callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
             requires inner_transaction_lower_bounds_k
         {
             shared_lock _ {store_->mutex_};
-            inner_transaction_.lower_bound(std::forward<comparable_type_>(comparable),
-                                           std::forward<callback_found_type_>(callback_found),
-                                           std::forward<callback_missing_type_>(callback_missing));
+            return inner_transaction_.lower_bound(std::forward<comparable_type_>(comparable),
+                                                  std::forward<callback_found_type_>(callback_found),
+                                                  std::forward<callback_missing_type_>(callback_missing));
         }
 
         /** @brief Hands @p callback every member equal to @p comparable, this transaction's writes included. */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-        void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
+        [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
             requires inner_transaction_matches_equals_k
         {
             shared_lock _ {store_->mutex_};
-            inner_transaction_.equal_range(std::forward<comparable_type_>(comparable),
-                                           std::forward<callback_type_>(callback));
+            return inner_transaction_.equal_range(std::forward<comparable_type_>(comparable),
+                                                  std::forward<callback_type_>(callback));
         }
 
         /** @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's writes included. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires inner_transaction_walks_range_k
         {
             shared_lock _ {store_->mutex_};
-            inner_transaction_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                     std::forward<callback_type_>(callback));
+            return inner_transaction_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                            std::forward<callback_type_>(callback));
         }
 
         /** @brief Hands @p callback every member this transaction reads, in whatever order the store keeps. */
         template <typename callback_type_ = no_op_t>
-        void for_each(callback_type_ &&callback) const noexcept
+        [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
             requires inner_transaction_enumerates_k
         {
             shared_lock _ {store_->mutex_};
-            inner_transaction_.for_each(std::forward<callback_type_>(callback));
+            return inner_transaction_.for_each(std::forward<callback_type_>(callback));
         }
 
         /** @brief Stages @p element only if its key is free, leaving an incumbent untouched. */
@@ -417,6 +444,108 @@ class locked_store {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.insert_if_missing(std::move(element));
         }
+
+#pragma region Transaction Range Operations
+
+        /** @brief How many members equal @p comparable, this transaction's own writes included. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept
+            requires inner_transaction_counts_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.count(std::forward<comparable_type_>(comparable));
+        }
+
+        /** @brief Copies out the first member at or after @p comparable. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
+            requires inner_transaction_copies_bounds_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.lower_bound_copy(std::forward<comparable_type_>(comparable));
+        }
+
+        /** @brief Copies out the first member after @p comparable. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
+            requires inner_transaction_copies_bounds_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.upper_bound_copy(std::forward<comparable_type_>(comparable));
+        }
+
+        /** @brief Stages a tombstone for every member in [ @p lower, @p upper ). */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires inner_transaction_erases_range_k
+        {
+            unique_lock _ {store_->mutex_};
+            return inner_transaction_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                                  std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Stages a tombstone for every member at or after @p lower. */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
+            requires inner_transaction_erases_range_k
+        {
+            unique_lock _ {store_->mutex_};
+            return inner_transaction_.erase_from(std::forward<lower_type_>(lower),
+                                                 std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Stages a tombstone for every member before @p upper. */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires inner_transaction_erases_range_k
+        {
+            unique_lock _ {store_->mutex_};
+            return inner_transaction_.erase_up_to(std::forward<upper_type_>(upper),
+                                                  std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
+                                            callback_type_ &&callback) noexcept
+            requires inner_transaction_revises_range_k
+        {
+            unique_lock _ {store_->mutex_};
+            return inner_transaction_.update_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                                   std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Draws one member uniformly from [ @p lower, @p upper ). */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                          callback_type_ &&callback) const noexcept
+            requires inner_transaction_samples_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                                 std::forward<generator_type_>(generator),
+                                                 std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+        [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                                std::size_t &seen, std::size_t capacity,
+                                                output_iterator_type_ &&reservoir) const noexcept
+            requires inner_transaction_samples_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.sample_reservoir(std::forward<lower_type_>(lower),
+                                                       std::forward<upper_type_>(upper),
+                                                       std::forward<generator_type_>(generator), seen, capacity,
+                                                       std::forward<output_iterator_type_>(reservoir));
+        }
+
+#pragma endregion Transaction Range Operations
 
         /** @brief Whether anything is staged, which is transaction-local and needs no lock. */
         [[nodiscard]] bool has_changes() const noexcept
@@ -609,26 +738,30 @@ class locked_store {
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-              callback_missing_type_ &&callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) const noexcept {
         shared_lock _ {mutex_};
-        inner_store_.find(std::forward<comparable_type_>(comparable),
-                          std::forward<callback_found_type_>(callback_found),
-                          std::forward<callback_missing_type_>(callback_missing));
+        return inner_store_.find(std::forward<comparable_type_>(comparable),
+                                 std::forward<callback_found_type_>(callback_found),
+                                 std::forward<callback_missing_type_>(callback_missing));
     }
 
     /** @brief Existence check, expressed through @c find so the lock discipline stays in one place. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
-        bool found = false;
-        find(std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; }, no_op_t {});
-        return found;
+    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+        bool present = false;
+        status_t const answered = find(
+            std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { present = true; }, no_op_t {});
+        if (failed(answered)) return answered;
+        return present;
     }
 
     /** @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
-        return contains(std::forward<comparable_type_>(comparable)) ? 1u : 0u;
+    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
+        if (!present) return present.status();
+        return *present ? std::size_t {1} : std::size_t {0};
     }
 
     /** @brief Inserts a batch, leaving already-present keys untouched. */
@@ -640,21 +773,21 @@ class locked_store {
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                       callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ordered_k
     {
         shared_lock _ {mutex_};
-        inner_store_.lower_bound(std::forward<comparable_type_>(comparable),
-                                 std::forward<callback_found_type_>(callback_found),
-                                 std::forward<callback_missing_type_>(callback_missing));
+        return inner_store_.lower_bound(std::forward<comparable_type_>(comparable),
+                                        std::forward<callback_found_type_>(callback_found),
+                                        std::forward<callback_missing_type_>(callback_missing));
     }
 
     /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        find(
+        [[maybe_unused]] status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -666,7 +799,7 @@ class locked_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        lower_bound(
+        [[maybe_unused]] status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -678,7 +811,7 @@ class locked_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        upper_bound(
+        [[maybe_unused]] status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -686,24 +819,24 @@ class locked_store {
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                       callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ordered_k
     {
         shared_lock _ {mutex_};
-        inner_store_.upper_bound(std::forward<comparable_type_>(comparable),
-                                 std::forward<callback_found_type_>(callback_found),
-                                 std::forward<callback_missing_type_>(callback_missing));
+        return inner_store_.upper_bound(std::forward<comparable_type_>(comparable),
+                                        std::forward<callback_found_type_>(callback_found),
+                                        std::forward<callback_missing_type_>(callback_missing));
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
         requires inner_is_ordered_k
     {
         shared_lock _ {mutex_};
-        inner_store_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                           std::forward<callback_type_>(callback));
+        return inner_store_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                  std::forward<callback_type_>(callback));
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -758,11 +891,11 @@ class locked_store {
      *  present when the call began is visited exactly once, and no element inserted during it is seen.
      */
     template <typename callback_type_ = no_op_t>
-    void for_each(callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
         requires inner_enumerates_k
     {
         shared_lock _ {mutex_};
-        inner_store_.for_each(std::forward<callback_type_>(callback));
+        return inner_store_.for_each(std::forward<callback_type_>(callback));
     }
 
     /**
@@ -795,13 +928,13 @@ class locked_store {
      *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    void select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                  callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ranked_k
     {
         shared_lock _ {mutex_};
-        inner_store_.select(ordinal, std::forward<callback_found_type_>(callback_found),
-                            std::forward<callback_missing_type_>(callback_missing));
+        return inner_store_.select(ordinal, std::forward<callback_found_type_>(callback_found),
+                                   std::forward<callback_missing_type_>(callback_missing));
     }
 
     /**
@@ -810,14 +943,14 @@ class locked_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-              callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ranked_k
     {
         shared_lock _ {mutex_};
-        inner_store_.rank(std::forward<comparable_type_>(comparable),
-                          std::forward<callback_found_type_>(callback_found),
-                          std::forward<callback_missing_type_>(callback_missing));
+        return inner_store_.rank(std::forward<comparable_type_>(comparable),
+                                 std::forward<callback_found_type_>(callback_found),
+                                 std::forward<callback_missing_type_>(callback_missing));
     }
 
     [[nodiscard]] status_t clear() noexcept {
@@ -831,33 +964,36 @@ class locked_store {
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                    callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                      callback_type_ &&callback) const noexcept
         requires inner_samples_one_k
     {
         shared_lock _ {mutex_};
-        inner_store_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
+        return inner_store_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                       std::forward<generator_type_>(generator),
+                                       std::forward<callback_type_>(callback));
     }
 
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
+    [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                            std::size_t &seen, std::size_t reservoir_capacity,
+                                            output_iterator_type_ &&reservoir) const noexcept
         requires inner_samples_reservoir_k
     {
         shared_lock _ {mutex_};
-        inner_store_.sample_reservoir(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                      std::forward<generator_type_>(generator), seen, reservoir_capacity,
-                                      std::forward<output_iterator_type_>(reservoir));
+        return inner_store_.sample_reservoir(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                             std::forward<generator_type_>(generator), seen, reservoir_capacity,
+                                             std::forward<output_iterator_type_>(reservoir));
     }
 
     /** @brief Hands @p callback every member equal to @p comparable, which for a unique-key store is one or none. */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
         requires inner_matches_equals_k
     {
         shared_lock _ {mutex_};
-        inner_store_.equal_range(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback));
+        return inner_store_.equal_range(std::forward<comparable_type_>(comparable),
+                                        std::forward<callback_type_>(callback));
     }
 
     /** @brief How many keys the ordinal surface indexes, which is what @c select counts against. */

@@ -87,6 +87,9 @@ class partitioned_store {
     using unique_lock_t = unique_lock<mutex_t>;
 
     using mutexes_t = std::array<mutex_t, partitions_k>;
+    /** @brief How many times each partition has been written, so a cached read can be told it is stale. */
+    using epoch_t = std::size_t;
+    using epochs_t = std::array<epoch_t, partitions_k>;
     using partitions_t = std::array<inner_store_t, partitions_k>;
     using partition_transactions_t = std::array<inner_transaction_t, partitions_k>;
 
@@ -96,7 +99,6 @@ class partitioned_store {
     using mapped_type = typename mapped_value_type_or_void<value_t>::type;
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
-    using callback_reads = std::true_type;
 
     /** @brief The clock every partition draws its stamps from, or @c no_clock_t where there are none. */
     using clock_t = typename shared_clock_of<inner_store_t>::type;
@@ -119,13 +121,11 @@ class partitioned_store {
      *  A part sharing a clock is stamped, and one stamp spans every partition of a commit: a reader
      *  that fixed its snapshot below that stamp sees none of the commit and one at or above it sees
      *  all of it, whatever order the partitions were written in. Such a part keeps its own promise
-     *  whole. A part deciding visibility any other way is capped, and one weaker than
-     *  @c read_committed_k stays the answer.
+     *  whole. A part deciding visibility any other way is capped at @c read_committed_k, which is the
+     *  weakest level named and so the floor a cap can reach.
      */
     static constexpr isolation_t isolation_k =
-        partitions_k == 1 || inner_shares_clock_k || inner_store_t::isolation_k < isolation_t::read_committed_k
-            ? inner_store_t::isolation_k
-            : isolation_t::read_committed_k;
+        partitions_k == 1 || inner_shares_clock_k ? inner_store_t::isolation_k : isolation_t::read_committed_k;
 
     using comparator_t = typename inner_store_t::comparator_t;
     using identifier_t = typename inner_store_t::identifier_t;
@@ -160,6 +160,27 @@ class partitioned_store {
     static constexpr bool inner_transaction_is_ordered_k =
         requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
             transaction.upper_bound(key, callback, callback);
+        };
+
+    /** @brief Whether the wrapped transaction counts the members matching a key. */
+    static constexpr bool inner_transaction_counts_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key) { transaction.count(key); };
+    /** @brief Whether the wrapped transaction erases a window of its own keys. */
+    static constexpr bool inner_transaction_erases_range_k =
+        requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.erase_range(key, key, callback);
+            transaction.erase_from(key, callback);
+            transaction.erase_up_to(key, callback);
+        };
+    /** @brief Whether the wrapped transaction revises a window of its own members. */
+    static constexpr bool inner_transaction_revises_range_k =
+        requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.update_range(key, key, callback);
+        };
+    /** @brief Whether an open transaction answers an inclusive bound, which a merged scan needs to seed from. */
+    static constexpr bool inner_transaction_lower_bounds_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.lower_bound(key, callback, callback);
         };
 
     /** @brief Whether a partition enumerates its members with no ordering to walk them in. */
@@ -358,7 +379,31 @@ class partitioned_store {
         }
     };
 
-    std::size_t bucket_(identifier_t const &id) const noexcept { return hasher_(id) % partitions_k; }
+    /**
+     *  @brief Whether a merged walk can hold one key per partition between its steps.
+     *
+     *  A walk answers in one order across sixteen independently ordered partitions, which it can only
+     *  do by remembering the smallest key each one is offering. That remembering is a copy, so a key
+     *  that refuses to be copied cannot be walked in merged order - it can still be written, read by
+     *  its own key, and enumerated in no particular order, none of which hold a key between steps.
+     */
+    static constexpr bool identifier_survives_a_walk_k = std::is_copy_constructible_v<identifier_t>;
+
+    /**
+     *  @brief Which partition owns @p comparable, hashing what it is handed rather than a copy of it.
+     *
+     *  A key that is already the identifier is hashed through the reference, so a move-only key reaches
+     *  a partition at all and a heavy one is not duplicated per lookup. A comparable of some other type
+     *  is converted first, since the hasher is only promised to answer for the identifier and a
+     *  differently-typed hash would send a lookup to a partition the key does not live in.
+     */
+    template <typename comparable_type_>
+    std::size_t bucket_(comparable_type_ const &comparable) const noexcept {
+        auto const &key = mapping_key_or_itself(comparable);
+        using key_t = std::remove_cvref_t<decltype(key)>;
+        if constexpr (std::is_same_v<key_t, identifier_t>) return hasher_(key) % partitions_k;
+        else return hasher_(identifier_t(key)) % partitions_k;
+    }
 
     /**
      *  @brief Holds every partition for its own lifetime, taking them in ascending index order.
@@ -395,6 +440,42 @@ class partitioned_store {
         every_part_lock &operator=(every_part_lock const &) = delete;
     };
 
+    // A cursor keeps one key per partition between its steps, so it needs to know which partitions a
+    // writer touched since it last looked. Counting writes answers that without taking every lock on
+    // every step, which is what makes a resumable walk cheaper than probing all sixteen per element.
+
+    /** @brief Records that a partition changed, ordered so its new contents are visible with the count. */
+    static void note_written_(epoch_t &epoch) noexcept {
+        atomic_ref<epoch_t> counter {epoch};
+        counter.store(counter.load(memory_order_relaxed_k) + 1, memory_order_release_k);
+    }
+
+    /** @brief The count a reader last saw, paired with whatever it read under it. */
+    static epoch_t epoch_seen_(epoch_t const &epoch) noexcept {
+        return atomic_ref<epoch_t>(const_cast<epoch_t &>(epoch)).load(memory_order_acquire_k);
+    }
+
+    /**
+     *  @brief Holds one partition exclusively, and records that it changed when the write is done.
+     *
+     *  Taking this rather than the bare mutex is what keeps the write count honest: a writer cannot
+     *  forget to move it, because moving it is part of giving the lock back. A refused write moves it
+     *  too, which costs a reader one re-probe and never costs it a key.
+     */
+    class writing_part_lock {
+        mutex_t &mutex_;
+        epoch_t &epoch_;
+
+      public:
+        writing_part_lock(mutex_t &mutex, epoch_t &epoch) noexcept : mutex_(mutex), epoch_(epoch) { mutex_.lock(); }
+        ~writing_part_lock() noexcept {
+            note_written_(epoch_);
+            mutex_.unlock();
+        }
+        writing_part_lock(writing_part_lock const &) = delete;
+        writing_part_lock &operator=(writing_part_lock const &) = delete;
+    };
+
     /**
      *  @brief Holds exactly the partitions a transaction reached, ascending, until told to let go.
      *
@@ -405,11 +486,12 @@ class partitioned_store {
      */
     class touched_parts_lock {
         mutexes_t *mutexes_;
+        epochs_t &epochs_;
         touched_partitions_t const &touched_;
 
       public:
-        touched_parts_lock(mutexes_t &mutexes, touched_partitions_t const &touched) noexcept
-            : mutexes_(&mutexes), touched_(touched) {
+        touched_parts_lock(mutexes_t &mutexes, epochs_t &epochs, touched_partitions_t const &touched) noexcept
+            : mutexes_(&mutexes), epochs_(epochs), touched_(touched) {
             for (marked_partition_t held = touched_.first_marked(); held.presence == marked_presence_t::one_marked_k;
                  held = touched_.next_marked(held.index))
                 (*mutexes_)[held.index].lock();
@@ -422,30 +504,12 @@ class partitioned_store {
         void release() noexcept {
             if (!mutexes_) return;
             for (marked_partition_t held = touched_.first_marked(); held.presence == marked_presence_t::one_marked_k;
-                 held = touched_.next_marked(held.index))
+                 held = touched_.next_marked(held.index)) {
+                note_written_(epochs_[held.index]);
                 (*mutexes_)[held.index].unlock();
+            }
             mutexes_ = nullptr;
         }
-    };
-
-    /**
-     *  @brief Which partition holds the next key of an ordered walk, when one of them does.
-     *    @c index is only meaningful once @c presence says a partition claimed it, which is why the
-     *    two travel together rather than as an index with a reserved value.
-     */
-    struct next_partition_t {
-        /** @brief Whether any partition offered a key above the bound. */
-        enum class presence_t : std::uint8_t {
-            /** @brief Every partition ended before the bound, so the walk is over. */
-            none_holds_it_k,
-            /** @brief The partition at @c index holds the smallest key seen above the bound. */
-            one_holds_it_k,
-        };
-
-        /** @brief Whether @c index names a partition at all. */
-        presence_t presence = presence_t::none_holds_it_k;
-        /** @brief The claiming partition, meaningful only under @c one_holds_it_k. */
-        std::size_t index = 0;
     };
 
     /** @brief How long an all-partition walk holds the partitions it visits. */
@@ -478,70 +542,32 @@ class partitioned_store {
      */
     template <typename lock_type_, locking_policy_t locking_, refusal_policy_t refusal_, typename partitions_type_,
               typename mutexes_type_, typename callable_type_>
-    static status_t for_all(partitions_type_ &parts, mutexes_type_ &mutexes, callable_type_ &&callable) noexcept {
+    status_t for_all(partitions_type_ &parts, mutexes_type_ &mutexes, callable_type_ &&callable) noexcept {
+        constexpr bool writing_k = std::is_same<lock_type_, unique_lock_t>();
         if constexpr (locking_ == locking_policy_t::all_at_once_k) {
-            every_part_lock<lock_type_> _ {mutexes};
-            return for_all_indices_<refusal_>(
-                [&](std::size_t partition_index) noexcept { return callable(parts[partition_index]); });
+            status_t answered = success_k;
+            {
+                every_part_lock<lock_type_> _ {mutexes};
+                answered = for_all_indices_<refusal_>(
+                    [&](std::size_t partition_index) noexcept { return callable(parts[partition_index]); });
+            }
+            // Counted after the whole hold rather than per partition, since nothing may read a front
+            // while every partition is held anyway.
+            if constexpr (writing_k)
+                for (epoch_t &epoch : epochs_) note_written_(epoch);
+            return answered;
         }
         else
             return for_all_indices_<refusal_>([&](std::size_t partition_index) noexcept {
-                lock_type_ lock {mutexes[partition_index]};
-                return callable(parts[partition_index]);
+                if constexpr (writing_k) {
+                    writing_part_lock lock {mutexes[partition_index], epochs_[partition_index]};
+                    return callable(parts[partition_index]);
+                }
+                else {
+                    lock_type_ lock {mutexes[partition_index]};
+                    return callable(parts[partition_index]);
+                }
             });
-    }
-
-    template <typename partitions_type_, typename mutexes_type_, typename comparable_type_,
-              typename callback_found_type_, typename callback_missing_type_>
-    static void for_all_next_lookups(comparator_t const &comparator, partitions_type_ &parts, mutexes_type_ &mutexes,
-                                     comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                     callback_missing_type_ &&callback_missing) noexcept {
-
-        identifier_t smallest_id;
-
-        // One pass over every partition, in ascending order - the same order every other all-partition
-        // walk here uses, which is what makes them safe to run against each other. The bound arrives as
-        // a const lvalue and reaches all @c partitions_k partitions that way, so nothing can move from it;
-        // narrowing it to @c identifier_t first would refuse to compile for any comparable that is not
-        // one, and would throw away the heterogeneous lookup the caller asked for.
-        auto scan_for_smallest = [&](auto const &bound) noexcept {
-            next_partition_t smallest;
-            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-                shared_lock_t lock {mutexes[partition_index]};
-                parts[partition_index].upper_bound(bound, [&](value_t const &element) noexcept {
-                    if (smallest.presence == next_partition_t::presence_t::one_holds_it_k &&
-                        !comparator(mapping_key_or_itself(element), smallest_id))
-                        return;
-                    smallest_id = identifier_t(element);
-                    smallest.presence = next_partition_t::presence_t::one_holds_it_k;
-                    smallest.index = partition_index;
-                });
-            }
-            return smallest;
-        };
-
-        // Under "Read Committed" isolation the winner may be erased between the scan that found it and
-        // the read below, which is the non-repeatable read that level permits. The re-read takes that
-        // partition's lock, since losing the entry is allowed but reading it mid-update is not - that
-        // would hand the callback a half-destroyed value.
-        //
-        // A miss then rescans from the missing key rather than from the original bound. Restarting from
-        // the same place has no progress guarantee: a writer churning one key just above the cursor
-        // makes the scan find it and lose it forever. Each rescan raises the bound strictly - the next
-        // pass starts above a key just observed absent - so the walk terminates, and skipping a key
-        // reinserted behind the cursor is the same thing this level already permits.
-        next_partition_t smallest = scan_for_smallest(comparable);
-        while (smallest.presence == next_partition_t::presence_t::one_holds_it_k) {
-            bool vanished = false;
-            {
-                shared_lock_t lock {mutexes[smallest.index]};
-                parts[smallest.index].find(smallest_id, callback_found, [&]() noexcept { vanished = true; });
-            }
-            if (!vanished) return;
-            identifier_t const vanished_key = std::move(smallest_id);
-            smallest = scan_for_smallest(vanished_key);
-        }
-        callback_missing();
     }
 
     /** @brief Whether a merged walk wants the key after the one its step was just handed. */
@@ -560,52 +586,298 @@ class partitioned_store {
         holds_a_key_k,
     };
 
+    /** @brief Where a cursor's next step begins, which is a different question before and after the first. */
+    enum class cursor_seed_t : std::uint8_t {
+        /** @brief No bound was given and nothing has been handed over, so the walk starts at the least key. */
+        the_smallest_k,
+        /** @brief A bound was given and nothing has been handed over, so that bound is inclusive. */
+        the_given_bound_k,
+        /** @brief A key has been handed over, so the walk continues strictly above it. */
+        past_the_last_k,
+    };
+
+    /** @brief One key per partition, the smallest each has left to contribute. */
+    using fronts_t = std::array<identifier_t, partitions_k>;
+    /** @brief Whether each of those fronts holds anything. */
+    using front_states_t = std::array<front_state_t, partitions_k>;
+
+    /** @brief Which partition's front is the smallest, when any of them still holds one. */
+    static marked_partition_t smallest_front_(comparator_t const &comparator, fronts_t const &fronts,
+                                              front_states_t const &states) noexcept {
+        marked_partition_t smallest;
+        for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+            if (states[partition_index] != front_state_t::holds_a_key_k) continue;
+            if (smallest.presence == marked_presence_t::one_marked_k &&
+                !comparator(fronts[partition_index], fronts[smallest.index]))
+                continue;
+            smallest = {marked_presence_t::one_marked_k, partition_index};
+        }
+        return smallest;
+    }
+
     /**
      *  @brief Walks the merged order of every partition, smallest key first, until @p step halts.
      *
-     *  A front per partition, refilled from that partition's own successor once its key is consumed,
-     *  which is the same exclusive-successor stepping @c for_all_next_lookups takes - what differs is
-     *  that every partition is held for the whole walk rather than one at a time, so the sequence is
-     *  one order taken at one moment rather than sixteen probes taken at sixteen.
+     *  A front per partition, refilled from that partition's own successor once its key is consumed.
+     *  Where the walk begins is @p seed_front's business and nothing else's, which is what lets one
+     *  walk answer a bound, a range and an ordinal without knowing which of them it is serving.
      *
+     *  Static, so a transaction drives it over its own array of partition transactions rather than
+     *  needing a second copy written against those.
+     *
+     *  @param[in] seed_front Fills one partition's front with the first key that partition contributes.
      *  @param[in] step Receives the partition index and the key, and says whether to carry on.
-     *  @warning Every partition is locked shared for the length of the walk, so every writer waits.
+     *  @warning Every partition must already be held for the length of the walk, and @p step runs
+     *    under all of them - so a step reaching back into this store deadlocks against a mutex that
+     *    does not recurse.
      */
-    template <typename step_type_>
-    void walk_merged_order_(step_type_ &&step) const noexcept
-        requires inner_is_ranked_k
-    {
-        every_part_lock<shared_lock_t> _ {mutexes_};
+    template <typename parts_type_, typename seed_type_, typename step_type_>
+    static void walk_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
+                             step_type_ &&step) noexcept {
+        static_assert(identifier_survives_a_walk_k,
+                      "a merged walk remembers one key per partition, so the identifier must be copyable");
 
-        std::array<identifier_t, partitions_k> fronts;
-        std::array<front_state_t, partitions_k> states {};
+        fronts_t fronts;
+        front_states_t states {};
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
-            partitions_[partition_index].select(0, [&](value_t const &element) noexcept {
+            seed_front(partition_index, [&](value_t const &element) noexcept {
                 fronts[partition_index] = identifier_t(element);
                 states[partition_index] = front_state_t::holds_a_key_k;
             });
 
         while (true) {
-            std::size_t smallest = partitions_k;
-            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-                if (states[partition_index] != front_state_t::holds_a_key_k) continue;
-                if (smallest != partitions_k && !comparator_(fronts[partition_index], fronts[smallest])) continue;
-                smallest = partition_index;
-            }
-            if (smallest == partitions_k) return;
-            if (step(smallest, fronts[smallest]) == merge_control_t::halt_k) return;
+            marked_partition_t const smallest = smallest_front_(comparator, fronts, states);
+            if (smallest.presence != marked_presence_t::one_marked_k) return;
+            if (step(smallest.index, fronts[smallest.index]) == merge_control_t::halt_k) return;
 
             // The bound outlives the front it came from, since refilling the front is what overwrites it.
-            identifier_t const consumed = std::move(fronts[smallest]);
-            states[smallest] = front_state_t::exhausted_k;
-            partitions_[smallest].upper_bound(consumed, [&](value_t const &element) noexcept {
-                fronts[smallest] = identifier_t(element);
-                states[smallest] = front_state_t::holds_a_key_k;
-            });
+            identifier_t const consumed = std::move(fronts[smallest.index]);
+            states[smallest.index] = front_state_t::exhausted_k;
+            [[maybe_unused]] status_t const refilled =
+                parts[smallest.index].upper_bound(consumed, [&](value_t const &element) noexcept {
+                    fronts[smallest.index] = identifier_t(element);
+                    states[smallest.index] = front_state_t::holds_a_key_k;
+                });
         }
     }
 
+    /** @brief Whether a partition names its smallest member without being given a bound to beat. */
+    static constexpr bool inner_names_its_smallest_k =
+        requires(inner_store_t const &store, no_op_t callback) { store.smallest(callback, callback); };
+
+    /**
+     *  @brief Seeds every front with the smallest key its partition holds, for a walk with no lower bound.
+     *
+     *  A store that names its smallest member answers straight away. One that does not, but counts its
+     *  members, reaches the same key through its zeroth ordinal - which is why an ordinal walk works at
+     *  all over a core that keeps subtree counts and nothing else.
+     */
+    auto seed_from_the_start_() const noexcept
+        requires inner_names_its_smallest_k || inner_is_ranked_k
+    {
+        return [this](std::size_t partition_index, auto &&fill) noexcept {
+            // Only one of these exists on a given inner store, so the other branch has to be discarded
+            // rather than merely unevaluated - a ternary would instantiate both.
+            if constexpr (inner_names_its_smallest_k) {
+                [[maybe_unused]] status_t const seeded = partitions_[partition_index].smallest(fill, no_op_t {});
+            }
+            else { [[maybe_unused]] status_t const seeded = partitions_[partition_index].select(0, fill, no_op_t {}); }
+        };
+    }
+
+    /**
+     *  @brief Hands @p callback_found the first key of the merged order, wherever @p seed_front starts it.
+     *
+     *  Every partition is taken once, for the one answer, so the bound is read against a single moment
+     *  rather than against sixteen. Under the held locks the winning key cannot be erased between being
+     *  chosen and being read, which is what leaves this with no retry to make.
+     */
+    template <typename parts_type_, typename mutexes_type_, typename seed_type_, typename callback_found_type_,
+              typename callback_missing_type_>
+    static void first_merged_(comparator_t const &comparator, parts_type_ &parts, mutexes_type_ &mutexes,
+                              seed_type_ &&seed_front, callback_found_type_ &&callback_found,
+                              callback_missing_type_ &&callback_missing) noexcept {
+
+        every_part_lock<shared_lock_t> _ {mutexes};
+        bool delivered = false;
+        walk_merged_(comparator, parts, seed_front, [&](std::size_t partition_index, identifier_t const &key) noexcept {
+            [[maybe_unused]] status_t const answered = parts[partition_index].find(key, callback_found, no_op_t {});
+            delivered = true;
+            return merge_control_t::halt_k;
+        });
+        if (!delivered) callback_missing();
+    }
+
   public:
+    /**
+     *  @brief A resumable walk of the merged order that holds no lock between its steps.
+     *
+     *  The position is held by value rather than as an iterator, which is what makes erasing the key
+     *  the cursor stands on harmless: the next step asks for the first key at or after it and is
+     *  answered by the successor. Each partition's smallest unvisited key is cached beside the write
+     *  count it was read under, so a step re-probes only the partitions somebody has written since -
+     *  none of them, in a store nobody is writing, which is where the cost goes from sixteen probes
+     *  per element to one.
+     *
+     *  What it promises: no key is handed over twice, nothing fails, and every key present for the
+     *  whole walk is handed over exactly once. A key inserted ahead of the cursor is seen, because the
+     *  insert moved the count its partition's front was cached under. A key inserted behind it is
+     *  missed, which is what walking without holding the store means.
+     */
+    class ordered_cursor_t {
+        static_assert(identifier_survives_a_walk_k,
+                      "a cursor remembers one key per partition, so the identifier must be copyable");
+
+        friend class partitioned_store;
+
+        partitioned_store const *store_ {nullptr};
+        /** @brief Each partition's smallest key not yet handed over. */
+        fronts_t fronts_;
+        /** @brief Whether each of those fronts holds anything. */
+        front_states_t states_ {};
+        /** @brief The write count each front was read under, which is what dates it. */
+        epochs_t seen_epochs_ {};
+        /** @brief The bound every step is taken from - the one given, then the last key handed over. */
+        identifier_t position_;
+        /** @brief Where the next step begins, which is not the same question before and after the first. */
+        cursor_seed_t seed_ {cursor_seed_t::the_smallest_k};
+
+        explicit ordered_cursor_t(partitioned_store const &store, cursor_seed_t seed) noexcept
+            : store_(&store), seed_(seed) {
+            // Settled here rather than on the first step, so `exhausted` answers about the store
+            // rather than about whether anybody has asked yet - the same moment `visible_cursor_t`
+            // settles, and what lets `while (!exhausted()) next(...)` walk the whole order.
+            seed_every_front_();
+        }
+
+        /** @brief Reads one partition's front at the seed this cursor is standing on. */
+        void seed_one_front_(std::size_t partition_index, epoch_t written) noexcept {
+            states_[partition_index] = front_state_t::exhausted_k;
+            shared_lock_t _ {store_->mutexes_[partition_index]};
+            auto fill = [&](value_t const &element) noexcept {
+                fronts_[partition_index] = identifier_t(element);
+                states_[partition_index] = front_state_t::holds_a_key_k;
+            };
+            inner_store_t const &part = store_->partitions_[partition_index];
+            switch (seed_) {
+            case cursor_seed_t::the_smallest_k: store_->seed_from_the_start_()(partition_index, fill); break;
+            case cursor_seed_t::the_given_bound_k: {
+                [[maybe_unused]] status_t const seeded = part.lower_bound(position_, fill, no_op_t {});
+                break;
+            }
+            case cursor_seed_t::past_the_last_k: {
+                [[maybe_unused]] status_t const seeded = part.upper_bound(position_, fill, no_op_t {});
+                break;
+            }
+            }
+            seen_epochs_[partition_index] = written;
+        }
+
+        /** @brief Reads every partition's front, which is how a cursor starts knowing anything. */
+        void seed_every_front_() noexcept {
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
+                seed_one_front_(partition_index, epoch_seen_(store_->epochs_[partition_index]));
+        }
+
+        /**
+         *  @brief Re-reads the front of every partition written since this cursor last looked at it.
+         *
+         *  A front is only stale if somebody wrote its partition, and the constructor has already read
+         *  every one of them - so an unchanged count means the cached key still stands.
+         */
+        void refresh_stale_fronts_() noexcept {
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                epoch_t const written = epoch_seen_(store_->epochs_[partition_index]);
+                if (written == seen_epochs_[partition_index]) continue;
+                seed_one_front_(partition_index, written);
+            }
+        }
+
+      public:
+        ordered_cursor_t() noexcept = default;
+
+        /** @brief Whether every partition is spent, so the walk has nothing left to hand over. */
+        [[nodiscard]] bool exhausted() const noexcept {
+            for (front_state_t state : states_)
+                if (state == front_state_t::holds_a_key_k) return false;
+            return true;
+        }
+
+        /**
+         *  @brief Hands @p callback_found the next key of the merged order, or reports the walk is over.
+         *
+         *  One partition is held while its key is read, and none between calls - so a walk may be
+         *  suspended anywhere without holding the store, but @p callback_found itself runs under that
+         *  one partition's lock and must not write to it.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        void next(callback_found_type_ &&callback_found, callback_missing_type_ &&callback_missing = {}) noexcept {
+            while (true) {
+                refresh_stale_fronts_();
+                marked_partition_t const smallest = smallest_front_(store_->comparator_, fronts_, states_);
+                if (smallest.presence != marked_presence_t::one_marked_k) {
+                    callback_missing();
+                    return;
+                }
+
+                identifier_t const chosen = fronts_[smallest.index];
+                bool delivered = false;
+                {
+                    // One hold covers handing the key over and refilling the front behind it, so a step
+                    // over a store nobody is writing costs exactly one partition acquisition.
+                    shared_lock_t _ {store_->mutexes_[smallest.index]};
+                    inner_store_t const &part = store_->partitions_[smallest.index];
+
+                    // Inclusive, so a key erased since it was cached is answered by its successor rather
+                    // than by a miss - the same probe covers both, and neither needs a second pass.
+                    [[maybe_unused]] status_t const bounded = part.lower_bound(
+                        chosen,
+                        [&](value_t const &element) noexcept {
+                            identifier_t landed(element);
+                            fronts_[smallest.index] = landed;
+                            if (store_->comparator_(chosen, landed)) return;
+                            callback_found(element);
+                            position_ = std::move(landed);
+                            delivered = true;
+                        },
+                        [&]() noexcept { states_[smallest.index] = front_state_t::exhausted_k; });
+                    seen_epochs_[smallest.index] = epoch_seen_(store_->epochs_[smallest.index]);
+
+                    if (delivered) {
+                        states_[smallest.index] = front_state_t::exhausted_k;
+                        [[maybe_unused]] status_t const bounded = part.upper_bound(
+                            position_,
+                            [&](value_t const &element) noexcept {
+                                fronts_[smallest.index] = identifier_t(element);
+                                states_[smallest.index] = front_state_t::holds_a_key_k;
+                            },
+                            no_op_t {});
+                    }
+                }
+
+                if (!delivered) continue; // The front rose or emptied; whichever it was, retry the minimum.
+                seed_ = cursor_seed_t::past_the_last_k;
+                return;
+            }
+        }
+    };
+
+    /** @brief A walk of every member in ascending order, resumable and holding no lock between steps. */
+    [[nodiscard]] ordered_cursor_t cursor() const noexcept
+        requires inner_is_ordered_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+    {
+        return ordered_cursor_t {*this, cursor_seed_t::the_smallest_k};
+    }
+
+    /** @brief The same walk, begun at the first member ordered at or after @p from. */
+    [[nodiscard]] ordered_cursor_t cursor_from(identifier_t from) const noexcept
+        requires inner_is_ordered_k
+    {
+        ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k};
+        walking.position_ = std::move(from);
+        return walking;
+    }
+
     class transaction_t {
         friend class partitioned_store;
         /**
@@ -675,7 +947,7 @@ class partitioned_store {
         status_t for_parts_(callable_type_ &&callable) noexcept {
             status_t status = success_k;
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-                unique_lock_t lock {store_->mutexes_[partition_index]};
+                writing_part_lock lock {store_->mutexes_[partition_index], store_->epochs_[partition_index]};
                 status_t const one = callable(partitions_[partition_index]);
                 if (failed(one)) status = one;
             }
@@ -688,7 +960,7 @@ class partitioned_store {
             status_t status = success_k;
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                unique_lock_t lock {store_->mutexes_[reached.index]};
+                writing_part_lock lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
                 status_t const one = callable(partitions_[reached.index]);
                 if (failed(one)) status = one;
             }
@@ -716,7 +988,7 @@ class partitioned_store {
             requires inner_shares_clock_k
         {
             clock_t &clock = store_->clock_;
-            touched_parts_lock held {store_->mutexes_, touched_};
+            touched_parts_lock held {store_->mutexes_, store_->epochs_, touched_};
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                 if (status_t const refused = partitions_[reached.index].validate_for_commit(); failed(refused))
@@ -741,7 +1013,7 @@ class partitioned_store {
             // superseded is freed rather than pinned by the claim it has already given up.
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                unique_lock_t lock {store_->mutexes_[reached.index]};
+                writing_part_lock lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
                 partitions_[reached.index].prune_committed();
             }
             touched_.clear();
@@ -796,7 +1068,7 @@ class partitioned_store {
             status_t status = success_k;
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                unique_lock_t lock {store_->mutexes_[reached.index]};
+                writing_part_lock lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
                 status = partitions_[reached.index].stage();
                 if (failed(status)) break;
                 staged.mark(reached.index);
@@ -805,7 +1077,7 @@ class partitioned_store {
 
             for (marked_partition_t landed = staged.first_marked(); landed.presence == marked_presence_t::one_marked_k;
                  landed = staged.next_marked(landed.index)) {
-                unique_lock_t lock {store_->mutexes_[landed.index]};
+                writing_part_lock lock {store_->mutexes_[landed.index], store_->epochs_[landed.index]};
                 [[maybe_unused]] status_t const unwound = partitions_[landed.index].rollback();
             }
             return status;
@@ -837,21 +1109,21 @@ class partitioned_store {
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                  callback_missing_type_ &&callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(comparable));
+            std::size_t partition_index = store_->bucket_(comparable);
             shared_lock_t _ {store_->mutexes_[partition_index]};
-            partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
-                                              std::forward<callback_found_type_>(callback_found),
-                                              std::forward<callback_missing_type_>(callback_missing));
+            return partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
+                                                     std::forward<callback_found_type_>(callback_found),
+                                                     std::forward<callback_missing_type_>(callback_missing));
         }
 
         /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            find(
+            [[maybe_unused]] status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
             return result;
@@ -859,9 +1131,9 @@ class partitioned_store {
 
         /** @brief Whether @p comparable is there, including this transaction's own writes. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+        [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(comparable));
+            std::size_t partition_index = store_->bucket_(comparable);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
         }
@@ -875,29 +1147,84 @@ class partitioned_store {
         [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                               callback_missing_type_ &&callback_missing = {}) noexcept {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(comparable));
+            std::size_t partition_index = store_->bucket_(comparable);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].find_and_watch(std::forward<comparable_type_>(comparable),
                                                                std::forward<callback_found_type_>(callback_found),
                                                                std::forward<callback_missing_type_>(callback_missing));
         }
 
+        /** @brief The first member this transaction reads at or after @p comparable, from any partition. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                         callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_lower_bounds_k
+        {
+            settle_snapshot_();
+            store_t::first_merged_(
+                store_->comparator_, partitions_, store_->mutexes_,
+                [&](std::size_t partition_index, auto &&fill) noexcept {
+                    [[maybe_unused]] status_t const seeded =
+                        partitions_[partition_index].lower_bound(comparable, fill, no_op_t {});
+                },
+                std::forward<callback_found_type_>(callback_found),
+                std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
+        }
+
+        /** @brief The first member this transaction reads strictly after @p comparable, from any partition. */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
             requires inner_transaction_is_ordered_k
         {
             settle_snapshot_();
-            store_t::for_all_next_lookups(store_->comparator_, partitions_, store_->mutexes_,
-                                          std::forward<comparable_type_>(comparable),
-                                          std::forward<callback_found_type_>(callback_found),
-                                          std::forward<callback_missing_type_>(callback_missing));
+            store_t::first_merged_(
+                store_->comparator_, partitions_, store_->mutexes_,
+                [&](std::size_t partition_index, auto &&fill) noexcept {
+                    [[maybe_unused]] status_t const seeded =
+                        partitions_[partition_index].upper_bound(comparable, fill, no_op_t {});
+                },
+                std::forward<callback_found_type_>(callback_found),
+                std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
+        }
+
+        /**
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ) this transaction reads, in order.
+         *
+         *  Merged across the partitions rather than concatenated, so a transactional scan answers in the
+         *  order an ordered container promises.
+         *
+         *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
+         */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+        {
+            settle_snapshot_();
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            store_t::walk_merged_(
+                store_->comparator_, partitions_,
+                [&](std::size_t partition_index, auto &&fill) noexcept {
+                    [[maybe_unused]] status_t const seeded =
+                        partitions_[partition_index].lower_bound(lower, fill, no_op_t {});
+                },
+                [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                    if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
+                    [[maybe_unused]] status_t const answered =
+                        partitions_[partition_index].find(key, callback, no_op_t {});
+                    return merge_control_t::resume_k;
+                });
+            return success_k;
         }
 
         [[nodiscard]] status_t upsert(value_t &&element) noexcept {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(element));
+            std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             return partitions_[partition_index].upsert(std::move(element));
         }
@@ -921,7 +1248,7 @@ class partitioned_store {
             requires inner_transaction_refuses_occupied_key_k
         {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(element));
+            std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].insert(std::move(element));
@@ -938,7 +1265,7 @@ class partitioned_store {
             requires inner_transaction_reports_occupied_key_k
         {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(element));
+            std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].insert(std::move(element),
@@ -951,7 +1278,7 @@ class partitioned_store {
             requires inner_transaction_refuses_absent_key_k
         {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(element));
+            std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].update(std::move(element));
@@ -962,7 +1289,7 @@ class partitioned_store {
             requires inner_transaction_skips_occupied_key_k
         {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(element));
+            std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].insert_if_missing(std::move(element));
@@ -970,43 +1297,161 @@ class partitioned_store {
 
         /** @brief Hands @p callback every member equal to @p comparable, which one partition owns outright. */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-        void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
+        [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
             requires inner_transaction_matches_equals_k
         {
             settle_snapshot_();
-            std::size_t partition_index = store_->bucket_(identifier_t(comparable));
+            std::size_t partition_index = store_->bucket_(comparable);
             shared_lock_t _ {store_->mutexes_[partition_index]};
-            partitions_[partition_index].equal_range(std::forward<comparable_type_>(comparable),
-                                                     std::forward<callback_type_>(callback));
+            return partitions_[partition_index].equal_range(std::forward<comparable_type_>(comparable),
+                                                            std::forward<callback_type_>(callback));
+        }
+
+#pragma region Transaction Range Operations
+
+        /** @brief How many members equal @p comparable, which one partition alone can answer. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept
+            requires inner_transaction_counts_k
+        {
+            settle_snapshot_();
+            std::size_t const partition_index = store_->bucket_(comparable);
+            shared_lock_t _ {store_->mutexes_[partition_index]};
+            return partitions_[partition_index].count(std::forward<comparable_type_>(comparable));
         }
 
         /**
-         *  @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's writes included.
-         *    One partition is held at a time, ascending, as the store's own enumeration takes them, and each
-         *    contributes its own sorted run rather than the walk emitting one ascending order.
+         *  @brief Copies out the first member at or after @p comparable in the merged order.
+         *
+         *  Answered through this transaction's own bound rather than one partition's, since the smallest
+         *  successor may live in any of them.
+         */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
+            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+        {
+            expected<value_t> result {status_t::key_not_found_k};
+            [[maybe_unused]] status_t const answered = lower_bound(
+                std::forward<comparable_type_>(comparable),
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            return result;
+        }
+
+        /** @brief Copies out the first member after @p comparable in the merged order. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
+            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+        {
+            expected<value_t> result {status_t::key_not_found_k};
+            [[maybe_unused]] status_t const answered = upper_bound(
+                std::forward<comparable_type_>(comparable),
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            return result;
+        }
+
+        /**
+         *  @brief Stages a tombstone for every member in [ @p lower, @p upper ), in every partition.
+         *
+         *  The window spans the whole keyspace and a key's partition is its hash, so every partition is
+         *  asked. Each answers for its own share, and the union is the window.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires inner_transaction_walks_range_k
+        [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires inner_transaction_erases_range_k
         {
             settle_snapshot_();
-            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-                shared_lock_t lock {store_->mutexes_[partition_index]};
-                partitions_[partition_index].range(lower, upper, callback);
-            }
+            return for_parts_(
+                [&](inner_transaction_t &part) noexcept { return part.erase_range(lower, upper, callback); });
         }
+
+        /** @brief Stages a tombstone for every member at or after @p lower, in every partition. */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
+            requires inner_transaction_erases_range_k
+        {
+            settle_snapshot_();
+            return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_from(lower, callback); });
+        }
+
+        /** @brief Stages a tombstone for every member before @p upper, in every partition. */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires inner_transaction_erases_range_k
+        {
+            settle_snapshot_();
+            return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_up_to(upper, callback); });
+        }
+
+        /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, in every partition. */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
+                                            callback_type_ &&callback) noexcept
+            requires inner_transaction_revises_range_k
+        {
+            settle_snapshot_();
+            return for_parts_(
+                [&](inner_transaction_t &part) noexcept { return part.update_range(lower, upper, callback); });
+        }
+
+        /** @brief Draws one member uniformly from [ @p lower, @p upper ) of the merged order. */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                          callback_type_ &&callback) const noexcept
+            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+        {
+            std::size_t counted = 0;
+            if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
+                failed(measured))
+                return measured;
+            if (!counted) return success_k;
+
+            std::size_t skipped = draw_below(generator, counted);
+            bool drawn = false;
+            return range(lower, upper, [&](value_t const &value) noexcept {
+                if (drawn) return;
+                if (skipped) --skipped;
+                else {
+                    callback(value);
+                    drawn = true;
+                }
+            });
+        }
+
+        /** @brief Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+        [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                                std::size_t &seen, std::size_t capacity,
+                                                output_iterator_type_ &&reservoir) const noexcept
+            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+        {
+            static_assert(std::is_nothrow_copy_assignable_v<value_t>,
+                          "a reservoir copies into the caller's buffer, so the member must copy without throwing");
+            return range(lower, upper, [&](value_t const &value) noexcept {
+                if (seen < capacity) reservoir[seen] = value;
+                else if (std::size_t const slot = draw_below(generator, seen + 1); slot < capacity)
+                    reservoir[slot] = value;
+                ++seen;
+            });
+        }
+
+#pragma endregion Transaction Range Operations
 
         /** @brief Hands @p callback every member this transaction reads, in no particular order. */
         template <typename callback_type_ = no_op_t>
-        void for_each(callback_type_ &&callback) const noexcept
+        [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
             requires inner_transaction_enumerates_k
         {
             settle_snapshot_();
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 shared_lock_t lock {store_->mutexes_[partition_index]};
-                partitions_[partition_index].for_each(callback);
+                if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))
+                    return visited;
             }
+            return success_k;
         }
 
         /**
@@ -1044,19 +1489,12 @@ class partitioned_store {
             for (inner_transaction_t const &part : partitions_) counted += part.changes_count();
             return counted;
         }
-
-        // A transaction-level `lower_bound` is deliberately absent, and is the one surface of the inner
-        // transaction this wrapper does not carry. An exact match lives in one partition, but the key
-        // after it can live in any of the sixteen, so the answer is a merge of every partition's own
-        // bound rather than a forward - the machinery `upper_bound` reaches through
-        // `for_all_next_lookups`, taken over an inclusive bound and over a transaction's staged writes
-        // as well as its snapshot. Until that walk exists, an exact-match probe followed by
-        // `upper_bound` would answer, but not atomically, and a bound that is only sometimes right is
-        // worse than one that is absent.
     };
 
   private:
     mutable mutexes_t mutexes_;
+    /** @brief One write count per partition, moved by every exclusive hold of the matching mutex. */
+    epochs_t epochs_ {};
     partitions_t partitions_;
 
     /**
@@ -1168,19 +1606,19 @@ class partitioned_store {
 
         // Ascending order, one lock at a time, like every other all-partition walk here.
         auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
-            unique_lock_t lock {mutexes_[partition_index]};
+            writing_part_lock lock {mutexes_[partition_index], epochs_[partition_index]};
             if constexpr (inner_shares_clock_k)
                 return partitions_[partition_index].transaction_at(snapshot, generation);
             else return partitions_[partition_index].transaction();
         });
-        if (!maybe) return {};
+        if (!maybe) return maybe.status();
 
         return transaction_t(*this, std::move(*maybe), std::move(lease));
     }
 
     [[nodiscard]] status_t upsert(value_t &&element) noexcept {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t _ {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].upsert(std::move(element));
     }
 
@@ -1196,8 +1634,8 @@ class partitioned_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                                  callback_missing_type_ &&callback_missing = {}) noexcept {
-        std::size_t partition_index = bucket_(identifier_t(comparable));
-        unique_lock_t _ {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(comparable);
+        writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].erase(std::forward<comparable_type_>(comparable),
                                                   std::forward<callback_found_type_>(callback_found),
                                                   std::forward<callback_missing_type_>(callback_missing));
@@ -1219,33 +1657,36 @@ class partitioned_store {
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-              callback_missing_type_ &&callback_missing = {}) const noexcept {
-        std::size_t partition_index = bucket_(identifier_t(comparable));
+    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+        std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
-        partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
-                                          std::forward<callback_found_type_>(callback_found),
-                                          std::forward<callback_missing_type_>(callback_missing));
+        [[maybe_unused]] status_t const answered = partitions_[partition_index].find(
+            std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
+            std::forward<callback_missing_type_>(callback_missing));
+        return success_k;
     }
 
     /** @brief Whether @p comparable is there, asking only the partition that owns it. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
-        std::size_t partition_index = bucket_(identifier_t(comparable));
+    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+        std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
         return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
     }
 
     /** @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
-        return contains(std::forward<comparable_type_>(comparable)) ? 1u : 0u;
+    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
+        if (!present) return present.status();
+        return *present ? std::size_t {1} : std::size_t {0};
     }
 
     /** @brief Inserts one element only if its key is absent, leaving an incumbent untouched. */
     [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t lock {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock lock {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert_if_missing(std::move(element));
     }
 
@@ -1258,8 +1699,8 @@ class partitioned_store {
     template <typename callback_inserted_type_, typename callback_existing_type_>
     [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
                                              callback_existing_type_ &&callback_existing) noexcept {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t lock {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock lock {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert_if_missing(std::move(element),
                                                               std::forward<callback_inserted_type_>(callback_inserted),
                                                               std::forward<callback_existing_type_>(callback_existing));
@@ -1273,8 +1714,8 @@ class partitioned_store {
     [[nodiscard]] status_t insert(value_t &&element) noexcept
         requires inner_refuses_occupied_key_k
     {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t _ {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert(std::move(element));
     }
 
@@ -1289,8 +1730,8 @@ class partitioned_store {
                                   callback_existing_type_ &&callback_existing) noexcept
         requires inner_reports_occupied_key_k
     {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t _ {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert(std::move(element),
                                                    std::forward<callback_inserted_type_>(callback_inserted),
                                                    std::forward<callback_existing_type_>(callback_existing));
@@ -1300,8 +1741,8 @@ class partitioned_store {
     [[nodiscard]] status_t update(value_t &&element) noexcept
         requires inner_refuses_absent_key_k
     {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t _ {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].update(std::move(element));
     }
 
@@ -1310,56 +1751,59 @@ class partitioned_store {
     [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         for (; begin != end; ++begin) {
             value_t element(*begin);
-            std::size_t partition_index = bucket_(identifier_t(element));
-            unique_lock_t _ {mutexes_[partition_index]};
+            std::size_t partition_index = bucket_(element);
+            writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
             if (auto status = partitions_[partition_index].insert_if_missing(std::move(element)); failed(status))
                 return status;
         }
         return success_k;
     }
 
+    /** @brief The first element ordered strictly after @p comparable, which may live in any partition. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                       callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ordered_k
     {
-        for_all_next_lookups(comparator_, partitions_, mutexes_, std::forward<comparable_type_>(comparable),
-                             std::forward<callback_found_type_>(callback_found),
-                             std::forward<callback_missing_type_>(callback_missing));
+        first_merged_(
+            comparator_, partitions_, mutexes_,
+            [&](std::size_t partition_index, auto &&fill) noexcept {
+                [[maybe_unused]] status_t const seeded =
+                    partitions_[partition_index].upper_bound(comparable, fill, no_op_t {});
+            },
+            std::forward<callback_found_type_>(callback_found), std::forward<callback_missing_type_>(callback_missing));
+        return success_k;
     }
 
     /**
      *  @brief The first element at or after @p comparable, which may live in any partition.
      *
-     *  @warning Two separately locked probes - an exact match, then the successor - with no lock held
-     *    across them, so this is not atomic even against a single partition. A key erased between the
-     *    two is answered by its successor, and one inserted between them is skipped.
+     *  Every partition is asked for its own bound under one set of locks, so the exact match and the
+     *  cross-partition minimum are read at the same moment rather than in two probes a writer can slip
+     *  between.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                       callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ordered_k
     {
-        bool found_exact = false;
-        find(
-            comparable,
-            [&](value_t const &value) noexcept {
-                found_exact = true;
-                callback_found(value);
+        first_merged_(
+            comparator_, partitions_, mutexes_,
+            [&](std::size_t partition_index, auto &&fill) noexcept {
+                [[maybe_unused]] status_t const seeded =
+                    partitions_[partition_index].lower_bound(comparable, fill, no_op_t {});
             },
-            no_op_t {});
-        if (found_exact) return;
-        upper_bound(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
-                    std::forward<callback_missing_type_>(callback_missing));
+            std::forward<callback_found_type_>(callback_found), std::forward<callback_missing_type_>(callback_missing));
+        return success_k;
     }
 
     /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        find(
+        [[maybe_unused]] status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -1371,7 +1815,7 @@ class partitioned_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        lower_bound(
+        [[maybe_unused]] status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -1383,27 +1827,41 @@ class partitioned_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        upper_bound(
+        [[maybe_unused]] status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
     /**
-     *  @brief Hands @p callback every member of [ @p lower, @p upper ), one partition's run after another.
+     *  @brief Hands @p callback every member of [ @p lower, @p upper ) in one ascending order.
      *
-     *  @warning The sequence is @b not one ascending order: each partition contributes its own sorted
-     *    run and the runs are concatenated in partition order, so a caller wanting the merged order has
-     *    to sort what it collects. Every partition is held shared for the length of the walk, so the
-     *    runs are drawn from one moment rather than sixteen, and every writer waits.
+     *  The partitions are merged rather than concatenated, so the sequence is the one an ordered
+     *  container promises whatever the key's hash happened to be. Each element costs a comparison per
+     *  partition and one descent to refill the front it came from, against the single iterator step a
+     *  concatenated walk would take - the price of the order being right.
+     *
+     *  @warning Every partition is held shared for the length of the walk, so every writer waits, and
+     *    @p callback runs under all of them: a callback reaching back into this store deadlocks.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
         requires inner_is_ordered_k
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
-        for (auto const &part : partitions_) part.range(lower, upper, callback);
+        walk_merged_(
+            comparator_, partitions_,
+            [&](std::size_t partition_index, auto &&fill) noexcept {
+                [[maybe_unused]] status_t const seeded =
+                    partitions_[partition_index].lower_bound(lower, fill, no_op_t {});
+            },
+            [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                if (!comparator_(key, upper)) return merge_control_t::halt_k;
+                [[maybe_unused]] status_t const answered = partitions_[partition_index].find(key, callback, no_op_t {});
+                return merge_control_t::resume_k;
+            });
+        return success_k;
     }
 
     /**
@@ -1485,13 +1943,15 @@ class partitioned_store {
      *  enumerating a container depends on; the second is the one it has to tolerate.
      */
     template <typename callback_type_ = no_op_t>
-    void for_each(callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
         requires inner_enumerates_k
     {
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
             shared_lock_t lock {mutexes_[partition_index]};
-            partitions_[partition_index].for_each(callback);
+            if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))
+                return visited;
         }
+        return success_k;
     }
 
     /**
@@ -1505,7 +1965,7 @@ class partitioned_store {
         std::size_t reclaimed = 0;
         // Ascending order, one partition at a time, like every other all-partition walk here.
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-            unique_lock_t lock {mutexes_[partition_index]};
+            writing_part_lock lock {mutexes_[partition_index], epochs_[partition_index]};
             auto one = partitions_[partition_index].vacuum();
             if constexpr (std::is_same<decltype(one), std::size_t>()) reclaimed += one;
             else {
@@ -1526,7 +1986,7 @@ class partitioned_store {
     {
         std::size_t reclaimed = 0;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-            unique_lock_t lock {mutexes_[partition_index]};
+            writing_part_lock lock {mutexes_[partition_index], epochs_[partition_index]};
             auto one = partitions_[partition_index].vacuum(lower, upper);
             if constexpr (std::is_same<decltype(one), std::size_t>()) reclaimed += one;
             else {
@@ -1548,19 +2008,23 @@ class partitioned_store {
      *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    void select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                  callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ranked_k
     {
+        every_part_lock<shared_lock_t> _ {mutexes_};
         std::size_t position = 0;
         bool delivered = false;
-        walk_merged_order_([&](std::size_t partition_index, identifier_t const &key) noexcept {
-            if (position++ != ordinal) return merge_control_t::resume_k;
-            partitions_[partition_index].find(key, callback_found, no_op_t {});
-            delivered = true;
-            return merge_control_t::halt_k;
-        });
+        walk_merged_(comparator_, partitions_, seed_from_the_start_(),
+                     [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                         if (position++ != ordinal) return merge_control_t::resume_k;
+                         [[maybe_unused]] status_t const answered =
+                             partitions_[partition_index].find(key, callback_found, no_op_t {});
+                         delivered = true;
+                         return merge_control_t::halt_k;
+                     });
         if (!delivered) callback_missing();
+        return success_k;
     }
 
     /**
@@ -1570,23 +2034,25 @@ class partitioned_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-              callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) const noexcept
         requires inner_is_ranked_k
     {
-        identifier_t const target(comparable);
+        every_part_lock<shared_lock_t> _ {mutexes_};
         std::size_t position = 0;
         bool found = false;
-        walk_merged_order_([&](std::size_t, identifier_t const &key) noexcept {
-            if (comparator_(key, target)) {
-                ++position;
-                return merge_control_t::resume_k;
-            }
-            found = !comparator_(target, key);
-            return merge_control_t::halt_k;
-        });
+        walk_merged_(comparator_, partitions_, seed_from_the_start_(),
+                     [&](std::size_t, identifier_t const &key) noexcept {
+                         if (comparator_(key, comparable)) {
+                             ++position;
+                             return merge_control_t::resume_k;
+                         }
+                         found = !comparator_(comparable, key);
+                         return merge_control_t::halt_k;
+                     });
         if (found) callback_found(position);
         else callback_missing();
+        return success_k;
     }
 
     /**
@@ -1597,15 +2063,15 @@ class partitioned_store {
      *    call site that needs the whole range weighted correctly wants that one.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                    callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                      callback_type_ &&callback) const noexcept
         requires inner_samples_one_k
     {
         std::size_t partition_index = generator() % partitions_k;
         shared_lock_t _ {mutexes_[partition_index]};
-        partitions_[partition_index].sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
-                                                std::forward<generator_type_>(generator),
-                                                std::forward<callback_type_>(callback));
+        return partitions_[partition_index].sample_one(
+            std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+            std::forward<generator_type_>(generator), std::forward<callback_type_>(callback));
     }
 
     /**
@@ -1616,15 +2082,18 @@ class partitioned_store {
      *    between partitions can have it sampled twice or not at all.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
+    [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                            std::size_t &seen, std::size_t reservoir_capacity,
+                                            output_iterator_type_ &&reservoir) const noexcept
         requires inner_samples_reservoir_k
     {
         // Ascending order, blocking, like every other all-partition walk here.
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
             shared_lock_t lock {mutexes_[partition_index]};
-            partitions_[partition_index].sample_reservoir(lower, upper, generator, seen, reservoir_capacity, reservoir);
+            [[maybe_unused]] status_t const answered = partitions_[partition_index].sample_reservoir(
+                lower, upper, generator, seen, reservoir_capacity, reservoir);
         }
+        return success_k;
     }
 
     /**
@@ -1654,13 +2123,13 @@ class partitioned_store {
 
     /** @brief Hands @p callback every member equal to @p comparable, which one partition owns outright. */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
         requires inner_matches_equals_k
     {
-        std::size_t partition_index = bucket_(identifier_t(comparable));
+        std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
-        partitions_[partition_index].equal_range(std::forward<comparable_type_>(comparable),
-                                                 std::forward<callback_type_>(callback));
+        return partitions_[partition_index].equal_range(std::forward<comparable_type_>(comparable),
+                                                        std::forward<callback_type_>(callback));
     }
 
     /** @brief How many versions every partition holds together, published and staged alike. */
@@ -1678,7 +2147,7 @@ class partitioned_store {
     [[nodiscard]] std::size_t versions_count(comparable_type_ const &comparable) const noexcept
         requires inner_counts_versions_k
     {
-        std::size_t partition_index = bucket_(identifier_t(comparable));
+        std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
         return partitions_[partition_index].versions_count(comparable);
     }
@@ -1702,8 +2171,8 @@ class partitioned_store {
     [[nodiscard]] status_t insert_or_assign(value_t &&element) noexcept
         requires inner_assigns_over_key_k
     {
-        std::size_t partition_index = bucket_(identifier_t(element));
-        unique_lock_t _ {mutexes_[partition_index]};
+        std::size_t partition_index = bucket_(element);
+        writing_part_lock _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert_or_assign(std::move(element));
     }
 };

@@ -49,8 +49,8 @@ void test_range_walk_takes_partitions_shared() {
 
     [[maybe_unused]] auto const range_member = &container_t::template range<probe_key_t, probe_key_t, probe_callback_t>;
     static_assert(
-        std::is_same<decltype(range_member),
-                     void (container_t::*const)(probe_key_t &&, probe_key_t &&, probe_callback_t &&) const noexcept>(),
+        std::is_same<decltype(range_member), status_t (container_t::*const)(probe_key_t &&, probe_key_t &&,
+                                                                            probe_callback_t &&) const noexcept>(),
         "range must be a single const overload, so a non-const handle still reads under a shared lock");
 }
 
@@ -83,8 +83,7 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
     // never the serialization conflict this once reported.
     auto const seeded = container.upsert(std::make_move_iterator(batch.begin()), std::make_move_iterator(batch.end()));
     st_verify_(seeded);
-    st_verify_((seeded != status_t::consistency_k) &&
-               "a bulk upsert that cannot open is out of memory, not in conflict");
+    st_verify_ne_(seeded, status_t::consistency_k, "a bulk upsert that cannot open is out of memory, not in conflict");
     st_verify_eq_(container.size(), key_span);
 
     std::atomic<std::size_t> elements_seen {0};
@@ -109,22 +108,22 @@ void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::
         threads.emplace_back([&]() noexcept {
             std::size_t counted = 0;
             for (std::size_t round = 0; round != rounds; ++round)
-                container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span),
-                                [&](auto const &) noexcept { ++counted; });
+                st_verify_(container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span),
+                                           [&](auto const &) noexcept { ++counted; }));
             elements_seen += counted;
         });
 
     for (auto &thread : threads) thread.join();
-    st_verify_((elements_seen.load() != 0) && "the walkers must have seen something, or this proves nothing");
+    st_verify_ne_(elements_seen.load(), 0, "the walkers must have seen something, or this proves nothing");
 
     // The half the writer never touched is still whole, so a walk that skipped an unlock or lost an
     // element to the erasing writer would show here.
-    for (std::size_t identifier = key_span / 2; identifier < key_span; ++identifier)
-        st_verify_(container.contains(trivial_id_to_key<member_t>(identifier)));
+    for (std::size_t identifier = key_span / 2; identifier < key_span; ++identifier) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
+    }
 
     // Erasing everything reports a status now, and the collection must be empty afterwards.
-    st_verify_(
-        succeeded(container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span * 2))));
+    st_verify_(container.erase_range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(key_span * 2)));
     st_verify_eq_(container.size(), std::size_t {0});
 }
 
@@ -176,7 +175,7 @@ void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size
         });
 
     for (auto &thread : threads) thread.join();
-    st_verify_((answers.load() != 0) && "the probes must have answered something, or this proves nothing");
+    st_verify_ne_(answers.load(), 0, "the probes must have answered something, or this proves nothing");
 }
 
 /**
@@ -228,14 +227,14 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
                 auto cursor = trivial_id_to_key<member_t>(0);
                 for (std::size_t step = 0; step != key_span; ++step) {
                     bool advanced = false;
-                    container.upper_bound(
+                    st_verify_(container.upper_bound(
                         cursor,
                         [&](auto const &element) noexcept {
                             cursor = trivial_id_to_key<member_t>(0);
                             cursor = typename container_t::identifier_t(element);
                             advanced = true;
                         },
-                        []() noexcept {});
+                        []() noexcept {}));
                     if (!advanced) break;
                     ++walked;
                 }
@@ -245,7 +244,7 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
 
     for (auto &thread : threads) thread.join();
     stop.store(true, std::memory_order_relaxed);
-    st_verify_((steps_walked.load() != 0) && "the walkers must have made progress, or this proves nothing");
+    st_verify_ne_(steps_walked.load(), 0, "the walkers must have made progress, or this proves nothing");
 
     // The same walk driven by a comparable that is not the identifier, which is what keeps the
     // heterogeneous API reachable: the bound travels to each partition as it arrived, never narrowed
@@ -257,17 +256,17 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
         probe_key_t cursor {};
         for (std::size_t step = 0; step != key_span; ++step) {
             bool advanced = false;
-            container.upper_bound(
+            st_verify_(container.upper_bound(
                 cursor,
                 [&](auto const &element) noexcept {
                     cursor = probe_key_t(mapping_key_or_itself(element));
                     advanced = true;
                 },
-                []() noexcept {});
+                []() noexcept {}));
             if (!advanced) break;
             ++heterogeneous_steps;
         }
-        st_verify_((heterogeneous_steps != 0) && "a heterogeneous bound must walk the collection too");
+        st_verify_ne_(heterogeneous_steps, 0, "a heterogeneous bound must walk the collection too");
     }
 }
 
@@ -351,8 +350,8 @@ void test_concurrent_transactions_get_distinct_generations(std::size_t per_threa
             ++total;
         }
 
-    st_verify_((total != 0) && "no transaction opened at all");
-    st_verify_((distinct.size() == total) && "two transactions were handed the same generation");
+    st_verify_ne_(total, 0, "no transaction opened at all");
+    st_verify_eq_(distinct.size(), total, "two transactions were handed the same generation");
 }
 
 /**
@@ -493,10 +492,10 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
                 agreed_value = 0;
                 for (std::size_t identifier = 0; identifier != keys_count; ++identifier) {
                     std::size_t observed = 0;
-                    reader.find(
+                    st_verify_(reader.find(
                         trivial_id_to_key<member_t>(identifier),
                         [&](auto const &member) noexcept { observed = static_cast<std::size_t>(member.mapped); },
-                        [&]() noexcept { ++disagreements; });
+                        [&]() noexcept { ++disagreements; }));
                     if (identifier == 0) agreed_value = observed;
                     else if (observed != agreed_value) ++disagreements;
                 }
@@ -517,9 +516,9 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
 
     for (auto &thread : threads) thread.join();
 
-    st_verify_((reads_taken.load() != 0) && "no reader ever crossed the writer, so this proves nothing");
-    st_verify_((torn_across_keys.load() == 0) && "a reader saw one commit half applied across partitions");
-    st_verify_((unrepeatable_reads.load() == 0) && "one transaction read two different commits");
+    st_verify_ne_(reads_taken.load(), 0, "no reader ever crossed the writer, so this proves nothing");
+    st_verify_eq_(torn_across_keys.load(), 0, "a reader saw one commit half applied across partitions");
+    st_verify_eq_(unrepeatable_reads.load(), 0, "one transaction read two different commits");
 }
 
 /**
@@ -567,21 +566,21 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
                     ++commit_refusals;
                     bool published = false;
                     for (std::size_t identifier = 0; identifier != keys_count && !published; ++identifier)
-                        container.find(
+                        st_verify_(container.find(
                             trivial_id_to_key<member_t>(identifier),
                             [&](auto const &member) noexcept {
                                 published = published || static_cast<std::size_t>(member.mapped) == marker;
                             },
-                            []() noexcept {});
+                            []() noexcept {}));
                     if (published) ++published_refusals;
                     [[maybe_unused]] status_t const undone = writer->reset();
                 }
         });
 
     for (auto &thread : threads) thread.join();
-    st_verify_((published_refusals.load() == 0) && "a commit that refused had already published its writes");
+    st_verify_eq_(published_refusals.load(), 0, "a commit that refused had already published its writes");
     // The refusals themselves are the point of the suite, not a defect - but without any, it proved nothing.
-    st_verify_((commit_refusals.load() != 0) && "no commit ever refused, so nothing here was exercised");
+    st_verify_ne_(commit_refusals.load(), 0, "no commit ever refused, so nothing here was exercised");
 }
 
 /**
@@ -629,10 +628,10 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
             while (!churn_started.load()) pause_briefly();
             do {
                 for (std::size_t &seen : visits) seen = 0;
-                container.for_each([&](member_t const &member) noexcept {
+                st_verify_(container.for_each([&](member_t const &member) noexcept {
                     std::size_t const identifier = static_cast<std::size_t>(member.unique_id);
                     if (identifier < visits.size()) ++visits[identifier];
-                });
+                }));
                 for (std::size_t identifier = 0; identifier != stable_count; ++identifier)
                     if (visits[identifier] != 1) ++stable_misses;
                 for (std::size_t identifier = stable_count; identifier != visits.size(); ++identifier)
@@ -646,8 +645,8 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
 
     st_verify_((walks_taken.load() >= sharded_threads_count_k) &&
                "every walker must complete a walk begun after the writer started, or this proves nothing");
-    st_verify_((stable_misses.load() == 0) && "an element present for the whole walk was missed or seen twice");
-    st_verify_((repeat_visits.load() == 0) && "one walk handed the same key to the callback twice");
+    st_verify_eq_(stable_misses.load(), 0, "an element present for the whole walk was missed or seen twice");
+    st_verify_eq_(repeat_visits.load(), 0, "one walk handed the same key to the callback twice");
 }
 
 #pragma endregion Sharded Concurrency

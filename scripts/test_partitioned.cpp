@@ -105,8 +105,8 @@ struct enumerable_set_t : tree_trivial_set_t {
     }
 
     template <typename callback_type_>
-    void for_each(callback_type_ &&callback) const noexcept {
-        base_t::range(trivial_key_t {0}, trivial_key_t {keyspace_k}, std::forward<callback_type_>(callback));
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
+        return base_t::range(trivial_key_t {0}, trivial_key_t {keyspace_k}, std::forward<callback_type_>(callback));
     }
 };
 
@@ -434,6 +434,12 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_composite_map_t>();
 }
 
+static void transactional_consistency_lost_update_matches_isolation() {
+    test_lost_update_matches_isolation<transactional_trivial_map_t>();
+    test_lost_update_matches_isolation<transactional_tracking_map_t>();
+    test_lost_update_matches_isolation<transactional_composite_map_t>();
+}
+
 static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_trivial_map_t>();
     test_repeated_read_matches_isolation<transactional_tracking_map_t>();
@@ -572,30 +578,30 @@ static void test_forwarded_order_statistics(std::size_t count = 64) {
     for (std::size_t identifier = 0; identifier != count; ++identifier) {
         member_t selected {};
         bool selected_one = false;
-        container.select(
+        st_verify_(container.select(
             identifier,
             [&](member_t const &member) noexcept {
                 selected = member;
                 selected_one = true;
             },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_((selected_one) && "every ordinal below the size must name an element");
         st_verify_(selected == trivial_id_to_key<member_t>(identifier));
 
         std::size_t position = count;
-        container.rank(
+        st_verify_(container.rank(
             trivial_id_to_key<member_t>(identifier), [&](std::size_t found) noexcept { position = found; },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_eq_(position, identifier);
     }
 
     bool missed = false;
-    container.select(count, [](member_t const &) noexcept {}, [&]() noexcept { missed = true; });
+    st_verify_(container.select(count, [](member_t const &) noexcept {}, [&]() noexcept { missed = true; }));
     st_verify_((missed) && "an ordinal at the size must find nothing");
 
     missed = false;
-    container.rank(
-        trivial_id_to_key<member_t>(count + 1), [](std::size_t) noexcept {}, [&]() noexcept { missed = true; });
+    st_verify_(container.rank(
+        trivial_id_to_key<member_t>(count + 1), [](std::size_t) noexcept {}, [&]() noexcept { missed = true; }));
     st_verify_((missed) && "a key that is not there has no rank");
 }
 
@@ -615,10 +621,12 @@ static void test_forwarded_vacuum(std::size_t count = 32) {
     expected<std::size_t> const reclaimed = container.vacuum();
     st_verify_((reclaimed) && "a sweep that cannot refuse must still answer with a count");
     st_verify_eq_(container.size(), count / 2);
-    for (std::size_t identifier = 1; identifier < count; identifier += 2)
-        st_verify_(container.contains(trivial_id_to_key<member_t>(identifier)));
-    for (std::size_t identifier = 0; identifier < count; identifier += 2)
-        st_verify_(!container.contains(trivial_id_to_key<member_t>(identifier)));
+    for (std::size_t identifier = 1; identifier < count; identifier += 2) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
+    }
+    for (std::size_t identifier = 0; identifier < count; identifier += 2) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), false);
+    }
 }
 
 /** @brief A windowed sweep must reclaim its window and leave the rest of the keyspace readable. */
@@ -662,10 +670,10 @@ static void test_forwarded_update_range(std::size_t count = 32) {
     for (std::size_t identifier = 0; identifier != count; ++identifier) {
         std::size_t const bonus = identifier >= window_begin && identifier < window_end ? 100 : 0;
         std::size_t observed = count + 1000;
-        container.find(
+        st_verify_(container.find(
             trivial_id_to_key<member_t>(identifier),
             [&](member_t const &member) noexcept { observed = static_cast<std::size_t>(member.mapped); },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_eq_(observed, identifier + bonus);
     }
 }
@@ -686,16 +694,16 @@ static void test_forwarded_open_ended_erase(std::size_t count = 32) {
         container.erase_from(trivial_id_to_key<member_t>(count / 2), [&](member_t const &) noexcept { ++erased; }));
     st_verify_eq_(erased, count - count / 2);
     st_verify_eq_(container.size(), count / 2);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(count / 2 - 1)));
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(count / 2)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(count / 2 - 1)), true);
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(count / 2)), false);
 
     erased = 0;
     st_verify_(
         container.erase_up_to(trivial_id_to_key<member_t>(count / 4), [&](member_t const &) noexcept { ++erased; }));
     st_verify_eq_(erased, count / 4);
     st_verify_eq_(container.size(), count / 2 - count / 4);
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(0)));
-    st_verify_(container.contains(trivial_id_to_key<member_t>(count / 4)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(0)), false);
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(count / 4)), true);
 }
 
 /** @brief An enumeration through a wrapper must visit every member exactly once. */
@@ -711,18 +719,18 @@ static void test_forwarded_for_each(std::size_t count = 200) {
 
     std::vector<std::size_t> visits(count, 0);
     std::size_t total = 0;
-    container.for_each([&](member_t const &member) noexcept {
+    st_verify_(container.for_each([&](member_t const &member) noexcept {
         ++total;
         std::size_t const identifier = static_cast<std::size_t>(member.unique_id);
         if (identifier < visits.size()) ++visits[identifier];
-    });
+    }));
 
     st_verify_eq_(total, count);
     for (std::size_t identifier = 0; identifier != count; ++identifier) st_verify_eq_(visits[identifier], 1u);
 
     st_verify_(container.erase(trivial_id_to_key<member_t>(count / 2)));
     total = 0;
-    container.for_each([&](member_t const &) noexcept { ++total; });
+    st_verify_(container.for_each([&](member_t const &) noexcept { ++total; }));
     st_verify_eq_(total, count - 1);
 }
 
@@ -781,17 +789,17 @@ static void test_forwarded_equal_range() {
         st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::size_t matched = 0;
-    store.equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; });
+    st_verify_(store.equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; }));
     st_verify_eq_(matched, 1u);
 
     matched = 0;
-    store.equal_range(trivial_id_to_key<member_t>(99), [&](member_t const &) noexcept { ++matched; });
+    st_verify_(store.equal_range(trivial_id_to_key<member_t>(99), [&](member_t const &) noexcept { ++matched; }));
     st_verify_eq_(matched, 0u);
 
     expected<typename wrapper_type_::transaction_t> writer = store.transaction();
     st_verify_((writer) && "the wrapped store must open a transaction");
     matched = 0;
-    writer->equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; });
+    st_verify_(writer->equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; }));
     st_verify_eq_(matched, 1u);
 }
 
@@ -814,7 +822,7 @@ static void test_forwarded_heterogeneous_erase() {
     st_verify_(store.erase(static_cast<trivial_id_t>(2), [&](member_t const &) noexcept { ++removed; }));
     st_verify_eq_(removed, 1u);
     st_verify_eq_(store.size(), 5u);
-    st_verify_(!store.contains(static_cast<trivial_id_t>(2)));
+    st_verify_eq_(store.contains(static_cast<trivial_id_t>(2)), false);
 
     std::size_t missed = 0;
     st_verify_eq_(store.erase(
@@ -845,12 +853,12 @@ static void test_forwarded_transaction_staged_surface() {
     st_verify_eq_(writer->changes_count(), 1u);
 
     std::size_t walked = 0;
-    writer->for_each([&](member_t const &) noexcept { ++walked; });
+    st_verify_(writer->for_each([&](member_t const &) noexcept { ++walked; }));
     st_verify_eq_(walked, 2u);
 
     std::size_t within = 0;
-    writer->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(2),
-                  [&](member_t const &) noexcept { ++within; });
+    st_verify_(writer->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(2),
+                             [&](member_t const &) noexcept { ++within; }));
     st_verify_eq_(within, 1u);
 
     st_verify_(writer->stage());
@@ -977,17 +985,337 @@ static void failure_policy_distinct_causes() {
 static void failure_policy_relayed_causes() { test_wrapper_relays_every_cause<sharded_refusing_map_t>(); }
 static void failure_policy_bulk_methods() { test_bulk_methods_match_declared_policy<sharded_refusing_map_t>(); }
 
+#pragma region Merged Order
+
+/** @brief A store holding @p size members, keyed by identifier, spread across every partition. */
+static transactional_trivial_set_t seeded_sharded_set(std::size_t size) {
+    auto built = transactional_trivial_set_t::make();
+    st_verify_((built) && "the sharded set must build");
+    transactional_trivial_set_t store = std::move(*built);
+    for (std::size_t identifier = 0; identifier != size; ++identifier)
+        st_verify_(store.upsert(trivial_id_to_member<trivial_key_t>(identifier)));
+    return store;
+}
+
+/**
+ *  @brief A range over an ordered container answers in one ascending order, not sixteen sorted runs.
+ *
+ *  Concatenating each partition's run passes every membership check ever written for @c range, which
+ *  is how it survived: only asking whether the sequence rises catches it.
+ */
+static void merged_order_range_ascends() {
+    transactional_trivial_set_t store = seeded_sharded_set(256);
+
+    std::size_t seen = 0;
+    trivial_id_t previous = 0;
+    bool first = true;
+    st_verify_(store.range(trivial_id_to_key<trivial_key_t>(0), trivial_id_to_key<trivial_key_t>(256),
+                           [&](trivial_key_t const &member) noexcept {
+                               trivial_id_t const current = member.unique_id;
+                               st_verify_((first || previous < current) && "a merged range must rise at every step");
+                               previous = current;
+                               first = false;
+                               ++seen;
+                           }));
+    st_verify_eq_(seen, 256u);
+}
+
+/** @brief The merged range and repeated exclusive bounds answer with the same sequence. */
+static void merged_order_range_matches_stepping() {
+    transactional_trivial_set_t store = seeded_sharded_set(128);
+
+    std::vector<trivial_id_t> walked;
+    st_verify_(store.range(trivial_id_to_key<trivial_key_t>(0), trivial_id_to_key<trivial_key_t>(128),
+                           [&](trivial_key_t const &member) noexcept { walked.push_back(member.unique_id); }));
+
+    std::vector<trivial_id_t> stepped;
+    trivial_key_t at = trivial_id_to_key<trivial_key_t>(0);
+    st_verify_(store.lower_bound(at, [&](trivial_key_t const &member) noexcept {
+        stepped.push_back(member.unique_id);
+        at = member;
+    }));
+    while (true) {
+        bool advanced = false;
+        st_verify_(store.upper_bound(at, [&](trivial_key_t const &member) noexcept {
+            stepped.push_back(member.unique_id);
+            at = member;
+            advanced = true;
+        }));
+        if (!advanced) break;
+    }
+    st_verify_eq_(walked.size(), stepped.size());
+    for (std::size_t position = 0; position != walked.size(); ++position)
+        st_verify_eq_(walked[position], stepped[position]);
+}
+
+/** @brief An inclusive bound answers with the key itself when it is there, and its successor when it is not. */
+static void merged_order_inclusive_bound_is_one_probe() {
+    transactional_trivial_set_t store = seeded_sharded_set(64);
+
+    bool answered = false;
+    st_verify_(store.lower_bound(trivial_id_to_key<trivial_key_t>(17), [&](trivial_key_t const &member) noexcept {
+        st_verify_eq_(member.unique_id, 17u);
+        answered = true;
+    }));
+    st_verify_((answered) && "an inclusive bound must answer with the key itself");
+
+    st_verify_(store.erase(trivial_id_to_key<trivial_key_t>(17)));
+    answered = false;
+    st_verify_(store.lower_bound(trivial_id_to_key<trivial_key_t>(17), [&](trivial_key_t const &member) noexcept {
+        st_verify_eq_(member.unique_id, 18u);
+        answered = true;
+    }));
+    st_verify_((answered) && "an erased key must be answered by its successor");
+}
+
+#pragma endregion Merged Order
+
+#pragma region Ordered Cursor
+
+/** @brief Every key the cursor hands over, in the order it handed them over. */
+static std::vector<trivial_id_t> drain_cursor(transactional_trivial_set_t const &store, std::size_t limit) {
+    std::vector<trivial_id_t> walked;
+    auto walking = store.cursor_from(trivial_id_to_key<trivial_key_t>(0));
+    for (std::size_t step = 0; step != limit; ++step) {
+        bool handed = false;
+        walking.next([&](trivial_key_t const &member) noexcept {
+            walked.push_back(member.unique_id);
+            handed = true;
+        });
+        if (!handed) break;
+    }
+    return walked;
+}
+
+/** @brief A cursor walks the same ascending sequence a merged range does, and stops when it runs out. */
+static void ordered_cursor_matches_the_range() {
+    transactional_trivial_set_t store = seeded_sharded_set(200);
+
+    std::vector<trivial_id_t> ranged;
+    st_verify_(store.range(trivial_id_to_key<trivial_key_t>(0), trivial_id_to_key<trivial_key_t>(200),
+                           [&](trivial_key_t const &member) noexcept { ranged.push_back(member.unique_id); }));
+
+    std::vector<trivial_id_t> const walked = drain_cursor(store, 400);
+    st_verify_eq_(walked.size(), ranged.size());
+    for (std::size_t position = 0; position != walked.size(); ++position)
+        st_verify_eq_(walked[position], ranged[position]);
+}
+
+/** @brief Erasing the key a cursor stands on hands over the successor rather than losing the walk. */
+static void ordered_cursor_survives_its_own_key_erased() {
+    transactional_trivial_set_t store = seeded_sharded_set(64);
+
+    auto walking = store.cursor_from(trivial_id_to_key<trivial_key_t>(0));
+    trivial_id_t standing = 0;
+    walking.next([&](trivial_key_t const &member) noexcept { standing = member.unique_id; });
+
+    st_verify_(store.erase(trivial_id_to_key<trivial_key_t>(standing)));
+
+    bool handed = false;
+    walking.next([&](trivial_key_t const &member) noexcept {
+        st_verify_((member.unique_id > standing) && "a cursor must never hand back a key it already gave");
+        handed = true;
+    });
+    st_verify_((handed) && "erasing the key underneath a cursor must not end its walk");
+}
+
+/**
+ *  @brief A key inserted ahead of a live cursor is still handed over.
+ *
+ *  This is the property a cached front can quietly lose: the front was read before the insert, so
+ *  nothing but the partition's write count tells the cursor to look again. Reverting the count leaves
+ *  every other test here passing and this one failing.
+ */
+static void ordered_cursor_sees_a_key_inserted_ahead() {
+    auto built = transactional_trivial_set_t::make();
+    st_verify_((built) && "the sharded set must build");
+    transactional_trivial_set_t store = std::move(*built);
+    for (std::size_t identifier = 0; identifier != 64; identifier += 2)
+        st_verify_(store.upsert(trivial_id_to_member<trivial_key_t>(identifier)));
+
+    auto walking = store.cursor_from(trivial_id_to_key<trivial_key_t>(0));
+    bool handed = false;
+    walking.next([&](trivial_key_t const &member) noexcept {
+        st_verify_eq_(member.unique_id, 0u);
+        handed = true;
+    });
+    st_verify_(handed);
+
+    // Slotted between the key just handed over and the front every partition is holding.
+    st_verify_(store.upsert(trivial_id_to_member<trivial_key_t>(1)));
+
+    handed = false;
+    walking.next([&](trivial_key_t const &member) noexcept {
+        st_verify_eq_(member.unique_id, 1u);
+        handed = true;
+    });
+    st_verify_((handed) && "a key inserted ahead of a live cursor must still be handed over");
+}
+
+/** @brief A cursor hands over every key exactly once, whatever partition each of them hashed into. */
+static void ordered_cursor_hands_every_key_once() {
+    transactional_trivial_set_t store = seeded_sharded_set(300);
+
+    std::vector<std::size_t> handed(300, 0);
+    std::vector<trivial_id_t> const walked = drain_cursor(store, 600);
+    for (trivial_id_t identifier : walked) {
+        st_verify_((identifier < 300) && "a cursor must hand over only keys the store holds");
+        ++handed[identifier];
+    }
+    for (std::size_t identifier = 0; identifier != 300; ++identifier) st_verify_eq_(handed[identifier], 1u);
+}
+
+#pragma endregion Ordered Cursor
+
+#pragma region Lock Cost
+
+/**
+ *  @brief A shared mutex that counts how many times it was taken, so a walk's cost can be asserted.
+ *
+ *  The count lives here rather than in the store because the store is already parameterized on its
+ *  mutex: what a walk costs is measurable from outside without the library carrying a tally it would
+ *  only ever use in a test.
+ */
+class counting_mutex_t {
+    spin_shared_mutex held_;
+
+  public:
+    static inline std::atomic<std::size_t> acquisitions {0};
+
+    static void reset() noexcept { acquisitions.store(0, std::memory_order_relaxed); }
+    static std::size_t taken() noexcept { return acquisitions.load(std::memory_order_relaxed); }
+
+    void lock() noexcept {
+        acquisitions.fetch_add(1, std::memory_order_relaxed);
+        held_.lock();
+    }
+    void unlock() noexcept { held_.unlock(); }
+    void lock_shared() noexcept {
+        acquisitions.fetch_add(1, std::memory_order_relaxed);
+        held_.lock_shared();
+    }
+    void unlock_shared() noexcept { held_.unlock_shared(); }
+};
+
+using counted_sharded_set_t = partitioned_store<tree_trivial_set_t, hash<trivial_key_t>, counting_mutex_t, 16>;
+
+/** @brief How many partitions a sharded store was built with, for a cost a test states in those terms. */
+template <typename store_type_>
+constexpr std::size_t partitions_of_v = store_type_::partitions_k;
+
+/**
+ *  @brief A cursor costs one partition acquisition per element, where stepping a bound costs all sixteen.
+ *
+ *  Asserted rather than measured: the whole reason the cursor caches a front per partition is that
+ *  re-probing every partition per element is what an ordered walk used to cost, and a cache that
+ *  quietly stopped working would still pass every correctness test above it.
+ */
+static void lock_cost_cursor_beats_stepping() {
+    auto built = counted_sharded_set_t::make();
+    st_verify_((built) && "the counted set must build");
+    counted_sharded_set_t store = std::move(*built);
+
+    constexpr std::size_t size_k = 256;
+    for (std::size_t identifier = 0; identifier != size_k; ++identifier)
+        st_verify_(store.upsert(trivial_id_to_member<trivial_key_t>(identifier)));
+
+    // Stepping by exclusive bound: every element asks every partition.
+    counting_mutex_t::reset();
+    std::size_t stepped = 0;
+    trivial_key_t at = trivial_id_to_key<trivial_key_t>(0);
+    while (true) {
+        bool advanced = false;
+        st_verify_(store.upper_bound(at, [&](trivial_key_t const &member) noexcept {
+            at = member;
+            advanced = true;
+        }));
+        if (!advanced) break;
+        ++stepped;
+    }
+    std::size_t const stepping_locks = counting_mutex_t::taken();
+
+    // The cursor: one partition per element, plus the sixteen it seeded from.
+    counting_mutex_t::reset();
+    std::size_t walked = 0;
+    auto walking = store.cursor_from(trivial_id_to_key<trivial_key_t>(0));
+    while (true) {
+        bool handed = false;
+        walking.next([&](trivial_key_t const &) noexcept { handed = true; });
+        if (!handed) break;
+        ++walked;
+    }
+    std::size_t const cursor_locks = counting_mutex_t::taken();
+
+    st_verify_eq_(walked, size_k);
+    st_verify_((stepping_locks >= stepped * 16) && "stepping a bound must ask every partition per element");
+    // One acquisition per element handed over, plus the sixteen the first step seeds from.
+    st_verify_((cursor_locks <= walked + partitions_of_v<counted_sharded_set_t>) &&
+               "a cursor over a quiet store costs one partition acquisition per element");
+    st_verify_((cursor_locks * 8 < stepping_locks) && "the cursor must cost a fraction of stepping a bound");
+}
+
+#pragma endregion Lock Cost
+
+/**
+ *  @brief A key that refuses to be copied still reaches a partition.
+ *
+ *  Choosing a partition is a hash, and a hash needs to read a key rather than own one. Materializing an
+ *  identifier to feed the hasher made every point operation demand a copy, so a move-only key - which
+ *  every unsharded store accepts - could not be sharded at all. The merged walks still need a copy,
+ *  because they remember one key per partition between steps, and they say so in their own assertion.
+ */
+static void sharded_ops_move_only_key_reaches_a_partition() {
+    using heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
+    using sharded_t = partitioned_store<heavy_set_t, hash<heavy_key_t>>;
+
+    auto made = sharded_t::make(std::less<void> {}, hash<heavy_key_t> {});
+    st_verify_(made);
+    sharded_t &store = *made;
+
+    for (trivial_id_t identifier = 0; identifier != 64; ++identifier) {
+        auto key = heavy_key_t::make(identifier);
+        st_verify_(key);
+        st_verify_(store.upsert(std::move(*key)));
+    }
+    st_verify_eq_(store.size(), 64u);
+
+    for (trivial_id_t identifier = 0; identifier != 64; ++identifier) {
+        auto probe = heavy_key_t::make(identifier);
+        st_verify_(probe);
+        bool seen = false;
+        st_verify_(store.find(*probe, [&](heavy_key_t const &) noexcept { seen = true; }, no_op_t {}));
+        st_verify_((seen) && "a key that reached a partition must be findable in it");
+    }
+
+    auto doomed = heavy_key_t::make(7);
+    st_verify_(doomed);
+    st_verify_(store.erase(*doomed));
+    st_verify_eq_(store.size(), 63u);
+}
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
     std::size_t failures = 0;
 
+    failures += run_test(filter, "lock_cost.cursor_beats_stepping", lock_cost_cursor_beats_stepping);
+    failures += run_test(filter, "merged_order.range_ascends", merged_order_range_ascends);
+    failures += run_test(filter, "merged_order.range_matches_stepping", merged_order_range_matches_stepping);
+    failures +=
+        run_test(filter, "merged_order.inclusive_bound_is_one_probe", merged_order_inclusive_bound_is_one_probe);
+    failures += run_test(filter, "ordered_cursor.matches_the_range", ordered_cursor_matches_the_range);
+    failures +=
+        run_test(filter, "ordered_cursor.survives_its_own_key_erased", ordered_cursor_survives_its_own_key_erased);
+    failures += run_test(filter, "ordered_cursor.sees_a_key_inserted_ahead", ordered_cursor_sees_a_key_inserted_ahead);
+    failures += run_test(filter, "ordered_cursor.hands_every_key_once", ordered_cursor_hands_every_key_once);
     failures += run_test(filter, "failure_policy.distinct_causes", failure_policy_distinct_causes);
     failures += run_test(filter, "failure_policy.relayed_causes", failure_policy_relayed_causes);
     failures += run_test(filter, "failure_policy.bulk_methods", failure_policy_bulk_methods);
     failures += run_test(filter, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
     failures += run_test(filter, "sharded_concurrency.walks_never_race_erasures",
                          sharded_concurrency_walks_never_race_erasures);
+    failures += run_test(filter, "sharded_ops.move_only_key_reaches_a_partition",
+                         sharded_ops_move_only_key_reaches_a_partition);
     failures += run_test(filter, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);
     failures += run_test(filter, "sharded_concurrency.standard_mutex_substitutes",
                          sharded_concurrency_standard_mutex_substitutes);
@@ -1042,6 +1370,8 @@ int main() {
                          transactional_consistency_watch_detects_staged_writes_of_older_generation);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation",
+                         transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",
