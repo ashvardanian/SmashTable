@@ -65,16 +65,16 @@ using standard_mutex_map_t = partitioned_store<tree_composite_map_t, hash<compos
  */
 using hash_store_t = monotonic_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
 
-static_assert(offers_ordered_surface_k<tree_trivial_set_t>, "the tree-backed store is ordered");
-static_assert(offers_ordered_surface_k<locked_store<tree_trivial_set_t>>,
+static_assert(offers_ordered_surface<tree_trivial_set_t>, "the tree-backed store is ordered");
+static_assert(offers_ordered_surface<locked_store<tree_trivial_set_t>>,
               "wrapping an ordered store must keep the ordered surface");
-static_assert(offers_ordered_surface_k<partitioned_store<tree_trivial_set_t>>,
+static_assert(offers_ordered_surface<partitioned_store<tree_trivial_set_t>>,
               "sharding an ordered store must keep the ordered surface");
 
-static_assert(!offers_ordered_surface_k<hash_store_t>, "a hash-backed store has no ordering to offer");
-static_assert(!offers_ordered_surface_k<locked_store<hash_store_t>>,
+static_assert(!offers_ordered_surface<hash_store_t>, "a hash-backed store has no ordering to offer");
+static_assert(!offers_ordered_surface<locked_store<hash_store_t>>,
               "the lock wrapper must not claim an ordering its inner store denies");
-static_assert(!offers_ordered_surface_k<partitioned_store<hash_store_t>>,
+static_assert(!offers_ordered_surface<partitioned_store<hash_store_t>>,
               "the partitioned wrapper must not claim an ordering its inner store denies");
 
 /** Backed by a weight-balanced core, the only one that sums the subtree counts @c select descends on. */
@@ -110,34 +110,34 @@ struct enumerable_set_t : tree_trivial_set_t {
     }
 };
 
-static_assert(offers_order_statistics_k<ranked_set_t>, "the weight-balanced store answers by ordinal");
-static_assert(offers_order_statistics_k<locked_store<monotonic_ranked_set_t>>,
+static_assert(offers_order_statistics<ranked_set_t>, "the weight-balanced store answers by ordinal");
+static_assert(offers_order_statistics<locked_store<monotonic_ranked_set_t>>,
               "the ordinal surface travels through the wrapper whichever store family carries it");
-static_assert(offers_order_statistics_k<partitioned_store<monotonic_ranked_set_t>>,
+static_assert(offers_order_statistics<partitioned_store<monotonic_ranked_set_t>>,
               "the ordinal surface travels through the wrapper whichever store family carries it");
-static_assert(offers_order_statistics_k<locked_store<ranked_set_t>>,
+static_assert(offers_order_statistics<locked_store<ranked_set_t>>,
               "wrapping an order-statistics store must keep the ordinal surface");
-static_assert(offers_order_statistics_k<partitioned_store<ranked_set_t>>,
+static_assert(offers_order_statistics<partitioned_store<ranked_set_t>>,
               "sharding an order-statistics store must keep the ordinal surface");
 
-static_assert(!offers_order_statistics_k<tree_trivial_set_t>, "the AVL core sums no subtree counts");
-static_assert(!offers_order_statistics_k<locked_store<tree_trivial_set_t>>,
+static_assert(!offers_order_statistics<tree_trivial_set_t>, "the AVL core sums no subtree counts");
+static_assert(!offers_order_statistics<locked_store<tree_trivial_set_t>>,
               "the lock wrapper must not claim ordinals its inner core cannot answer");
-static_assert(!offers_order_statistics_k<partitioned_store<tree_trivial_set_t>>,
+static_assert(!offers_order_statistics<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper must not claim ordinals its inner core cannot answer");
-static_assert(!offers_order_statistics_k<locked_store<hash_store_t>>, "an unordered core has no ordinals at all");
-static_assert(!offers_order_statistics_k<partitioned_store<hash_store_t>>, "an unordered core has no ordinals at all");
+static_assert(!offers_order_statistics<locked_store<hash_store_t>>, "an unordered core has no ordinals at all");
+static_assert(!offers_order_statistics<partitioned_store<hash_store_t>>, "an unordered core has no ordinals at all");
 
-static_assert(offers_enumeration_k<enumerable_set_t>, "the fixture store enumerates");
-static_assert(offers_enumeration_k<locked_store<enumerable_set_t>>,
+static_assert(offers_enumeration<enumerable_set_t>, "the fixture store enumerates");
+static_assert(offers_enumeration<locked_store<enumerable_set_t>>,
               "wrapping an enumerable store must keep the enumeration");
-static_assert(offers_enumeration_k<partitioned_store<enumerable_set_t>>,
+static_assert(offers_enumeration<partitioned_store<enumerable_set_t>>,
               "sharding an enumerable store must keep the enumeration");
 
-static_assert(offers_enumeration_k<tree_trivial_set_t>, "a transactional store walks its own members");
-static_assert(offers_enumeration_k<locked_store<tree_trivial_set_t>>,
+static_assert(offers_enumeration<tree_trivial_set_t>, "a transactional store walks its own members");
+static_assert(offers_enumeration<locked_store<tree_trivial_set_t>>,
               "the lock wrapper forwards the enumeration its inner store offers");
-static_assert(offers_enumeration_k<partitioned_store<tree_trivial_set_t>>,
+static_assert(offers_enumeration<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper forwards the enumeration its inner store offers");
 
 /** Both wrappers over the enumerable fixture, which is what the enumeration suites walk. */
@@ -153,22 +153,22 @@ using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
  *  accept: an alias that took every store would name the same type as its sibling and catch nothing.
  */
 template <typename store_type_>
-constexpr bool names_locked_set_k = requires { typename locked_set<store_type_>; };
+constexpr bool names_locked_set = requires { typename locked_set<store_type_>; };
 template <typename store_type_>
-constexpr bool names_locked_map_k = requires { typename locked_map<store_type_>; };
+constexpr bool names_locked_map = requires { typename locked_map<store_type_>; };
 template <typename store_type_>
-constexpr bool names_partitioned_set_k = requires { typename partitioned_set<store_type_>; };
+constexpr bool names_partitioned_set = requires { typename partitioned_set<store_type_>; };
 template <typename store_type_>
-constexpr bool names_partitioned_map_k = requires { typename partitioned_map<store_type_>; };
+constexpr bool names_partitioned_map = requires { typename partitioned_map<store_type_>; };
 
-static_assert(names_locked_set_k<tree_trivial_set_t>, "the set alias takes a store of plain keys");
-static_assert(names_locked_map_k<tree_trivial_map_t>, "the map alias takes a store of mappings");
-static_assert(!names_locked_map_k<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
-static_assert(!names_locked_set_k<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
-static_assert(names_partitioned_set_k<tree_trivial_set_t>, "the set alias takes a store of plain keys");
-static_assert(names_partitioned_map_k<tree_trivial_map_t>, "the map alias takes a store of mappings");
-static_assert(!names_partitioned_map_k<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
-static_assert(!names_partitioned_set_k<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
+static_assert(names_locked_set<tree_trivial_set_t>, "the set alias takes a store of plain keys");
+static_assert(names_locked_map<tree_trivial_map_t>, "the map alias takes a store of mappings");
+static_assert(!names_locked_map<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
+static_assert(!names_locked_set<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
+static_assert(names_partitioned_set<tree_trivial_set_t>, "the set alias takes a store of plain keys");
+static_assert(names_partitioned_map<tree_trivial_map_t>, "the map alias takes a store of mappings");
+static_assert(!names_partitioned_map<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
+static_assert(!names_partitioned_set<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
 
 /**
  *  A wrapper names itself @c store_t, which is what every engine calls its own self-alias, so one name
@@ -197,21 +197,21 @@ using snapshot_hash_store_t =
  *  One line per store: the fold names the surface, the wrapper and the store in the diagnostic, so a
  *  forward that goes missing fails here rather than at whatever call site happened to want it.
  */
-static_assert(every_wrapper_keeps_surfaces_k<tree_trivial_set_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<tree_trivial_map_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<monotonic_ranked_set_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<hash_store_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<enumerable_set_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<snapshot_trivial_set_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<snapshot_trivial_map_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<ranked_set_t>, "a wrapper must keep what its store offers");
-static_assert(every_wrapper_keeps_surfaces_k<snapshot_hash_store_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<tree_trivial_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<tree_trivial_map_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<monotonic_ranked_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<hash_store_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<enumerable_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<snapshot_trivial_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<snapshot_trivial_map_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<ranked_set_t>, "a wrapper must keep what its store offers");
+static_assert(every_wrapper_keeps_surfaces<snapshot_hash_store_t>, "a wrapper must keep what its store offers");
 
 /** A wrapper meant to be invisible must not change what an outer wrapper concludes about isolation. */
-static_assert(nesting_preserves_isolation_k<tree_trivial_set_t>, "a transparent wrapper decides nothing");
-static_assert(nesting_preserves_isolation_k<snapshot_trivial_set_t>, "a transparent wrapper decides nothing");
-static_assert(nesting_preserves_isolation_k<snapshot_trivial_map_t>, "a transparent wrapper decides nothing");
-static_assert(nesting_preserves_isolation_k<ranked_set_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation<tree_trivial_set_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation<snapshot_trivial_set_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation<snapshot_trivial_map_t>, "a transparent wrapper decides nothing");
+static_assert(nesting_preserves_isolation<ranked_set_t>, "a transparent wrapper decides nothing");
 
 /** Sharding a stamped store keeps its promise whole, and a wrapper between the two takes nothing from it. */
 static_assert(partitioned_store<snapshot_trivial_map_t>::isolation_k == snapshot_trivial_map_t::isolation_k,
@@ -221,9 +221,9 @@ static_assert(partitioned_store<locked_store<snapshot_trivial_map_t>>::isolation
               "one clock across partitions carries the inner store's isolation");
 
 /** A transaction has to survive being stored, which is what a deleted move assignment takes away. */
-static_assert(transaction_moves_as_a_value_k<locked_store<tree_trivial_set_t>>, "a transaction moves as a value");
-static_assert(transaction_moves_as_a_value_k<partitioned_store<tree_trivial_set_t>>, "a transaction moves as a value");
-static_assert(transaction_moves_as_a_value_k<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
+static_assert(transaction_moves_as_a_value<locked_store<tree_trivial_set_t>>, "a transaction moves as a value");
+static_assert(transaction_moves_as_a_value<partitioned_store<tree_trivial_set_t>>, "a transaction moves as a value");
+static_assert(transaction_moves_as_a_value<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
               "a transaction moves as a value");
 
 /** The wrappers stay in the group the concept describes, which now also asks how a transaction moves. */

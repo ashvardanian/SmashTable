@@ -468,12 +468,15 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
     std::atomic<std::size_t> torn_across_keys {0};
     std::atomic<std::size_t> unrepeatable_reads {0};
     std::atomic<std::size_t> reads_taken {0};
+    /** @brief Holds the writer until every reader is inside its loop, so the two provably overlap. */
+    std::atomic<std::size_t> readers_ready {0};
     std::vector<std::thread> threads;
     threads.reserve(sharded_threads_count_k + 1);
 
     // Every round writes the same value to every key, so any two keys disagreeing is a commit read
     // half applied - the one thing a snapshot spanning the partitions has to make impossible.
     threads.emplace_back([&]() noexcept {
+        while (readers_ready.load() != sharded_threads_count_k) std::this_thread::yield();
         for (std::size_t round = 1; round <= rounds; ++round) {
             auto writer = container.transaction();
             if (!writer) break;
@@ -503,6 +506,7 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
                 return disagreements;
             };
 
+            ++readers_ready;
             while (writing.load()) {
                 auto reader = container.transaction();
                 if (!reader) continue;
@@ -517,6 +521,8 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
 
     for (auto &thread : threads) thread.join();
 
+    // The gate above starts the writer only once every reader is looping, so this can only trip if a
+    // reader gave up before taking a single pass.
     st_verify_ne_(reads_taken.load(), 0, "no reader ever crossed the writer, so this proves nothing");
     st_verify_eq_(torn_across_keys.load(), 0, "a reader saw one commit half applied across partitions");
     st_verify_eq_(unrepeatable_reads.load(), 0, "one transaction read two different commits");

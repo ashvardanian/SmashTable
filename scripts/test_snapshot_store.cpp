@@ -1670,31 +1670,31 @@ using reference_heavy_map_t = reference_map<heavy_key_t, int, std::less<void>>;
 
 /** @brief Whether a mutator that can fail reports through a status rather than through @c void. */
 template <typename store_type_>
-constexpr bool update_range_reports_a_status_k =
+constexpr bool update_range_reports_a_status =
     std::is_same_v<status_t, decltype(std::declval<store_type_ &>().update_range(
                                  std::declval<typename store_type_::identifier_t const &>(),
                                  std::declval<typename store_type_::identifier_t const &>(), std::declval<no_op_t>()))>;
 
 /** @brief Whether a sweep answers with a count or with the reason it could not run, never one zero for both. */
 template <typename store_type_>
-constexpr bool vacuum_reports_through_expected_k =
+constexpr bool vacuum_reports_through_expected =
     std::is_same_v<expected<std::size_t>, decltype(std::declval<store_type_ &>().vacuum())>;
 
 /** @brief Whether an ordered walk may be asked to visit a window without being handed a callback. */
 template <typename store_type_>
-constexpr bool range_defaults_its_callback_k =
+constexpr bool range_defaults_its_callback =
     requires(store_type_ const &store, typename store_type_::identifier_t const &key) { store.range(key, key); };
 
 /** @brief Whether an insert that declines to overwrite may report only the branch a caller cares about. */
 template <typename store_type_>
-constexpr bool insert_if_missing_takes_one_callback_k =
+constexpr bool insert_if_missing_takes_one_callback =
     requires(store_type_ &store, typename store_type_::value_type &&element, no_op_t callback) {
         store.insert_if_missing(std::move(element), callback);
     };
 
 /** @brief Whether a store refuses a key that is not already there, in the single and the batch form. */
 template <typename store_type_>
-constexpr bool refuses_an_absent_key_k =
+constexpr bool refuses_an_absent_key =
     requires(store_type_ &store, typename store_type_::value_type &&element, typename store_type_::value_type *cursor) {
         store.update(std::move(element));
         store.update(cursor, cursor);
@@ -1702,7 +1702,7 @@ constexpr bool refuses_an_absent_key_k =
 
 /** @brief Whether a store and its transactions both answer for a first key, without being asked an ordinal. */
 template <typename store_type_>
-constexpr bool answers_a_smallest_k =
+constexpr bool answers_a_smallest =
     requires(store_type_ const &store, typename store_type_::transaction_t const &transaction, no_op_t callback) {
         store.smallest(callback, callback);
         transaction.smallest(callback, callback);
@@ -1710,7 +1710,7 @@ constexpr bool answers_a_smallest_k =
 
 /** @brief Whether a store and its transactions both answer ordinals. */
 template <typename store_type_>
-constexpr bool answers_ordinals_k =
+constexpr bool answers_ordinals =
     requires(store_type_ const &store, typename store_type_::transaction_t const &transaction,
              typename store_type_::identifier_t const &key, std::size_t ordinal, no_op_t callback) {
         store.select(ordinal, callback, callback);
@@ -1719,53 +1719,53 @@ constexpr bool answers_ordinals_k =
         transaction.rank(key, callback, callback);
     };
 
-static_assert(answers_a_smallest_k<snapshot_avl_map_t>, "an ordered store opens a merged walk with a first key");
-static_assert(answers_a_smallest_k<snapshot_wb_map_t>, "an ordered store opens a merged walk with a first key");
-static_assert(answers_a_smallest_k<monotonic_avl_map_t>, "an ordered store opens a merged walk with a first key");
-static_assert(!answers_a_smallest_k<snapshot_hash_map_t>, "an unordered core has no first key to name");
-static_assert(!answers_ordinals_k<snapshot_avl_map_t>,
+static_assert(answers_a_smallest<snapshot_avl_map_t>, "an ordered store opens a merged walk with a first key");
+static_assert(answers_a_smallest<snapshot_wb_map_t>, "an ordered store opens a merged walk with a first key");
+static_assert(answers_a_smallest<monotonic_avl_map_t>, "an ordered store opens a merged walk with a first key");
+static_assert(!answers_a_smallest<snapshot_hash_map_t>, "an unordered core has no first key to name");
+static_assert(!answers_ordinals<snapshot_avl_map_t>,
               "the AVL core keeps no subtree counts, which is why the seed must not ask for an ordinal");
 
-static_assert(update_range_reports_a_status_k<snapshot_avl_map_t>, "a mutator that can fail needs a channel");
-static_assert(update_range_reports_a_status_k<monotonic_avl_map_t>, "a mutator that can fail needs a channel");
-static_assert(update_range_reports_a_status_k<reference_avl_map_t>, "a mutator that can fail needs a channel");
+static_assert(update_range_reports_a_status<snapshot_avl_map_t>, "a mutator that can fail needs a channel");
+static_assert(update_range_reports_a_status<monotonic_avl_map_t>, "a mutator that can fail needs a channel");
+static_assert(update_range_reports_a_status<reference_avl_map_t>, "a mutator that can fail needs a channel");
 
-static_assert(vacuum_reports_through_expected_k<snapshot_avl_map_t>, "zero must not mean 'could not run'");
-static_assert(vacuum_reports_through_expected_k<monotonic_avl_map_t>, "zero must not mean 'could not run'");
-static_assert(vacuum_reports_through_expected_k<reference_avl_map_t>, "zero must not mean 'could not run'");
+static_assert(vacuum_reports_through_expected<snapshot_avl_map_t>, "zero must not mean 'could not run'");
+static_assert(vacuum_reports_through_expected<monotonic_avl_map_t>, "zero must not mean 'could not run'");
+static_assert(vacuum_reports_through_expected<reference_avl_map_t>, "zero must not mean 'could not run'");
 
-static_assert(range_defaults_its_callback_k<snapshot_avl_map_t>, "the trailing callback is optional everywhere");
-static_assert(range_defaults_its_callback_k<monotonic_avl_map_t>, "the trailing callback is optional everywhere");
-static_assert(range_defaults_its_callback_k<reference_avl_map_t>, "the trailing callback is optional everywhere");
+static_assert(range_defaults_its_callback<snapshot_avl_map_t>, "the trailing callback is optional everywhere");
+static_assert(range_defaults_its_callback<monotonic_avl_map_t>, "the trailing callback is optional everywhere");
+static_assert(range_defaults_its_callback<reference_avl_map_t>, "the trailing callback is optional everywhere");
 
-static_assert(insert_if_missing_takes_one_callback_k<snapshot_avl_map_t>, "one call shape across the engines");
-static_assert(insert_if_missing_takes_one_callback_k<monotonic_avl_map_t>, "one call shape across the engines");
-static_assert(insert_if_missing_takes_one_callback_k<reference_avl_map_t>, "one call shape across the engines");
+static_assert(insert_if_missing_takes_one_callback<snapshot_avl_map_t>, "one call shape across the engines");
+static_assert(insert_if_missing_takes_one_callback<monotonic_avl_map_t>, "one call shape across the engines");
+static_assert(insert_if_missing_takes_one_callback<reference_avl_map_t>, "one call shape across the engines");
 
-static_assert(refuses_an_absent_key_k<snapshot_avl_map_t>, "all four insert strategies, on every engine");
-static_assert(refuses_an_absent_key_k<monotonic_avl_map_t>, "all four insert strategies, on every engine");
-static_assert(refuses_an_absent_key_k<reference_avl_map_t>, "all four insert strategies, on every engine");
+static_assert(refuses_an_absent_key<snapshot_avl_map_t>, "all four insert strategies, on every engine");
+static_assert(refuses_an_absent_key<monotonic_avl_map_t>, "all four insert strategies, on every engine");
+static_assert(refuses_an_absent_key<reference_avl_map_t>, "all four insert strategies, on every engine");
 
-static_assert(answers_ordinals_k<snapshot_wb_map_t>, "an engine that can rank must rank at both levels");
-static_assert(answers_ordinals_k<monotonic_wb_map_t>, "an engine that can rank must rank at both levels");
-static_assert(answers_ordinals_k<reference_avl_map_t>, "the oracle ranks by walking, which is always possible");
+static_assert(answers_ordinals<snapshot_wb_map_t>, "an engine that can rank must rank at both levels");
+static_assert(answers_ordinals<monotonic_wb_map_t>, "an engine that can rank must rank at both levels");
+static_assert(answers_ordinals<reference_avl_map_t>, "the oracle ranks by walking, which is always possible");
 
-static_assert(sample_one_surface_t::offered_k<snapshot_avl_map_t>, "every ordered engine draws one key");
-static_assert(sample_one_surface_t::offered_k<monotonic_avl_map_t>, "every ordered engine draws one key");
-static_assert(sample_one_surface_t::offered_k<reference_avl_map_t>, "every ordered engine draws one key");
+static_assert(sample_one_surface_t::offered<snapshot_avl_map_t>, "every ordered engine draws one key");
+static_assert(sample_one_surface_t::offered<monotonic_avl_map_t>, "every ordered engine draws one key");
+static_assert(sample_one_surface_t::offered<reference_avl_map_t>, "every ordered engine draws one key");
 
-static_assert(transaction_equal_range_surface_t::offered_k<reference_avl_map_t>,
+static_assert(transaction_equal_range_surface_t::offered<reference_avl_map_t>,
               "the oracle answers a point range inside a transaction, like its siblings");
 
 /** @brief Whether a store's self-alias is reachable, which is what makes it public vocabulary. */
 template <typename store_type_>
-constexpr bool names_itself_k = std::is_same_v<typename store_type_::store_t, store_type_>;
+constexpr bool names_itself = std::is_same_v<typename store_type_::store_t, store_type_>;
 
-static_assert(names_itself_k<snapshot_avl_map_t>, "an engine names itself, as every wrapper does");
-static_assert(names_itself_k<monotonic_avl_map_t>, "an engine names itself, as every wrapper does");
-static_assert(names_itself_k<reference_avl_map_t>, "an engine names itself, as every wrapper does");
-static_assert(names_itself_k<locked_store<snapshot_avl_map_t>>, "a wrapper names itself, as every engine does");
-static_assert(names_itself_k<partitioned_store<snapshot_avl_map_t>>, "a wrapper names itself, as every engine does");
+static_assert(names_itself<snapshot_avl_map_t>, "an engine names itself, as every wrapper does");
+static_assert(names_itself<monotonic_avl_map_t>, "an engine names itself, as every wrapper does");
+static_assert(names_itself<reference_avl_map_t>, "an engine names itself, as every wrapper does");
+static_assert(names_itself<locked_store<snapshot_avl_map_t>>, "a wrapper names itself, as every engine does");
+static_assert(names_itself<partitioned_store<snapshot_avl_map_t>>, "a wrapper names itself, as every engine does");
 
 /**
  *  @brief A watch borrows the identifier it is given, and a watch on a fetched version copies through
@@ -2516,8 +2516,8 @@ static void transaction_range_surface_sees_its_own_writes() {
 
     auto const bounded = writer->lower_bound_copy(trivial_id_to_key<member_t>(100));
     st_verify_(bounded);
-    st_verify_((mapping_key_or_itself<member_t>(*bounded) == trivial_id_to_key<member_t>(100)) &&
-               "a bound copy must reach the transaction's own staged member");
+    st_verify_eq_(mapping_key_or_itself<member_t>(*bounded), trivial_id_to_key<member_t>(100),
+                  "a bound copy must reach the transaction's own staged member");
 
     // An erasing walk stages tombstones; the store keeps its members until the commit lands.
     std::size_t erased = 0;

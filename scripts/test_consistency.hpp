@@ -31,14 +31,14 @@ using parity_snapshot_map_t = snapshot_avl_map<std::uint64_t, std::uint64_t>;
 using parity_monotonic_map_t = monotonic_avl_map<std::uint64_t, std::uint64_t>;
 using parity_serializable_map_t = serializable_avl_map<std::uint64_t, std::uint64_t>;
 
-static_assert(transaction_mirrors_the_store_k<parity_snapshot_map_t>,
+static_assert(transaction_mirrors_the_store<parity_snapshot_map_t>,
               "a snapshot store's transaction must mirror the store it opens on");
-static_assert(transaction_mirrors_the_store_k<parity_monotonic_map_t>,
+static_assert(transaction_mirrors_the_store<parity_monotonic_map_t>,
               "a monotonic store's transaction must mirror the store it opens on");
-static_assert(transaction_mirrors_the_store_k<parity_serializable_map_t>,
+static_assert(transaction_mirrors_the_store<parity_serializable_map_t>,
               "a serializable store's transaction must mirror the store it opens on");
 
-static_assert(wrappers_honour_the_level_k<parity_serializable_map_t>,
+static_assert(wrappers_honour_the_level<parity_serializable_map_t>,
               "a wrapper reporting a level must forward the surface that level is defined by");
 
 #pragma endregion Level Parity
@@ -85,13 +85,8 @@ inline constexpr isolation_t validated_reads_from_k = isolation_t::serializable_
  *  watch sampled have one answer for every case, so a suite spanning both asks for the name here.
  */
 template <typename container_type_>
-inline constexpr status_t watch_refusal_k =
+inline constexpr status_t watch_refusal =
     at_least(container_type_::isolation_k, isolation_t::snapshot_k) ? status_t::read_conflict_k
-                                                                    : status_t::consistency_k;
-
-template <typename container_type_>
-inline constexpr status_t write_refusal_k =
-    at_least(container_type_::isolation_k, isolation_t::snapshot_k) ? status_t::write_conflict_k
                                                                     : status_t::consistency_k;
 
 #pragma endregion Isolation Expectations
@@ -567,7 +562,7 @@ void test_concurrent_transactions_on_same_key() {
     // T2's stage should FAIL (watched value changed)
     auto status = t2->stage();
     st_verify_((failed(status)) && "staging must fail once a watched key was modified");
-    st_verify_eq_(status, watch_refusal_k<container_t>);
+    st_verify_eq_(status, watch_refusal<container_t>);
 
     // Verify T1's value persisted, T2's did not
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
@@ -625,7 +620,7 @@ void test_multi_key_conflict_any_key_fails() {
     // T1's stage should FAIL (key 2 was modified externally)
     auto status = t1->stage();
     st_verify_((failed(status)) && "staging must fail if any watched key changed");
-    st_verify_eq_(status, watch_refusal_k<container_t>);
+    st_verify_eq_(status, watch_refusal<container_t>);
 }
 
 /**
@@ -664,7 +659,7 @@ void test_watch_detects_external_direct_modification() {
     // Stage should detect the external change
     auto status = transaction->stage();
     st_verify_((failed(status)) && "a watch must detect a direct write to the store");
-    st_verify_eq_(status, watch_refusal_k<container_t>);
+    st_verify_eq_(status, watch_refusal<container_t>);
 }
 
 /**
@@ -1134,7 +1129,7 @@ void test_watch_detects_staged_invisible_writes() {
     st_verify_(t2->commit());
     auto status = t1->commit();
     st_verify_((failed(status)) && "committing must detect the conflicting commit");
-    st_verify_eq_(status, watch_refusal_k<container_t>);
+    st_verify_eq_(status, watch_refusal<container_t>);
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
@@ -1190,7 +1185,7 @@ void test_watch_detects_staged_writes_of_older_generation() {
     st_verify_(early->commit());
     auto const status = newcomer->commit();
     st_verify_((failed(status)) && "a commit over a watched key must refuse the second writer");
-    st_verify_eq_(status, watch_refusal_k<container_t>);
+    st_verify_eq_(status, watch_refusal<container_t>);
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
@@ -1370,7 +1365,7 @@ void test_find_does_not_watch() {
         auto const staged = reader->stage();
         auto const committed = succeeded(staged) ? reader->commit() : staged;
         st_verify_((failed(committed)) && "a watched read must refuse a write over a newer commit");
-        st_verify_eq_(committed, watch_refusal_k<container_t>);
+        st_verify_eq_(committed, watch_refusal<container_t>);
     }
 }
 
@@ -1499,7 +1494,7 @@ void test_group_unwinds_every_participant_on_conflict() {
 
     auto status = group->stage();
     st_verify_((failed(status)) && "a moved watch must refuse the whole group");
-    st_verify_eq_(status, watch_refusal_k<container_t>);
+    st_verify_eq_(status, watch_refusal<container_t>);
 
     // Nothing may be left staged in the participant that did succeed.
     st_verify_(group->reset());

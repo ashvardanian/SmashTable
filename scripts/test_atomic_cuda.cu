@@ -267,7 +267,7 @@ static void cuda_device_insert_find_erase_cycle() {
     st_verify_eq_(table->deleted_count(), erased_count);
 
     for (std::size_t index = 0; index != erased_count; ++index) {
-        st_verify_((table->contains(users[index]) == false) && "Erased key still present");
+        st_verify_eq_(table->contains(users[index]), false, "Erased key still present");
     }
     for (std::size_t index = erased_count; index != count; ++index) verify_present(table, users[index]);
 }

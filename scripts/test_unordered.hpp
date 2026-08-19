@@ -50,7 +50,7 @@ namespace ashvardanian::smashtable::scripts {
 
 /** @brief True when the container stores values alongside keys, false for sets. */
 template <typename container_type_>
-inline constexpr bool unordered_has_values_k = !std::is_void_v<typename container_type_::mapped_type>;
+inline constexpr bool unordered_has_values = !std::is_void_v<typename container_type_::mapped_type>;
 
 /** @brief Builds a key of the container's key type from an integer identifier. */
 template <typename key_type_>
@@ -70,7 +70,7 @@ value_type_ unordered_value_from(std::size_t identifier) noexcept {
 template <typename container_type_, typename... tags_types_>
 void unordered_emplace(container_type_ &container, std::size_t identifier, tags_types_... tags) noexcept {
     using key_t = typename container_type_::key_type;
-    if constexpr (unordered_has_values_k<container_type_>) {
+    if constexpr (unordered_has_values<container_type_>) {
         using mapped_t = typename container_type_::mapped_type;
         container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier), tags...);
     }
@@ -83,7 +83,7 @@ void unordered_emplace_valued(container_type_ &container, std::size_t identifier
                               tags_types_... tags) noexcept {
     using key_t = typename container_type_::key_type;
     using mapped_t = typename container_type_::mapped_type;
-    static_assert(unordered_has_values_k<container_type_>, "Only maps carry a separate value");
+    static_assert(unordered_has_values<container_type_>, "Only maps carry a separate value");
     container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(value_identifier), tags...);
 }
 
@@ -93,7 +93,7 @@ template <typename container_type_>
                                         [[maybe_unused]] std::size_t value_identifier) noexcept {
     using key_t = typename container_type_::key_type;
     using owned_t = typename container_type_::owned_value_type;
-    if constexpr (unordered_has_values_k<container_type_>) {
+    if constexpr (unordered_has_values<container_type_>) {
         using mapped_t = typename container_type_::mapped_type;
         return container.upsert(
             owned_t {unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(value_identifier)});
@@ -111,7 +111,7 @@ void unordered_verify_present(container_type_ &container, std::size_t identifier
     st_verify_eq_(container.contains(key), true, "a key that was inserted must be found");
     st_verify_eq_(container.count(key), 1u);
     st_verify_ne_(container.find(key), container.end(), "find must reach the element");
-    if constexpr (unordered_has_values_k<container_type_>) {
+    if constexpr (unordered_has_values<container_type_>) {
         using mapped_t = typename container_type_::mapped_type;
         st_verify_eq_(container.at(key), unordered_value_from<mapped_t>(value_identifier),
                       "the mapped value must survive every rehash");
@@ -248,7 +248,7 @@ void test_unordered_single_element_operations() {
     st_verify_eq_(*collected.begin(), unordered_key_from<key_t>(42), "the only key must be the inserted one");
 
     // Re-inserting the same key overwrites rather than duplicates.
-    if constexpr (unordered_has_values_k<container_t>) {
+    if constexpr (unordered_has_values<container_t>) {
         unordered_emplace_valued(container, 42, 99);
         st_verify_eq_(container.size(), 1u);
         unordered_verify_present(container, 42, 99);
@@ -548,7 +548,7 @@ void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
         st_verify_eq_(container.contains(borrowed), true, "a view of a present key must be found");
         st_verify_eq_(container.count(borrowed), 1u);
         st_verify_ne_(container.find(borrowed), container.end(), "find must accept a view");
-        if constexpr (unordered_has_values_k<container_t>) {
+        if constexpr (unordered_has_values<container_t>) {
             using mapped_t = typename container_t::mapped_type;
             st_verify_eq_(container.at(borrowed), unordered_value_from<mapped_t>(identifier),
                           "a view must reach the same value the owned key does");
@@ -611,7 +611,7 @@ template <typename container_type_, typename... tags_types_>
 auto unordered_emplace_reporting(container_type_ &container, std::size_t identifier, tags_types_... tags) noexcept {
     using key_t = typename container_type_::key_type;
     using report_t = typename container_type_::emplace_report_t;
-    if constexpr (unordered_has_values_k<container_type_>) {
+    if constexpr (unordered_has_values<container_type_>) {
         using mapped_t = typename container_type_::mapped_type;
         return container.template emplace<report_t::insert_result_k>(
             unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(identifier), tags...);
@@ -773,7 +773,7 @@ void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
     // Everything that did fit is still reachable, and an overwrite of a present key still lands.
     for (std::size_t identifier = 0; identifier < slots; ++identifier)
         unordered_verify_present(container, identifier, identifier);
-    if constexpr (unordered_has_values_k<container_t>) {
+    if constexpr (unordered_has_values<container_t>) {
         unordered_emplace_valued(container, 0, 7, assume_reserved_t {});
         st_verify_eq_(container.size(), slots);
         unordered_verify_present(container, 0, 7);
@@ -862,7 +862,7 @@ struct unordered_pinned_of<basic_hash_table<element_type_, hasher_type_, equals_
 
 /** @brief The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */
 template <typename container_type_>
-using unordered_pinned_t = typename unordered_pinned_of<container_type_>::type;
+using unordered_pinned = typename unordered_pinned_of<container_type_>::type;
 
 /**
  *  @brief Tests that the pinned table answers a missing key with a status and a callback.
@@ -876,11 +876,11 @@ void test_unordered_pinned_reports_status() {
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
     using mapped_t = typename container_t::mapped_type;
-    static_assert(unordered_has_values_k<container_t>, "The pinned suites are written for maps");
+    static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
     auto allocated = container_t::make(std::size_t {64});
     st_verify_((allocated) && "the growable table must build");
-    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
 
     st_verify_eq_(container.emplace(unordered_key_from<key_t>(1), unordered_value_from<mapped_t>(1)), success_k,
                   "an empty pinned table must take the first key");
@@ -921,11 +921,11 @@ void test_unordered_pinned_saturation() {
     using key_t = typename container_t::key_type;
     using mapped_t = typename container_t::mapped_type;
 
-    static_assert(unordered_has_values_k<container_t>, "The pinned suites are written for maps");
+    static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
     auto allocated = container_t::make(std::size_t {64});
     st_verify_((allocated) && "the growable table must build");
-    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     std::size_t const slots = container.slots_count();
     st_verify_((slots) > (0u));
 
@@ -958,8 +958,8 @@ void test_unordered_pinned_saturation() {
         bool reached = false;
         st_verify_(container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
             reached = true;
-            st_verify_((slot.value() == unordered_value_from<mapped_t>(identifier + slots)) &&
-                       "the overwrite must be the value that survives");
+            st_verify_eq_(slot.value(), unordered_value_from<mapped_t>(identifier + slots),
+                          "the overwrite must be the value that survives");
         }));
         st_verify_((reached) && "an overwritten key must still be present");
     }
@@ -977,11 +977,11 @@ void test_unordered_pinned_tombstone_saturation() {
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
     using mapped_t = typename container_t::mapped_type;
-    static_assert(unordered_has_values_k<container_t>, "The pinned suites are written for maps");
+    static_assert(unordered_has_values<container_t>, "The pinned suites are written for maps");
 
     auto allocated = container_t::make(std::size_t {64});
     st_verify_((allocated) && "the growable table must build");
-    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     std::size_t const slots = container.slots_count();
     st_verify_((slots) > (0u));
 
@@ -1018,12 +1018,12 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
     using key_t = typename container_t::key_type;
     using mapped_t = typename container_t::mapped_type;
 
-    static_assert(unordered_has_values_k<container_t>, "The atomic suites are written for maps");
+    static_assert(unordered_has_values<container_t>, "The atomic suites are written for maps");
 
     std::size_t const total = unordered_threads_count_k * per_thread;
     auto allocated = container_t::make(total * 2);
     st_verify_((allocated) && "the growable table must build");
-    auto container = unordered_pinned_t<container_t>::adopt((*std::move(allocated)).release());
+    auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     st_verify_((container.capacity() >= total) && "the pinned table must hold what the writers will store");
     auto const slots_before = container.slots_count();
 
@@ -1094,7 +1094,7 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
     using container_t = container_type_;
     using key_t = typename container_t::key_type;
     using mapped_t = typename container_t::mapped_type;
-    static_assert(unordered_has_values_k<container_t>, "The atomic suites are written for maps");
+    static_assert(unordered_has_values<container_t>, "The atomic suites are written for maps");
 
     std::size_t const total = unordered_threads_count_k * per_thread;
     auto allocated = container_t::make(total * 2);
@@ -1104,7 +1104,7 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
         unordered_emplace(growable, identifier, assume_reserved_t {});
     st_verify_eq_(growable.size(), total);
 
-    auto container = unordered_pinned_t<container_t>::adopt(std::move(growable).release());
+    auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
     st_verify_((container.capacity() >= total) && "the pinned table must hold every key it was filled with");
 
     // Every key already exists, so every update must land.
@@ -1129,8 +1129,8 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
         bool reached = false;
         st_verify_(container.find(unordered_key_from<key_t>(identifier), [&](auto const &slot) noexcept {
             reached = true;
-            st_verify_((slot.value() == unordered_value_from<mapped_t>(identifier + total)) &&
-                       "every update must be visible once the writers have joined");
+            st_verify_eq_(slot.value(), unordered_value_from<mapped_t>(identifier + total),
+                          "every update must be visible once the writers have joined");
         }));
         st_verify_((reached) && "an updated key must still be present");
     }
