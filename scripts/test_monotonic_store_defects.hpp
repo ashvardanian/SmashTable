@@ -39,7 +39,7 @@ void test_direct_write_spares_staged_version() {
 
     st_verify_(container.upsert(trivial_id_to_member<member_t>(7, 200)));
     st_verify_eq_(container.size(), 1);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(7)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(7)), true);
 
     // The staged version survived the direct write and is what the commit publishes.
     st_verify_(transaction->commit());
@@ -150,12 +150,12 @@ void test_committed_erase_hidden_from_point_reads() {
     st_verify_(transaction->commit());
 
     st_verify_eq_(container.size(), 1);
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(2)));
-    st_verify_eq_(container.count(trivial_id_to_key<member_t>(2)), 0);
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), false);
+    st_verify_eq_(container.count(trivial_id_to_key<member_t>(2)), std::size_t {0});
     st_verify_(!container.find_copy(trivial_id_to_key<member_t>(2)).has_value());
 
     std::size_t matches = 0;
-    container.equal_range(trivial_id_to_key<member_t>(2), [&](member_t const &) noexcept { ++matches; });
+    st_verify_(container.equal_range(trivial_id_to_key<member_t>(2), [&](member_t const &) noexcept { ++matches; }));
     st_verify_eq_(matches, 0);
 }
 
@@ -180,34 +180,35 @@ void test_committed_erase_hidden_from_ordered_reads() {
     st_verify_eq_(container.size(), 3);
 
     std::size_t walked = 0;
-    container.range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4),
-                    [&](member_t const &member) noexcept {
-                        ++walked;
-                        st_verify_(trivial_id_to_key<member_t>(2) != mapping_key_or_itself<member_t>(member));
-                    });
+    st_verify_(container.range(
+        trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4), [&](member_t const &member) noexcept {
+            ++walked;
+            st_verify_(trivial_id_to_key<member_t>(2) != mapping_key_or_itself<member_t>(member));
+        }));
     st_verify_eq_(walked, 3);
 
     // The tombstone sits exactly on the sought key, so a bound that ignored it would return it.
-    container.lower_bound(
+    st_verify_(container.lower_bound(
         trivial_id_to_key<member_t>(2),
         [&](member_t const &member) noexcept {
             st_verify_(trivial_id_to_key<member_t>(3) == mapping_key_or_itself<member_t>(member));
         },
-        []() noexcept { st_verify_(false && "A live key sits above the tombstone"); });
-    container.upper_bound(
+        []() noexcept { st_verify_(false && "A live key sits above the tombstone"); }));
+    st_verify_(container.upper_bound(
         trivial_id_to_key<member_t>(1),
         [&](member_t const &member) noexcept {
             st_verify_(trivial_id_to_key<member_t>(3) == mapping_key_or_itself<member_t>(member));
         },
-        []() noexcept { st_verify_(false && "A live key sits above the tombstone"); });
+        []() noexcept { st_verify_(false && "A live key sits above the tombstone"); }));
 
     // Sampling shares the range surface, so it must not draw the tombstone either.
     std::mt19937 generator(42);
     for (std::size_t attempt = 0; attempt != 64; ++attempt)
-        container.sample_one(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4), generator,
-                             [&](member_t const &member) noexcept {
-                                 st_verify_(trivial_id_to_key<member_t>(2) != mapping_key_or_itself<member_t>(member));
-                             });
+        st_verify_(container.sample_one(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4), generator,
+                                        [&](member_t const &member) noexcept {
+                                            st_verify_(trivial_id_to_key<member_t>(2) !=
+                                                       mapping_key_or_itself<member_t>(member));
+                                        }));
 }
 
 /** @brief A mutating ranged update never hands a caller the payload of a tombstone. */
@@ -238,7 +239,7 @@ void test_committed_erase_hidden_from_update_range() {
                                           mapped = typename member_t::mapped_type(9);
                                       }));
     st_verify_eq_(visited, 3);
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(2)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), false);
 }
 
 #pragma endregion Tombstone Visibility
@@ -270,8 +271,8 @@ void test_vacuum_reclaims_committed_tombstones() {
     st_verify_(reclaimed.has_value());
     st_verify_eq_(*reclaimed, 2);
     st_verify_eq_(container.size(), 4);
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(1)));
-    st_verify_(container.contains(trivial_id_to_key<member_t>(0)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), false);
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(0)), true);
 
     // Nothing is left to reclaim, and a live key is never mistaken for a tombstone.
     auto second_pass = container.vacuum();
@@ -309,7 +310,7 @@ void test_vacuum_spares_staged_versions() {
 
     st_verify_(rewriting->commit());
     st_verify_eq_(container.size(), 1);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(5)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(5)), true);
 }
 
 /** @brief The windowed overload reclaims only its own slice, so a caller can walk the keyspace in steps. */
@@ -374,23 +375,23 @@ void test_transaction_range_interleaves_staged_and_committed() {
 
     std::size_t const expected_ids[] = {0, 1, 2, 3, 5, 6};
     std::size_t walked = 0;
-    transaction->range(
+    st_verify_(transaction->range(
         trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(8), [&](member_t const &member) noexcept {
             st_verify_(walked < 6);
             st_verify_(trivial_id_to_key<member_t>(expected_ids[walked]) == mapping_key_or_itself<member_t>(member));
             ++walked;
-        });
+        }));
     st_verify_eq_(walked, 6);
 
     // A half-open window sees the same order, and the bound still excludes its upper key.
     walked = 0;
-    transaction->range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(5),
-                       [&](member_t const &member) noexcept {
-                           st_verify_(walked < 3);
-                           st_verify_(trivial_id_to_key<member_t>(expected_ids[walked + 1]) ==
-                                      mapping_key_or_itself<member_t>(member));
-                           ++walked;
-                       });
+    st_verify_(transaction->range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(5),
+                                  [&](member_t const &member) noexcept {
+                                      st_verify_(walked < 3);
+                                      st_verify_(trivial_id_to_key<member_t>(expected_ids[walked + 1]) ==
+                                                 mapping_key_or_itself<member_t>(member));
+                                      ++walked;
+                                  }));
     st_verify_eq_(walked, 3);
 }
 
@@ -412,18 +413,20 @@ void test_transaction_equal_range_sees_staged_writes() {
     st_verify_(transaction->erase(trivial_id_to_key<member_t>(1)));
 
     std::size_t staged_matches = 0;
-    transaction->equal_range(trivial_id_to_key<member_t>(2), [&](member_t const &member) noexcept {
+    st_verify_(transaction->equal_range(trivial_id_to_key<member_t>(2), [&](member_t const &member) noexcept {
         ++staged_matches;
         if constexpr (is_mapping<member_t>) st_verify_eq_(member.mapped, typename member_t::mapped_type(22));
-    });
+    }));
     st_verify_eq_(staged_matches, 1);
 
     std::size_t erased_matches = 0;
-    transaction->equal_range(trivial_id_to_key<member_t>(1), [&](member_t const &) noexcept { ++erased_matches; });
+    st_verify_(
+        transaction->equal_range(trivial_id_to_key<member_t>(1), [&](member_t const &) noexcept { ++erased_matches; }));
     st_verify_eq_(erased_matches, 0);
 
     std::size_t absent_matches = 0;
-    transaction->equal_range(trivial_id_to_key<member_t>(9), [&](member_t const &) noexcept { ++absent_matches; });
+    st_verify_(
+        transaction->equal_range(trivial_id_to_key<member_t>(9), [&](member_t const &) noexcept { ++absent_matches; }));
     st_verify_eq_(absent_matches, 0);
 }
 
@@ -496,7 +499,7 @@ void test_second_stage_is_rejected() {
 
     st_verify_(transaction->commit());
     st_verify_eq_(container.size(), 1);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), true);
 }
 
 #pragma endregion Status Reporting

@@ -78,6 +78,13 @@ enum class status_t : int {
 
     consistency_k = -2, // ? Not an errno; the value 1 would collide with `EPERM`
 
+    // ? The three ways an optimistic validation turns a transaction away. No errno names any of them:
+    // ? the closest, `EBUSY` and `EAGAIN`, are about a resource being held, while these are about what
+    // ? another transaction published. A retry loop reads them to decide whether retrying can help.
+    write_conflict_k = -3,   // A key this transaction wrote was published over since its snapshot
+    read_conflict_k = -4,    // A key this transaction read was published over since its snapshot
+    phantom_conflict_k = -5, // A window this transaction read gained or lost a member since its snapshot
+
     out_of_memory_heap_k = ENOMEM,
 
     invalid_argument_k = EINVAL,
@@ -116,6 +123,9 @@ constexpr char const *name_of(status_t status) noexcept {
     case status_t::success_k: return "success_k";
     case status_t::unknown_k: return "unknown_k";
     case status_t::consistency_k: return "consistency_k";
+    case status_t::write_conflict_k: return "write_conflict_k";
+    case status_t::read_conflict_k: return "read_conflict_k";
+    case status_t::phantom_conflict_k: return "phantom_conflict_k";
     case status_t::out_of_memory_heap_k: return "out_of_memory_heap_k";
     case status_t::invalid_argument_k: return "invalid_argument_k";
     case status_t::operation_not_permitted_k: return "operation_not_permitted_k";
@@ -752,11 +762,10 @@ constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(st
  *  @see https://jepsen.io/consistency
  */
 enum class isolation_t : std::uint8_t {
-    read_uncommitted_k = 0,
-    read_committed_k = 1,
-    monotonic_atomic_view_k = 2,
-    snapshot_k = 3,
-    serializable_k = 4,
+    read_committed_k = 0,
+    monotonic_atomic_view_k = 1,
+    snapshot_k = 2,
+    serializable_k = 3,
 };
 
 /** @brief Whether @p offered is at least as strong a promise as @p required. */
@@ -860,6 +869,56 @@ struct watched_identifier {
     watch_t watch;
 };
 
+/**
+ *  @brief How one transaction reached one key, as independent claims rather than as a state.
+ *
+ *  A key can be read and be the endpoint of a range at once, so these are flags and not an
+ *  enumeration. Nothing here dates anything: a transaction's snapshot is the only date its validator
+ *  needs, which is what lets a read record no sampled value at all.
+ *
+ *  @c read_k names exactly this key, so its whole version run is validated. @c opens_k begins a range
+ *  read at this key, inclusive, and the entry recorded next to it closes that range, exclusive - the
+ *  adjacency is the pairing, which is what lets one sequence hold points and windows alike.
+ *
+ *  A window can also run off one end. An ordinal read depends on every key ordered before the one it
+ *  lands on, and a bound read that finds nothing depends on everything above its bound, yet neither
+ *  end has a key to name - there is no smallest @c std::string and no largest one. @c from_the_lowest_k
+ *  on the opening entry and @c to_the_highest_k on the closing entry say so, and the identifier stored
+ *  beside the flag is then ignored rather than meaning anything.
+ */
+enum class access_t : std::uint8_t {
+    none_k = 0,
+    read_k = 1u << 0,
+    opens_k = 1u << 1,
+    closes_k = 1u << 2,
+    from_the_lowest_k = 1u << 3,
+    to_the_highest_k = 1u << 4,
+};
+
+/** @brief Whether @p mask carries @p flag, spelled out because a scoped enum has no @c operator&. */
+[[nodiscard]] constexpr bool holds(access_t mask, access_t flag) noexcept {
+    return (static_cast<std::uint8_t>(mask) & static_cast<std::uint8_t>(flag)) != 0;
+}
+
+/** @brief Both claims at once, for a key that is read and also opens a range. */
+[[nodiscard]] constexpr access_t operator|(access_t first, access_t second) noexcept {
+    return static_cast<access_t>(static_cast<std::uint8_t>(first) | static_cast<std::uint8_t>(second));
+}
+
+/**
+ *  @brief One key a transaction read, and in what way.
+ *
+ *  Carries no generation, so it orders by key alone and a validator dates it against the
+ *  transaction's snapshot rather than against whatever the read happened to see.
+ */
+template <typename identifier_type_>
+struct accessed_identifier {
+    using identifier_t = identifier_type_;
+
+    identifier_t identifier;
+    access_t access {access_t::read_k};
+};
+
 template <typename type_>
 struct is_dating_identifier : public std::false_type {};
 
@@ -944,6 +1003,7 @@ struct versioning_for {
 
     using dated_identifier_t = dated_identifier<identifier_t>;
     using watched_identifier_t = watched_identifier<identifier_t>;
+    using accessed_identifier_t = accessed_identifier<identifier_t>;
 
     static_assert(!std::is_reference<value_t>(), "Only value types are supported.");
     static_assert(std::is_nothrow_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>,
@@ -1381,7 +1441,7 @@ concept key_addressable_collection =
                                                     typename collection_type_::key_type const &key) {
         { constant.size() } -> std::convertible_to<std::size_t>;
         { constant.empty() } -> std::convertible_to<bool>;
-        { constant.contains(key) } -> std::convertible_to<bool>;
+        { constant.contains(key) } -> std::same_as<expected<bool>>;
         collection.clear();
     };
 
@@ -1639,9 +1699,9 @@ struct storage_node_of<collection_type_, std::void_t<typename collection_type_::
 /**
  *  @brief A store whose transactions validate what they watched and stage before they commit.
  *
- *  The isolation floor is @c read_committed_k rather than the weakest level: a validated optimistic
- *  transaction stages behind a flag no reader honours, so a store satisfying the rest cannot expose
- *  an uncommitted write, and one claiming @c read_uncommitted_k is describing something else.
+ *  The isolation floor is @c read_committed_k, which is also the weakest level named: a validated
+ *  optimistic transaction stages behind a flag no reader honours, so a store satisfying the rest
+ *  cannot expose an uncommitted write, and a store that could is describing something else.
  *
  *  @c reserve is deliberately absent: it is a capacity hint over the watch list, not part of the
  *  contract, and a sharded store has no single list to size.

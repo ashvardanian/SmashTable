@@ -9,10 +9,39 @@
 #include <utility> // `std::move`
 #include <vector>  // `std::vector`
 
+#include <smashtable/monotonic_store.hpp> // `monotonic_avl_map`
+#include <smashtable/snapshot_store.hpp>  // `snapshot_avl_map`, `serializable_avl_map`
+
 #include "test_basic.hpp"
 #include "test_failure_policy.hpp"
+#include "test_surface_parity.hpp"
 
 namespace ashvardanian::smashtable::scripts {
+
+#pragma region Level Parity
+
+/**
+ *  @brief The store-versus-transaction and level-versus-wrapper folds, over the shipped engines.
+ *
+ *  Asserted here rather than beside the wrapper fold because these ask about a store on its own: a
+ *  surface missing from a store @b and from its transaction passes every wrapper check vacuously,
+ *  which is how a whole family of them went unnoticed.
+ */
+using parity_snapshot_map_t = snapshot_avl_map<std::uint64_t, std::uint64_t>;
+using parity_monotonic_map_t = monotonic_avl_map<std::uint64_t, std::uint64_t>;
+using parity_serializable_map_t = serializable_avl_map<std::uint64_t, std::uint64_t>;
+
+static_assert(transaction_mirrors_the_store_k<parity_snapshot_map_t>,
+              "a snapshot store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store_k<parity_monotonic_map_t>,
+              "a monotonic store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store_k<parity_serializable_map_t>,
+              "a serializable store's transaction must mirror the store it opens on");
+
+static_assert(wrappers_honour_the_level_k<parity_serializable_map_t>,
+              "a wrapper reporting a level must forward the surface that level is defined by");
+
+#pragma endregion Level Parity
 
 #pragma region Isolation Expectations
 
@@ -25,6 +54,35 @@ inline constexpr isolation_t repeatable_reads_from_k = isolation_t::snapshot_k;
 
 /** @brief The level at which a predicate repeated inside one transaction must see the same members. */
 inline constexpr isolation_t stable_predicates_from_k = isolation_t::snapshot_k;
+
+/**
+ *  @brief The level at which two blind writers to one key are separated, rather than one overwriting
+ *    the other.
+ *
+ *  Below it the later commit wins and the earlier write is lost - the anomaly Berenson numbers P4 and
+ *  Monotonic Atomic View licenses, since that level constrains what a reader observes rather than what
+ *  two writers do to each other, and Bailis shows a totally available model provably cannot prevent it.
+ *  From here up the write set is validated whether the caller asks or not, which is the first-committer
+ *  -wins rule Snapshot Isolation is defined by.
+ */
+inline constexpr isolation_t first_committer_wins_from_k = isolation_t::snapshot_k;
+
+/**
+ *  @brief What an optimistic refusal answers with on @p container_type_, which depends on the level.
+ *
+ *  A stamp-based store names which of the three ways a transaction lost, because a retry loop reads
+ *  that to decide whether retrying can help. The engines that validate by comparing the version a
+ *  watch sampled have one answer for every case, so a suite spanning both asks for the name here.
+ */
+template <typename container_type_>
+inline constexpr status_t watch_refusal_k =
+    at_least(container_type_::isolation_k, isolation_t::snapshot_k) ? status_t::read_conflict_k
+                                                                    : status_t::consistency_k;
+
+template <typename container_type_>
+inline constexpr status_t write_refusal_k =
+    at_least(container_type_::isolation_k, isolation_t::snapshot_k) ? status_t::write_conflict_k
+                                                                    : status_t::consistency_k;
 
 #pragma endregion Isolation Expectations
 
@@ -40,7 +98,7 @@ void test_empty_transaction_commit() {
 
     container_t container;
     auto transaction = container.transaction();
-    st_verify_(transaction.has_value());
+    transaction.has_value();
 
     // Don't add anything, just commit
     st_verify_(transaction->stage());
@@ -78,8 +136,8 @@ void test_no_dirty_reads_multi_key() {
     for (std::size_t i = 1; i <= 5; ++i) {
         auto maybe_found = container.find_copy(trivial_id_to_key<member_t>(i));
         st_verify_((maybe_found) && "key must exist before the transaction stages over it");
-        st_verify_((maybe_found->mapped) == (static_cast<decltype(maybe_found->mapped)>(i)) &&
-                   "a reader outside must see the original, not the staged value");
+        st_verify_eq_((maybe_found->mapped), (static_cast<decltype(maybe_found->mapped)>(i)),
+                      "a reader outside must see the original, not the staged value");
     }
 }
 
@@ -186,27 +244,39 @@ void test_multi_key_atomicity_10_keys() {
 
     container_t container;
     auto transaction = container.transaction();
-    st_verify_(transaction.has_value());
+    transaction.has_value();
 
     // Insert 10 keys in transaction
     for (std::size_t i = 0; i < 10; ++i) st_verify_(transaction->upsert(trivial_id_to_member<member_t>(i, i * 10)));
 
     // Before stage: should see 0
     std::size_t count_before_stage = 0;
-    for (std::size_t i = 0; i < 10; ++i) count_before_stage += container.count(trivial_id_to_key<member_t>(i));
+    for (std::size_t i = 0; i < 10; ++i) {
+        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
+        st_verify_(matched);
+        count_before_stage += *matched;
+    }
     st_verify_eq_(count_before_stage, 0);
     st_verify_(transaction->stage());
 
     // After stage, before commit: should see 0
     std::size_t count_after_stage = 0;
-    for (std::size_t i = 0; i < 10; ++i) count_after_stage += container.count(trivial_id_to_key<member_t>(i));
+    for (std::size_t i = 0; i < 10; ++i) {
+        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
+        st_verify_(matched);
+        count_after_stage += *matched;
+    }
     st_verify_eq_(count_after_stage, 0);
     st_verify_(transaction->commit());
 
     // After commit: should see ALL 10
     std::size_t count_after_commit = 0;
-    for (std::size_t i = 0; i < 10; ++i) count_after_commit += container.count(trivial_id_to_key<member_t>(i));
-    st_verify_((count_after_commit) == (10) && "commit must publish every key at once");
+    for (std::size_t i = 0; i < 10; ++i) {
+        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
+        st_verify_(matched);
+        count_after_commit += *matched;
+    }
+    st_verify_eq_((count_after_commit), (10), "commit must publish every key at once");
 }
 
 /**
@@ -245,7 +315,7 @@ void test_rollback_makes_all_invisible() {
     // Key 1 should have original value
     auto maybe1 = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_((maybe1) && "rollback must leave the committed entry in place");
-    st_verify_((maybe1->mapped) == (1) && "rollback must restore the original value");
+    st_verify_eq_((maybe1->mapped), (1), "rollback must restore the original value");
 
     // Keys 2 and 3 should not exist
     auto maybe2 = container.find_copy(trivial_id_to_key<member_t>(2));
@@ -286,8 +356,8 @@ void test_range_query_sees_atomic_boundaries() {
 
     // Before commit: range query sees 0
     std::size_t count_before = 0;
-    container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
-                    [&](member_t const &) noexcept { count_before++; });
+    st_verify_(container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
+                               [&](member_t const &) noexcept { count_before++; }));
     st_verify_eq_(count_before, 0);
 
     st_verify_(transaction->stage());
@@ -295,8 +365,8 @@ void test_range_query_sees_atomic_boundaries() {
 
     // After commit: range query sees ALL 10
     std::size_t count_after = 0;
-    container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
-                    [&](member_t const &) noexcept { count_after++; });
+    st_verify_(container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
+                               [&](member_t const &) noexcept { count_after++; }));
     st_verify_eq_(count_after, 10);
 }
 
@@ -349,22 +419,22 @@ void test_fractured_read_prevention() {
     // Before any commits: see 0
     std::size_t count_initial = 0;
     for (std::size_t i = 1; i <= 6; ++i)
-        container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_initial++; });
+        st_verify_(container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_initial++; }));
     st_verify_eq_(count_initial, 0);
     st_verify_(t1->commit()); // Commit T1
 
     // Should see exactly T1's keys (1-3), not T2's (4-6)
     std::size_t count_t1 = 0;
     for (std::size_t i = 1; i <= 6; ++i)
-        container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_t1++; });
-    st_verify_((count_t1) == (3) && "a range must not see another transaction staged keys");
+        st_verify_(container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_t1++; }));
+    st_verify_eq_((count_t1), (3), "a range must not see another transaction staged keys");
     st_verify_(t2->commit()); // Commit T2
 
     // Now should see ALL 6
     std::size_t count_both = 0;
     for (std::size_t i = 1; i <= 6; ++i)
-        container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_both++; });
-    st_verify_((count_both) == (6) && "a range must see both committed transactions");
+        st_verify_(container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_both++; }));
+    st_verify_eq_((count_both), (6), "a range must see both committed transactions");
 }
 
 /**
@@ -386,18 +456,18 @@ void test_sequential_updates_never_regress() {
     std::vector<int> observed_values;
 
     // Observe initial value
-    container.find(trivial_id_to_key<member_t>(1),
-                   [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); });
+    st_verify_(container.find(trivial_id_to_key<member_t>(1),
+                              [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); }));
 
     // Update to 20
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 20)));
-    container.find(trivial_id_to_key<member_t>(1),
-                   [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); });
+    st_verify_(container.find(trivial_id_to_key<member_t>(1),
+                              [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); }));
 
     // Update to 30
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 30)));
-    container.find(trivial_id_to_key<member_t>(1),
-                   [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); });
+    st_verify_(container.find(trivial_id_to_key<member_t>(1),
+                              [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); }));
 
     // Verify monotonicity: each value >= previous
     st_verify_eq_(observed_values.size(), 3);
@@ -487,12 +557,12 @@ void test_concurrent_transactions_on_same_key() {
     // T2's stage should FAIL (watched value changed)
     auto status = t2->stage();
     st_verify_((failed(status)) && "staging must fail once a watched key was modified");
-    st_verify_eq_(status, status_t::consistency_k);
+    st_verify_eq_(status, watch_refusal_k<container_t>);
 
     // Verify T1's value persisted, T2's did not
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (100) && "only the winning transaction value may persist");
+    st_verify_eq_((maybe_final->mapped), (100), "only the winning transaction value may persist");
 }
 
 /**
@@ -545,7 +615,7 @@ void test_multi_key_conflict_any_key_fails() {
     // T1's stage should FAIL (key 2 was modified externally)
     auto status = t1->stage();
     st_verify_((failed(status)) && "staging must fail if any watched key changed");
-    st_verify_eq_(status, status_t::consistency_k);
+    st_verify_eq_(status, watch_refusal_k<container_t>);
 }
 
 /**
@@ -584,7 +654,7 @@ void test_watch_detects_external_direct_modification() {
     // Stage should detect the external change
     auto status = transaction->stage();
     st_verify_((failed(status)) && "a watch must detect a direct write to the store");
-    st_verify_eq_(status, status_t::consistency_k);
+    st_verify_eq_(status, watch_refusal_k<container_t>);
 }
 
 /**
@@ -628,8 +698,12 @@ void test_disjoint_keys_both_succeed() {
 
     // Verify all 6 keys exist
     std::size_t count = 0;
-    for (std::size_t i = 1; i <= 6; ++i) count += container.count(trivial_id_to_key<member_t>(i));
-    st_verify_((count) == (6) && "disjoint transactions must both commit");
+    for (std::size_t i = 1; i <= 6; ++i) {
+        expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
+        st_verify_(matched);
+        count += *matched;
+    }
+    st_verify_eq_((count), (6), "disjoint transactions must both commit");
 }
 
 /**
@@ -674,11 +748,11 @@ void test_repeated_read_matches_isolation() {
     st_verify_(second_read.has_value());
 
     if constexpr (at_least(container_t::isolation_k, repeatable_reads_from_k)) {
-        st_verify_((second_read->mapped) == (100) && "a snapshot must repeat its first read");
+        st_verify_eq_((second_read->mapped), (100), "a snapshot must repeat its first read");
         st_verify_eq_(first_read->mapped, second_read->mapped);
     }
     else {
-        st_verify_((second_read->mapped) == (999) && "below snapshot, a read sees the newest commit");
+        st_verify_eq_((second_read->mapped), (999), "below snapshot, a read sees the newest commit");
         st_verify_ne_(first_read->mapped, second_read->mapped);
     }
 }
@@ -717,10 +791,13 @@ void test_repeated_range_matches_isolation() {
     // not fail. It is spelled with `find` rather than a range scan because that is the one ordered-free
     // surface every transaction type here offers, `partitioned_store`'s included.
     auto count_present = [&]() noexcept {
-        std::size_t present = 0;
-        for (std::size_t candidate = 0; candidate != 10; ++candidate)
-            if (transaction->contains(trivial_id_to_key<member_t>(candidate))) ++present;
-        return present;
+        std::size_t seen = 0;
+        for (std::size_t candidate = 0; candidate != 10; ++candidate) {
+            expected<bool> const is_present = transaction->contains(trivial_id_to_key<member_t>(candidate));
+            st_verify_(is_present);
+            if (*is_present) ++seen;
+        }
+        return seen;
     };
 
     std::size_t const first_count = count_present();
@@ -733,12 +810,71 @@ void test_repeated_range_matches_isolation() {
     std::size_t const second_count = count_present();
 
     if constexpr (at_least(container_t::isolation_k, stable_predicates_from_k)) {
-        st_verify_((second_count) == (5) && "a snapshot must not admit phantoms");
+        st_verify_eq_((second_count), (5), "a snapshot must not admit phantoms");
         st_verify_eq_(first_count, second_count);
     }
     else {
-        st_verify_((second_count) == (7) && "below snapshot, a repeated predicate sees the newest commits");
+        st_verify_eq_((second_count), (7), "below snapshot, a repeated predicate sees the newest commits");
         st_verify_((second_count) > (first_count));
+    }
+}
+
+/**
+ *  @brief Licensed Anomaly: a lost update is CORRECT below Snapshot.
+ *
+ *  Two transactions open together and each writes key 1 without reading it. The first commits, then the
+ *  second. Whether the second is allowed to land is the whole of what separates the two levels here.
+ *
+ *  Timeline:
+ *    A, B open together
+ *    A:  upsert(1, 10)
+ *    B:  upsert(1, 20)
+ *    A:  commit           → lands
+ *    B:  commit           → lands below Snapshot, refused from Snapshot up
+ *
+ *  Below Snapshot nothing validates the write set, so B lands and A's write is gone. That is the lost
+ *  update, and it is a promise this level makes rather than an outcome left open. From Snapshot up the
+ *  write set is checked against everything published since B opened, so B is refused and A survives.
+ */
+template <typename container_type_>
+void test_lost_update_matches_isolation() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 0)));
+
+    // Both open before either writes, so each is unaware of the other by construction.
+    auto earlier = container.transaction();
+    st_verify_(earlier);
+    auto later = container.transaction();
+    st_verify_(later);
+
+    st_verify_(earlier->upsert(trivial_id_to_member<member_t>(1, 10)));
+    st_verify_(later->upsert(trivial_id_to_member<member_t>(1, 20)));
+
+    st_verify_(earlier->stage());
+    st_verify_(earlier->commit());
+
+    // A store that validates the write set refuses at `stage`, one that does not gets as far as `commit`,
+    // so the answer is whichever of the two spoke first.
+    status_t const staged = later->stage();
+    status_t const answered = succeeded(staged) ? later->commit() : staged;
+
+    auto held = container.find_copy(trivial_id_to_key<member_t>(1));
+    st_verify_(held.has_value());
+
+    if constexpr (at_least(container_t::isolation_k, first_committer_wins_from_k)) {
+        st_verify_eq_(answered, status_t::write_conflict_k);
+        st_verify_eq_((held->mapped), (10), "first-committer-wins keeps the write that landed first");
+    }
+    else {
+        st_verify_(answered);
+        st_verify_eq_((held->mapped), (20), "below snapshot the later write wins and the earlier one is lost");
     }
 }
 
@@ -761,7 +897,7 @@ void test_delete_visibility() {
     erase_range_of(container, trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(2));
 
     // Verify deleted key is invisible
-    st_verify_(!(container.contains(trivial_id_to_key<member_t>(1))));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), false);
     st_verify_eq_(container.size(), 1);
 }
 
@@ -794,12 +930,14 @@ void test_reset_clears_transaction_state() {
     st_verify_(transaction->stage());
     st_verify_(transaction->commit());
 
-    auto found3 = container.contains(trivial_id_to_key<member_t>(3));
-    auto found4 = container.contains(trivial_id_to_key<member_t>(4));
+    expected<bool> const found3 = container.contains(trivial_id_to_key<member_t>(3));
+    expected<bool> const found4 = container.contains(trivial_id_to_key<member_t>(4));
+    st_verify_(found3);
+    st_verify_(found4);
 
-    st_verify_((!found4) && "reset must discard the staged key");
-    st_verify_((found3) && "the reused transaction must commit its own key");
-    st_verify_((container.contains(trivial_id_to_key<member_t>(2))) && "reset must not touch committed entries");
+    st_verify_((!*found4) && "reset must discard the staged key");
+    st_verify_((*found3) && "the reused transaction must commit its own key");
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), true, "reset must not touch committed entries");
 }
 
 /**
@@ -849,11 +987,11 @@ void test_watch_detects_staged_invisible_writes() {
     st_verify_(t2->commit());
     auto status = t1->commit();
     st_verify_((failed(status)) && "committing must detect the conflicting commit");
-    st_verify_eq_(status, status_t::consistency_k);
+    st_verify_eq_(status, watch_refusal_k<container_t>);
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (999) && "the accepted writer's value must be the one that lands");
+    st_verify_eq_((maybe_final->mapped), (999), "the accepted writer's value must be the one that lands");
 }
 
 /**
@@ -905,11 +1043,11 @@ void test_watch_detects_staged_writes_of_older_generation() {
     st_verify_(early->commit());
     auto const status = newcomer->commit();
     st_verify_((failed(status)) && "a commit over a watched key must refuse the second writer");
-    st_verify_eq_(status, status_t::consistency_k);
+    st_verify_eq_(status, watch_refusal_k<container_t>);
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (102) && "the accepted writer's value must be the one that lands");
+    st_verify_eq_((maybe_final->mapped), (102), "the accepted writer's value must be the one that lands");
 }
 
 /**
@@ -955,7 +1093,7 @@ void test_stateful_comparator_is_consulted() {
     auto cursor = trivial_id_to_key<member_t>(above_every_key_k);
     for (std::size_t step = 0; step != keys_count_k; ++step) {
         bool advanced = false;
-        container.upper_bound(
+        st_verify_(container.upper_bound(
             cursor,
             [&](member_t const &element) noexcept {
                 auto const &key = mapping_key_or_itself<member_t>(element);
@@ -963,13 +1101,13 @@ void test_stateful_comparator_is_consulted() {
                 cursor = key;
                 advanced = true;
             },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_(advanced && "every stored key must be reachable by walking successors");
     }
 
     // An ignored comparator orders ascending, so the walk would read 1, 2, 3 instead.
     std::vector<std::size_t> const descending {3, 2, 1};
-    st_verify_((walked == descending) && "the comparator the container was given must decide the order");
+    st_verify_eq_(walked, descending, "the comparator the container was given must decide the order");
 }
 
 #pragma region Transaction Lifetime and Watches
@@ -1006,7 +1144,7 @@ void test_abandoned_transaction_leaves_no_trace() {
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(2));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (222) && "the abandoned version must not shadow a later write");
+    st_verify_eq_((maybe_final->mapped), (222), "the abandoned version must not shadow a later write");
 }
 
 /**
@@ -1036,7 +1174,7 @@ void test_moved_transaction_unwinds_once() {
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(5));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (555) && "a moved transaction must unwind exactly once");
+    st_verify_eq_((maybe_final->mapped), (555), "a moved transaction must unwind exactly once");
 }
 
 /**
@@ -1062,7 +1200,7 @@ void test_find_does_not_watch() {
         st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
 
         auto reader = container.transaction();
-        reader->find(trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {});
+        st_verify_(reader->find(trivial_id_to_key<member_t>(1), [](member_t const &) noexcept {}, []() noexcept {}));
 
         st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 999)));
         st_verify_(reader->upsert(trivial_id_to_member<member_t>(1, 101)));
@@ -1085,7 +1223,7 @@ void test_find_does_not_watch() {
         auto const staged = reader->stage();
         auto const committed = succeeded(staged) ? reader->commit() : staged;
         st_verify_((failed(committed)) && "a watched read must refuse a write over a newer commit");
-        st_verify_eq_(committed, status_t::consistency_k);
+        st_verify_eq_(committed, watch_refusal_k<container_t>);
     }
 }
 
@@ -1145,7 +1283,7 @@ void test_absent_watch_survives_rollback() {
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(8));
     st_verify_(maybe_final.has_value());
-    st_verify_((maybe_final->mapped) == (800) && "the rolled-back write must still commit");
+    st_verify_eq_((maybe_final->mapped), (800), "the rolled-back write must still commit");
 }
 
 #pragma endregion Transaction Lifetime and Watches
@@ -1214,7 +1352,7 @@ void test_group_unwinds_every_participant_on_conflict() {
 
     auto status = group->stage();
     st_verify_((failed(status)) && "a moved watch must refuse the whole group");
-    st_verify_eq_(status, status_t::consistency_k);
+    st_verify_eq_(status, watch_refusal_k<container_t>);
 
     // Nothing may be left staged in the participant that did succeed.
     st_verify_(group->reset());

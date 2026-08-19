@@ -26,7 +26,7 @@
 #     `SMASHTABLE_FILTER`.
 #   * smashtable_test_hash_table - the unordered family, running the hash-specific suites of
 #     `scripts/test_unordered.hpp` instead, including the threaded ones.
-#   * smashtable_test_transactional_hash - the transactional store over the open-addressed table,
+#   * smashtable_test_monotonic_hash - the transactional store over the open-addressed table,
 #     running only the point-access suites an unordered core can answer.
 #   * smashtable_test_concurrent_cuda - the pinned lock-free table driven from kernels and from the
 #     host over one managed allocation. Built only where `nvcc` is visible, and skipping at runtime
@@ -146,9 +146,9 @@ if (SMASHTABLE_BUILD_TESTS)
     target_include_directories(smashtable_test_hash_table PRIVATE scripts/)
     target_link_libraries(smashtable_test_hash_table PRIVATE smashtable::smashtable smashtable_warnings)
 
-    add_executable(smashtable_test_transactional_hash scripts/test_monotonic_hash.cpp)
-    target_include_directories(smashtable_test_transactional_hash PRIVATE scripts/)
-    target_link_libraries(smashtable_test_transactional_hash PRIVATE smashtable::smashtable smashtable_warnings)
+    add_executable(smashtable_test_monotonic_hash scripts/test_monotonic_hash.cpp)
+    target_include_directories(smashtable_test_monotonic_hash PRIVATE scripts/)
+    target_link_libraries(smashtable_test_monotonic_hash PRIVATE smashtable::smashtable smashtable_warnings)
 
     add_executable(smashtable_test_snapshot_store scripts/test_snapshot_store.cpp)
     target_include_directories(smashtable_test_snapshot_store PRIVATE scripts/)
@@ -199,7 +199,7 @@ if (SMASHTABLE_BUILD_TESTS)
     add_test(NAME test_wb_tree COMMAND smashtable_test_wb_tree)
     add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
     add_test(NAME test_hash_table COMMAND smashtable_test_hash_table)
-    add_test(NAME test_monotonic_hash COMMAND smashtable_test_transactional_hash)
+    add_test(NAME test_monotonic_hash COMMAND smashtable_test_monotonic_hash)
     add_test(NAME test_snapshot_store COMMAND smashtable_test_snapshot_store)
     add_test(NAME test_shared COMMAND smashtable_test_shared)
     add_test(NAME test_vector COMMAND smashtable_test_vector)

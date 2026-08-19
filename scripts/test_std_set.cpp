@@ -295,6 +295,13 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_lost_update_matches_isolation() {
+    test_lost_update_matches_isolation<transactional_trivial_map_t>();
+    test_lost_update_matches_isolation<transactional_tracking_map_t>();
+    test_lost_update_matches_isolation<transactional_composite_map_t>();
+    test_lost_update_matches_isolation<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_trivial_map_t>();
     test_repeated_read_matches_isolation<transactional_tracking_map_t>();
@@ -506,6 +513,8 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation",
+                         transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation",

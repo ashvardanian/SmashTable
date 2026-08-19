@@ -275,6 +275,19 @@ class snapshot_clock_t {
     [[nodiscard]] generation_t published_stamp() const noexcept { return atomic_load(published_stamp_); }
 
     /**
+     *  @brief The newest stamp any commit has drawn, landed or not, which is what a reader must
+     *    validate against rather than the watermark.
+     *
+     *  A commit in flight has already written its stamp onto its versions while the watermark still
+     *  sits below it, so a validator asking whether anything moved has to compare against what was
+     *  drawn. Under a shard set that overlap is ordinary rather than a corner case.
+     */
+    [[nodiscard]] generation_t drawn_stamp() const noexcept {
+        shared_lock<spin_shared_mutex> _ {mutex_};
+        return commits_;
+    }
+
+    /**
      *  @brief Points @p lease at the newest whole stamp, giving back whatever it held first.
      *  @return The snapshot the lease now reads at.
      */
@@ -410,8 +423,10 @@ class snapshot_clock_t {
  *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and providing
  *    a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock bounds and ranges.
  */
-template <typename collection_type_>
+template <typename collection_type_, isolation_t isolation_ = isolation_t::snapshot_k>
 class snapshot_store {
+    static_assert(isolation_ == isolation_t::snapshot_k || isolation_ == isolation_t::serializable_k,
+                  "this engine answers at a snapshot; the choice is whether reads are validated too");
 
   public:
 #pragma region Type Definitions
@@ -427,10 +442,9 @@ class snapshot_store {
 
     using is_associative = typename collection_type_::is_associative;
     using is_transactional = std::true_type;
-    using callback_reads = std::true_type;
 
     /** @brief Every read of a transaction is answered at the stamp the transaction opened on. */
-    static constexpr isolation_t isolation_k = isolation_t::snapshot_k;
+    static constexpr isolation_t isolation_k = isolation_;
 
     /** @brief Where stamps and snapshots come from, which a shard set shares across its partitions. */
     using clock_t = snapshot_clock_t;
@@ -445,7 +459,7 @@ class snapshot_store {
     using identifier_t = typename versioning_t::identifier_t;
     using generation_t = typename versioning_t::generation_t;
     using watch_t = typename versioning_t::watch_t;
-    using watched_identifier_t = typename versioning_t::watched_identifier_t;
+    using accessed_identifier_t = typename versioning_t::accessed_identifier_t;
     using dated_identifier_t = typename versioning_t::dated_identifier_t;
 
     /** @brief Whether the core sums a second per-subtree count, which is what unlocks @c select and @c rank. */
@@ -462,21 +476,6 @@ class snapshot_store {
     /** @brief What this store calls itself, so generic code spells an engine and a wrapper alike. */
     using store_t = snapshot_store;
 
-    /**
-     *  @brief The one shape a watch records, whatever the read that produced it looked like.
-     *
-     *  A committed tombstone is handed out as found - the public @c find has to see it in order to
-     *  hide it - while every path that resolves a key for validation calls a key with only a
-     *  tombstone missing. Recording that same shape here is what keeps a watch on an erased version
-     *  from being a watch nothing can ever match, and there is one place to read it off.
-     *
-     *  @param[in] resolved The version a read resolved to, or null when the key resolves to nothing.
-     */
-    [[nodiscard]] static watch_t watch_shape_of(versioned_t const *resolved) noexcept {
-        if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
-        return watch_t {resolved->generation, resolved->presence};
-    }
-
   private:
     /** @brief Names one stored version without owning its key, so a probe costs no copy. */
     using dated_reference_t = dated_identifier<identifier_t const &>;
@@ -487,9 +486,9 @@ class snapshot_store {
     /** @brief One transaction's pending writes, at most one per key since all share its generation. */
     using changes_t = typename storage_shape_t::template rebind<versioned_t>;
 
-    using watches_allocator_t =
-        typename std::allocator_traits<allocator_t>::template rebind_alloc<watched_identifier_t>;
-    using watches_vector_t = basic_vector<watched_identifier_t, watches_allocator_t>;
+    using accesses_allocator_t =
+        typename std::allocator_traits<allocator_t>::template rebind_alloc<accessed_identifier_t>;
+    using accesses_vector_t = basic_vector<accessed_identifier_t, accesses_allocator_t>;
 
     using changed_identifiers_allocator_t =
         typename std::allocator_traits<allocator_t>::template rebind_alloc<identifier_t>;
@@ -610,11 +609,26 @@ class snapshot_store {
 #pragma endregion Visible Cursor
 
     class transaction_t {
-
         friend store_t;
         store_t *store_ {nullptr};
         changes_t changes_;
-        watches_vector_t watches_ {};
+        /** @brief Every key this transaction read, and the ends of every window it walked. */
+        mutable accesses_vector_t accesses_ {};
+        /**
+         *  @brief Whether every read this transaction made named a key, and if not, why not.
+         *
+         *  A validator can only prove a read is untouched if it knows which key was read. Two things
+         *  leave it unable to: a walk of the whole keyspace names no key by design, and a read whose
+         *  key could not be copied names none by accident. Both refuse the commit, and a reader of a
+         *  refusal needs to know which happened.
+         */
+        enum class read_set_t : std::uint8_t {
+            names_every_key_k,
+            covers_everything_k,
+            unrecorded_k,
+        };
+
+        mutable read_set_t read_set_ {read_set_t::names_every_key_k};
         changed_identifiers_vector_t changed_identifiers_ {};
         generation_t generation_ {0};
         /**
@@ -629,7 +643,7 @@ class snapshot_store {
 
         transaction_t(store_t &store) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
-              watches_(watches_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               generation_(store.next_generation_()), snapshot_(store.clock_->take_snapshot(lease_)) {}
 
@@ -639,7 +653,7 @@ class snapshot_store {
          */
         transaction_t(store_t &store, generation_t snapshot, generation_t generation) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
-              watches_(watches_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               generation_(generation), snapshot_(snapshot) {}
 
@@ -665,22 +679,104 @@ class snapshot_store {
          *  erased again under a watch on its absence: both ends resolve to missing, so the two watches
          *  match while two commits the transaction never saw sit between them.
          */
-        [[nodiscard]] status_t validate_watches_() const noexcept {
-            auto const &store = store_ref();
-            for (watched_identifier_t const &watched : watches_)
-                if (store.key_changed_since_(watched.identifier, snapshot_)) return status_t::consistency_k;
-            return success_k;
+        /**
+         *  @brief Records that this transaction read @p comparable, where the level says reads are validated.
+         *
+         *  A read cannot report a refusal - @c find hands its answer to a callback and returns nothing -
+         *  so a record that will not fit marks the read set unnameable instead, and the commit refuses
+         *  rather than passing a validation it could not perform.
+         */
+        template <typename comparable_type_>
+        void record_read_(comparable_type_ const &comparable) const noexcept {
+            if constexpr (isolation_k != isolation_t::serializable_k) return;
+
+            auto owned = copy_safely<identifier_t>(identifier_t {comparable});
+            if (!owned) {
+                read_set_ = read_set_t::unrecorded_k;
+                return;
+            }
+            if (failed(accesses_.push_back({std::move(*owned), access_t::read_k})))
+                read_set_ = read_set_t::unrecorded_k;
         }
 
         /**
-         *  @brief Whether every key this transaction writes is untouched since its snapshot.
-         *    This is the first-committer-wins rule: the earlier commit keeps the key and the later
-         *    transaction is turned away rather than overwriting a version it never read.
+         *  @brief Records that this transaction read the window between @p lower and @p upper.
+         *
+         *  Two entries pushed next to each other, because adjacency is what pairs them. @p ends names
+         *  which side, if either, runs off the end of the keyspace - an ordinal read depends on every
+         *  key before the one it lands on, and there is no smallest key to name - in which case the
+         *  identifier stored on that side is kept only so the pair stays a pair.
          */
-        [[nodiscard]] status_t validate_writes_() const noexcept {
+        template <typename lower_type_, typename upper_type_>
+        void record_window_read_(lower_type_ const &lower, upper_type_ const &upper, access_t ends) const noexcept {
+            if constexpr (isolation_k != isolation_t::serializable_k) return;
+
+            auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
+            if (!lower_copy) {
+                read_set_ = read_set_t::unrecorded_k;
+                return;
+            }
+            auto upper_copy = copy_safely<identifier_t>(identifier_t {upper});
+            if (!upper_copy) {
+                read_set_ = read_set_t::unrecorded_k;
+                return;
+            }
+            if (failed(accesses_.reserve(accesses_.size() + 2))) {
+                read_set_ = read_set_t::unrecorded_k;
+                return;
+            }
+            access_t const opens = holds(ends, access_t::from_the_lowest_k)
+                                       ? access_t::opens_k | access_t::from_the_lowest_k
+                                       : access_t::opens_k;
+            access_t const closes = holds(ends, access_t::to_the_highest_k)
+                                        ? access_t::closes_k | access_t::to_the_highest_k
+                                        : access_t::closes_k;
+            [[maybe_unused]] status_t const opened =
+                accesses_.push_back(assume_reserved, {std::move(*lower_copy), opens});
+            [[maybe_unused]] status_t const closed =
+                accesses_.push_back(assume_reserved, {std::move(*upper_copy), closes});
+        }
+
+        /** @brief Records that this transaction read every key, which no pair of bounds can name. */
+        void record_whole_keyspace_read_() const noexcept {
+            if constexpr (isolation_k == isolation_t::serializable_k) read_set_ = read_set_t::covers_everything_k;
+        }
+
+        [[nodiscard]] status_t validate_accesses_() const noexcept {
             auto const &store = store_ref();
+
+            // Nothing has been drawn above this transaction's snapshot, so nothing can have moved
+            // under it. Compared against the drawn stamp and not the watermark: a commit in flight
+            // has already written its stamp onto its versions while the watermark still lags.
+            if (store.drawn_stamp_() == snapshot_) return success_k;
+
+            // A read this transaction cannot name cannot be proven untouched, so any commit conflicts.
+            // A walk of the whole keyspace is a window nobody can spell, which is the phantom case.
+            if (read_set_ == read_set_t::covers_everything_k) return status_t::phantom_conflict_k;
+            if (read_set_ == read_set_t::unrecorded_k) return status_t::read_conflict_k;
+
+            // First-committer-wins: an earlier commit keeps the key and the later transaction is
+            // turned away rather than overwriting a version it never read.
             for (identifier_t const &identifier : changed_identifiers_)
-                if (store.key_changed_since_(identifier, snapshot_)) return status_t::consistency_k;
+                if (store.key_changed_since_(identifier, snapshot_)) return status_t::write_conflict_k;
+
+            for (std::size_t index = 0; index != accesses_.size(); ++index) {
+                access_t const access = accesses_[index].access;
+                if (holds(access, access_t::read_k) && store.key_changed_since_(accesses_[index].identifier, snapshot_))
+                    return status_t::read_conflict_k;
+
+                if constexpr (ordered_core_k)
+                    if (holds(access, access_t::opens_k)) {
+                        assert(index + 1 != accesses_.size() &&
+                               holds(accesses_[index + 1].access, access_t::closes_k) &&
+                               "a range endpoint is closed by the entry pushed straight after it");
+                        access_t const ends = access | accesses_[index + 1].access;
+                        if (store.range_changed_since_(accesses_[index].identifier, accesses_[index + 1].identifier,
+                                                       snapshot_, ends))
+                            return status_t::phantom_conflict_k;
+                        ++index;
+                    }
+            }
             return success_k;
         }
 
@@ -719,7 +815,7 @@ class snapshot_store {
          */
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
-              watches_(std::move(other.watches_)), changed_identifiers_(std::move(other.changed_identifiers_)),
+              accesses_(std::move(other.accesses_)), changed_identifiers_(std::move(other.changed_identifiers_)),
               generation_(other.generation_), lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
 
@@ -728,7 +824,7 @@ class snapshot_store {
             unwind_();
             store_ = std::exchange(other.store_, nullptr);
             changes_ = std::move(other.changes_);
-            watches_ = std::move(other.watches_);
+            accesses_ = std::move(other.accesses_);
             changed_identifiers_ = std::move(other.changed_identifiers_);
             generation_ = other.generation_;
             lease_ = std::move(other.lease_);
@@ -762,7 +858,9 @@ class snapshot_store {
          *  @return Success, @c key_already_exists_k, or an allocation failure.
          */
         [[nodiscard]] status_t insert(value_t &&value) noexcept {
-            if (contains(mapping_key_or_itself<value_t>(value))) return key_already_exists_k;
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
+            if (!key_is_present) return key_is_present.status();
+            if (*key_is_present) return key_already_exists_k;
             return upsert(std::move(value));
         }
 
@@ -772,7 +870,9 @@ class snapshot_store {
          *  @return Success unless an allocation failed.
          */
         [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
-            if (contains(mapping_key_or_itself<value_t>(value))) return success_k;
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
+            if (!key_is_present) return key_is_present.status();
+            if (*key_is_present) return success_k;
             return upsert(std::move(value));
         }
 
@@ -795,7 +895,9 @@ class snapshot_store {
          *  @return Success, @c key_not_found_k, or an allocation failure.
          */
         [[nodiscard]] status_t update(value_t &&value) noexcept {
-            if (!contains(mapping_key_or_itself<value_t>(value))) return key_not_found_k;
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
+            if (!key_is_present) return key_is_present.status();
+            if (!*key_is_present) return key_not_found_k;
             return upsert(std::move(value));
         }
 
@@ -817,8 +919,13 @@ class snapshot_store {
             return stage_(std::move(*maybe_identifier), std::move(versioned));
         }
 
-        /** @brief Sizes the watch list up front, so a later @c watch cannot run out of memory. */
-        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return watches_.reserve(size); }
+        /**
+         *  @brief Sizes the access list up front, so a later read or watch has room already.
+         *
+         *  Under @c serializable_k a read records itself, so this bounds nothing on its own - it is a
+         *  hint sized to what the caller expects to touch, not a promise that recording cannot fail.
+         */
+        [[nodiscard]] status_t reserve(std::size_t size) noexcept { return accesses_.reserve(size); }
 
 #pragma endregion Transaction Modifiers
 
@@ -834,9 +941,7 @@ class snapshot_store {
         [[nodiscard]] status_t watch(identifier_t const &identifier) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
             if (!maybe_identifier) return maybe_identifier.status();
-            auto const &store = store_ref();
-            versioned_t const *seen = store.visible_version_(identifier, snapshot_);
-            return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(seen)});
+            return accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
         }
 
         /** @brief Records @p versioned as the version this transaction read of its own key. */
@@ -845,7 +950,7 @@ class snapshot_store {
             // compiles here and an identifier that allocates reports instead of throwing.
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
             if (!maybe_identifier) return maybe_identifier.status();
-            return watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&versioned)});
+            return accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
         }
 
         /**
@@ -860,9 +965,8 @@ class snapshot_store {
             if (!maybe_identifier) return maybe_identifier.status();
             status_t const recorded = watch(*maybe_identifier);
             if (failed(recorded)) return recorded;
-            find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
-                 std::forward<callback_missing_type_>(callback_missing));
-            return success_k;
+            return find(std::forward<comparable_type_>(comparable), std::forward<callback_found_type_>(callback_found),
+                        std::forward<callback_missing_type_>(callback_missing));
         }
 
         /**
@@ -875,23 +979,25 @@ class snapshot_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                  callback_missing_type_ &&callback_missing = {}) const noexcept {
+        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+            record_read_(comparable);
             if (auto iterator = changes_.find(comparable); iterator != changes_.end()) {
                 if ((*iterator).presence == presence_t::present_k) callback_found((*iterator).payload);
                 else callback_missing();
-                return;
+                return success_k;
             }
             store_ref().find_at_(std::forward<comparable_type_>(comparable), snapshot_,
                                  std::forward<callback_found_type_>(callback_found),
                                  std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
         }
 
         /** @brief Copies out the member equal to @p comparable, this transaction's own writes included. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            find(
+            [[maybe_unused]] status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
             return result;
@@ -899,12 +1005,13 @@ class snapshot_store {
 
         /** @brief Whether a member equal to @p comparable exists, this transaction's own writes included. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
-            bool found = false;
-            find(
-                std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { found = true; },
+        [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+            bool present = false;
+            status_t const answered = find(
+                std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { present = true; },
                 no_op_t {});
-            return found;
+            if (failed(answered)) return answered;
+            return present;
         }
 
         /**
@@ -915,26 +1022,78 @@ class snapshot_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                         callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
         {
-            bounded_(changes_.lower_bound(comparable), store_ref().visible_at_(comparable, snapshot_),
-                     std::forward<callback_found_type_>(callback_found),
-                     std::forward<callback_missing_type_>(callback_missing));
+            bool landed = false;
+            bounded_(
+                changes_.lower_bound(comparable), store_ref().visible_at_(comparable, snapshot_),
+                [&](value_t const &value) noexcept {
+                    landed = true;
+                    identifier_t const &key = mapping_key_or_itself<value_t>(value);
+                    record_window_read_(comparable, key, access_t::none_k);
+                    record_read_(key);
+                    callback_found(value);
+                },
+                [&]() noexcept { callback_missing(); });
+            // Nothing at or above the bound, so the read depended on everything above it.
+            if (!landed) record_window_read_(comparable, comparable, access_t::to_the_highest_k);
+            return success_k;
+        }
+
+        /**
+         *  @brief Hands @p callback_found the smallest member this snapshot reads, staged writes included.
+         *
+         *  The unbounded case of @c lower_bound, which is what a merged walk over several stores needs to
+         *  open with: it asks for a first key rather than an ordinal, so a core keeping no subtree counts
+         *  can answer it.
+         *
+         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
+                                        callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires ordered_core_k
+        {
+            bool landed = false;
+            bounded_(
+                changes_.begin(), store_ref().visible_from_(store_ref().entries_.begin(), snapshot_),
+                [&](value_t const &value) noexcept {
+                    landed = true;
+                    identifier_t const &key = mapping_key_or_itself<value_t>(value);
+                    record_window_read_(key, key, access_t::from_the_lowest_k);
+                    record_read_(key);
+                    callback_found(value);
+                },
+                [&]() noexcept { callback_missing(); });
+            // Nothing readable at all, so the answer rests on the whole keyspace being empty.
+            if (!landed) record_whole_keyspace_read_();
+            return success_k;
         }
 
         /** @brief Finds the first member @b strictly greater than @p comparable at this snapshot. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                         callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
         {
-            bounded_(changes_.upper_bound(comparable),
-                     store_ref().visible_from_(store_ref().entries_.upper_bound(comparable), snapshot_),
-                     std::forward<callback_found_type_>(callback_found),
-                     std::forward<callback_missing_type_>(callback_missing));
+            bool landed = false;
+            bounded_(
+                changes_.upper_bound(comparable),
+                store_ref().visible_from_(store_ref().entries_.upper_bound(comparable), snapshot_),
+                [&](value_t const &value) noexcept {
+                    landed = true;
+                    identifier_t const &key = mapping_key_or_itself<value_t>(value);
+                    record_window_read_(comparable, key, access_t::none_k);
+                    record_read_(key);
+                    callback_found(value);
+                },
+                [&]() noexcept { callback_missing(); });
+            if (!landed) record_window_read_(comparable, comparable, access_t::to_the_highest_k);
+            return success_k;
         }
 
         /**
@@ -947,15 +1106,17 @@ class snapshot_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
+            record_window_read_(lower, upper, access_t::none_k);
             auto const ordering = changes_.key_comp();
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
                 if (version.presence == presence_t::present_k) callback(version.payload);
                 return probe_control_t::resume_k;
             });
+            return success_k;
         }
 
         /**
@@ -970,10 +1131,11 @@ class snapshot_store {
          *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
          */
         template <typename callback_type_ = no_op_t>
-        void for_each(callback_type_ &&callback) const noexcept {
+        [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
             static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                           "callback must be noexcept invocable with value_t const &");
 
+            record_whole_keyspace_read_();
             if constexpr (ordered_core_k) {
                 merge_all_([&](versioned_t const &version) noexcept {
                     if (version.presence == presence_t::present_k) callback(version.payload);
@@ -990,6 +1152,7 @@ class snapshot_store {
                     if (changes_.find(mapping_key_or_itself<value_t>(value)) == changes_.end()) callback(value);
                 });
             }
+            return success_k;
         }
 
         /**
@@ -998,8 +1161,8 @@ class snapshot_store {
          *  @param[in] callback Callback receiving each match. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-        void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-            find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
+        [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+            return find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
         }
 
         /**
@@ -1012,8 +1175,8 @@ class snapshot_store {
          *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be @c noexcept.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-        void select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                    callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                      callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
         {
             static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
@@ -1027,11 +1190,20 @@ class snapshot_store {
                     --ordinal;
                     return probe_control_t::resume_k;
                 }
+                identifier_t const &key = mapping_key_or_itself<value_t>(version.payload);
+                // An ordinal is decided by how many keys precede it, so the window is everything
+                // below the one it lands on - a key appearing above cannot move it.
+                record_window_read_(key, key, access_t::from_the_lowest_k);
+                record_read_(key);
                 callback_found(version.payload);
                 found = true;
                 return probe_control_t::halt_k;
             });
-            if (!found) callback_missing();
+            if (!found) {
+                record_whole_keyspace_read_();
+                callback_missing();
+            }
+            return success_k;
         }
 
         /**
@@ -1044,18 +1216,21 @@ class snapshot_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                  callback_missing_type_ &&callback_missing = {}) const noexcept
+        [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept
             requires ordered_core_k
         {
             static_assert(is_safe_callback_for<callback_found_type_, std::size_t>,
                           "callback_found must be noexcept invocable with std::size_t");
             static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
-            if (!contains(comparable)) {
+            expected<bool> const key_is_present = contains(comparable);
+            if (!key_is_present) return key_is_present.status();
+            if (!*key_is_present) {
                 callback_missing();
-                return;
+                return success_k;
             }
+            record_window_read_(comparable, comparable, access_t::from_the_lowest_k);
             auto const ordering = changes_.key_comp();
             std::size_t counted = 0;
             merge_all_([&](versioned_t const &version) noexcept {
@@ -1064,8 +1239,175 @@ class snapshot_store {
                 return probe_control_t::resume_k;
             });
             callback_found(counted);
+            return success_k;
         }
 
+#pragma region Transaction Range Operations
+
+        /** @brief How many members equal @p comparable, which for a unique key is nought or one. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+            expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
+            if (!present) return present.status();
+            return *present ? std::size_t {1} : std::size_t {0};
+        }
+
+        /** @brief Copies out the first member at or after @p comparable, this transaction's writes included. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
+            requires ordered_core_k
+        {
+            expected<value_t> result {status_t::key_not_found_k};
+            [[maybe_unused]] status_t const answered = lower_bound(
+                std::forward<comparable_type_>(comparable),
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            return result;
+        }
+
+        /** @brief Copies out the first member after @p comparable, this transaction's writes included. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
+            requires ordered_core_k
+        {
+            expected<value_t> result {status_t::key_not_found_k};
+            [[maybe_unused]] status_t const answered = upper_bound(
+                std::forward<comparable_type_>(comparable),
+                [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            return result;
+        }
+
+        /**
+         *  @brief Stages a tombstone for every member this transaction reads in [ @p lower, @p upper ).
+         *
+         *  The window is walked first and staged afterwards, because staging a tombstone changes what the
+         *  merged walk answers and a walk revising itself would skip its own neighbours.
+         */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            return erase_walked_(
+                [&](auto &&step) noexcept {
+                    return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), step);
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Stages a tombstone for every member at or after @p lower, @p lower included. */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            return erase_walked_(
+                [&](auto &&step) noexcept {
+                    record_window_read_(lower, lower, access_t::to_the_highest_k);
+                    merge_from_(lower, [&](versioned_t const &version) noexcept {
+                        if (version.presence == presence_t::present_k) step(version.payload);
+                        return probe_control_t::resume_k;
+                    });
+                    return success_k;
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Stages a tombstone for every member before @p upper, @p upper excluded. */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            return erase_walked_(
+                [&](auto &&step) noexcept {
+                    record_window_read_(upper, upper, access_t::from_the_lowest_k);
+                    auto const ordering = changes_.key_comp();
+                    merge_all_([&](versioned_t const &version) noexcept {
+                        if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
+                        if (version.presence == presence_t::present_k) step(version.payload);
+                        return probe_control_t::resume_k;
+                    });
+                    return success_k;
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /**
+         *  @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result.
+         *
+         *  Collected before revising for the same reason the erasing walks collect: a staged write moves
+         *  what the merged walk answers underneath itself.
+         */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
+                                            callback_type_ &&callback) noexcept
+            requires is_mapping<value_t> && ordered_core_k
+        {
+            values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
+            status_t collecting = success_k;
+            [[maybe_unused]] status_t const walked = range(
+                std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
+                    if (failed(collecting)) return;
+                    auto duplicate = copy_safely(value);
+                    if (!duplicate) {
+                        collecting = duplicate.status();
+                        return;
+                    }
+                    if (status_t const kept = revised.push_back(std::move(*duplicate)); failed(kept)) collecting = kept;
+                });
+            if (failed(collecting)) return collecting;
+
+            for (std::size_t index = 0; index != revised.size(); ++index) {
+                value_t &revision = revised[index];
+                callback(revision.key, revision.mapped);
+                if (status_t const staged = upsert(std::move(revision)); failed(staged)) return staged;
+            }
+            return success_k;
+        }
+
+        /** @brief Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes included. */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                          callback_type_ &&callback) const noexcept
+            requires ordered_core_k
+        {
+            std::size_t counted = 0;
+            if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
+                failed(measured))
+                return measured;
+            if (!counted) return success_k;
+
+            std::size_t skipped = draw_below(generator, counted);
+            bool drawn = false;
+            return range(lower, upper, [&](value_t const &value) noexcept {
+                if (drawn) return;
+                if (skipped) --skipped;
+                else {
+                    callback(value);
+                    drawn = true;
+                }
+            });
+        }
+
+        /** @brief Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+        [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                                std::size_t &seen, std::size_t capacity,
+                                                output_iterator_type_ &&reservoir) const noexcept
+            requires ordered_core_k
+        {
+            static_assert(std::is_nothrow_copy_assignable_v<value_t>,
+                          "a reservoir copies into the caller's buffer, so the member must copy without throwing");
+            return range(lower, upper, [&](value_t const &value) noexcept {
+                if (seen < capacity) reservoir[seen] = value;
+                else if (std::size_t const slot = draw_below(generator, seen + 1); slot < capacity)
+                    reservoir[slot] = value;
+                ++seen;
+            });
+        }
+
+#pragma endregion Transaction Range Operations
       private:
         /**
          *  @brief Hands @p callback every version this transaction reads, in key order, from the two
@@ -1103,6 +1445,36 @@ class snapshot_store {
                 if (callback(pending) == probe_control_t::halt_k) return;
                 ++staged;
             }
+        }
+
+        /**
+         *  @brief Walks a window, hands every member to @p callback, and stages a tombstone for each.
+         *
+         *  The walk finishes before the first tombstone is staged, because a staged write changes what
+         *  the merged view answers and a walk revising itself would step over its own neighbours.
+         */
+        template <typename walk_type_, typename callback_type_>
+        [[nodiscard]] status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            changed_identifiers_vector_t doomed(
+                changed_identifiers_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
+            status_t collecting = success_k;
+            [[maybe_unused]] status_t const walked = walk([&](value_t const &value) noexcept {
+                if (failed(collecting)) return;
+                auto owned = copy_safely<identifier_t>(identifier_t {mapping_key_or_itself<value_t>(value)});
+                if (!owned) {
+                    collecting = owned.status();
+                    return;
+                }
+                callback(value);
+                if (status_t const kept = doomed.push_back(std::move(*owned)); failed(kept)) collecting = kept;
+            });
+            if (failed(collecting)) return collecting;
+
+            for (std::size_t index = 0; index != doomed.size(); ++index)
+                if (status_t const staged = erase(doomed[index]); failed(staged)) return staged;
+            return success_k;
         }
 
         /** @brief Merges both sides from the first key not less than @p comparable. */
@@ -1151,7 +1523,6 @@ class snapshot_store {
 #pragma endregion Transaction Lookup
 
 #pragma region Transaction Lifecycle
-
         /**
          *  @brief Moves every pending write into the store, invisible, and reserves everything a
          *    commit would otherwise have to allocate.
@@ -1163,8 +1534,7 @@ class snapshot_store {
             auto &store = store_ref();
             auto const prepaid = storage_shape_t::prepare(store.entries_, changed_identifiers_.size());
             if (failed(prepaid)) return prepaid;
-            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
-            if (status_t const validated = validate_writes_(); failed(validated)) return validated;
+            if (status_t const validated = validate_accesses_(); failed(validated)) return validated;
 
             // Every change needs somewhere to land before any of them moves, or a transaction could
             // run out of memory with half of itself already in the store. So this pass files a
@@ -1235,8 +1605,7 @@ class snapshot_store {
          */
         [[nodiscard]] status_t validate_for_commit() const noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
-            if (status_t const validated = validate_watches_(); failed(validated)) return validated;
-            return validate_writes_();
+            return validate_accesses_();
         }
 
         /**
@@ -1300,9 +1669,12 @@ class snapshot_store {
             auto &store = store_ref();
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
 
-            watches_.clear();
+            accesses_.clear();
             changes_.clear();
             changed_identifiers_.clear();
+            // A read that named no key refuses every commit that saw a newer stamp. Clearing the reads
+            // without clearing that refusal leaves a transaction which can never commit again.
+            read_set_ = read_set_t::names_every_key_k;
             staging_ = staging_t::pending_k;
             generation_ = store.next_generation_();
             snapshot_ = snapshot;
@@ -1326,7 +1698,6 @@ class snapshot_store {
      *  way through a group leaves the store exactly as it was.
      */
     class publication_t {
-
         friend store_t;
 
         store_t *store_ {nullptr};
@@ -1468,6 +1839,9 @@ class snapshot_store {
     /** @brief The newest stamp every part of which is written, which is what a fresh read answers at. */
     [[nodiscard]] generation_t published_stamp_() const noexcept { return clock_->published_stamp(); }
 
+    /** @brief The newest stamp drawn, which is what a validator compares against. */
+    [[nodiscard]] generation_t drawn_stamp_() const noexcept { return clock_->drawn_stamp(); }
+
     /** @brief The stamp as a plain number, which is how two versions are ordered by recency. */
     static constexpr generation_t stamp_of(commit_stamp_t stamp) noexcept { return static_cast<generation_t>(stamp); }
 
@@ -1562,6 +1936,39 @@ class snapshot_store {
             if (!visible_at(version.committed, snapshot)) changed = true;
         });
         return changed;
+    }
+
+    /**
+     *  @brief Whether anything published a version of any key in [ @p lower, @p upper ) after @p snapshot.
+     *
+     *  A phantom is an @b entry in the window, whatever key it carries and whatever masks it, so this
+     *  scans the dated core over the window rather than resolving what the window reads. Answering the
+     *  latter is per-key work the question does not need, and it would miss a key whose newest version
+     *  is a tombstone - an erase publishes one rather than leaving a hole, which is exactly the commit
+     *  a range read has to notice.
+     *
+     *  Pruning cannot hide a conflict here: reclamation never passes an open lease, so no version
+     *  stamped above a live reader's snapshot is reclaimable while that reader holds it.
+     *
+     *  @param[in] ends Which sides of the window run off the end, in which case the matching bound is
+     *    ignored - an ordinal read starts before every key, and a bound read that landed on nothing
+     *    runs past the last one.
+     */
+    template <typename lower_type_, typename upper_type_>
+    [[nodiscard]] bool range_changed_since_(lower_type_ const &lower, upper_type_ const &upper, generation_t snapshot,
+                                            access_t ends = access_t::none_k) const noexcept
+        requires ordered_core_k
+    {
+        auto const ordering = entries_.key_comp();
+        bool const runs_to_the_highest = holds(ends, access_t::to_the_highest_k);
+        auto cursor = holds(ends, access_t::from_the_lowest_k) ? entries_.begin() : entries_.lower_bound(lower);
+        for (; cursor != entries_.end(); ++cursor) {
+            versioned_t const &version = *cursor;
+            if (!runs_to_the_highest && !ordering.per_key_compare(version, upper)) break;
+            if (version.committed == commit_stamp_t::uncommitted_k) continue;
+            if (!visible_at(version.committed, snapshot)) return true;
+        }
+        return false;
     }
 
     /** @brief Hands @p callback the value @p snapshot reads for @p comparable, or reports absence. */
@@ -2013,14 +2420,16 @@ class snapshot_store {
 
     /** @brief Whether a member equal to @p comparable is readable now. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] bool contains(comparable_type_ &&comparable) const noexcept {
+    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         return readable_version_(comparable, published_stamp_()) != nullptr;
     }
 
     /** @brief How many members equal @p comparable, which for a unique-key store is zero or one. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] std::size_t count(comparable_type_ &&comparable) const noexcept {
-        return contains(std::forward<comparable_type_>(comparable)) ? 1 : 0;
+    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+        expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
+        if (!present) return present.status();
+        return *present ? std::size_t {1} : std::size_t {0};
     }
 
 #pragma endregion Capacity
@@ -2072,28 +2481,51 @@ class snapshot_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-              callback_missing_type_ &&callback_missing = {}) const noexcept {
+    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) const noexcept {
         find_at_(std::forward<comparable_type_>(comparable), published_stamp_(),
                  std::forward<callback_found_type_>(callback_found),
                  std::forward<callback_missing_type_>(callback_missing));
+        return success_k;
     }
 
     /** @brief Copies out the member equal to @p comparable, or reports why it could not. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        find(
+        [[maybe_unused]] status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
     }
 
+    /**
+     *  @brief Hands @p callback_found the smallest member the newest published commit shows.
+     *
+     *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens with:
+     *  it asks for a first key rather than an ordinal, so a core keeping no subtree counts can answer.
+     *
+     *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires ordered_core_k
+    {
+        static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
+                      "callback_found must be noexcept invocable with value_t const &");
+        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
+        visible_keys().peek(std::forward<callback_found_type_>(callback_found),
+                            std::forward<callback_missing_type_>(callback_missing));
+        return success_k;
+    }
+
     /** @brief Finds the first member @b greater or equal to @p comparable. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                       callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ordered_core_k
     {
         value_t const *found = nullptr;
@@ -2106,13 +2538,14 @@ class snapshot_store {
             });
         if (found) callback_found(*found);
         else callback_missing();
+        return success_k;
     }
 
     /** @brief Finds the first member @b strictly greater than @p comparable. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                     callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                       callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ordered_core_k
     {
         value_t const *found = nullptr;
@@ -2125,6 +2558,7 @@ class snapshot_store {
             });
         if (found) callback_found(*found);
         else callback_missing();
+        return success_k;
     }
 
     /** @brief Copies out the first member not less than @p comparable. */
@@ -2133,7 +2567,7 @@ class snapshot_store {
         requires ordered_core_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        lower_bound(
+        [[maybe_unused]] status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -2145,7 +2579,7 @@ class snapshot_store {
         requires ordered_core_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        upper_bound(
+        [[maybe_unused]] status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
         return result;
@@ -2169,7 +2603,8 @@ class snapshot_store {
     /** @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit. */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    void range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept
+    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
+                                 callback_type_ &&callback = {}) const noexcept
         requires ordered_core_k
     {
         range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
@@ -2177,6 +2612,7 @@ class snapshot_store {
                       callback(value);
                       return probe_control_t::resume_k;
                   });
+        return success_k;
     }
 
     /**
@@ -2185,8 +2621,8 @@ class snapshot_store {
      *  @param[in] callback Callback receiving each match. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    void equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
-        find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
+    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+        return find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
     }
 
 #pragma endregion Lookup
@@ -2205,8 +2641,8 @@ class snapshot_store {
      *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    void select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                  callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ranked_core_k
     {
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
@@ -2216,6 +2652,7 @@ class snapshot_store {
         auto const *node = entries_.select_augmented(ordinal);
         if (node) callback_found(node->fruit.payload);
         else callback_missing();
+        return success_k;
     }
 
     /**
@@ -2228,8 +2665,8 @@ class snapshot_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    void rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-              callback_missing_type_ &&callback_missing = {}) const noexcept
+    [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) const noexcept
         requires ranked_core_k
     {
         static_assert(is_safe_callback_for<callback_found_type_, std::size_t>,
@@ -2239,11 +2676,12 @@ class snapshot_store {
         versioned_t const *readable = readable_version_(comparable, published_stamp_());
         if (!readable) {
             callback_missing();
-            return;
+            return success_k;
         }
         // Dated at a generation no version can carry, so the descent orders the target strictly before
         // every version of its own key rather than stopping inside that key's run.
         callback_found(entries_.rank_augmented(dated_reference_t {identifier_of(*readable), 0}));
+        return success_k;
     }
 
     /** @brief How many keys the augmented counts say are readable, which is what @c select indexes. */
@@ -2272,7 +2710,9 @@ class snapshot_store {
 
     /** @brief Publishes @p value only if the key is absent, reporting a clash rather than hiding it. */
     [[nodiscard]] status_t insert(value_t &&value) noexcept {
-        if (contains(mapping_key_or_itself<value_t>(value))) return key_already_exists_k;
+        expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
+        if (!key_is_present) return key_is_present.status();
+        if (*key_is_present) return key_already_exists_k;
         return upsert(std::move(value));
     }
 
@@ -2292,7 +2732,6 @@ class snapshot_store {
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
     [[nodiscard]] status_t insert_if_missing(value_t &&value, callback_inserted_type_ &&callback_inserted = {},
                                              callback_existing_type_ &&callback_existing = {}) noexcept {
-
         static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                       "callback_existing must be noexcept invocable with value_t const &");
         static_assert(is_safe_callback_for<callback_inserted_type_, value_t const &>,
@@ -2321,7 +2760,9 @@ class snapshot_store {
 
     /** @brief Publishes @p value only if the key is already there. */
     [[nodiscard]] status_t update(value_t &&value) noexcept {
-        if (!contains(mapping_key_or_itself<value_t>(value))) return key_not_found_k;
+        expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
+        if (!key_is_present) return key_is_present.status();
+        if (!*key_is_present) return key_not_found_k;
         return upsert(std::move(value));
     }
 
@@ -2339,7 +2780,9 @@ class snapshot_store {
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
-            if (contains(mapping_key_or_itself<value_t>(candidate))) return key_already_exists_k;
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(candidate));
+            if (!key_is_present) return key_is_present.status();
+            if (*key_is_present) return key_already_exists_k;
             return staging.insert_if_missing(std::move(candidate));
         });
     }
@@ -2453,10 +2896,11 @@ class snapshot_store {
      *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
      */
     template <typename callback_type_ = no_op_t>
-    void for_each(callback_type_ &&callback) const noexcept {
+    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
         for_each_at_(published_stamp_(), std::forward<callback_type_>(callback));
+        return success_k;
     }
 
 #pragma endregion Enumeration
@@ -2548,15 +2992,16 @@ class snapshot_store {
     {
         values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(entries_)));
         status_t collecting = success_k;
-        range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
-            if (failed(collecting)) return;
-            auto duplicate = copy_safely(value);
-            if (!duplicate) {
-                collecting = duplicate.status();
-                return;
-            }
-            if (status_t const kept = revised.push_back(std::move(*duplicate)); failed(kept)) collecting = kept;
-        });
+        [[maybe_unused]] status_t const walked = range(
+            std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
+                if (failed(collecting)) return;
+                auto duplicate = copy_safely(value);
+                if (!duplicate) {
+                    collecting = duplicate.status();
+                    return;
+                }
+                if (status_t const kept = revised.push_back(std::move(*duplicate)); failed(kept)) collecting = kept;
+            });
         if (failed(collecting)) return collecting;
         if (revised.size() == 0) return success_k;
 
@@ -2590,17 +3035,18 @@ class snapshot_store {
      *    the window shows nothing.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    void sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                    callback_type_ &&callback) const noexcept
+    [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                      callback_type_ &&callback) const noexcept
         requires ordered_core_k
     {
         std::size_t visible_count = 0;
-        range(lower, upper, [&](value_t const &) noexcept { ++visible_count; });
-        if (visible_count == 0) return;
+        [[maybe_unused]] status_t const walked =
+            range(lower, upper, [&](value_t const &) noexcept { ++visible_count; });
+        if (visible_count == 0) return success_k;
 
         std::size_t matches_to_skip = draw_below(generator, visible_count);
         bool drawn = false;
-        range(lower, upper, [&](value_t const &element) noexcept {
+        return range(lower, upper, [&](value_t const &element) noexcept {
             if (drawn) return;
             if (matches_to_skip) --matches_to_skip;
             else {
@@ -2624,22 +3070,26 @@ class snapshot_store {
      *  @param[out] reservoir Random-access iterator to that buffer.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    void sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
-                          std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
+    [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                            std::size_t &seen, std::size_t reservoir_capacity,
+                                            output_iterator_type_ &&reservoir) const noexcept
         requires ordered_core_k
     {
+        static_assert(std::is_nothrow_copy_assignable_v<value_t>,
+                      "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
         using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
         using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
         static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
-        range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
-            if (seen < reservoir_capacity) { reservoir[seen] = value; }
-            else {
-                auto const slot_to_replace = draw_below(generator, seen + 1);
-                if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = value;
-            }
-            ++seen;
-        });
+        return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                     [&](value_t const &value) noexcept {
+                         if (seen < reservoir_capacity) { reservoir[seen] = value; }
+                         else {
+                             auto const slot_to_replace = draw_below(generator, seen + 1);
+                             if (slot_to_replace < reservoir_capacity) reservoir[slot_to_replace] = value;
+                         }
+                         ++seen;
+                     });
     }
 
 #pragma endregion Sampling
@@ -2846,6 +3296,51 @@ template <typename key_type_, typename value_type_, typename hasher_type_ = defa
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using snapshot_hash_map =
     snapshot_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+
+/**
+ *  @brief Snapshot isolation with the read set validated at commit as well as the write set.
+ *
+ *  That is serializability without real-time ordering: every committed history is equivalent to some
+ *  serial one, but a transaction that opened on an older snapshot and read only untouched keys commits
+ *  @b in @b the @b past, so one starting after another returned may still not see it.
+ */
+template <typename collection_type_>
+using serializable_store = snapshot_store<collection_type_, isolation_t::serializable_k>;
+
+/** @brief Serializable transactional set backed by an AVL tree. */
+template <typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<value_type_>>
+using serializable_avl_set = serializable_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
+
+/** @brief Serializable transactional map backed by an AVL tree. */
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+using serializable_avl_map =
+    serializable_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+
+/** @brief Serializable transactional set backed by a weight-balanced tree, so it answers ordinals too. */
+template <typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<value_type_>>
+using serializable_wb_set =
+    serializable_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+
+/** @brief Serializable transactional map backed by a weight-balanced tree, so it answers ordinals too. */
+template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+using serializable_wb_map = serializable_store<
+    basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+
+/** @brief Serializable transactional set backed by an open-addressed table, so it keeps no ordering. */
+template <typename value_type_, typename hasher_type_ = hash<value_type_>, typename equals_type_ = equal_to_t,
+          typename allocator_type_ = std::allocator<std::byte>>
+using serializable_hash_set =
+    serializable_store<basic_hash_table<value_type_, hasher_type_, equals_type_, allocator_type_>>;
+
+/** @brief Serializable transactional map backed by an open-addressed table, so it keeps no ordering. */
+template <typename key_type_, typename value_type_, typename hasher_type_ = hash<key_type_>,
+          typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
+using serializable_hash_map =
+    serializable_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 #pragma endregion Aliases
 

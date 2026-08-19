@@ -82,8 +82,8 @@ static void test_point_insert_strategies() {
     st_verify_(first->stage());
     st_verify_(first->commit());
     st_verify_eq_(container.size(), 1);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(2)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), true);
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), false);
 }
 
 /** @brief Tests that an erase staged in a transaction only becomes visible on commit */
@@ -101,11 +101,17 @@ static void test_point_erase_visibility() {
     st_verify_(erasing.has_value());
     for (std::size_t index = 0; index < 4; ++index) st_verify_(erasing->erase(trivial_id_to_key<member_t>(index)));
     st_verify_(erasing->stage());
-    for (std::size_t index = 0; index < 4; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 0; index < 4; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
 
     st_verify_(erasing->commit());
-    for (std::size_t index = 0; index < 4; ++index) st_verify_(!container.contains(trivial_id_to_key<member_t>(index)));
-    for (std::size_t index = 4; index < 8; ++index) st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 0; index < 4; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), false);
+    }
+    for (std::size_t index = 4; index < 8; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
 }
 
 /** @brief Tests that a rollback pulls every staged version back and leaves the store as it was */
@@ -125,9 +131,10 @@ static void test_point_rollback_restores_store() {
     st_verify_(writing->rollback());
 
     st_verify_eq_(container.size(), 1);
-    st_verify_(container.contains(trivial_id_to_key<member_t>(1)));
-    for (std::size_t index = 2; index <= 5; ++index)
-        st_verify_(!container.contains(trivial_id_to_key<member_t>(index)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), true);
+    for (std::size_t index = 2; index <= 5; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), false);
+    }
 
     // The rolled-back versions are still the transaction's, so a second staging lands them all
     st_verify_(writing->stage());
@@ -151,8 +158,9 @@ static void test_point_staging_survives_growth(std::size_t size = 500) {
     st_verify_(writing->commit());
 
     st_verify_eq_(container.size(), size);
-    for (std::size_t index = 0; index < size; ++index)
-        st_verify_(container.contains(trivial_id_to_key<member_t>(index)));
+    for (std::size_t index = 0; index < size; ++index) {
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(index)), true);
+    }
 }
 
 /** @brief Tests that the unordered walk reports every member once, over a store and over a transaction */
@@ -166,7 +174,7 @@ static void test_point_enumeration_visits_every_member() {
 
     container_t container;
     std::size_t empty_visits = 0;
-    container.for_each([&](member_t const &) noexcept { ++empty_visits; });
+    st_verify_(container.for_each([&](member_t const &) noexcept { ++empty_visits; }));
     st_verify_eq_(empty_visits, 0);
 
     // The keys are materialized up front, since a heap-allocating one cannot be built inside a
@@ -179,11 +187,11 @@ static void test_point_enumeration_visits_every_member() {
 
     std::vector<std::size_t> tally(size, 0);
     std::size_t visits = 0;
-    container.for_each([&](member_t const &member) noexcept {
+    st_verify_(container.for_each([&](member_t const &member) noexcept {
         ++visits;
         for (std::size_t index = 0; index < size; ++index)
             if (mapping_key_or_itself<member_t>(member) == keys[index]) ++tally[index];
-    });
+    }));
     st_verify_eq_(visits, container.size());
     for (std::size_t index = 0; index < size; ++index) st_verify_eq_(tally[index], 1);
 
@@ -195,11 +203,11 @@ static void test_point_enumeration_visits_every_member() {
 
     std::vector<std::size_t> staged_tally(size, 0);
     std::size_t staged_visits = 0;
-    writing->for_each([&](member_t const &member) noexcept {
+    st_verify_(writing->for_each([&](member_t const &member) noexcept {
         ++staged_visits;
         for (std::size_t index = 0; index < size; ++index)
             if (mapping_key_or_itself<member_t>(member) == keys[index]) ++staged_tally[index];
-    });
+    }));
     st_verify_eq_(staged_visits, size);
     st_verify_eq_(staged_tally[0], 0);
     for (std::size_t index = 1; index < size; ++index) st_verify_eq_(staged_tally[index], 1);
@@ -207,7 +215,7 @@ static void test_point_enumeration_visits_every_member() {
     // Nothing the transaction staged is published, so the store still reports what it did before.
     st_verify_(writing->stage());
     std::size_t published_visits = 0;
-    container.for_each([&](member_t const &) noexcept { ++published_visits; });
+    st_verify_(container.for_each([&](member_t const &) noexcept { ++published_visits; }));
     st_verify_eq_(published_visits, size);
 }
 
@@ -391,6 +399,12 @@ static void transactional_consistency_disjoint_keys_both_succeed() {
     test_disjoint_keys_both_succeed<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_lost_update_matches_isolation() {
+    test_lost_update_matches_isolation<transactional_trivial_map_t>();
+    test_lost_update_matches_isolation<transactional_composite_map_t>();
+    test_lost_update_matches_isolation<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_trivial_map_t>();
     test_repeated_read_matches_isolation<transactional_composite_map_t>();
@@ -434,7 +448,7 @@ static void test_watch_on_erased_version_commits() {
         st_verify_(eraser->stage());
         st_verify_(eraser->commit());
     }
-    st_verify_(!container.contains(trivial_id_to_key<member_t>(1)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(1)), false);
 
     auto watcher = container.transaction();
     st_verify_(watcher.has_value());
@@ -445,7 +459,7 @@ static void test_watch_on_erased_version_commits() {
     st_verify_(watcher->insert(trivial_id_to_member<member_t>(2)));
     st_verify_(watcher->stage());
     st_verify_(watcher->commit());
-    st_verify_(container.contains(trivial_id_to_key<member_t>(2)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), true);
 }
 
 static void transactional_consistency_watch_on_erased_version_commits() {
@@ -671,6 +685,8 @@ int main() {
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
                          transactional_consistency_disjoint_keys_both_succeed);
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation",
+                         transactional_consistency_lost_update_matches_isolation);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation",
                          transactional_consistency_repeated_read_matches_isolation);
     failures += run_test(filter, "transactional_consistency.reset_clears_transaction_state",

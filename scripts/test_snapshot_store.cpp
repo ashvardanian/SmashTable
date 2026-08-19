@@ -39,6 +39,10 @@ using namespace ashvardanian::smashtable::scripts;
 using snapshot_avl_map_t =
     snapshot_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
+/** The same core and members at the serializable level, so a suite can compare the two directly. */
+using serializable_avl_map_t =
+    serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+
 /**
  *  Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
  *  Tests: The same suites over the weight-balanced core
@@ -121,8 +125,8 @@ static_assert(partitioned_store<monotonic_avl_map_t, hash<trivial_key_t>, spin_s
 template <typename readable_type_>
 static int mapped_or_absent(readable_type_ const &readable, trivial_id_t identifier) noexcept {
     int observed = -1;
-    readable.find(
-        trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {});
+    st_verify_(readable.find(
+        trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {}));
     return observed;
 }
 
@@ -178,6 +182,7 @@ static void test_isolation_traits() {
 /** @brief Tests that a read repeated inside one transaction survives an external commit */
 template <typename store_type_>
 static void test_repeated_read_is_stable() {
+
     store_type_ store;
     commit_write(store, 1, 100);
     commit_write(store, 2, 200);
@@ -194,7 +199,7 @@ static void test_repeated_read_is_stable() {
     // The snapshot was fixed when the reader opened, so neither commit reaches it.
     st_verify_eq_(mapped_or_absent(*reader, 1), 100);
     st_verify_eq_(mapped_or_absent(*reader, 2), 200);
-    st_verify_(reader->contains(trivial_key_t {2}));
+    st_verify_eq_(reader->contains(trivial_key_t {2}), true);
 }
 
 /** @brief Tests that a transaction reads its own writes before and after they are published */
@@ -227,8 +232,8 @@ static void test_range_admits_no_phantoms() {
 
     auto collect = [&]() {
         std::vector<trivial_id_t> seen;
-        reader->range(trivial_key_t {0}, trivial_key_t {10},
-                      [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); });
+        st_verify_(reader->range(trivial_key_t {0}, trivial_key_t {10},
+                                 [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }));
         return seen;
     };
 
@@ -245,8 +250,8 @@ static void test_range_admits_no_phantoms() {
     st_verify_eq_(mapped_or_absent(*reader, 4), 10);
 
     std::vector<trivial_id_t> outside;
-    store.range(trivial_key_t {0}, trivial_key_t {10},
-                [&](auto const &member) noexcept { outside.push_back(member.key.unique_id); });
+    st_verify_(store.range(trivial_key_t {0}, trivial_key_t {10},
+                           [&](auto const &member) noexcept { outside.push_back(member.key.unique_id); }));
     st_verify_eq_(outside.size(), 5);
 }
 
@@ -262,21 +267,21 @@ static void test_bounds_follow_the_snapshot() {
     commit_write(store, 4, 40);
 
     trivial_id_t after_two = 0;
-    reader->upper_bound(
+    st_verify_(reader->upper_bound(
         trivial_key_t {2}, [&](auto const &member) noexcept { after_two = member.key.unique_id; },
-        []() noexcept { st_verify_(false && "the reader's snapshot still holds key 6"); });
+        []() noexcept { st_verify_(false && "the reader's snapshot still holds key 6"); }));
     st_verify_eq_(after_two, 6);
 
     trivial_id_t from_three = 0;
-    reader->lower_bound(
+    st_verify_(reader->lower_bound(
         trivial_key_t {3}, [&](auto const &member) noexcept { from_three = member.key.unique_id; },
-        []() noexcept { st_verify_(false && "the reader's snapshot still holds key 6"); });
+        []() noexcept { st_verify_(false && "the reader's snapshot still holds key 6"); }));
     st_verify_eq_(from_three, 6);
 
     trivial_id_t published = 0;
-    store.lower_bound(
+    st_verify_(store.lower_bound(
         trivial_key_t {3}, [&](auto const &member) noexcept { published = member.key.unique_id; },
-        []() noexcept { st_verify_(false && "key 4 is published"); });
+        []() noexcept { st_verify_(false && "key 4 is published"); }));
     st_verify_eq_(published, 4);
 }
 
@@ -302,7 +307,7 @@ static void test_first_committer_wins() {
     st_verify_(early->commit());
 
     // The loser is turned away rather than overwriting a version it never read.
-    st_verify_eq_(late->stage(), status_t::consistency_k);
+    st_verify_eq_(late->stage(), status_t::write_conflict_k);
     st_verify_eq_(mapped_or_absent(store, 1), 111);
 }
 
@@ -325,7 +330,7 @@ static void test_conflict_caught_after_staging() {
     st_verify_(late->stage());
     st_verify_(early->commit());
 
-    st_verify_eq_(late->commit(), status_t::consistency_k);
+    st_verify_eq_(late->commit(), status_t::write_conflict_k);
     st_verify_eq_(mapped_or_absent(store, 1), 111);
     st_verify_(late->rollback());
 }
@@ -347,7 +352,7 @@ static void test_watch_refuses_lost_update() {
     st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 222)));
 
     commit_write(store, 1, 111);
-    st_verify_eq_(reader->stage(), status_t::consistency_k);
+    st_verify_eq_(reader->stage(), status_t::read_conflict_k);
     st_verify_eq_(mapped_or_absent(store, 2), 200);
 }
 
@@ -366,7 +371,7 @@ static void test_watch_records_absence() {
     st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 222)));
 
     commit_write(store, 1, 111);
-    st_verify_eq_(reader->stage(), status_t::consistency_k);
+    st_verify_eq_(reader->stage(), status_t::read_conflict_k);
 }
 
 /** @brief Tests that a watch on an absent key refuses a commit that inserted and erased it since */
@@ -388,7 +393,7 @@ static void test_watch_spans_insert_then_erase() {
     commit_write(store, 1, 111);
     commit_erase(store, 1);
     st_verify_eq_(mapped_or_absent(store, 1), -1);
-    st_verify_eq_(reader->stage(), status_t::consistency_k);
+    st_verify_eq_(reader->stage(), status_t::read_conflict_k);
 }
 
 /** @brief Tests that rollback hands staged writes back and lets a retry commit them */
@@ -714,6 +719,7 @@ static void test_long_lived_reader_holds_its_own_snapshot() {
 template <typename store_type_>
 static void test_point_insert_strategies() {
     using member_t = typename store_type_::value_type;
+
     store_type_ store;
 
     auto writer = store.transaction();
@@ -733,11 +739,12 @@ static void test_point_insert_strategies() {
     st_verify_(store.insert(trivial_id_to_member<member_t>(2)));
     st_verify_eq_(store.update(trivial_id_to_member<member_t>(3)), status_t::key_not_found_k);
     st_verify_eq_(store.size(), 2);
-    st_verify_eq_(store.count(trivial_key_t {2}), 1);
+    st_verify_eq_(store.count(trivial_key_t {2}), std::size_t {1});
 }
 
 /** @brief Tests that a key allocating on every copy stages, commits and reclaims like a trivial one */
 static void test_heavy_keys_round_trip() {
+
     snapshot_heavy_set_t store;
 
     {
@@ -755,9 +762,9 @@ static void test_heavy_keys_round_trip() {
 
     auto probe = heavy_key_t::make(trivial_id_t {3});
     st_verify_(probe.has_value());
-    st_verify_(store.contains(*probe));
+    st_verify_eq_(store.contains(*probe), true);
     st_verify_(store.erase(*probe));
-    st_verify_(!store.contains(*probe));
+    st_verify_eq_(store.contains(*probe), false);
     st_verify_eq_(store.versions_count(), 15);
 }
 
@@ -826,8 +833,8 @@ static void test_cursor_yields_each_key_once() {
 
     // The push-style walk and the resumable one must never disagree.
     std::vector<trivial_id_t> pushed;
-    store.range(trivial_key_t {0}, trivial_key_t {10},
-                [&](auto const &member) noexcept { pushed.push_back(member.key.unique_id); });
+    st_verify_(store.range(trivial_key_t {0}, trivial_key_t {10},
+                           [&](auto const &member) noexcept { pushed.push_back(member.key.unique_id); }));
     st_verify_(pushed == expected);
 
     std::vector<trivial_id_t> const from_four {4, 6, 7, 9};
@@ -864,10 +871,10 @@ static void test_transaction_range_is_sorted() {
 
     std::vector<trivial_id_t> seen;
     std::vector<int> values;
-    writer->range(trivial_key_t {0}, trivial_key_t {10}, [&](auto const &member) noexcept {
+    st_verify_(writer->range(trivial_key_t {0}, trivial_key_t {10}, [&](auto const &member) noexcept {
         seen.push_back(member.key.unique_id);
         values.push_back(member.mapped);
-    });
+    }));
 
     std::vector<trivial_id_t> const expected {0, 1, 2, 3, 4, 8, 9};
     st_verify_(seen == expected);
@@ -877,8 +884,8 @@ static void test_transaction_range_is_sorted() {
 
     // A window that opens on a staged key and closes inside the committed ones stays sorted too.
     std::vector<trivial_id_t> window;
-    writer->range(trivial_key_t {1}, trivial_key_t {5},
-                  [&](auto const &member) noexcept { window.push_back(member.key.unique_id); });
+    st_verify_(writer->range(trivial_key_t {1}, trivial_key_t {5},
+                             [&](auto const &member) noexcept { window.push_back(member.key.unique_id); }));
     std::vector<trivial_id_t> const expected_window {1, 2, 3, 4};
     st_verify_(window == expected_window);
 }
@@ -989,8 +996,8 @@ static void test_clear_refuses_open_readers() {
 template <typename readable_type_>
 static std::vector<trivial_id_t> keys_in_range(readable_type_ const &readable, trivial_id_t lower, trivial_id_t upper) {
     std::vector<trivial_id_t> seen;
-    readable.range(trivial_key_t {lower}, trivial_key_t {upper},
-                   [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); });
+    st_verify_(readable.range(trivial_key_t {lower}, trivial_key_t {upper},
+                              [&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }));
     return seen;
 }
 
@@ -1003,19 +1010,22 @@ static void test_equal_range_collapses_to_find() {
     commit_erase(store, 2);
 
     std::vector<int> found;
-    store.equal_range(trivial_key_t {1}, [&](auto const &member) noexcept { found.push_back(member.mapped); });
+    st_verify_(
+        store.equal_range(trivial_key_t {1}, [&](auto const &member) noexcept { found.push_back(member.mapped); }));
     st_verify_eq_(found.size(), 1);
     st_verify_eq_(found[0], 100);
 
     found.clear();
-    store.equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); });
+    st_verify_(
+        store.equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }));
     st_verify_(found.empty());
 
     auto reader = store.transaction();
     st_verify_(reader.has_value());
     st_verify_(reader->upsert(trivial_id_to_member<typename store_type_::value_type>(2, 222)));
     found.clear();
-    reader->equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); });
+    st_verify_(
+        reader->equal_range(trivial_key_t {2}, [&](auto const &member) noexcept { found.push_back(member.mapped); }));
     st_verify_eq_(found.size(), 1);
     st_verify_eq_(found[0], 222);
 }
@@ -1231,6 +1241,7 @@ static void test_bounded_vacuum_sweeps_whole_runs() {
 template <typename store_type_>
 static void test_sample_reservoir_draws_visible_keys() {
     using member_t = typename store_type_::value_type;
+
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != 20; ++identifier) commit_write(store, identifier, 0);
     for (trivial_id_t identifier = 0; identifier != 20; identifier += 2) commit_erase(store, identifier);
@@ -1238,16 +1249,18 @@ static void test_sample_reservoir_draws_visible_keys() {
     std::mt19937 generator(42);
     std::vector<member_t> reservoir(4);
     std::size_t seen = 0;
-    store.sample_reservoir(trivial_key_t {0}, trivial_key_t {20}, generator, seen, reservoir.size(), reservoir.begin());
+    st_verify_(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {20}, generator, seen, reservoir.size(),
+                                      reservoir.begin()));
 
     st_verify_eq_(seen, 10);
     for (std::size_t slot = 0; slot != reservoir.size(); ++slot) {
         st_verify_((reservoir[slot].key.unique_id % 2) == 1);
-        st_verify_(store.contains(reservoir[slot].key));
+        st_verify_eq_(store.contains(reservoir[slot].key), true);
     }
 
     seen = 0;
-    store.sample_reservoir(trivial_key_t {0}, trivial_key_t {4}, generator, seen, reservoir.size(), reservoir.begin());
+    st_verify_(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {4}, generator, seen, reservoir.size(),
+                                      reservoir.begin()));
     st_verify_eq_(seen, 2);
 }
 
@@ -1255,6 +1268,7 @@ static void test_sample_reservoir_draws_visible_keys() {
 template <typename store_type_>
 static void test_bulk_modifiers_commit_together() {
     using member_t = typename store_type_::value_type;
+
     store_type_ store;
 
     std::vector<member_t> batch;
@@ -1272,7 +1286,7 @@ static void test_bulk_modifiers_commit_together() {
     clashing.push_back(trivial_id_to_member<member_t>(3, 1));
     st_verify_eq_(store.insert(clashing.begin(), clashing.end()), status_t::key_already_exists_k);
     st_verify_eq_(store.size(), 5);
-    st_verify_(!store.contains(trivial_key_t {9}));
+    st_verify_eq_(store.contains(trivial_key_t {9}), false);
 
     st_verify_(store.insert_if_missing(clashing.begin(), clashing.end()));
     st_verify_eq_(store.size(), 6);
@@ -1288,7 +1302,7 @@ static void test_bulk_modifiers_commit_together() {
     std::vector<member_t> absent;
     absent.push_back(trivial_id_to_member<member_t>(77, 3));
     st_verify_eq_(store.update(absent.begin(), absent.end()), status_t::key_not_found_k);
-    st_verify_(!store.contains(trivial_key_t {77}));
+    st_verify_eq_(store.contains(trivial_key_t {77}), false);
 
     std::vector<member_t> mixed;
     mixed.push_back(trivial_id_to_member<member_t>(0, 5));
@@ -1318,35 +1332,35 @@ static void test_order_statistics_match_the_walk() {
     for (std::size_t ordinal = 0; ordinal != expected.size(); ++ordinal) {
         trivial_id_t drawn = 0;
         bool present = false;
-        store.select(
+        st_verify_(store.select(
             ordinal,
             [&](auto const &member) noexcept {
                 drawn = member.key.unique_id;
                 present = true;
             },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_(present);
         st_verify_eq_(drawn, expected[ordinal]);
 
         std::size_t ranked = 0;
         bool ranked_found = false;
-        store.rank(
+        st_verify_(store.rank(
             trivial_key_t {drawn},
             [&](std::size_t position) noexcept {
                 ranked = position;
                 ranked_found = true;
             },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_(ranked_found);
         st_verify_eq_(ranked, ordinal);
     }
 
     bool overshot = false;
-    store.select(expected.size(), [](auto const &) noexcept {}, [&]() noexcept { overshot = true; });
+    st_verify_(store.select(expected.size(), [](auto const &) noexcept {}, [&]() noexcept { overshot = true; }));
     st_verify_(overshot);
 
     bool erased_ranked = false;
-    store.rank(trivial_key_t {0}, [&](std::size_t) noexcept { erased_ranked = true; }, []() noexcept {});
+    st_verify_(store.rank(trivial_key_t {0}, [&](std::size_t) noexcept { erased_ranked = true; }, []() noexcept {}));
     st_verify_(!erased_ranked);
 }
 
@@ -1365,14 +1379,16 @@ static void test_order_statistics_cost_a_logarithm() {
 
     call_tally_t::reset();
     trivial_id_t drawn = 0;
-    store.select(size / 2, [&](auto const &member) noexcept { drawn = member.key.unique_id; }, []() noexcept {});
+    st_verify_(
+        store.select(size / 2, [&](auto const &member) noexcept { drawn = member.key.unique_id; }, []() noexcept {}));
     st_verify_eq_(drawn, size / 2);
     // A select reads only the stored subtree counts, so it never consults the comparator at all.
     st_verify_eq_(call_tally_t::comparisons_count(), 0);
 
     call_tally_t::reset();
     std::size_t ranked = 0;
-    store.rank(trivial_key_t {size - 1}, [&](std::size_t position) noexcept { ranked = position; }, []() noexcept {});
+    st_verify_(store.rank(
+        trivial_key_t {size - 1}, [&](std::size_t position) noexcept { ranked = position; }, []() noexcept {}));
     st_verify_eq_(ranked, size - 1);
     // The budget covers both halves of a rank: the probe that decides the key is readable at all, and
     // the descent that sums the counts to its left.
@@ -1397,35 +1413,35 @@ static void test_transaction_order_statistics_merge() {
     for (std::size_t ordinal = 0; ordinal != expected.size(); ++ordinal) {
         trivial_id_t drawn = 0;
         bool present = false;
-        writer->select(
+        st_verify_(writer->select(
             ordinal,
             [&](auto const &member) noexcept {
                 drawn = member.key.unique_id;
                 present = true;
             },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_(present);
         st_verify_eq_(drawn, expected[ordinal]);
 
         std::size_t ranked = 0;
         bool ranked_found = false;
-        writer->rank(
+        st_verify_(writer->rank(
             trivial_key_t {drawn},
             [&](std::size_t position) noexcept {
                 ranked = position;
                 ranked_found = true;
             },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_(ranked_found);
         st_verify_eq_(ranked, ordinal);
     }
 
     bool overshot = false;
-    writer->select(expected.size(), [](auto const &) noexcept {}, [&]() noexcept { overshot = true; });
+    st_verify_(writer->select(expected.size(), [](auto const &) noexcept {}, [&]() noexcept { overshot = true; }));
     st_verify_(overshot);
 
     bool erased_ranked = false;
-    writer->rank(trivial_key_t {4}, [&](std::size_t) noexcept { erased_ranked = true; }, []() noexcept {});
+    st_verify_(writer->rank(trivial_key_t {4}, [&](std::size_t) noexcept { erased_ranked = true; }, []() noexcept {}));
     st_verify_(!erased_ranked);
 }
 
@@ -1472,7 +1488,7 @@ static void test_ranked_size_tracks_every_write() {
 template <typename readable_type_>
 static std::vector<trivial_id_t> keys_enumerated(readable_type_ const &readable) {
     std::vector<trivial_id_t> seen;
-    readable.for_each([&](auto const &member) noexcept { seen.push_back(member.key.unique_id); });
+    st_verify_(readable.for_each([&](auto const &member) noexcept { seen.push_back(member.key.unique_id); }));
     std::sort(seen.begin(), seen.end());
     return seen;
 }
@@ -1480,6 +1496,7 @@ static std::vector<trivial_id_t> keys_enumerated(readable_type_ const &readable)
 /** @brief Tests that the unordered walk reports every visible element once, and nothing else at all */
 template <typename store_type_>
 static void test_for_each_visits_every_element_once() {
+
     store_type_ store;
     st_verify_(keys_enumerated(store).empty());
 
@@ -1490,7 +1507,7 @@ static void test_for_each_visits_every_element_once() {
     st_verify_eq_(seen.size(), store.size());
     st_verify_eq_(seen.size(), 8);
     for (std::size_t slot = 0; slot != seen.size(); ++slot) {
-        st_verify_(store.contains(trivial_key_t {seen[slot]}));
+        st_verify_eq_(store.contains(trivial_key_t {seen[slot]}), true);
         // A key reported twice would sort next to itself, and a tombstone would sort in among the rest.
         if (slot) st_verify_ne_(seen[slot], seen[slot - 1]);
         st_verify_ne_(seen[slot] % 3, 0u);
@@ -1558,13 +1575,13 @@ static void test_select_answers_exactly_once() {
         std::size_t found_count = 0;
         std::size_t missing_count = 0;
         trivial_id_t drawn = size;
-        store.select(
+        st_verify_(store.select(
             ordinal,
             [&](auto const &member) noexcept {
                 drawn = member.key.unique_id;
                 ++found_count;
             },
-            [&]() noexcept { ++missing_count; });
+            [&]() noexcept { ++missing_count; }));
         st_verify_eq_(found_count, 1u);
         st_verify_eq_(missing_count, 0u);
         st_verify_eq_(drawn, ordinal);
@@ -1572,7 +1589,8 @@ static void test_select_answers_exactly_once() {
 
     std::size_t overshot_found = 0;
     std::size_t overshot_missing = 0;
-    store.select(size, [&](auto const &) noexcept { ++overshot_found; }, [&]() noexcept { ++overshot_missing; });
+    st_verify_(
+        store.select(size, [&](auto const &) noexcept { ++overshot_found; }, [&]() noexcept { ++overshot_missing; }));
     st_verify_eq_(overshot_found, 0u);
     st_verify_eq_(overshot_missing, 1u);
 }
@@ -1591,13 +1609,13 @@ static void test_transaction_select_answers_exactly_once() {
         std::size_t found_count = 0;
         std::size_t missing_count = 0;
         trivial_id_t drawn = size;
-        reader->select(
+        st_verify_(reader->select(
             ordinal,
             [&](auto const &member) noexcept {
                 drawn = member.key.unique_id;
                 ++found_count;
             },
-            [&]() noexcept { ++missing_count; });
+            [&]() noexcept { ++missing_count; }));
         st_verify_eq_(found_count, 1u);
         st_verify_eq_(missing_count, 0u);
         st_verify_eq_(drawn, ordinal);
@@ -1678,6 +1696,14 @@ constexpr bool refuses_an_absent_key_k =
         store.update(cursor, cursor);
     };
 
+/** @brief Whether a store and its transactions both answer for a first key, without being asked an ordinal. */
+template <typename store_type_>
+constexpr bool answers_a_smallest_k =
+    requires(store_type_ const &store, typename store_type_::transaction_t const &transaction, no_op_t callback) {
+        store.smallest(callback, callback);
+        transaction.smallest(callback, callback);
+    };
+
 /** @brief Whether a store and its transactions both answer ordinals. */
 template <typename store_type_>
 constexpr bool answers_ordinals_k =
@@ -1688,6 +1714,13 @@ constexpr bool answers_ordinals_k =
         transaction.select(ordinal, callback, callback);
         transaction.rank(key, callback, callback);
     };
+
+static_assert(answers_a_smallest_k<snapshot_avl_map_t>, "an ordered store opens a merged walk with a first key");
+static_assert(answers_a_smallest_k<snapshot_wb_map_t>, "an ordered store opens a merged walk with a first key");
+static_assert(answers_a_smallest_k<monotonic_avl_map_t>, "an ordered store opens a merged walk with a first key");
+static_assert(!answers_a_smallest_k<snapshot_hash_map_t>, "an unordered core has no first key to name");
+static_assert(!answers_ordinals_k<snapshot_avl_map_t>,
+              "the AVL core keeps no subtree counts, which is why the seed must not ask for an ordinal");
 
 static_assert(update_range_reports_a_status_k<snapshot_avl_map_t>, "a mutator that can fail needs a channel");
 static_assert(update_range_reports_a_status_k<monotonic_avl_map_t>, "a mutator that can fail needs a channel");
@@ -1786,8 +1819,7 @@ static void test_update_refuses_an_absent_key() {
     st_verify_eq_(mapped_or_absent(store, 2), -1);
 
     member_t both_present[1] = {trivial_id_to_member<member_t>(1, 50)};
-    st_verify_(
-        succeeded(store.update(std::make_move_iterator(both_present), std::make_move_iterator(both_present + 1))));
+    st_verify_(store.update(std::make_move_iterator(both_present), std::make_move_iterator(both_present + 1)));
     st_verify_eq_(mapped_or_absent(store, 1), 50);
 }
 
@@ -1811,21 +1843,22 @@ static void test_ordinals_agree_with_the_oracle() {
     for (std::size_t ordinal = 0; ordinal != oracle.size() + 2; ++ordinal) {
         int expected_mapped = -1;
         int observed_mapped = -2;
-        oracle.select(ordinal, [&](auto const &member) noexcept { expected_mapped = member.mapped; }, []() noexcept {});
-        store.select(
+        st_verify_(oracle.select(
+            ordinal, [&](auto const &member) noexcept { expected_mapped = member.mapped; }, []() noexcept {}));
+        st_verify_(store.select(
             ordinal, [&](auto const &member) noexcept { observed_mapped = member.mapped; },
-            [&]() noexcept { observed_mapped = -1; });
+            [&]() noexcept { observed_mapped = -1; }));
         st_verify_eq_(expected_mapped, observed_mapped);
     }
 
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
         std::size_t expected_rank = keys_k;
         std::size_t observed_rank = keys_k + 1;
-        oracle.rank(
-            trivial_key_t {identifier}, [&](std::size_t rank) noexcept { expected_rank = rank; }, []() noexcept {});
-        store.rank(
+        st_verify_(oracle.rank(
+            trivial_key_t {identifier}, [&](std::size_t rank) noexcept { expected_rank = rank; }, []() noexcept {}));
+        st_verify_(store.rank(
             trivial_key_t {identifier}, [&](std::size_t rank) noexcept { observed_rank = rank; },
-            [&]() noexcept { observed_rank = keys_k; });
+            [&]() noexcept { observed_rank = keys_k; }));
         st_verify_eq_(expected_rank, observed_rank);
     }
 }
@@ -1845,23 +1878,25 @@ static void test_oracle_transaction_ordinals_include_staged_writes() {
     trivial_id_t const expected_order[4] = {0, 2, 3, 6};
     for (std::size_t ordinal = 0; ordinal != 4; ++ordinal) {
         trivial_id_t observed = 99;
-        staging->select(
-            ordinal, [&](auto const &member) noexcept { observed = member.key.unique_id; }, []() noexcept {});
+        st_verify_(staging->select(
+            ordinal, [&](auto const &member) noexcept { observed = member.key.unique_id; }, []() noexcept {}));
         st_verify_eq_(observed, expected_order[ordinal]);
     }
 
     std::size_t staged_rank = 99;
-    staging->rank(trivial_key_t {3}, [&](std::size_t rank) noexcept { staged_rank = rank; }, []() noexcept {});
+    st_verify_(
+        staging->rank(trivial_key_t {3}, [&](std::size_t rank) noexcept { staged_rank = rank; }, []() noexcept {}));
     st_verify_eq_(staged_rank, 2);
 
     bool tombstoned_reported = false;
-    staging->rank(trivial_key_t {4}, [](std::size_t) noexcept {}, [&]() noexcept { tombstoned_reported = true; });
+    st_verify_(
+        staging->rank(trivial_key_t {4}, [](std::size_t) noexcept {}, [&]() noexcept { tombstoned_reported = true; }));
     st_verify_(tombstoned_reported);
 
     std::size_t counted = 0;
-    staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++counted; });
+    st_verify_(staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++counted; }));
     st_verify_eq_(counted, 1);
-    staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++counted; });
+    st_verify_(staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++counted; }));
     st_verify_eq_(counted, 1);
 }
 
@@ -1879,20 +1914,104 @@ static void test_sample_one_draws_from_the_visible_window() {
     bool saw_lowest = false;
     bool saw_highest = false;
     for (int attempt = 0; attempt != 256; ++attempt)
-        store.sample_one(trivial_key_t {4}, trivial_key_t {12}, generator, [&](auto const &member) noexcept {
+        st_verify_(store.sample_one(trivial_key_t {4}, trivial_key_t {12}, generator, [&](auto const &member) noexcept {
             ++drawn;
             st_verify_(member.key.unique_id >= 4 && member.key.unique_id < 12);
             st_verify_(member.key.unique_id % 2 == 1);
             saw_lowest |= member.key.unique_id == 5;
             saw_highest |= member.key.unique_id == 11;
-        });
+        }));
     st_verify_eq_(drawn, 256);
     st_verify_(saw_lowest && saw_highest);
 
     std::size_t out_of_range = 0;
-    store.sample_one(trivial_key_t {100}, trivial_key_t {200}, generator,
-                     [&](auto const &) noexcept { ++out_of_range; });
+    st_verify_(store.sample_one(trivial_key_t {100}, trivial_key_t {200}, generator,
+                                [&](auto const &) noexcept { ++out_of_range; }));
     st_verify_eq_(out_of_range, 0);
+}
+
+/**
+ *  @brief The smallest key is the one a full walk reports first, and nothing at all when none is readable.
+ *
+ *  Driven over a store whose entries are all tombstoned as well, since a key whose newest published
+ *  version is an erase is present in the core and readable by nobody.
+ */
+template <typename store_type_>
+static void test_smallest_opens_the_walk() {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+
+    st_verify_(store.smallest([](member_t const &) noexcept { st_verify_(false && "an empty store has no first key"); },
+                              [&]() noexcept {}));
+
+    for (trivial_id_t identifier : {40, 10, 30, 20})
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))));
+
+    trivial_id_t walked_first = 0;
+    st_verify_(store.range(trivial_key_t {0}, trivial_key_t {1000}, [&](member_t const &member) noexcept {
+        if (!walked_first) walked_first = mapping_key_or_itself(member).unique_id;
+    }));
+
+    trivial_id_t answered = 0;
+    std::size_t missing_count = 0;
+    st_verify_(
+        store.smallest([&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; },
+                       [&]() noexcept { ++missing_count; }));
+    st_verify_eq_(missing_count, 0);
+    st_verify_eq_(answered, walked_first);
+    st_verify_eq_(answered, 10);
+
+    // Erasing the incumbent has to move the answer on, not merely hide it.
+    st_verify_(store.erase(trivial_id_to_key<member_t>(10)));
+    st_verify_(store.smallest(
+        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
+    st_verify_eq_(answered, 20);
+
+    for (trivial_id_t identifier : {20, 30, 40}) st_verify_(store.erase(trivial_id_to_key<member_t>(identifier)));
+    missing_count = 0;
+    st_verify_(
+        store.smallest([](member_t const &) noexcept { st_verify_(false && "a fully tombstoned store reads nothing"); },
+                       [&]() noexcept { ++missing_count; }));
+    st_verify_eq_(missing_count, 1);
+}
+
+/** @brief A transaction opens on its own snapshot and on its own staged writes, not on the newest commit. */
+template <typename store_type_>
+static void test_smallest_answers_at_the_readers_snapshot() {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+    for (trivial_id_t identifier : {30, 40})
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, static_cast<int>(identifier))));
+
+    auto reader = store.transaction();
+    st_verify_(reader.has_value());
+
+    trivial_id_t answered = 0;
+    st_verify_(reader->smallest(
+        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
+    st_verify_eq_(answered, 30);
+
+    // Only a reader holding a stamp is shielded from a commit landing under it; a monotonic reader
+    // holds none and is meant to see the newest published state, which is the level it advertises.
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(10, 10)));
+    st_verify_(reader->smallest(
+        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
+    if constexpr (at_least(store_type_::isolation_k, isolation_t::snapshot_k)) { st_verify_eq_(answered, 30); }
+    else { st_verify_eq_(answered, 10); }
+
+    // Its own staged write does move it, at either level, so the key is put below everything committed
+    // rather than between - which would only answer the same on a reader that is shielded.
+    st_verify_(reader->upsert(trivial_id_to_member<member_t>(5, 5)));
+    st_verify_(reader->smallest(
+        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
+    st_verify_eq_(answered, 5);
+
+    // A fresh reader opens on the committed key whether or not the earlier one was shielded from it.
+    auto later = store.transaction();
+    st_verify_(later.has_value());
+    st_verify_(later->smallest(
+        [&](member_t const &member) noexcept { answered = mapping_key_or_itself(member).unique_id; }, no_op_t {}));
+    st_verify_eq_(answered, 10);
 }
 
 #pragma endregion Surface Convergence Tests
@@ -1950,9 +2069,9 @@ static void test_sharded_reader_holds_one_snapshot() {
 
     for (trivial_id_t identifier : identifiers) {
         int observed = -1;
-        reader->find(
+        st_verify_(reader->find(
             trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_eq_(observed, 100);
     }
 
@@ -1960,9 +2079,9 @@ static void test_sharded_reader_holds_one_snapshot() {
     using member_t = typename store_type_::value_type;
     st_verify_(reader->upsert(trivial_id_to_member<member_t>(identifiers.front(), 111)));
     int written = -1;
-    reader->find(
+    st_verify_(reader->find(
         trivial_key_t {identifiers.front()}, [&](auto const &member) noexcept { written = member.mapped; },
-        []() noexcept {});
+        []() noexcept {}));
     st_verify_eq_(written, 111);
 
     // A reader opening after both rounds sees the newer of them, whole.
@@ -1970,9 +2089,9 @@ static void test_sharded_reader_holds_one_snapshot() {
     st_verify_(fresh.has_value());
     for (trivial_id_t identifier : identifiers) {
         int observed = -1;
-        fresh->find(
+        st_verify_(fresh->find(
             trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_eq_(observed, 300);
     }
 }
@@ -2001,9 +2120,9 @@ static void test_sharded_transaction_reads_its_own_commit() {
         // The same transaction, still open, answers every partition at the stamp it just published.
         for (trivial_id_t identifier : identifiers) {
             int observed = -1;
-            writer->find(
+            st_verify_(writer->find(
                 trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; },
-                []() noexcept {});
+                []() noexcept {}));
             st_verify_eq_(observed, round * 100);
         }
     }
@@ -2012,9 +2131,9 @@ static void test_sharded_transaction_reads_its_own_commit() {
     st_verify_(writer->reset());
     for (trivial_id_t identifier : identifiers) {
         int observed = -1;
-        writer->find(
+        st_verify_(writer->find(
             trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; },
-            []() noexcept {});
+            []() noexcept {}));
         st_verify_eq_(observed, 400);
     }
     for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(store, identifier), 400);
@@ -2034,10 +2153,13 @@ static void test_sharded_range_admits_no_phantoms() {
     // The predicate is evaluated through the transaction, over a span wide enough that every
     // partition answers part of it.
     auto count_present = [&]() noexcept {
-        std::size_t present = 0;
-        for (trivial_id_t candidate = 0; candidate != 64; ++candidate)
-            if (reader->contains(trivial_key_t {candidate})) ++present;
-        return present;
+        std::size_t seen = 0;
+        for (trivial_id_t candidate = 0; candidate != 64; ++candidate) {
+            expected<bool> const is_present = reader->contains(trivial_key_t {candidate});
+            st_verify_(is_present);
+            if (*is_present) ++seen;
+        }
+        return seen;
     };
     std::size_t const before = count_present();
     st_verify_eq_(before, identifiers.size());
@@ -2082,9 +2204,9 @@ static void test_sharded_mark_pins_every_partition() {
         // Every partition still answers with the version the reader opened on.
         for (trivial_id_t identifier : identifiers) {
             int observed = -1;
-            reader->find(
+            st_verify_(reader->find(
                 trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; },
-                []() noexcept {});
+                []() noexcept {}));
             st_verify_eq_(observed, 100);
         }
     }
@@ -2095,6 +2217,320 @@ static void test_sharded_mark_pins_every_partition() {
 }
 
 #pragma endregion Sharded Isolation Tests
+
+#pragma region Write Skew
+
+/**
+ *  @brief Whether two transactions can each read a shared invariant and break it between them.
+ *
+ *  The classic write skew: two keys hold a total nobody may drive to zero, two transactions each read
+ *  both keys, and each clears the one the other did not. Their write sets are disjoint, so
+ *  first-committer-wins never fires - it only ever compares what was @b written. Only a level that
+ *  validates what was @b read can refuse the second one.
+ *
+ *  @return Whether the second transaction committed, which is the anomaly occurring.
+ */
+template <typename store_type_>
+[[nodiscard]] static bool write_skew_commits() {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+    commit_write(store, 1, 1);
+    commit_write(store, 2, 1);
+
+    auto first = store.transaction();
+    auto second = store.transaction();
+    st_verify_(first.has_value() && second.has_value());
+
+    // Each reads both keys and concludes the other one covers the invariant.
+    std::size_t first_total = 0, second_total = 0;
+    for (trivial_id_t key = 1; key != 3; ++key) {
+        st_verify_(first->find(
+            trivial_id_to_key<member_t>(key),
+            [&](member_t const &held) noexcept { first_total += static_cast<std::size_t>(held.mapped); }, no_op_t {}));
+        st_verify_(second->find(
+            trivial_id_to_key<member_t>(key),
+            [&](member_t const &held) noexcept { second_total += static_cast<std::size_t>(held.mapped); }, no_op_t {}));
+    }
+    st_verify_eq_(first_total, 2u);
+    st_verify_eq_(second_total, 2u);
+
+    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, 0)));
+    st_verify_(second->upsert(trivial_id_to_member<member_t>(2, 0)));
+
+    st_verify_(first->stage());
+    st_verify_(first->commit());
+
+    if (failed(second->stage())) return false;
+    return succeeded(second->commit());
+}
+
+/** @brief Snapshot isolation admits write skew, and the serializable level refuses it. */
+static void test_write_skew_separates_the_levels() {
+    st_verify_((write_skew_commits<snapshot_avl_map_t>()) &&
+               "snapshot isolation compares only written keys, so it must admit write skew");
+    st_verify_((!write_skew_commits<serializable_avl_map_t>()) &&
+               "validating the read set is what refuses a transaction whose read was overwritten");
+}
+
+#pragma endregion Write Skew
+
+/**
+ *  @brief A key appearing inside a watched window refuses the transaction that walked it.
+ *
+ *  A phantom is not a change to any key the reader saw - it is a key that was not there to be seen, so
+ *  no per-key watch can catch it. Recording the window is what makes it visible to a validator.
+ */
+static void test_phantom_insert_refuses_the_walker() {
+    using store_t = serializable_avl_map_t;
+    using member_t = typename store_t::value_type;
+    store_t store;
+    commit_write(store, 10, 1);
+    commit_write(store, 30, 1);
+
+    auto walker = store.transaction();
+    st_verify_(walker.has_value());
+    std::size_t seen = 0;
+    st_verify_(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100),
+                             [&](member_t const &) noexcept { ++seen; }));
+    st_verify_eq_(seen, 2u);
+
+    commit_write(store, 20, 1); // lands inside the window the walker recorded
+
+    st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+}
+
+/** @brief An erase inside a watched window refuses too, since it publishes a tombstone in the window. */
+static void test_phantom_erase_refuses_the_walker() {
+    using store_t = serializable_avl_map_t;
+    using member_t = typename store_t::value_type;
+    store_t store;
+    commit_write(store, 10, 1);
+    commit_write(store, 30, 1);
+
+    auto walker = store.transaction();
+    st_verify_(walker.has_value());
+    st_verify_(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}));
+
+    auto eraser = store.transaction();
+    st_verify_(eraser.has_value());
+    st_verify_(eraser->erase(trivial_id_to_key<member_t>(10)));
+    st_verify_(eraser->stage());
+    st_verify_(eraser->commit());
+
+    st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+}
+
+/**
+ *  @brief A scan by repeated bounds is refused by a key that appears in the window it crossed.
+ *
+ *  Navigating by @c lower_bound is the natural way to walk an ordered store, and it used to record
+ *  nothing at all - so a serializable transaction that scanned a window and acted on what it counted
+ *  committed happily while a key landed inside that window behind it.
+ */
+static void test_phantom_refuses_a_bounded_scan() {
+    using store_t = serializable_avl_map_t;
+    using member_t = typename store_t::value_type;
+    store_t store;
+    commit_write(store, 10, 1);
+    commit_write(store, 30, 1);
+
+    auto reader = store.transaction();
+    st_verify_(reader.has_value());
+
+    // Step the window [10, 40) the way a caller would, by bounds rather than by a range call.
+    std::size_t counted = 0;
+    trivial_id_t at = 10;
+    for (bool stepping = true; stepping;) {
+        bool landed = false;
+        trivial_id_t next = 0;
+        st_verify_(reader->lower_bound(
+            trivial_id_to_key<member_t>(at),
+            [&](member_t const &member) noexcept {
+                landed = true;
+                next = static_cast<trivial_id_t>(mapping_key_or_itself<member_t>(member).unique_id);
+            },
+            no_op_t {}));
+        if (!landed || next >= 40) break;
+        ++counted;
+        at = next + 1;
+    }
+    st_verify_eq_(counted, 2u);
+
+    commit_write(store, 20, 1); // inside a window the scan crossed but never named before
+
+    st_verify_eq_(reader->stage(), status_t::phantom_conflict_k);
+}
+
+/**
+ *  @brief An ordinal read is refused by a key below it and left alone by one above it.
+ *
+ *  @c select and @c rank depend on how many keys precede their answer, so their window ends where the
+ *  answer does. Recording them as whole-keyspace reads would be safe and would make every ordinal read
+ *  conflict with every commit anywhere, which is the difference this pins.
+ */
+static void test_ordinal_window_ignores_a_commit_above_it() {
+    using store_t = serializable_avl_map_t;
+
+    // A commit above the ordinal's answer leaves it alone.
+    {
+        store_t store;
+        for (trivial_id_t identifier : {10, 20, 30}) commit_write(store, identifier, 1);
+        auto reader = store.transaction();
+        st_verify_(reader.has_value());
+        st_verify_(reader->select(0, no_op_t {}, no_op_t {}));
+        commit_write(store, 99, 1); // ordered after the key `select(0)` landed on
+        st_verify_(reader->stage());
+        st_verify_(reader->commit());
+    }
+
+    // A commit below it moves the answer, so it must refuse.
+    {
+        store_t store;
+        for (trivial_id_t identifier : {10, 20, 30}) commit_write(store, identifier, 1);
+        auto reader = store.transaction();
+        st_verify_(reader.has_value());
+        st_verify_(reader->select(1, no_op_t {}, no_op_t {}));
+        commit_write(store, 5, 1); // ordered before the key `select(1)` landed on
+        st_verify_eq_(reader->stage(), status_t::phantom_conflict_k);
+    }
+}
+
+/** @brief Each way a transaction can lose names itself, so a retry loop knows whether to bother. */
+static void test_each_refusal_names_its_cause() {
+    using store_t = serializable_avl_map_t;
+    using member_t = typename store_t::value_type;
+
+    // A key this transaction wrote was published over.
+    {
+        store_t store;
+        commit_write(store, 1, 1);
+        auto writer = store.transaction();
+        st_verify_(writer.has_value());
+        st_verify_(writer->upsert(trivial_id_to_member<member_t>(1, 7)));
+        commit_write(store, 1, 2);
+        st_verify_eq_(writer->stage(), status_t::write_conflict_k);
+    }
+
+    // A key this transaction read was published over.
+    {
+        store_t store;
+        commit_write(store, 1, 1);
+        auto reader = store.transaction();
+        st_verify_(reader.has_value());
+        st_verify_(reader->find(trivial_id_to_key<member_t>(1), no_op_t {}, no_op_t {}));
+        st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 7)));
+        commit_write(store, 1, 2);
+        st_verify_eq_(reader->stage(), status_t::read_conflict_k);
+    }
+
+    // A window this transaction read gained a member.
+    {
+        store_t store;
+        commit_write(store, 10, 1);
+        auto walker = store.transaction();
+        st_verify_(walker.has_value());
+        st_verify_(walker->range(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(100), no_op_t {}));
+        commit_write(store, 50, 1);
+        st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+    }
+}
+
+/** @brief A read of the whole keyspace names no key, so any commit at all refuses it. */
+static void test_unbounded_read_refuses_any_commit() {
+    using store_t = serializable_avl_map_t;
+    store_t store;
+    commit_write(store, 1, 1);
+
+    auto walker = store.transaction();
+    st_verify_(walker.has_value());
+    st_verify_(walker->for_each(no_op_t {}));
+
+    commit_write(store, 999, 1); // anywhere at all, since the read covered everything
+
+    st_verify_eq_(walker->stage(), status_t::phantom_conflict_k);
+}
+
+/**
+ *  @brief A transaction reset after a whole-keyspace read can commit again.
+ *
+ *  Reading everything records that the read set names no key, which refuses any commit that saw a newer
+ *  stamp - correct while that read stands. A reset clears the reads it was refusing for, so leaving the
+ *  refusal behind left a transaction that could never commit again however many times it was reset.
+ */
+static void serializable_reset_clears_a_whole_keyspace_read() {
+    using store_t = serializable_avl_map_t;
+    using member_t = typename store_t::value_type;
+
+    store_t store;
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(1)));
+
+    auto reader = store.transaction();
+    st_verify_(reader);
+    st_verify_(reader->for_each(no_op_t {}));
+
+    // Somebody commits, so the whole-keyspace read is now stale and the transaction must refuse.
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(2)));
+    st_verify_eq_(reader->stage(), status_t::phantom_conflict_k);
+
+    // Reset drops that read. What follows is a fresh transaction in all but name, and must commit.
+    st_verify_(reader->reset());
+    st_verify_(reader->upsert(trivial_id_to_member<member_t>(3)));
+
+    // A commit lands on a key this transaction never read, after the reset - so validation has to look
+    // past its fast path and consult the read set, which is where an uncleared refusal would be found.
+    st_verify_(store.upsert(trivial_id_to_member<member_t>(4)));
+    st_verify_(reader->stage());
+    st_verify_((succeeded(reader->commit())) && "a reset transaction must not inherit the refusal it was reset from");
+    st_verify_eq_(store.size(), 4u);
+}
+
+/**
+ *  @brief The transaction's range surface answers from the transaction, not from the store.
+ *
+ *  A store-level walk inside a transaction would read past its own staging and write around it, which is
+ *  the whole reason these exist at the transaction at all. Each is asked to see a staged write the store
+ *  has not published, and each erasing walk is asked to stage rather than to publish.
+ */
+template <typename store_type_>
+static void transaction_range_surface_sees_its_own_writes() {
+    using store_t = store_type_;
+    using member_t = typename store_t::value_type;
+
+    store_t store;
+    for (std::size_t identifier = 0; identifier != 8; ++identifier)
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
+
+    auto writer = store.transaction();
+    st_verify_(writer);
+
+    // A staged member the store has not published must be visible to every read on this transaction.
+    st_verify_(writer->upsert(trivial_id_to_member<member_t>(100)));
+    st_verify_eq_(writer->count(trivial_id_to_key<member_t>(100)), std::size_t {1},
+                  "a staged key must be counted by the transaction that staged it");
+    st_verify_eq_(store.count(trivial_id_to_key<member_t>(100)), std::size_t {0},
+                  "and must stay invisible to the store until it commits");
+
+    auto const bounded = writer->lower_bound_copy(trivial_id_to_key<member_t>(100));
+    st_verify_(bounded);
+    st_verify_((mapping_key_or_itself<member_t>(*bounded) == trivial_id_to_key<member_t>(100)) &&
+               "a bound copy must reach the transaction's own staged member");
+
+    // An erasing walk stages tombstones; the store keeps its members until the commit lands.
+    std::size_t erased = 0;
+    st_verify_(writer->erase_range(trivial_id_to_key<member_t>(2), trivial_id_to_key<member_t>(5),
+                                   [&](member_t const &) noexcept { ++erased; }));
+    st_verify_eq_(erased, std::size_t {3}, "the window held three members");
+    st_verify_eq_(writer->count(trivial_id_to_key<member_t>(3)), std::size_t {0},
+                  "an erased key must be gone from the transaction that erased it");
+    st_verify_eq_(store.count(trivial_id_to_key<member_t>(3)), std::size_t {1},
+                  "and must remain in the store until the commit lands");
+
+    st_verify_(writer->stage());
+    st_verify_(writer->commit());
+    st_verify_eq_(store.count(trivial_id_to_key<member_t>(3)), std::size_t {0},
+                  "the commit publishes what the transaction staged");
+    st_verify_eq_(store.count(trivial_id_to_key<member_t>(100)), std::size_t {1});
+}
 
 int main(int, char **) {
     install_test_signal_handlers();
@@ -2129,7 +2565,21 @@ int main(int, char **) {
                          test_bounds_follow_the_snapshot<snapshot_avl_map_t>);
     failures +=
         run_test(filter, "isolation.bounds_follow_the_snapshot.wb", test_bounds_follow_the_snapshot<snapshot_wb_map_t>);
+    failures += run_test(filter, "transaction_surface.sees_its_own_writes.snapshot",
+                         []() { transaction_range_surface_sees_its_own_writes<snapshot_avl_map_t>(); });
+    failures += run_test(filter, "transaction_surface.sees_its_own_writes.serializable",
+                         []() { transaction_range_surface_sees_its_own_writes<serializable_avl_map_t>(); });
+    failures += run_test(filter, "serializable.reset_clears_a_whole_keyspace_read",
+                         serializable_reset_clears_a_whole_keyspace_read);
 
+    failures += run_test(filter, "write_skew.separates_the_levels", test_write_skew_separates_the_levels);
+    failures += run_test(filter, "phantom.insert_refuses_the_walker", test_phantom_insert_refuses_the_walker);
+    failures += run_test(filter, "phantom.erase_refuses_the_walker", test_phantom_erase_refuses_the_walker);
+    failures += run_test(filter, "phantom.unbounded_read_refuses_any_commit", test_unbounded_read_refuses_any_commit);
+    failures += run_test(filter, "phantom.refuses_a_bounded_scan", test_phantom_refuses_a_bounded_scan);
+    failures += run_test(filter, "phantom.ordinal_window_ignores_a_commit_above_it",
+                         test_ordinal_window_ignores_a_commit_above_it);
+    failures += run_test(filter, "conflict.each_refusal_names_its_cause", test_each_refusal_names_its_cause);
     failures += run_test(filter, "conflict.first_committer_wins.avl", test_first_committer_wins<snapshot_avl_map_t>);
     failures += run_test(filter, "conflict.first_committer_wins.wb", test_first_committer_wins<snapshot_wb_map_t>);
     failures += run_test(filter, "conflict.first_committer_wins.hash", test_first_committer_wins<snapshot_hash_map_t>);
@@ -2291,6 +2741,10 @@ int main(int, char **) {
 
     // The shared suite decides what to assert from `isolation_k`. Running it here is what compiles and
     // exercises its snapshot arms - every other container in the tree takes the weaker one.
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation.snapshot",
+                         test_lost_update_matches_isolation<snapshot_avl_map_t>);
+    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation.serializable",
+                         test_lost_update_matches_isolation<serializable_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.avl",
                          test_repeated_read_matches_isolation<snapshot_avl_map_t>);
     failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.wb",
@@ -2322,6 +2776,16 @@ int main(int, char **) {
                          test_update_refuses_an_absent_key<monotonic_avl_map_t>);
     failures += run_test(filter, "convergence.update_refuses_an_absent_key.reference",
                          test_update_refuses_an_absent_key<reference_avl_map_t>);
+    failures += run_test(filter, "convergence.smallest_opens_the_walk.snapshot",
+                         test_smallest_opens_the_walk<snapshot_avl_map_t>);
+    failures += run_test(filter, "convergence.smallest_opens_the_walk.snapshot_wb",
+                         test_smallest_opens_the_walk<snapshot_wb_map_t>);
+    failures += run_test(filter, "convergence.smallest_opens_the_walk.monotonic",
+                         test_smallest_opens_the_walk<monotonic_avl_map_t>);
+    failures += run_test(filter, "convergence.smallest_answers_at_the_readers_snapshot.snapshot",
+                         test_smallest_answers_at_the_readers_snapshot<snapshot_avl_map_t>);
+    failures += run_test(filter, "convergence.smallest_answers_at_the_readers_snapshot.monotonic",
+                         test_smallest_answers_at_the_readers_snapshot<monotonic_avl_map_t>);
     failures += run_test(filter, "convergence.ordinals_agree_with_the_oracle.snapshot",
                          test_ordinals_agree_with_the_oracle<snapshot_wb_map_t>);
     failures += run_test(filter, "convergence.ordinals_agree_with_the_oracle.monotonic",

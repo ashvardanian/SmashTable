@@ -121,6 +121,7 @@ void test_erase_range_skips_tombstones() {
 template <typename container_type_>
 void test_vacuum_leaves_staged_entries() {
     using member_t = typename container_type_::value_type;
+
     auto maybe_container = container_type_::make();
     st_verify_(maybe_container.has_value());
     auto &container = *maybe_container;
@@ -138,7 +139,7 @@ void test_vacuum_leaves_staged_entries() {
     st_verify_eq_(*reclaimed, 1u);
 
     st_verify_(transaction->commit());
-    st_verify_(container.contains(trivial_id_to_key<member_t>(3)));
+    st_verify_eq_(container.contains(trivial_id_to_key<member_t>(3)), true);
     st_verify_eq_(container.size(), 1u);
 }
 
@@ -324,11 +325,9 @@ void test_insert_reports_the_stored_element() {
     st_verify_eq_(existing_reports, 4u);
 
     expected_key = trivial_id_to_key<member_t>(7);
-    st_verify_(
-        succeeded(transaction->insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing)));
+    st_verify_(transaction->insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing));
     st_verify_eq_(stored_reports, 5u);
-    st_verify_(
-        succeeded(transaction->insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing)));
+    st_verify_(transaction->insert_if_missing(trivial_id_to_member<member_t>(7), note_stored, note_existing));
     st_verify_eq_(existing_reports, 5u);
 }
 
@@ -420,9 +419,9 @@ void test_transaction_bounds_skip_locally_erased() {
     std::size_t found = 0;
     auto const ninth = trivial_id_to_key<member_t>(9);
     auto note = [&](member_t const &element) noexcept { found += mapping_key_or_itself(element) == ninth; };
-    transaction->lower_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {});
+    st_verify_(transaction->lower_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {}));
     st_verify_eq_(found, 1u);
-    transaction->upper_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {});
+    st_verify_(transaction->upper_bound(trivial_id_to_key<member_t>(0), note, []() noexcept {}));
     st_verify_eq_(found, 2u);
 }
 
