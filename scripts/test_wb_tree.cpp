@@ -647,7 +647,7 @@ static void weight_balance_two_child_erase_rebalances() {
 
 /** @brief Both halves of a split own their element counts, their allocator, and a balanced shape. */
 static void weight_balance_split_and_join_track_size() {
-    std::mt19937 generator(1337);
+    std::mt19937 generator(test_seed_for(__func__));
     for (std::size_t trial = 0; trial < 200; ++trial) {
         ordered_set_t tree;
         std::set<int> oracle;
@@ -713,7 +713,7 @@ static void weight_balance_erase_iterator_range() {
 
 /** @brief Dropping an arbitrary subset must leave a balanced tree, not merely a correct one. */
 static void weight_balance_erase_if_rebalances() {
-    std::mt19937 generator(2026);
+    std::mt19937 generator(test_seed_for(__func__));
     for (std::size_t trial = 0; trial < 200; ++trial) {
         ordered_set_t tree;
         std::set<int> oracle;
@@ -738,7 +738,7 @@ static void weight_balance_erase_if_rebalances() {
 /** @brief A long randomized mutation sequence, re-checking every invariant after each step. */
 static void weight_balance_randomized_mutations() {
     using placement_t = ordered_set_t::node_t::node_placement_t;
-    std::mt19937 generator(20260817);
+    std::mt19937 generator(test_seed_for(__func__));
     ordered_set_t tree;
     std::set<int> oracle;
     for (std::size_t step = 0; step < 20000; ++step) {
@@ -855,7 +855,7 @@ static void verify_augmented_against_oracle(augmented_map_t &tree, std::map<int,
  */
 static void augmented_randomized_mutations() {
     using placement_t = augmented_map_t::node_t::node_placement_t;
-    std::mt19937 generator(20260818);
+    std::mt19937 generator(test_seed_for(__func__));
     augmented_map_t tree;
     std::map<int, int> oracle;
     for (std::size_t step = 0; step < 20000; ++step) {
@@ -954,17 +954,17 @@ static std::size_t floor_log2(std::size_t count) noexcept {
 }
 
 /**
- *  @brief Bounds augmented @c select and @c rank against @c log2(size) at two sizes.
- *    Two sizes 64x apart, so a linear cost cannot pass as a logarithmic one: a linear descent would grow
- *    with the same factor, while these bounds only allow the measured counts to grow with the height.
+ *  @brief Pins augmented @c select and @c rank to @c log2(size) exactly, at two sizes 64× apart.
+ *
+ *  Ascending keys and a power-of-two count leave the tree perfectly balanced, so its height is exactly
+ *  @c log2(n) and every count below is an equality rather than a bound. The probe is exhaustive because
+ *  the defect this guards is one pathological path, which a sample is free to walk past.
  */
 static void augmented_select_is_logarithmic() {
-    std::size_t previous_select_steps = 0, previous_rank_comparisons = 0;
     for (std::size_t element_count : {std::size_t(4096), std::size_t(262144)}) {
         counted_map_t tree(counting_comparator_t {}, std::allocator<counted_map_t::node_t> {});
 
         // Every third key counts, so the augmented descent cannot degenerate into the plain one.
-        std::mt19937 generator(4242);
         std::vector<int> live;
         for (std::size_t index = 0; index < element_count; ++index) {
             int const key = int(index);
@@ -976,13 +976,12 @@ static void augmented_select_is_logarithmic() {
 
         std::size_t const budget = floor_log2(element_count);
         std::size_t worst_select_steps = 0, worst_rank_comparisons = 0;
-        for (std::size_t probe = 0; probe < 512; ++probe) {
-            std::size_t const index = generator() % live.size();
-
+        for (std::size_t index = 0; index < live.size(); ++index) {
             auto const *selected = tree.select_augmented(index);
             st_verify_ne_(selected, nullptr);
             st_verify_eq_(selected->fruit.key, live[index]);
-            // `select_augmented` follows one root-to-node path, so the node's depth is its exact step count.
+            // The node's own depth, measured by an independent descent - `select_augmented` navigates on
+            // subtree sizes and calls no comparator, so nothing can count its steps from the inside.
             std::size_t const steps = depth_of(tree, live[index]) + 1;
             worst_select_steps = steps > worst_select_steps ? steps : worst_select_steps;
 
@@ -992,18 +991,11 @@ static void augmented_select_is_logarithmic() {
             worst_rank_comparisons = comparisons > worst_rank_comparisons ? comparisons : worst_rank_comparisons;
         }
 
-        // Δ=3 caps the height at log(n)/log(4/3) ≈ 2.41 log2(n), and `rank` spends two comparisons a level.
-        st_verify_le_(worst_select_steps, 3 * budget + 4);
-        st_verify_le_(worst_rank_comparisons, 6 * budget + 8);
-        st_verify_ge_(worst_select_steps, previous_select_steps);
-        st_verify_ge_(worst_rank_comparisons, previous_rank_comparisons);
-        previous_select_steps = worst_select_steps;
-        previous_rank_comparisons = worst_rank_comparisons;
+        // One step a level down a tree of height `budget`. `rank` spends one comparison per left turn and
+        // two per right, and the deepest live key here sits on the all-right spine.
+        st_verify_eq_(worst_select_steps, budget + 1);
+        st_verify_eq_(worst_rank_comparisons, 2 * budget + 2);
     }
-
-    // A linear scan of the larger tree would have cost tens of thousands of steps, not a few dozen.
-    st_verify_lt_(previous_select_steps, 64);
-    st_verify_lt_(previous_rank_comparisons, 128);
 }
 
 #pragma endregion Augmented Order Statistics

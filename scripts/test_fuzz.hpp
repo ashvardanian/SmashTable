@@ -4,11 +4,17 @@
  *  @file scripts/test_fuzz.hpp
  *  @date August 20, 2026
  *
+ *  Included by @c scripts/test_snapshot_store.cpp and by no other binary, so a suite added here runs
+ *  exactly once.
+ *
  *  @section fuzz_oracle The Oracle
  *
- *  @c reference_store answers every question the engine under test is asked, stepped through the same
- *  operation sequence, and the two are compared after every step rather than at the end - so a
- *  divergence names the operation that caused it instead of the walk that noticed.
+ *  One Engine Against the Oracle steps a @c reference_store through the same operation sequence as the
+ *  engine under test and compares the two after every step rather than at the end - so a divergence
+ *  names the operation that caused it instead of the walk that noticed. Groups Against Tearing compares
+ *  each participant against what its round intended instead: the snapshot taken before a refused
+ *  commit, and a @c reference_store advanced by the same write after an accepted one. Never one
+ *  participant against the other, which two stores that published nothing would satisfy.
  *
  *  @section fuzz_seed Reproducing a Failure
  *
@@ -82,7 +88,7 @@ void test_random_writes_match_the_oracle(std::size_t rounds = 400) {
     static_assert(store_t::is_associative::value, "Container must be key-value");
     static_assert(store_t::is_transactional::value, "Container must be transactional");
 
-    std::mt19937 generator(test_seed());
+    std::mt19937 generator(test_seed_for(__func__));
     store_t engine;
     fuzz_oracle_t oracle;
 
@@ -155,7 +161,7 @@ void test_random_windows_match_the_oracle(std::size_t rounds = 120) {
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
-    std::mt19937 generator(test_seed());
+    std::mt19937 generator(test_seed_for(__func__));
     store_t engine;
     fuzz_oracle_t oracle;
 
@@ -214,7 +220,7 @@ void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
     using first_member_t = typename first_t::value_type;
     using second_member_t = typename second_t::value_type;
 
-    std::mt19937 generator(test_seed());
+    std::mt19937 generator(test_seed_for(__func__));
     first_t alpha;
     second_t beta;
 
@@ -282,10 +288,12 @@ void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
     using second_t = second_store_type_;
     using first_member_t = typename first_t::value_type;
     using second_member_t = typename second_t::value_type;
+    using model_member_t = typename fuzz_oracle_t::value_type;
 
-    std::mt19937 generator(test_seed());
+    std::mt19937 generator(test_seed_for(__func__));
     first_t alpha;
     second_t beta;
+    fuzz_oracle_t model;
     std::size_t published_rounds = 0;
 
     for (std::size_t round = 0; round != rounds; ++round) {
@@ -302,13 +310,15 @@ void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
         if (unwinding) { st_verify_(group->rollback()); }
         else {
             st_verify_(group->commit());
+            st_verify_(model.upsert(trivial_id_to_member<model_member_t>(identifier, value)));
             ++published_rounds;
         }
 
-        // Both participants were handed the same key and value every round, so agreeing with each
-        // other is the whole of what all-or-nothing claims here.
-        st_verify_eq_(fuzz_snapshot_of(alpha), fuzz_snapshot_of(beta),
-                      "the participants of a group disagreed about a round");
+        // Each participant answers to the model rather than to the other, so a round that published
+        // nothing anywhere cannot pass by leaving the two equally empty.
+        fuzz_snapshot_t const intended = fuzz_snapshot_of(model);
+        st_verify_eq_(fuzz_snapshot_of(alpha), intended, "the first participant lost what its round published");
+        st_verify_eq_(fuzz_snapshot_of(beta), intended, "the second participant lost what its round published");
     }
 
     st_verify_ne_(published_rounds, 0, "no round published, so this proves nothing");

@@ -621,7 +621,8 @@ SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
 One binary per container family runs the same suites — the `std::set` store, both trees, both thread-safety wrappers, the bare hash table and the transactional stores over it — so a behavioural difference between them shows up as a failure rather than a surprise.
 
 The suite asserts costs, not only answers.
-A counting comparator bounds a descent: `select` over the augmented count visits 12 nodes at 4096 entries and 18 at 262144, and the same assertion fails at a tighter multiple, so the bound is not vacuous.
+`select` over the augmented count is pinned to an exact node count rather than to a bound: an independent descent measures 13 nodes at 4096 entries and 19 at 262144, one per level of a tree that ascending keys leave perfectly balanced.
+The counting comparator tallies `rank` alone, because `select_augmented` navigates on subtree sizes and asks the comparator nothing.
 An element type that tallies its own construction and destruction turns a leak into arithmetic — a key leaked inside a correctly freed node is invisible to a sanitizer and not to the tally.
 A key whose hash keeps only its group forces the long probe runs a well-spread hash never produces, which is where tombstone reuse and severed runs actually show.
 

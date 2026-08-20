@@ -202,7 +202,7 @@ void test_committed_erase_hidden_from_ordered_reads() {
         []() noexcept { st_verify_(false && "A live key sits above the tombstone"); }));
 
     // Sampling shares the range surface, so it must not draw the tombstone either.
-    std::mt19937 generator(42);
+    std::mt19937 generator(test_seed_for(__func__));
     for (std::size_t attempt = 0; attempt != 64; ++attempt)
         st_verify_(container.sample_one(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4), generator,
                                         [&](member_t const &member) noexcept {

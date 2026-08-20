@@ -728,9 +728,9 @@ static void test_merge_unique_stays_balanced() {
 
 /** @brief Randomized insert and erase sequence, re-checking every invariant after each mutation. */
 template <typename tree_type_>
-static void test_random_mutations_preserve_invariants(std::size_t steps = 4000, unsigned int seed = 42) {
+static void test_random_mutations_preserve_invariants(std::size_t steps = 4000) {
     using member_t = typename tree_type_::value_type;
-    std::mt19937 generator(seed);
+    std::mt19937 generator(test_seed_for(__func__));
     tree_type_ tree;
     std::set<trivial_id_t> oracle;
 
