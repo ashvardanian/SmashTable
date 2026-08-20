@@ -95,7 +95,7 @@ def main():
 
     setup(
         name="smashtable",
-        version="0.1.0",
+        version="0.2.0",
         ext_modules=ext_modules,
         cmdclass={"build_ext": build_ext_with_stubs},
         description="Safer associative containers with DBMS-like transactions in Python",
