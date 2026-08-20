@@ -15,6 +15,8 @@
  */
 #include <cstring> // `std::strrchr`
 
+#include <memory> // `std::construct_at`, `std::destroy_at`
+
 #include "shared.hpp"
 
 namespace ashvardanian::smashtable::py {
@@ -39,6 +41,8 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
                        value_mode_t mode) noexcept {
     auto *self = object_as<container_object_t>(type->tp_alloc(type, 0));
     if (!self) return nullptr;
+    // `tp_alloc` hands back zeroed storage, which is not the same as a constructed member.
+    std::construct_at(&self->releases);
 
     expected<void *> made = store_ops->make(ops);
     if (!made) {
@@ -194,7 +198,10 @@ static void container_dealloc(PyObject *self) noexcept {
     // leaves the collector holding a link into freed memory, which surfaces much later as an abort
     // inside an unrelated collection.
     PyObject_GC_UnTrack(self);
-    if (container->store) container->store_ops->destroy(container->store);
+    if (container->store) container->store_ops->destroy(container->releases, container->store);
+    // After the store, so the drops it makes still have a ledger to report to, and the guard inside
+    // `destroy` has already released what it collected.
+    std::destroy_at(&container->releases);
     PyTypeObject *type = Py_TYPE(self);
     type->tp_free(self);
     Py_DECREF(type); // Heap types are reference-counted by their instances
@@ -226,7 +233,7 @@ static int container_traverse(PyObject *self, visitproc visit, void *arg) noexce
 static int container_gc_clear(PyObject *self) noexcept {
     auto *container = object_as<container_object_t>(self);
     if (container->mode != value_mode_t::objects_k || !container->store) return 0;
-    [[maybe_unused]] status_t const emptied = container->store_ops->clear(container->store);
+    [[maybe_unused]] status_t const emptied = container->store_ops->clear(container->releases, container->store);
     return 0;
 }
 
@@ -273,7 +280,9 @@ static PyObject *Map_subscript(PyObject *self, PyObject *key) noexcept {
     if (!key_from_python(key, container->ops, needle)) return nullptr;
 
     expected<value_variant_t> found {key_not_found_k};
-    run_over_values(container->mode, [&]() noexcept { found = container->store_ops->find(container->store, needle); });
+    run_over_values(container->mode, [&]() noexcept {
+        found = container->store_ops->find(container->releases, container->store, needle);
+    });
 
     // A key nobody holds and a read nobody could answer are different facts, and only the first is a
     // `KeyError`. Collapsing them would let `get()` hand back its default for a refusal.
@@ -345,7 +354,7 @@ static int container_delete_slice(PyObject *self, PyObject *slice) noexcept {
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->erase_range(container->store, has_lower ? &lower : nullptr,
+        status = container->store_ops->erase_range(container->releases, container->store, has_lower ? &lower : nullptr,
                                                    has_upper ? &upper : nullptr);
     });
     return raise_for(state, status);
@@ -381,17 +390,18 @@ static int Map_assign_subscript(PyObject *self, PyObject *key, PyObject *value) 
         // both believe they removed it.
         status_t status = success_k;
         run_over_values(container->mode, [&]() noexcept {
-            status = container->store_ops->erase(container->store, stored_key).status();
+            status = container->store_ops->erase(container->releases, container->store, stored_key).status();
         });
         return raise_for(state, status, key);
     }
 
     value_variant_t stored_value;
-    if (!value_from_python(value, container->mode, stored_value)) return -1;
+    if (!value_from_python(value, container->mode, &container->releases, stored_value)) return -1;
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert(container->store, std::move(stored_key), &stored_value);
+        status =
+            container->store_ops->upsert(container->releases, container->store, std::move(stored_key), &stored_value);
     });
     return raise_for(state, status, key);
 }
@@ -407,7 +417,8 @@ static PyObject *container_clear(PyObject *self, PyObject *) noexcept {
     if (!state) return nullptr;
 
     status_t status = success_k;
-    run_over_values(container->mode, [&]() noexcept { status = container->store_ops->clear(container->store); });
+    run_over_values(container->mode,
+                    [&]() noexcept { status = container->store_ops->clear(container->releases, container->store); });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -439,8 +450,9 @@ static PyObject *Map_pop(PyObject *self, PyObject *const *args, Py_ssize_t count
     }
 
     expected<value_variant_t> removed {key_not_found_k};
-    run_over_values(container->mode,
-                    [&]() noexcept { removed = container->store_ops->erase(container->store, needle); });
+    run_over_values(container->mode, [&]() noexcept {
+        removed = container->store_ops->erase(container->releases, container->store, needle);
+    });
     bool const present = static_cast<bool>(removed);
 
     if (!present) {
@@ -474,8 +486,9 @@ static PyObject *Map_popmin(PyObject *self, PyObject *) noexcept {
     // One store call, so the pair handed back is the one that was removed and no key can be inserted
     // below it between a seek and an erase.
     expected<entry_t> removed {key_not_found_k};
-    run_over_values(container->mode,
-                    [&]() noexcept { removed = container->store_ops->pop_smallest(container->store); });
+    run_over_values(container->mode, [&]() noexcept {
+        removed = container->store_ops->pop_smallest(container->releases, container->store);
+    });
 
     if (!removed) {
         // Nothing was there, and only a genuine failure is worth raising over an empty store.
@@ -512,13 +525,14 @@ static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_
     if (!key_from_python(args[0], container->ops, stored_key)) return nullptr;
     PyObject *fallback = count == 2 ? args[1] : Py_None;
     value_variant_t stored_value;
-    if (!value_from_python(fallback, container->mode, stored_value)) return nullptr;
+    if (!value_from_python(fallback, container->mode, &container->releases, stored_value)) return nullptr;
 
     expected<value_variant_t> winner {key_not_found_k};
     run_over_values(container->mode, [&]() noexcept {
         // One strict insert that leaves the winner readable. A key arriving concurrently keeps its own
         // value, and what comes back is that winner rather than what we tried to store.
-        winner = container->store_ops->insert_if_missing(container->store, stored_key, std::move(stored_value));
+        winner = container->store_ops->insert_if_missing(container->releases, container->store, stored_key,
+                                                         std::move(stored_value));
     });
 
     if (!winner && raise_for(state, winner.status(), args[0]) != 0) return nullptr;
@@ -579,8 +593,9 @@ static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
 
         key_variant_t key;
         value_variant_t value;
-        bool const read = key_from_python(PySequence_Fast_GET_ITEM(unpacked, 0), container->ops, key) &&
-                          value_from_python(PySequence_Fast_GET_ITEM(unpacked, 1), container->mode, value);
+        bool const read =
+            key_from_python(PySequence_Fast_GET_ITEM(unpacked, 0), container->ops, key) &&
+            value_from_python(PySequence_Fast_GET_ITEM(unpacked, 1), container->mode, &container->releases, value);
         Py_DECREF(unpacked);
         if (!read) {
             Py_DECREF(fast);
@@ -597,7 +612,8 @@ static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert_entries(container->store, (*staged).data(), (*staged).size());
+        status = container->store_ops->upsert_entries(container->releases, container->store, (*staged).data(),
+                                                      (*staged).size());
     });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -625,7 +641,7 @@ static PyObject *Set_add(PyObject *self, PyObject *member) noexcept {
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert(container->store, std::move(stored), nullptr);
+        status = container->store_ops->upsert(container->releases, container->store, std::move(stored), nullptr);
     });
     if (raise_for(state, status, member) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -641,8 +657,9 @@ static int set_erase(PyObject *self, PyObject *member, bool *was_present) noexce
     if (!key_from_python(member, container->ops, stored)) return -1;
 
     status_t status = success_k;
-    run_over_values(container->mode,
-                    [&]() noexcept { status = container->store_ops->erase(container->store, stored).status(); });
+    run_over_values(container->mode, [&]() noexcept {
+        status = container->store_ops->erase(container->releases, container->store, stored).status();
+    });
 
     // Absence is `key_not_found_k`, which is the caller's answer rather than a failure; anything else
     // genuinely went wrong and is raised here, or `discard` would swallow a write conflict and
@@ -706,8 +723,9 @@ static PyObject *Set_popmin(PyObject *self, PyObject *) noexcept {
 
     // One store call, so the member reported is the one that was removed. See the map's popmin.
     expected<entry_t> removed {key_not_found_k};
-    run_over_values(container->mode,
-                    [&]() noexcept { removed = container->store_ops->pop_smallest(container->store); });
+    run_over_values(container->mode, [&]() noexcept {
+        removed = container->store_ops->pop_smallest(container->releases, container->store);
+    });
 
     if (!removed) {
         // Nothing was there, and only a genuine failure is worth raising over an empty set.
@@ -764,7 +782,8 @@ static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
 
     status_t status = success_k;
     run_over_values(container->mode, [&]() noexcept {
-        status = container->store_ops->upsert_members(container->store, (*staged).data(), (*staged).size());
+        status = container->store_ops->upsert_members(container->releases, container->store, (*staged).data(),
+                                                      (*staged).size());
     });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
@@ -804,7 +823,8 @@ static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operatio
     if (auto *twin = same_layout_set(self, other)) {
         auto *mine = object_as<container_object_t>(self);
         auto *filled = object_as<container_object_t>(result);
-        status_t const outcome = mine->store_ops->set_algebra(mine->store, twin->store, filled->store, operation);
+        status_t const outcome =
+            mine->store_ops->set_algebra(mine->releases, mine->store, twin->store, filled->store, operation);
         if (raise_for(state_of_type(self), outcome) != 0) {
             Py_DECREF(result);
             return nullptr;
@@ -1180,7 +1200,7 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
                 PyObject *their_value = nullptr;
                 if (twin) {
                     // Same layout, so the key stays a stored scalar and never becomes a Python object.
-                    auto probed = twin->store_ops->find(twin->store, key);
+                    auto probed = twin->store_ops->find(twin->releases, twin->store, key);
                     // A read that could not be answered is not a key the twin lacks, and must not settle
                     // the comparison as though it were.
                     if (!probed && probed.status() != key_not_found_k) {

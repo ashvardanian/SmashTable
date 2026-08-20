@@ -69,78 +69,7 @@ struct bytes_t {
     bool operator==(bytes_t const &other) const noexcept { return data == other.data; }
 };
 
-#pragma region Deferred Releases
-
-/**
- *  @brief Where a reference dropped inside a store call waits until that call's lock is gone.
- *
- *  A stored value's destructor gives back a reference, and the last one runs @c __del__ - arbitrary
- *  Python. The store destroys what it displaces while holding its own lock, and that lock is not
- *  recursive, so a finalizer touching the store it was stored in blocks forever against the
- *  write that freed it.
- *
- *  While a store call is in flight the drop is therefore recorded rather than performed, and what
- *  was recorded is released once the call has returned. Per-thread, because the lock is held per
- *  thread; counted rather than flagged, because a finalizer run here may enter the store again.
- */
-namespace deferred {
-
-inline thread_local basic_vector<PyObject *> pending {};
-inline thread_local std::size_t depth {0};
-
-/** @brief Whether a store call is in flight on this thread, so a drop has to wait for it. */
-inline bool armed() noexcept { return depth != 0; }
-
-/**
- *  @brief Releases everything recorded so far. The GIL must be held and no store lock may be.
- *
- *  Drains into a local first, because releasing one reference can run a finalizer that enters the
- *  store and records more, and a vector being appended to while iterated is a dangling read.
- */
-inline void release_recorded() noexcept {
-    while (!pending.empty()) {
-        // Moved aside first, because releasing one reference can run a finalizer that enters the
-        // store and records more, and a vector being appended to while walked is a dangling read.
-        basic_vector<PyObject *> draining {std::move(pending)};
-        pending.clear();
-        for (PyObject *object : draining) Py_DECREF(object);
-    }
-}
-
-} // namespace deferred
-
-/**
- *  @brief Gives one reference back, now or once the store call in flight has returned.
- *
- *  Under memory exhaustion the drop cannot be recorded, and releasing it here risks the very
- *  deadlock this exists to avoid. That is the better of the two answers available: a hang is
- *  unrecoverable, while the finalizer that would deadlock is one the caller wrote.
- */
-inline void release_reference(PyObject *object) noexcept {
-    if (!object) return;
-    // `basic_vector` reports exhaustion rather than throwing, which is what a `noexcept` destructor
-    // needs. Where it cannot record, the reference is released here and the deadlock is back on the
-    // table - the better of two answers, since a hang cannot be recovered from.
-    if (deferred::armed() && succeeded(deferred::pending.push_back(std::move(object)))) return;
-    Py_DECREF(object);
-}
-
-/**
- *  @brief Arms deferral for the span of one store call, releasing what it collected afterwards.
- *
- *  Held across the call inside the bridge rather than around it at the store, so the release
- *  happens at the one point where the store's lock is known to have been dropped.
- */
-struct deferring_store_call_t {
-    deferring_store_call_t() noexcept { ++deferred::depth; }
-    deferring_store_call_t(deferring_store_call_t const &) = delete;
-    deferring_store_call_t &operator=(deferring_store_call_t const &) = delete;
-    ~deferring_store_call_t() noexcept {
-        if (--deferred::depth == 0) deferred::release_recorded();
-    }
-};
-
-#pragma endregion Deferred Releases
+struct releases_t;
 
 /**
  *  @brief One owned Python reference, for a store whose values may be arbitrary objects.
@@ -151,27 +80,42 @@ struct deferring_store_call_t {
  */
 struct object_t {
     PyObject *held {nullptr};
+    /** @brief The container's ledger this reference reports its drop to, null where none was named. */
+    releases_t *releases {nullptr};
 
     object_t() = default;
-    explicit object_t(PyObject *borrowed) noexcept : held(Py_XNewRef(borrowed)) {}
-    object_t(object_t const &other) noexcept : held(Py_XNewRef(other.held)) {}
-    object_t(object_t &&other) noexcept : held(std::exchange(other.held, nullptr)) {}
+    explicit object_t(PyObject *borrowed, releases_t *ledger = nullptr) noexcept
+        : held(Py_XNewRef(borrowed)), releases(ledger) {}
+    object_t(object_t const &other) noexcept : held(Py_XNewRef(other.held)), releases(other.releases) {}
+    object_t(object_t &&other) noexcept
+        : held(std::exchange(other.held, nullptr)), releases(std::exchange(other.releases, nullptr)) {}
     object_t &operator=(object_t const &other) noexcept {
         if (this != &other) {
-            PyObject *previous = held;
-            held = Py_XNewRef(other.held);
-            release_reference(previous);
+            PyObject *previous = std::exchange(held, Py_XNewRef(other.held));
+            releases_t *previous_ledger = std::exchange(releases, other.releases);
+            give_back(previous, previous_ledger);
         }
         return *this;
     }
     object_t &operator=(object_t &&other) noexcept {
         std::swap(held, other.held);
+        std::swap(releases, other.releases);
         return *this;
     }
-    ~object_t() noexcept { release_reference(std::exchange(held, nullptr)); }
+    ~object_t() noexcept { give_back(std::exchange(held, nullptr), releases); }
 
     // Never ordered or hashed - only a value may be an object, and values are neither.
     bool operator==(object_t const &other) const noexcept { return held == other.held; }
+
+  private:
+    /**
+     *  @brief Gives one reference back, now or once the store calls in flight have returned.
+     *
+     *  Defined below @c releases_t, which it needs whole. Where the ledger cannot record the drop it
+     *  is released here and the deadlock it exists to avoid is back on the table - the better of two
+     *  answers, since a hang cannot be recovered from.
+     */
+    static void give_back(PyObject *object, releases_t *ledger) noexcept;
 };
 
 /**
@@ -268,9 +212,11 @@ enum class value_mode_t : std::uint8_t { scalars_k, objects_k };
  *
  *  A cursor and a transaction carry mutable state of their own - a walk position, a transaction state -
  *  that no store lock covers, and every operation over it drops the GIL part-way. @c PyMutex exists
- *  only from CPython 3.13, so 3.12 gets a @c std::mutex instead; neither is ever acquired with the
- *  GIL attached, which is what keeps a thread waiting here from being the one holding the GIL its
- *  owner must retake before it can unlock.
+ *  only from CPython 3.13, so 3.12 gets a @c std::mutex instead.
+ *
+ *  @warning Never hold this across anything that needs the GIL. A holder that stops to reacquire the
+ *    GIL while another thread waits here already holding it is a deadlock; confining the critical
+ *    section to plain data is what makes waiting safe whether or not the waiter holds the GIL.
  */
 struct object_lock_t {
 #if PY_VERSION_HEX >= 0x030D0000
@@ -283,6 +229,98 @@ struct object_lock_t {
     void unlock() noexcept { handle.unlock(); }
 #endif
 };
+
+#pragma region Deferred Releases
+
+/**
+ *  @brief Where references dropped inside a store call wait until that call's lock is gone.
+ *
+ *  A stored value's destructor gives back a reference, and the last one runs @c __del__ - arbitrary
+ *  Python. The store destroys what it displaces while holding its own lock, and that lock is not
+ *  recursive, so a finalizer touching the store it was stored in blocks forever against the write that
+ *  freed it. While a call is in flight the drop is therefore recorded rather than performed, and what
+ *  was recorded is released once the last call has returned.
+ *
+ *  One of these belongs to each container, and every object that container stores names it, so the
+ *  ledger a drop reports to is carried rather than looked up. It locks @b shared because several calls
+ *  may be in flight at once and the last one out does the releasing, which is what a reader count is;
+ *  @c shared_lock is therefore the guard, and the bridge needs no guard type of its own.
+ *
+ *  @warning A batch of finalizers runs at the moment the last call returns, so one @c __del__ can fire
+ *    inside another's user code. A @c __del__ that takes a non-reentrant lock can deadlock against
+ *    itself here where it would not against @c dict, which releases at assignment instead.
+ */
+class releases_t {
+    /** @brief How many store calls are in flight on this container, across every thread. */
+    alignas(atomic_alignment<std::size_t>) std::size_t calls_in_flight_ {0};
+    /** @brief Guards @c recorded_, which a partitioned store appends to from several threads at once. */
+    object_lock_t guard_;
+    /** @brief What has been dropped and not yet given back. */
+    basic_vector<PyObject *> recorded_;
+
+    /**
+     *  @brief Gives back one batch - what stood recorded on entry, and no more.
+     *
+     *  Drains under the guard and releases outside it, because one @c Py_DECREF can run a finalizer that
+     *  enters the store and records more, which would deadlock against a guard still held and dangle a
+     *  vector appended to while walked. Draining only one batch is what guarantees progress: looping
+     *  until empty lets several writers feed one draining thread as fast as it drains, and every later
+     *  call releases again, so nothing is stranded.
+     */
+    void drain_() noexcept {
+        basic_vector<PyObject *> draining;
+        {
+            unique_lock locked {guard_};
+            if (recorded_.empty()) return;
+            draining = std::move(recorded_);
+            recorded_.clear();
+        }
+        for (PyObject *object : draining) Py_DECREF(object);
+    }
+
+  public:
+    releases_t() = default;
+    releases_t(releases_t const &) = delete;
+    releases_t &operator=(releases_t const &) = delete;
+
+    /** @brief Gives back whatever a finalizer recorded during the final drain, which would else leak. */
+    ~releases_t() noexcept {
+        while (!recorded_.empty()) drain_();
+    }
+
+    /** @brief Whether a store call is in flight, so a drop has to wait for it. */
+    [[nodiscard]] bool armed() const noexcept { return atomic_load(calls_in_flight_) != 0; }
+
+    /**
+     *  @brief Records one dropped reference, reporting why it could not.
+     *
+     *  @c basic_vector answers exhaustion rather than throwing, which is what a @c noexcept destructor
+     *  needs. Where it cannot record, the caller releases on the spot and the deadlock is back on the
+     *  table - the better of two answers, since a hang cannot be recovered from.
+     */
+    [[nodiscard]] status_t record(PyObject *object) noexcept {
+        unique_lock locked {guard_};
+        return recorded_.push_back(std::move(object));
+    }
+
+    /** @brief One store call arrives. Shared, because several may be in flight at once. */
+    void lock_shared() noexcept {
+        [[maybe_unused]] std::size_t const arrived = atomic_add_fetch(calls_in_flight_, std::size_t {1});
+    }
+
+    /** @brief One store call leaves, and the last one out gives back what the calls recorded. */
+    void unlock_shared() noexcept {
+        if (atomic_sub_fetch(calls_in_flight_, std::size_t {1}) == 0) drain_();
+    }
+};
+
+#pragma endregion Deferred Releases
+
+inline void object_t::give_back(PyObject *object, releases_t *ledger) noexcept {
+    if (!object) return;
+    if (ledger && ledger->armed() && succeeded(ledger->record(object))) return;
+    Py_DECREF(object);
+}
 
 /**
  *  @brief Runs a store operation with the GIL dropped, unless a value could touch a refcount.
@@ -501,10 +539,10 @@ struct store_ops_t {
     /** @brief Builds an empty store of @p ops's layout, or reports why it could not. */
     expected<void *> (*make)(key_ops_t const *ops) noexcept;
     /** @brief Destroys a store @c make handed back. Never called with null. */
-    void (*destroy)(void *store) noexcept;
+    void (*destroy)(releases_t &releases, void *store) noexcept;
 
     std::size_t (*size)(void *store) noexcept;
-    status_t (*clear)(void *store) noexcept;
+    status_t (*clear)(releases_t &releases, void *store) noexcept;
     /**
      *  @brief Whether @p key is held, reported through @p present.
      *
@@ -514,9 +552,9 @@ struct store_ops_t {
      */
     expected<bool> (*contains)(void *store, key_variant_t const &key) noexcept;
     /** @brief Reads a mapped value, or reports @c key_not_found_k. Null on a set, which has none. */
-    expected<value_variant_t> (*find)(void *store, key_variant_t const &key) noexcept;
+    expected<value_variant_t> (*find)(releases_t &releases, void *store, key_variant_t const &key) noexcept;
     /** @brief Inserts or overwrites. @p value is null for a set, which stores the key alone. */
-    status_t (*upsert)(void *store, key_variant_t &&key, value_variant_t *value) noexcept;
+    status_t (*upsert)(releases_t &releases, void *store, key_variant_t &&key, value_variant_t *value) noexcept;
 
     /**
      *  @brief Applies a whole batch, staged once and committed once rather than element by element.
@@ -525,10 +563,10 @@ struct store_ops_t {
      *  of single writes is neither: it takes the lock once per element and leaves a failure halfway
      *  through half-applied.
      */
-    status_t (*upsert_entries)(void *store, entry_t *entries, std::size_t count) noexcept;
+    status_t (*upsert_entries)(releases_t &releases, void *store, entry_t *entries, std::size_t count) noexcept;
 
     /** @brief The same for a set, whose elements are bare keys rather than pairs. Null on a map. */
-    status_t (*upsert_members)(void *store, key_variant_t *members, std::size_t count) noexcept;
+    status_t (*upsert_members)(releases_t &releases, void *store, key_variant_t *members, std::size_t count) noexcept;
     /**
      *  @brief Removes a key, answering with what it held or with why it could not.
      *
@@ -539,7 +577,7 @@ struct store_ops_t {
      *
      *  A set has no value to give back and answers with a default one; only its status means anything.
      */
-    expected<value_variant_t> (*erase)(void *store, key_variant_t const &key) noexcept;
+    expected<value_variant_t> (*erase)(releases_t &releases, void *store, key_variant_t const &key) noexcept;
 
     /**
      *  @brief Removes the least member and hands back both halves, or reports @c key_not_found_k.
@@ -547,7 +585,7 @@ struct store_ops_t {
      *  One store call rather than a seek and an erase, so the member reported is the one that was
      *  taken. Null on an unordered core. A set fills only the key half.
      */
-    expected<entry_t> (*pop_smallest)(void *store) noexcept;
+    expected<entry_t> (*pop_smallest)(releases_t &releases, void *store) noexcept;
 
     /**
      *  @brief Fills @p result with @p algebra over @p first and @p second, which share this table.
@@ -555,7 +593,7 @@ struct store_ops_t {
      *  Only reachable when both sides were built from one table, which is what lets the second side
      *  be driven through it. Null on a map, which has no set algebra.
      */
-    status_t (*set_algebra)(void *first, void *second, void *result, algebra_t algebra) noexcept;
+    status_t (*set_algebra)(releases_t &releases, void *first, void *second, void *result, algebra_t algebra) noexcept;
 
     /**
      *  @brief Opens the store's own ordered walk, optionally bounded at either end.
@@ -566,7 +604,7 @@ struct store_ops_t {
     expected<void *> (*cursor_make)(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept;
 
     /** @brief Closes a walk opened by @c cursor_make. */
-    void (*cursor_destroy)(void *cursor) noexcept;
+    void (*cursor_destroy)(releases_t &releases, void *cursor) noexcept;
 
     /**
      *  @brief Takes one step, writing the key and, for a map, the value.
@@ -589,7 +627,7 @@ struct store_ops_t {
      *  answer both stores can give: a key arriving concurrently keeps its own value, and reporting the
      *  result is what makes two threads racing on one key agree on what it holds.
      */
-    expected<value_variant_t> (*insert_if_missing)(void *store, key_variant_t const &key,
+    expected<value_variant_t> (*insert_if_missing)(releases_t &releases, void *store, key_variant_t const &key,
                                                    value_variant_t &&value) noexcept;
 
     // The two bounds answer through out-parameters rather than an `expected`, which is the idiom
@@ -600,7 +638,8 @@ struct store_ops_t {
     // from C++ and hands its key and value back separately.
 
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
-    status_t (*erase_range)(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept;
+    status_t (*erase_range)(releases_t &releases, void *store, key_variant_t const *lower,
+                            key_variant_t const *upper) noexcept;
 
     /**
      *  @brief Hands every stored @c PyObject to @p visit, for the collector's traversal.
@@ -613,11 +652,13 @@ struct store_ops_t {
 
     /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
     expected<void *> (*transaction_make)(void *store) noexcept;
-    void (*transaction_destroy)(void *transaction) noexcept;
+    void (*transaction_destroy)(releases_t &releases, void *transaction) noexcept;
     expected<bool> (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
-    expected<value_variant_t> (*transaction_find)(void *transaction, key_variant_t const &key) noexcept;
-    status_t (*transaction_upsert)(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept;
-    status_t (*transaction_erase)(void *transaction, key_variant_t const &key) noexcept;
+    expected<value_variant_t> (*transaction_find)(releases_t &releases, void *transaction,
+                                                  key_variant_t const &key) noexcept;
+    status_t (*transaction_upsert)(releases_t &releases, void *transaction, key_variant_t &&key,
+                                   value_variant_t *value) noexcept;
+    status_t (*transaction_erase)(releases_t &releases, void *transaction, key_variant_t const &key) noexcept;
     status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
 
     /**
@@ -631,16 +672,17 @@ struct store_ops_t {
      *  copied rather than referenced, because a Python object is built from them after the lock drops.
      *  A set participant leaves every @c mapped default-constructed.
      */
-    status_t (*transaction_scan)(void *transaction, key_variant_t const *lower, key_variant_t const *upper,
-                                 std::size_t limit, basic_vector<entry_t> &collected) noexcept;
+    status_t (*transaction_scan)(releases_t &releases, void *transaction, key_variant_t const *lower,
+                                 key_variant_t const *upper, std::size_t limit,
+                                 basic_vector<entry_t> &collected) noexcept;
     /** @brief Erases that same window, staging a tombstone per member. Null on an unordered core. */
-    status_t (*transaction_erase_range)(void *transaction, key_variant_t const *lower,
+    status_t (*transaction_erase_range)(releases_t &releases, void *transaction, key_variant_t const *lower,
                                         key_variant_t const *upper) noexcept;
 
-    status_t (*transaction_stage)(void *transaction) noexcept;
-    status_t (*transaction_commit)(void *transaction) noexcept;
-    status_t (*transaction_rollback)(void *transaction) noexcept;
-    status_t (*transaction_reset)(void *transaction) noexcept;
+    status_t (*transaction_stage)(releases_t &releases, void *transaction) noexcept;
+    status_t (*transaction_commit)(releases_t &releases, void *transaction) noexcept;
+    status_t (*transaction_rollback)(releases_t &releases, void *transaction) noexcept;
+    status_t (*transaction_reset)(releases_t &releases, void *transaction) noexcept;
 };
 
 /**
@@ -732,6 +774,8 @@ struct container_object_t {
     PyObject_HEAD key_ops_t const *ops;
     store_ops_t const *store_ops;
     void *store;
+    /** @brief Where values dropped under this store's lock wait; see @c releases_t. */
+    mutable releases_t releases;
     std::uint64_t ordinal;
     value_mode_t mode;
 };
@@ -852,7 +896,7 @@ template <typename callback_type_>
         }
         else { callback(found_key, found_value); }
     }
-    table->cursor_destroy(*opened);
+    table->cursor_destroy(container->releases, *opened);
     return success_k;
 }
 
@@ -877,26 +921,30 @@ struct participant_t {
     store_ops_t const *table {nullptr};
     void *transaction {nullptr};
     key_ops_t const *ops {nullptr};
+    /** @brief The ledger of the container this participates in; see @c releases_t. */
+    releases_t *releases {nullptr};
     value_mode_t mode {value_mode_t::scalars_k};
 
     participant_t() = default;
-    participant_t(store_ops_t const *table, void *transaction, key_ops_t const *ops, value_mode_t mode) noexcept
-        : table(table), transaction(transaction), ops(ops), mode(mode) {}
+    participant_t(store_ops_t const *table, void *transaction, key_ops_t const *ops, releases_t *releases,
+                  value_mode_t mode) noexcept
+        : table(table), transaction(transaction), ops(ops), releases(releases), mode(mode) {}
 
     participant_t(participant_t const &) = delete;
     participant_t &operator=(participant_t const &) = delete;
     participant_t(participant_t &&other) noexcept
-        : table(other.table), transaction(std::exchange(other.transaction, nullptr)), ops(other.ops), mode(other.mode) {
-    }
+        : table(other.table), transaction(std::exchange(other.transaction, nullptr)), ops(other.ops),
+          releases(other.releases), mode(other.mode) {}
     participant_t &operator=(participant_t &&other) noexcept {
         std::swap(table, other.table);
         std::swap(transaction, other.transaction);
         std::swap(ops, other.ops);
+        std::swap(releases, other.releases);
         std::swap(mode, other.mode);
         return *this;
     }
     ~participant_t() noexcept {
-        if (transaction) table->transaction_destroy(transaction);
+        if (transaction) table->transaction_destroy(*releases, transaction);
     }
 
     /** @brief Whether this participant stores values as well as keys. */
@@ -909,7 +957,7 @@ struct participant_t {
     /** @brief Reads a mapped value. Only ever called on a map; callers check @c is_associative first. */
     [[nodiscard]] expected<value_variant_t> find(key_variant_t const &key) noexcept {
         assert(is_associative() && "find on a set participant; callers check is_associative first");
-        return table->transaction_find(transaction, key);
+        return table->transaction_find(*releases, transaction, key);
     }
 
     /**
@@ -921,11 +969,11 @@ struct participant_t {
      */
     [[nodiscard]] status_t upsert(key_variant_t &&key, value_variant_t *value) noexcept {
         assert(is_associative() == (value != nullptr) && "a map upsert carries a value and a set's does not");
-        return table->transaction_upsert(transaction, std::move(key), value);
+        return table->transaction_upsert(*releases, transaction, std::move(key), value);
     }
 
     [[nodiscard]] status_t erase(key_variant_t const &key) noexcept {
-        return table->transaction_erase(transaction, key);
+        return table->transaction_erase(*releases, transaction, key);
     }
     [[nodiscard]] status_t watch(key_variant_t const &key) noexcept {
         return table->transaction_watch(transaction, key);
@@ -937,17 +985,17 @@ struct participant_t {
     [[nodiscard]] status_t scan(key_variant_t const *lower, key_variant_t const *upper, std::size_t limit,
                                 basic_vector<entry_t> &collected) noexcept {
         assert(is_ordered() && "scan on an unordered participant; callers check is_ordered first");
-        return table->transaction_scan(transaction, lower, upper, limit, collected);
+        return table->transaction_scan(*releases, transaction, lower, upper, limit, collected);
     }
 
     [[nodiscard]] status_t erase_range(key_variant_t const *lower, key_variant_t const *upper) noexcept {
         assert(is_ordered() && "erase_range on an unordered participant; callers check is_ordered first");
-        return table->transaction_erase_range(transaction, lower, upper);
+        return table->transaction_erase_range(*releases, transaction, lower, upper);
     }
-    [[nodiscard]] status_t stage() noexcept { return table->transaction_stage(transaction); }
-    [[nodiscard]] status_t commit() noexcept { return table->transaction_commit(transaction); }
-    [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(transaction); }
-    [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(transaction); }
+    [[nodiscard]] status_t stage() noexcept { return table->transaction_stage(*releases, transaction); }
+    [[nodiscard]] status_t commit() noexcept { return table->transaction_commit(*releases, transaction); }
+    [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(*releases, transaction); }
+    [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(*releases, transaction); }
 };
 
 /**
@@ -1065,7 +1113,7 @@ int raise_for(module_state_t *state, status_t status, PyObject *key = nullptr) n
  *  @param[out] result Written only on success.
  *  @return True on success; false with an exception set otherwise.
  */
-bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &result) noexcept;
+bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases, value_variant_t &result) noexcept;
 
 /**
  *  @brief Reads a Python object as a key of one specific layout, rejecting every other type.

@@ -92,10 +92,12 @@ static PyMethodDef module_methods[] = {
  *  Added here rather than in each container's method table because it has to reach the module state to
  *  find the transaction type, and both container families want the identical method.
  */
+/** @brief Outlives every descriptor built from it, which is why it cannot be a local. */
+static PyMethodDef transaction_definition = {"transaction", container_transaction, METH_NOARGS,
+                                             "Open a transaction over this store alone."};
+
 static int add_transaction_method(PyTypeObject *type) noexcept {
-    static PyMethodDef definition = {"transaction", container_transaction, METH_NOARGS,
-                                     "Open a transaction over this store alone."};
-    PyObject *descriptor = PyDescr_NewMethod(type, &definition);
+    PyObject *descriptor = PyDescr_NewMethod(type, &transaction_definition);
     if (!descriptor) return -1;
     int const added = PyObject_SetAttrString(reinterpret_cast<PyObject *>(type), "transaction", descriptor);
     Py_DECREF(descriptor);

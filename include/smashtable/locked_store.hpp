@@ -27,7 +27,9 @@ namespace ashvardanian::smashtable {
  *
  *  @warning Every callback runs with the mutex held, and it is not recursive, so a callback that calls
  *    back into this store - or into anything that eventually does - deadlocks against itself.
- *    Copy out what a callback needs and do the rest after it returns.
+ *    Copy out what a callback needs and do the rest after it returns. The same holds for a value's
+ *    destructor, which runs under the mutex wherever the store displaces or reclaims what it holds:
+ *    a value whose teardown can re-enter must record the drop and perform it after the call returns.
  *  @warning Moving a store leaves every open transaction pointing at the husk, whose contents are
  *    empty and whose mutex guards nothing, so commits land nowhere and report success. Move only a
  *    store no transaction is open on and no other thread is touching.

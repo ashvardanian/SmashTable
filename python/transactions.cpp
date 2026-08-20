@@ -220,7 +220,7 @@ static int View_assign_subscript(PyObject *self, PyObject *key, PyObject *value)
     // object one would otherwise read the wrong policy for every participant but the first, which is
     // the path where a missed GIL acquisition corrupts rather than fails.
     value_variant_t stored_value;
-    if (!value_from_python(value, part->mode, stored_value)) return -1;
+    if (!value_from_python(value, part->mode, part->releases, stored_value)) return -1;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
             status = part.upsert(std::move(stored_key), &stored_value);
         }) != 0)
@@ -936,7 +936,8 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
             return nullptr;
         }
         [[maybe_unused]] status_t const appended = group->parts.push_back(
-            assume_reserved, participant_t {header->store_ops, *transaction, header->ops, header->mode});
+            assume_reserved,
+            participant_t {header->store_ops, *transaction, header->ops, &header->releases, header->mode});
     }
 
     // Views are handed back in the caller's order, whatever order the participants stage in.

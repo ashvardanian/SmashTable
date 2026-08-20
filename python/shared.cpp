@@ -178,7 +178,7 @@ static bool own_bytes(char const *source, Py_ssize_t length, std::string &result
     }
 }
 
-bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &result) noexcept {
+bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases, value_variant_t &result) noexcept {
     // `bool` is a `PyLong` subclass, so it has to be tested first or it disappears into `int`.
     if (PyBool_Check(object)) {
         result = value_variant_t {object == Py_True};
@@ -230,7 +230,7 @@ bool value_from_python(PyObject *object, value_mode_t mode, value_variant_t &res
     // Anything else is stored by reference, and only where the store promised to hold the GIL
     // around every operation that could touch its refcount.
     if (mode == value_mode_t::objects_k) {
-        result = value_variant_t {object_t {object}};
+        result = value_variant_t {object_t {object, releases}};
         return true;
     }
     PyErr_Format(PyExc_TypeError, "unsupported value type: %s; build the store with value='object' to store it",
@@ -416,7 +416,10 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
 static void cursor_dealloc(PyObject *self) noexcept {
     auto *walk = object_as<cursor_object_t>(self);
     PyObject_GC_UnTrack(self);
-    if (walk->walk && walk->owner) object_as<container_object_t>(walk->owner)->store_ops->cursor_destroy(walk->walk);
+    if (walk->walk && walk->owner) {
+        auto *owner = object_as<container_object_t>(walk->owner);
+        owner->store_ops->cursor_destroy(owner->releases, walk->walk);
+    }
     Py_CLEAR(walk->owner);
     walk->lock.~object_lock_t();
     PyTypeObject *type = Py_TYPE(self);
@@ -512,7 +515,7 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
 
     auto *walk = PyObject_GC_New(cursor_object_t, state->cursor_type);
     if (!walk) {
-        header->store_ops->cursor_destroy(*opened);
+        header->store_ops->cursor_destroy(header->releases, *opened);
         return nullptr;
     }
     // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in

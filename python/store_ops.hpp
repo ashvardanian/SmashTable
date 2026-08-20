@@ -126,8 +126,8 @@ struct store_bridge {
         return expected<void *> {owned, success_k};
     }
 
-    static void destroy(void *store) noexcept {
-        deferring_store_call_t deferral;
+    static void destroy(releases_t &releases, void *store) noexcept {
+        shared_lock deferral {releases};
         release_python_storage<store_t>(store);
     }
 
@@ -137,8 +137,8 @@ struct store_bridge {
 
     static std::size_t size(void *store) noexcept { return store_of(store).size(); }
 
-    static status_t clear(void *store) noexcept {
-        deferring_store_call_t deferral;
+    static status_t clear(releases_t &releases, void *store) noexcept {
+        shared_lock deferral {releases};
         return store_of(store).clear();
     }
 
@@ -146,8 +146,8 @@ struct store_bridge {
         return store_of(store).contains(key);
     }
 
-    static expected<value_variant_t> find(void *store, key_variant_t const &key) noexcept {
-        deferring_store_call_t deferral;
+    static expected<value_variant_t> find(releases_t &releases, void *store, key_variant_t const &key) noexcept {
+        shared_lock deferral {releases};
         expected<value_variant_t> answer {key_not_found_k};
         if constexpr (associative_k)
             if (status_t const read = store_of(store).find(
@@ -157,13 +157,13 @@ struct store_bridge {
         return answer;
     }
 
-    static status_t upsert(void *store, key_variant_t &&key, value_variant_t *value) noexcept {
-        deferring_store_call_t deferral;
+    static status_t upsert(releases_t &releases, void *store, key_variant_t &&key, value_variant_t *value) noexcept {
+        shared_lock deferral {releases};
         return store_of(store).upsert(element_of(std::move(key), value));
     }
 
-    static status_t upsert_entries(void *store, entry_t *entries, std::size_t count) noexcept {
-        deferring_store_call_t deferral;
+    static status_t upsert_entries(releases_t &releases, void *store, entry_t *entries, std::size_t count) noexcept {
+        shared_lock deferral {releases};
         // Moved rather than copied, which is the shape the store's batch form takes: it forwards
         // each element into one transaction it opens, stages, and commits.
         if constexpr (associative_k)
@@ -171,15 +171,16 @@ struct store_bridge {
         else return operation_not_permitted_k;
     }
 
-    static status_t upsert_members(void *store, key_variant_t *members, std::size_t count) noexcept {
-        deferring_store_call_t deferral;
+    static status_t upsert_members(releases_t &releases, void *store, key_variant_t *members,
+                                   std::size_t count) noexcept {
+        shared_lock deferral {releases};
         if constexpr (!associative_k)
             return store_of(store).upsert(std::make_move_iterator(members), std::make_move_iterator(members + count));
         else return operation_not_permitted_k;
     }
 
-    static expected<value_variant_t> erase(void *store, key_variant_t const &key) noexcept {
-        deferring_store_call_t deferral;
+    static expected<value_variant_t> erase(releases_t &releases, void *store, key_variant_t const &key) noexcept {
+        shared_lock deferral {releases};
         expected<value_variant_t> removed {value_variant_t {}, success_k};
         status_t const status = store_of(store).erase(
             key,
@@ -191,10 +192,10 @@ struct store_bridge {
         return removed;
     }
 
-    static expected<entry_t> pop_smallest(void *store) noexcept
+    static expected<entry_t> pop_smallest(releases_t &releases, void *store) noexcept
         requires ordered_k
     {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         expected<entry_t> removed {entry_t {}, success_k};
         status_t const status = store_of(store).pop_smallest(
             [&](value_t const &element) noexcept {
@@ -215,10 +216,11 @@ struct store_bridge {
     }
 
     /** @brief Runs one algebra, dispatching the compile-time parameter from the runtime request. */
-    static status_t set_algebra(void *first, void *second, void *result, algebra_t algebra) noexcept
+    static status_t set_algebra(releases_t &releases, void *first, void *second, void *result,
+                                algebra_t algebra) noexcept
         requires(!associative_k)
     {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         status_t absorbed = success_k;
         auto keep = [&](value_t const &member) noexcept {
             if (failed(absorbed)) return;
@@ -257,9 +259,9 @@ struct store_bridge {
         return smashtable::is_disjoint(store_of(first), store_of(second));
     }
 
-    static expected<value_variant_t> insert_if_missing(void *store, key_variant_t const &key,
+    static expected<value_variant_t> insert_if_missing(releases_t &releases, void *store, key_variant_t const &key,
                                                        value_variant_t &&value) noexcept {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         if constexpr (!associative_k) return expected<value_variant_t> {operation_not_permitted_k};
         else {
             auto copied = key.copy();
@@ -289,10 +291,11 @@ struct store_bridge {
      *  upper end with. Which one applies is decided here, where the names live, so the container
      *  never has to synthesize a bound it cannot spell.
      */
-    static status_t erase_range(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept
+    static status_t erase_range(releases_t &releases, void *store, key_variant_t const *lower,
+                                key_variant_t const *upper) noexcept
         requires ordered_k
     {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         auto &self = store_of(store);
         if (lower && upper) return self.erase_range(*lower, *upper);
         if (lower) return self.erase_from(*lower);
@@ -322,10 +325,10 @@ struct store_bridge {
         return expected<void *> {owned, success_k};
     }
 
-    static void cursor_destroy(void *cursor) noexcept
+    static void cursor_destroy(releases_t &releases, void *cursor) noexcept
         requires ordered_k
     {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         release_python_storage<cursor_t>(cursor);
     }
 
@@ -351,8 +354,8 @@ struct store_bridge {
         return expected<void *> {owned, success_k};
     }
 
-    static void transaction_destroy(void *transaction) noexcept {
-        deferring_store_call_t deferral;
+    static void transaction_destroy(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
         release_python_storage<transaction_t>(transaction);
     }
 
@@ -360,8 +363,9 @@ struct store_bridge {
         return transaction_of(transaction).contains(key);
     }
 
-    static expected<value_variant_t> transaction_find(void *transaction, key_variant_t const &key) noexcept {
-        deferring_store_call_t deferral;
+    static expected<value_variant_t> transaction_find(releases_t &releases, void *transaction,
+                                                      key_variant_t const &key) noexcept {
+        shared_lock deferral {releases};
         expected<value_variant_t> answer {key_not_found_k};
         if constexpr (associative_k)
             if (status_t const read =
@@ -373,13 +377,14 @@ struct store_bridge {
         return answer;
     }
 
-    static status_t transaction_upsert(void *transaction, key_variant_t &&key, value_variant_t *value) noexcept {
-        deferring_store_call_t deferral;
+    static status_t transaction_upsert(releases_t &releases, void *transaction, key_variant_t &&key,
+                                       value_variant_t *value) noexcept {
+        shared_lock deferral {releases};
         return transaction_of(transaction).upsert(element_of(std::move(key), value));
     }
 
-    static status_t transaction_erase(void *transaction, key_variant_t const &key) noexcept {
-        deferring_store_call_t deferral;
+    static status_t transaction_erase(releases_t &releases, void *transaction, key_variant_t const &key) noexcept {
+        shared_lock deferral {releases};
         return transaction_of(transaction).erase(key);
     }
 
@@ -410,11 +415,12 @@ struct store_bridge {
      *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
      *  against is the one the caller asked for rather than one this layer chose.
      */
-    static status_t transaction_scan(void *transaction, key_variant_t const *lower, key_variant_t const *upper,
-                                     std::size_t limit, basic_vector<entry_t> &collected) noexcept
+    static status_t transaction_scan(releases_t &releases, void *transaction, key_variant_t const *lower,
+                                     key_variant_t const *upper, std::size_t limit,
+                                     basic_vector<entry_t> &collected) noexcept
         requires ordered_k
     {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         auto &self = transaction_of(transaction);
         status_t collecting = success_k;
         auto step = [&](value_t const &element) noexcept {
@@ -440,11 +446,11 @@ struct store_bridge {
     }
 
     /** @brief Stages a tombstone for every member of that same window. */
-    static status_t transaction_erase_range(void *transaction, key_variant_t const *lower,
+    static status_t transaction_erase_range(releases_t &releases, void *transaction, key_variant_t const *lower,
                                             key_variant_t const *upper) noexcept
         requires ordered_k
     {
-        deferring_store_call_t deferral;
+        shared_lock deferral {releases};
         auto &self = transaction_of(transaction);
         if (lower && upper) return self.erase_range(*lower, *upper, no_op_t {});
         if (lower) return self.erase_from(*lower, no_op_t {});
@@ -466,20 +472,20 @@ struct store_bridge {
         return success_k;
     }
 
-    static status_t transaction_stage(void *transaction) noexcept {
-        deferring_store_call_t deferral;
+    static status_t transaction_stage(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
         return transaction_of(transaction).stage();
     }
-    static status_t transaction_commit(void *transaction) noexcept {
-        deferring_store_call_t deferral;
+    static status_t transaction_commit(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
         return transaction_of(transaction).commit();
     }
-    static status_t transaction_rollback(void *transaction) noexcept {
-        deferring_store_call_t deferral;
+    static status_t transaction_rollback(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
         return transaction_of(transaction).rollback();
     }
-    static status_t transaction_reset(void *transaction) noexcept {
-        deferring_store_call_t deferral;
+    static status_t transaction_reset(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
         return transaction_of(transaction).reset();
     }
 
