@@ -241,13 +241,18 @@ class monotonic_store {
          */
         [[nodiscard]] status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+            // A key written twice replaces its own staged version rather than adding one, so listing
+            // it twice would send the unwind looking for a version its first pass already took back.
+            bool const already_listed = changes_.find(identifier) != changes_.end();
             auto reserve_status = changed_identifiers_.reserve(changed_identifiers_.size() + 1);
             if (failed(reserve_status)) return reserve_status;
             versioned.generation = generation_;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
-            [[maybe_unused]] status_t const recorded =
-                changed_identifiers_.push_back(assume_reserved, std::move(identifier));
+            if (!already_listed) {
+                [[maybe_unused]] status_t const recorded =
+                    changed_identifiers_.push_back(assume_reserved, std::move(identifier));
+            }
             return success_k;
         }
 
@@ -357,7 +362,6 @@ class monotonic_store {
          *  @brief Checks if this transaction has any pending changes (upserts or erases).
          *  @return True if there are pending changes, false otherwise.
          */
-
         bool has_changes() const noexcept { return changes_.size() != 0; }
         /**
          *  @brief Returns the number of pending changes in this transaction.
@@ -710,36 +714,34 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Walks from @p lower while @p within accepts, hands every member to @p callback, and
-         *    stages a tombstone for each.
+         *  @brief Walks whatever @p walk offers, hands every member to @p callback, and stages a
+         *    tombstone for each.
          *
          *  The walk finishes before the first tombstone is staged, because a staged write changes what the
          *  merged view answers and a walk revising itself would step over its own neighbours.
          */
-        template <typename within_type_, typename lower_type_, typename callback_type_>
-        [[nodiscard]] status_t erase_walked_(within_type_ &&within, lower_type_ &&lower,
-                                             callback_type_ &&callback) noexcept
-            requires ordered_collection<versioned_chains_t>
-        {
+        template <typename walk_type_, typename callback_type_>
+        [[nodiscard]] status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept {
             changed_identifiers_vector_t doomed(
                 changed_identifiers_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
             status_t collecting = success_k;
-            [[maybe_unused]] status_t const walked = walk_from_(
-                std::forward<lower_type_>(lower), std::forward<within_type_>(within),
-                [&](value_t const &value) noexcept {
-                    if (failed(collecting)) return;
-                    auto owned = copy_safely<identifier_t>(identifier_t {mapping_key_or_itself<value_t>(value)});
-                    if (!owned) {
-                        collecting = owned.status();
-                        return;
-                    }
-                    callback(value);
-                    if (status_t const kept = doomed.push_back(std::move(*owned)); failed(kept)) collecting = kept;
-                });
+            [[maybe_unused]] status_t const walked = walk([&](value_t const &value) noexcept {
+                if (failed(collecting)) return;
+                auto owned = copy_safely<identifier_t>(identifier_t {mapping_key_or_itself<value_t>(value)});
+                if (!owned) {
+                    collecting = owned.status();
+                    return;
+                }
+                callback(value);
+                if (status_t const kept = doomed.push_back(std::move(*owned)); failed(kept)) collecting = kept;
+            });
             if (failed(collecting)) return collecting;
 
+            // A member the walk saw and somebody else erased in between is already gone, which is what
+            // this call was asking for rather than a key the caller misnamed.
             for (std::size_t index = 0; index != doomed.size(); ++index)
-                if (status_t const staged = erase(doomed[index]); failed(staged)) return staged;
+                if (status_t const staged = erase(doomed[index]); failed(staged) && staged != key_not_found_k)
+                    return staged;
             return success_k;
         }
 
@@ -1006,8 +1008,12 @@ class monotonic_store {
             requires ordered_collection<versioned_chains_t>
         {
             auto const less = changes_.key_comp();
-            return erase_walked_([&](auto const &candidate) noexcept { return less(candidate, upper); },
-                                 std::forward<lower_type_>(lower), std::forward<callback_type_>(callback));
+            return erase_walked_(
+                [&](auto &&step) noexcept {
+                    return walk_from_(
+                        lower, [&](auto const &candidate) noexcept { return less(candidate, upper); }, step);
+                },
+                std::forward<callback_type_>(callback));
         }
 
         /** @brief Stages a tombstone for every member at or after @p lower, @p lower included. */
@@ -1015,8 +1021,11 @@ class monotonic_store {
         [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires ordered_collection<versioned_chains_t>
         {
-            return erase_walked_([](auto const &) noexcept { return true; }, std::forward<lower_type_>(lower),
-                                 std::forward<callback_type_>(callback));
+            return erase_walked_(
+                [&](auto &&step) noexcept {
+                    return walk_from_(lower, [](auto const &) noexcept { return true; }, step);
+                },
+                std::forward<callback_type_>(callback));
         }
 
         /** @brief Stages a tombstone for every member before @p upper, @p upper excluded. */
@@ -1029,8 +1038,21 @@ class monotonic_store {
             expected<value_t> lowest = smallest_copy_();
             if (!lowest) return lowest.status() == key_not_found_k ? success_k : lowest.status();
             auto const less = changes_.key_comp();
-            return erase_walked_([&](auto const &candidate) noexcept { return less(candidate, upper); },
-                                 mapping_key_or_itself<value_t>(*lowest), std::forward<callback_type_>(callback));
+            return erase_walked_(
+                [&](auto &&step) noexcept {
+                    return walk_from_(
+                        mapping_key_or_itself<value_t>(*lowest),
+                        [&](auto const &candidate) noexcept { return less(candidate, upper); }, step);
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /**
+         *  @brief Stages a tombstone for every member this transaction reads, so a commit empties the store.
+         *    Unlike the bounded erases it names no key at all, so it serves an unordered core too.
+         */
+        [[nodiscard]] status_t clear() noexcept {
+            return erase_walked_([&](auto &&step) noexcept { return for_each(step); }, no_op_t {});
         }
 
         /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */

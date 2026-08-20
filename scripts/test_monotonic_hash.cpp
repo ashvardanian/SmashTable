@@ -1,10 +1,13 @@
 /**
- *  @brief Test instantiations for the transactional store over an open-addressed hash table. Covers only the
- *      point-access surface - insert, upsert, update, erase, find, watch and the two-phase commit - since an
- *      unordered core supplies no bounds, ranges, or order statistics.
+ *  @brief Test instantiations for the transactional store over an open-addressed hash table, which
+ *      answers points rather than windows.
  *  @author Ash Vardanian
  *  @file scripts/test_monotonic_hash.cpp
  *  @date August 17, 2026
+ *
+ *  The point-access surface is all an unordered core supplies - insert, upsert, update, erase, find,
+ *  watch and the two-phase commit - so there are no bounds, no ranges and no order statistics here.
+ *  Around it run the commit-stamp, fixture-coverage and transactional-consistency families.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -60,6 +63,18 @@ using transactional_composite_map_t = monotonic_hash_map<composite_key_t, guarde
 using transactional_heavy_map_t = monotonic_hash_map<heavy_key_t, guarded_payload_t>;
 
 #pragma endregion Type Aliases
+
+#pragma region Helpers
+
+/** @brief Where @p member's key sits in @p keys, or one slot past the last where none of them is it. */
+template <typename member_type_, typename key_type_>
+static std::size_t key_slot(member_type_ const &member, std::vector<key_type_> const &keys) noexcept {
+    for (std::size_t slot = 0; slot != keys.size(); ++slot)
+        if (mapping_key_or_itself<member_type_>(member) == keys[slot]) return slot;
+    return keys.size();
+}
+
+#pragma endregion Helpers
 
 #pragma region Point Access Tests
 
@@ -187,12 +202,12 @@ static void test_point_enumeration_visits_every_member() {
         st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
     }
 
-    std::vector<std::size_t> tally(size, 0);
+    // One slot per key, plus a trailing one for whatever no key claims.
+    std::vector<std::size_t> tally(size + 1, 0);
     std::size_t visits = 0;
     st_verify_(container.for_each([&](member_t const &member) noexcept {
         ++visits;
-        for (std::size_t index = 0; index < size; ++index)
-            if (mapping_key_or_itself<member_t>(member) == keys[index]) ++tally[index];
+        ++tally[key_slot<member_t>(member, keys)];
     }));
     st_verify_eq_(visits, container.size());
     for (std::size_t index = 0; index < size; ++index) st_verify_eq_(tally[index], 1);
@@ -203,12 +218,11 @@ static void test_point_enumeration_visits_every_member() {
     st_verify_(writing->erase(trivial_id_to_key<member_t>(0)));
     st_verify_(writing->upsert(trivial_id_to_member<member_t>(size)));
 
-    std::vector<std::size_t> staged_tally(size, 0);
+    std::vector<std::size_t> staged_tally(size + 1, 0);
     std::size_t staged_visits = 0;
     st_verify_(writing->for_each([&](member_t const &member) noexcept {
         ++staged_visits;
-        for (std::size_t index = 0; index < size; ++index)
-            if (mapping_key_or_itself<member_t>(member) == keys[index]) ++staged_tally[index];
+        ++staged_tally[key_slot<member_t>(member, keys)];
     }));
     st_verify_eq_(staged_visits, size);
     st_verify_eq_(staged_tally[0], 0);
@@ -543,19 +557,24 @@ static void transactional_consistency_group_unwinds_every_participant_on_conflic
 static void test_reserve_reaches_the_slab() {
     using member_t = mapping<trivial_key_t, int>;
     using ledgered_map_t = monotonic_hash_map<trivial_key_t, int, default_hash_t, equal_to_t, stateful_allocator_t>;
+    using ledgered_entry_t = typename ledgered_map_t::versioned_entry_t;
+    constexpr std::size_t reserved_k = 64;
 
     allocation_ledger_t ledger;
     {
         ledgered_map_t container {stateful_allocator_t {ledger}};
         st_verify_eq_(ledger.granted_count, std::size_t {0});
 
-        st_verify_(container.reserve(64));
-        st_verify_gt_(ledger.granted_count, 0);
-        st_verify_gt_(ledger.largest_request_elements(), 0);
+        st_verify_(container.reserve(reserved_k));
+        st_verify_eq_(ledger.granted_count, std::size_t {1});
+        // The allocator hands out bytes, so the one slab has to cover what the reserved entries occupy.
+        st_verify_ge_(ledger.largest_request_elements(), reserved_k * sizeof(ledgered_entry_t));
 
-        for (trivial_id_t identifier = 0; identifier != 64; ++identifier)
+        for (trivial_id_t identifier = 0; identifier != reserved_k; ++identifier)
             st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 1)));
-        st_verify_eq_(container.size(), 64);
+        st_verify_eq_(container.size(), reserved_k);
+        // Honoured rather than merely accepted: the writes the hint covered grew nothing.
+        st_verify_eq_(ledger.granted_count, std::size_t {1});
     }
     ledger.verify_balanced();
 
@@ -564,7 +583,7 @@ static void test_reserve_reaches_the_slab() {
     starved.refuse_everything();
     {
         ledgered_map_t container {stateful_allocator_t {starved}};
-        st_verify_eq_(container.reserve(64), status_t::out_of_memory_heap_k);
+        st_verify_eq_(container.reserve(reserved_k), status_t::out_of_memory_heap_k);
         st_verify_eq_(container.size(), 0);
     }
     starved.verify_balanced();

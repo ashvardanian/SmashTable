@@ -22,8 +22,8 @@
  *
  *  The concurrent suites hand each thread a disjoint key range against a table that was reserved
  *  before the first thread started, so no operation can trigger a reallocation and no two threads
- *  ever touch the same key. Threads are joined before anything is asserted, leaving the outcome
- *  independent of the interleaving.
+ *  ever touch the same key. A worker tallies what it saw into an atomic and asserts nothing; every
+ *  check runs after the join, leaving the outcome independent of the interleaving.
  */
 #pragma once
 #include <cstddef> // `std::size_t`
@@ -465,9 +465,10 @@ void test_unordered_capacity_management(std::size_t size = 800) {
     st_verify_eq_(container.bucket_count(), reserved_buckets * 4);
     unordered_verify_against_oracle(container, oracle, size);
 
-    // Shrinking gives the memory back without losing anything.
+    // Shrinking gives the four-fold growth back and lands on the count the reserve chose, so a
+    // @c shrink_to_fit that did nothing at all is a failure rather than a pass.
     container.shrink_to_fit();
-    st_verify_le_(container.bucket_count(), reserved_buckets * 4);
+    st_verify_eq_(container.bucket_count(), reserved_buckets);
     unordered_verify_against_oracle(container, oracle, size);
 
     container.clear();
@@ -602,7 +603,8 @@ void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) 
             st_verify_eq_(container.slots_count().raw, slots);
         }
 
-        st_verify_lt_(container.size(), attempts, "a table that cannot grow must refuse most of the range");
+        // The load factor caps at 75%, so the one buffer accepts three of every four slots and no more.
+        st_verify_eq_(container.size(), slots * 3 / 4, "a table that cannot grow stops at its load cap");
         st_verify_eq_(container.size(), oracle.size());
         for (auto const &entry : oracle) unordered_verify_present(container, entry.first, entry.second);
     }
@@ -1056,27 +1058,33 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
     std::atomic<std::size_t> found_by_contains {0};
     std::atomic<std::size_t> found_by_callback {0};
     std::atomic<std::size_t> wrong_values {0};
+    std::atomic<std::size_t> refused_reads {0};
     threads.clear();
     for (std::size_t thread_index = 0; thread_index < unordered_threads_count_k; ++thread_index)
         threads.emplace_back([&, thread_index]() noexcept {
-            std::size_t contains_hits = 0, callback_hits = 0, mismatches = 0;
+            std::size_t contains_hits = 0, callback_hits = 0, mismatches = 0, refusals = 0;
             for (std::size_t offset = 0; offset < per_thread; ++offset) {
                 std::size_t const identifier = thread_index * per_thread + offset;
                 auto const key = unordered_key_from<key_t>(identifier);
+                // A refusal is tallied rather than asserted, so no thread can abort mid-run and leave
+                // its siblings writing into a container the handler is already walking.
                 expected<bool> const seen = container.contains(key);
-                st_verify_(seen);
-                if (*seen) ++contains_hits;
-                st_verify_(container.find(key, [&](auto const &address) noexcept {
+                if (!seen) ++refusals;
+                else if (*seen) ++contains_hits;
+                status_t const walked = container.find(key, [&](auto const &address) noexcept {
                     ++callback_hits;
                     if (!(address.value() == unordered_value_from<mapped_t>(identifier))) ++mismatches;
-                }));
+                });
+                if (failed(walked)) ++refusals;
             }
             found_by_contains += contains_hits;
             found_by_callback += callback_hits;
             wrong_values += mismatches;
+            refused_reads += refusals;
         });
     for (auto &thread : threads) thread.join();
 
+    st_verify_eq_(refused_reads.load(), 0u, "a frozen table must answer every read it is handed");
     st_verify_eq_(found_by_contains.load(), total);
     st_verify_eq_(found_by_callback.load(), total);
     st_verify_eq_(wrong_values.load(), 0u);
@@ -1184,32 +1192,32 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 
 /** @brief A key filed once per generation, so several versions of one identifier coexist. */
 struct versioned_key_t {
-    std::size_t bare = 0;
+    std::size_t identifier = 0;
     std::size_t generation = 0;
 };
 
-/** @brief The bare half of a @c versioned_key_t, equal to every generation of it. */
-struct bare_key_t {
-    std::size_t bare = 0;
+/** @brief A @c versioned_key_t without its generation, equal to every generation of it. */
+struct unversioned_key_t {
+    std::size_t identifier = 0;
 };
 
-/** @brief Peels both key shapes to the bare identifier, so every version shares one home slot. */
+/** @brief Peels both key shapes to the identifier, so every version shares one home slot. */
 struct versioned_hash_t {
-    std::size_t operator()(versioned_key_t const &key) const noexcept { return key.bare; }
-    std::size_t operator()(bare_key_t const &key) const noexcept { return key.bare; }
+    std::size_t operator()(versioned_key_t const &key) const noexcept { return key.identifier; }
+    std::size_t operator()(unversioned_key_t const &key) const noexcept { return key.identifier; }
 };
 
 /** @brief Separates generations of one identifier, unless the probe asks for the bare key. */
 struct per_key_equals_t {
     using is_transparent = void;
     bool operator()(versioned_key_t const &first, versioned_key_t const &second) const noexcept {
-        return first.bare == second.bare && first.generation == second.generation;
+        return first.identifier == second.identifier && first.generation == second.generation;
     }
-    bool operator()(versioned_key_t const &first, bare_key_t const &second) const noexcept {
-        return first.bare == second.bare;
+    bool operator()(versioned_key_t const &first, unversioned_key_t const &second) const noexcept {
+        return first.identifier == second.identifier;
     }
-    bool operator()(bare_key_t const &first, versioned_key_t const &second) const noexcept {
-        return first.bare == second.bare;
+    bool operator()(unversioned_key_t const &first, versioned_key_t const &second) const noexcept {
+        return first.identifier == second.identifier;
     }
 };
 
@@ -1219,7 +1227,7 @@ using versioned_set_t = hash_set<versioned_key_t, versioned_hash_t, per_key_equa
 inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t const &container,
                                                             std::size_t bare) noexcept {
     std::vector<std::size_t> generations;
-    container.probe_to_visit(bare_key_t {bare}, [&](auto const &slot) noexcept {
+    container.probe_to_visit(unversioned_key_t {bare}, [&](auto const &slot) noexcept {
         generations.push_back(slot.key().generation);
         return probe_control_t::resume_k;
     });
@@ -1268,7 +1276,7 @@ inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
 
     for (std::size_t stop_after = 1; stop_after <= versions; ++stop_after) {
         std::size_t visits = 0;
-        container.probe_to_visit(bare_key_t {1}, [&](auto const &) noexcept {
+        container.probe_to_visit(unversioned_key_t {1}, [&](auto const &) noexcept {
             ++visits;
             return visits == stop_after ? probe_control_t::halt_k : probe_control_t::resume_k;
         });
@@ -1351,7 +1359,7 @@ inline void test_unordered_visit_full_table() {
 
     // A key absent from a table with nowhere to stop still has to walk exactly once around.
     std::size_t visits = 0;
-    container.probe_to_visit(bare_key_t {2}, [&](auto const &) noexcept {
+    container.probe_to_visit(unversioned_key_t {2}, [&](auto const &) noexcept {
         ++visits;
         return probe_control_t::resume_k;
     });

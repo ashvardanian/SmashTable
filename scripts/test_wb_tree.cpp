@@ -9,11 +9,10 @@
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
-#include <algorithm> // `std::equal`
-#include <map>       // `std::map`
-#include <random>    // `std::mt19937`
-#include <set>       // `std::set`
-#include <vector>    // `std::vector`
+#include <map>    // `std::map`
+#include <random> // `std::mt19937`
+#include <set>    // `std::set`
+#include <vector> // `std::vector`
 
 #include <smashtable/basic_wb_tree.hpp>
 #include <smashtable/reference_store.hpp>
@@ -180,7 +179,7 @@ static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests insertion patterns (ascending, descending, random) for all AVL containers */
+/** @brief Tests ascending, descending, and random insertion patterns across every container here. */
 static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<trivial_set_t>();
     test_basic_insertion_patterns<tracking_set_t>();
@@ -200,7 +199,7 @@ static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk insertion from iterators for all AVL containers */
+/** @brief Tests bulk insertion from iterators across every container here. */
 static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<trivial_set_t>();
     test_bulk_insertion_from_iterators<tracking_set_t>();
@@ -545,11 +544,11 @@ static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_heavy_map_t>();
 }
 
-#pragma endregion Consistency and Transaction Tests for Sets
-
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
 }
+
+#pragma endregion Consistency and Transaction Tests for Sets
 
 #pragma region Weight Balance Invariants
 
@@ -598,10 +597,12 @@ static void verify_against_oracle(ordered_set_t &tree, std::set<int> const &orac
     st_verify_eq_(verify_invariants(tree.root()).size, oracle.size());
     st_verify_eq_(tree.size(), oracle.size());
 
-    std::vector<int> walked;
-    st_verify_(tree.for_each([&](int const &element) noexcept { walked.push_back(element); }));
-    st_verify_eq_(walked.size(), oracle.size());
-    st_verify_(std::equal(walked.begin(), walked.end(), oracle.begin()));
+    auto expected = oracle.begin();
+    st_verify_(tree.for_each([&](int const &element) noexcept {
+        st_verify_(expected != oracle.end());
+        st_verify_eq_(element, *expected++);
+    }));
+    st_verify_(expected == oracle.end());
 }
 
 /** @brief Sequential keys must not degenerate into a spine - every entry point has to rebalance. */
@@ -724,13 +725,8 @@ static void weight_balance_erase_if_rebalances() {
         }
 
         int const residue = int(generator() % 7);
-        std::size_t const dropped = tree.erase_if([&](int const &element) noexcept { return element % 7 == residue; });
-        std::size_t counted = 0;
-        for (auto position = oracle.begin(); position != oracle.end();) {
-            if (*position % 7 == residue) position = oracle.erase(position), ++counted;
-            else ++position;
-        }
-        st_verify_eq_(dropped, counted);
+        auto const drops = [&](int element) noexcept { return element % 7 == residue; };
+        st_verify_eq_(tree.erase_if(drops), std::erase_if(oracle, drops));
         verify_against_oracle(tree, oracle);
     }
 }
@@ -889,19 +885,12 @@ static void augmented_randomized_mutations() {
             // Flip the count under the tree's feet, as a publish site would - and flip the successor too,
             // since one publish can supersede a neighbour, retagging two entries for a single write.
             auto position = tree.find(key);
-            bool const present = position != tree.end();
-            st_verify_eq_(present, oracle.count(key) != 0);
-            if (!present) break;
-            position->mapped = position->mapped != 0 ? 0 : 1;
-            oracle[key] = position->mapped;
-            st_verify_(tree.refresh_augmentation(key));
-
-            auto successor = position;
-            if (++successor != tree.end()) {
-                int const successor_key = successor->key;
-                successor->mapped = successor->mapped != 0 ? 0 : 1;
-                oracle[successor_key] = successor->mapped;
-                st_verify_(tree.refresh_augmentation(successor_key));
+            st_verify_eq_(position != tree.end(), oracle.count(key) != 0);
+            for (std::size_t flipped = 0; flipped < 2 && position != tree.end(); ++flipped, ++position) {
+                int const flipped_key = position->key;
+                position->mapped = position->mapped != 0 ? 0 : 1;
+                oracle[flipped_key] = position->mapped;
+                st_verify_(tree.refresh_augmentation(flipped_key));
             }
             break;
         }
@@ -910,12 +899,8 @@ static void augmented_randomized_mutations() {
             int const residue = int(generator() % 5);
             std::size_t const dropped =
                 tree.erase_if([&](mapping<int, int> const &entry) noexcept { return entry.key % 5 == residue; });
-            std::size_t counted = 0;
-            for (auto position = oracle.begin(); position != oracle.end();) {
-                if (position->first % 5 == residue) position = oracle.erase(position), ++counted;
-                else ++position;
-            }
-            st_verify_eq_(dropped, counted);
+            st_verify_eq_(
+                dropped, std::erase_if(oracle, [&](auto const &entry) noexcept { return entry.first % 5 == residue; }));
             break;
         }
         case 6: {
@@ -985,9 +970,9 @@ static void augmented_select_is_logarithmic() {
             std::size_t const steps = depth_of(tree, live[index]) + 1;
             worst_select_steps = steps > worst_select_steps ? steps : worst_select_steps;
 
-            call_tally_t::reset();
+            counting_call_tally_t::reset();
             st_verify_eq_(tree.rank_augmented(live[index]), index);
-            std::size_t const comparisons = call_tally_t::comparisons_count();
+            std::size_t const comparisons = counting_call_tally_t::comparisons_count();
             worst_rank_comparisons = comparisons > worst_rank_comparisons ? comparisons : worst_rank_comparisons;
         }
 
@@ -1066,7 +1051,7 @@ static void allocation_failure_preserves_the_argument() {
  *  A node that was made, one that was already there, and an allocation that never came back are
  *  three answers, and none of them should have to be read off a null check.
  */
-static void upsert_reports_placement() {
+static void weight_balance_upsert_reports_placement() {
     using placement_t = traced_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(1);
@@ -1267,7 +1252,7 @@ int main() {
     failures += run_test(filter, "weight_balance.range_is_half_open", weight_balance_range_is_half_open);
     failures += run_test(filter, "weight_balance.erase_iterator_range", weight_balance_erase_iterator_range);
     failures += run_test(filter, "weight_balance.erase_if_rebalances", weight_balance_erase_if_rebalances);
-    failures += run_test(filter, "weight_balance.upsert_reports_placement", upsert_reports_placement);
+    failures += run_test(filter, "weight_balance.upsert_reports_placement", weight_balance_upsert_reports_placement);
     failures += run_test(filter, "weight_balance.randomized_mutations", weight_balance_randomized_mutations);
 
     failures += run_test(filter, "augmented.randomized_mutations", augmented_randomized_mutations);

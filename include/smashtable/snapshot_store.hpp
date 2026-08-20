@@ -547,7 +547,8 @@ class snapshot_store {
 
         friend store_t;
 
-        store_t const *store_ {nullptr};
+        /** @brief The store whose entries this walk steps through. */
+        store_t const &store_;
         /** @brief First entry of the run the cursor stands on, @c end() once the walk is over. */
         entry_iterator_t position_;
         /** @brief One past the last entry of that run. */
@@ -558,20 +559,20 @@ class snapshot_store {
         generation_t snapshot_ {0};
 
         visible_cursor_t(store_t const &store, entry_iterator_t position, generation_t snapshot) noexcept
-            : store_(&store), position_(position), run_end_(position), snapshot_(snapshot) {
+            : store_(store), position_(position), run_end_(position), snapshot_(snapshot) {
             settle_();
         }
 
         /** @brief Delimits the run @c position_ opens and picks the version @c snapshot_ reads in it. */
         void settle_() noexcept {
-            auto const finish = store_->entries_.end();
+            auto const finish = store_.entries_.end();
             standing_ = nullptr;
             run_end_ = position_;
             if (position_ == finish) return;
 
             versioned_t const &head = *position_;
             versioned_t const *newest = nullptr;
-            while (run_end_ != finish && store_->same_key_(*run_end_, head)) {
+            while (run_end_ != finish && store_.same_key_(*run_end_, head)) {
                 versioned_t const &version = *run_end_;
                 if (visible_at(version.committed, snapshot_) &&
                     (!newest || stamp_of(newest->committed) < stamp_of(version.committed)))
@@ -597,7 +598,7 @@ class snapshot_store {
         [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
 
         /** @brief Whether the walk is over, which is when nothing more is readable. */
-        [[nodiscard]] bool exhausted() const noexcept { return position_ == store_->entries_.end(); }
+        [[nodiscard]] bool exhausted() const noexcept { return position_ == store_.entries_.end(); }
 
         /**
          *  @brief Hands @p callback_found the key the cursor stands on, or reports the walk is over.
@@ -839,13 +840,18 @@ class snapshot_store {
          */
         [[nodiscard]] status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+            // A key written twice replaces its own staged version rather than adding one, so listing
+            // it twice would send the unwind looking for a version its first pass already took back.
+            bool const already_listed = changes_.find(identifier) != changes_.end();
             auto reserve_status = changed_identifiers_.reserve(changed_identifiers_.size() + 1);
             if (failed(reserve_status)) return reserve_status;
             versioned.generation = generation_;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
-            [[maybe_unused]] status_t const recorded =
-                changed_identifiers_.push_back(assume_reserved, std::move(identifier));
+            if (!already_listed) {
+                [[maybe_unused]] status_t const recorded =
+                    changed_identifiers_.push_back(assume_reserved, std::move(identifier));
+            }
             return success_k;
         }
 
@@ -1453,6 +1459,18 @@ class snapshot_store {
         }
 
         /**
+         *  @brief Stages a tombstone for every member this transaction reads, so a commit empties the store.
+         *
+         *  At @c serializable_k the read recorded here is the whole keyspace, which no pair of bounds can
+         *  spell, so any commit published since the snapshot turns this transaction away - where a bounded
+         *  erase is turned away only by a commit inside its own window. Below that level nothing is
+         *  recorded and the walk is the only cost.
+         */
+        [[nodiscard]] status_t clear() noexcept {
+            return erase_walked_([&](auto &&step) noexcept { return for_each(step); }, no_op_t {});
+        }
+
+        /**
          *  @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result.
          *
          *  Collected before revising for the same reason the erasing walks collect: a staged write moves
@@ -1576,9 +1594,7 @@ class snapshot_store {
          *  the merged view answers and a walk revising itself would step over its own neighbours.
          */
         template <typename walk_type_, typename callback_type_>
-        [[nodiscard]] status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept
-            requires ordered_core_k
-        {
+        [[nodiscard]] status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept {
             changed_identifiers_vector_t doomed(
                 changed_identifiers_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
             status_t collecting = success_k;
@@ -1595,7 +1611,8 @@ class snapshot_store {
             if (failed(collecting)) return collecting;
 
             for (std::size_t index = 0; index != doomed.size(); ++index)
-                if (status_t const staged = erase(doomed[index]); failed(staged)) return staged;
+                if (status_t const staged = erase(doomed[index]); failed(staged) && staged != key_not_found_k)
+                    return staged;
             return success_k;
         }
 
@@ -1950,7 +1967,7 @@ class snapshot_store {
     dated_entries_t entries_;
     /** @brief The clock this store keeps for itself, and the one it uses until somebody attaches another. */
     snapshot_clock_t owned_clock_ {};
-    /** @brief Where every stamp and every snapshot comes from, which a shard set repoints at one it shares. */
+    /** @brief Where every stamp and every snapshot comes from, never null; a shard set repoints it at a shared one. */
     snapshot_clock_t *clock_ {&owned_clock_};
     /** @brief Keys whose newest published version says they are there. */
     std::size_t live_count_ {0};

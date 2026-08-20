@@ -291,36 +291,41 @@ template <std::size_t... indices_>
 static_assert(causes_name_distinct_statuses(), "two failure causes share one status, so no caller can tell them apart");
 
 /** @brief Whether a cause was driven against a given store at all, since not every store can produce every one. */
-enum class cause_drive_t : bool { skipped_k, driven_k };
+enum class failure_cause_driven_t : bool { skipped_k, driven_k };
+
+/** @brief One cause's outcome - the status it reported, and whether it was reachable to report one. */
+struct observed_cause_t {
+    /** @brief The status the cause reported, meaningful only where @c drive says it was driven. */
+    status_t status {};
+    /** @brief Whether the cause was reachable against the store under test. */
+    failure_cause_driven_t drive {failure_cause_driven_t::skipped_k};
+};
 
 /**
  *  @brief What each cause was observed to report, so distinctness is asserted of the run and not only
  *    of the table.
  */
 struct observed_causes_t {
-    /** @brief The status each cause reported, meaningful only where @c drives says it was driven. */
-    std::array<status_t, failure_causes_k> statuses {};
-    /** @brief Whether each cause was reachable against the store under test. */
-    std::array<cause_drive_t, failure_causes_k> drives {};
+    /** @brief One outcome per cause, subscripted by the cause's own value. */
+    std::array<observed_cause_t, failure_causes_k> observations {};
 
     /** @brief Records @p observed for @p cause, checking it against the table on the spot. */
     void note(failure_cause_t cause, status_t observed) noexcept {
         std::size_t const index = static_cast<std::size_t>(cause);
         auto const expected_statuses = statuses_of_causes(std::make_index_sequence<failure_causes_k> {});
         st_verify_eq_(observed, expected_statuses[index], "a cause must be reported as the status it owns");
-        statuses[index] = observed;
-        drives[index] = cause_drive_t::driven_k;
+        observations[index] = observed_cause_t {observed, failure_cause_driven_t::driven_k};
     }
 
     /** @brief Aborts unless the causes actually driven reported statuses no two of them shared. */
     void verify_distinct() const noexcept {
         std::size_t driven_count = 0;
         for (std::size_t first = 0; first != failure_causes_k; ++first) {
-            if (drives[first] == cause_drive_t::skipped_k) continue;
+            if (observations[first].drive == failure_cause_driven_t::skipped_k) continue;
             ++driven_count;
             for (std::size_t second = first + 1; second != failure_causes_k; ++second) {
-                if (drives[second] == cause_drive_t::skipped_k) continue;
-                st_verify_ne_(statuses[first], statuses[second],
+                if (observations[second].drive == failure_cause_driven_t::skipped_k) continue;
+                st_verify_ne_(observations[first].status, observations[second].status,
                               "two distinct causes reported the same status against this store");
             }
         }

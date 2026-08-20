@@ -439,6 +439,13 @@ struct vacuum_pair_t {
     static constexpr bool at_transaction =
         requires(typename store_type_::transaction_t &transaction) { transaction.vacuum(); };
 };
+/**
+ *  @brief Emptying, which the two levels reach by different means and the pair only asks to exist.
+ *
+ *  A store drops every version outright and refuses while a reader would watch its own versions
+ *  vanish - on @c snapshot_store that is any open snapshot, on the others anything staged. A
+ *  transaction stages a tombstone per member instead, so it refuses nothing and empties only on commit.
+ */
 struct clear_pair_t {
     template <typename store_type_>
     static constexpr bool at_store = requires(store_type_ &store) { store.clear(); };
@@ -573,13 +580,6 @@ constexpr bool refuses_at_transaction = false;
  */
 template <>
 constexpr bool refuses_at_transaction<vacuum_pair_t> = true;
-
-/**
- *  @brief Emptying the store refuses while any snapshot is open, so a transaction calling it would be
- *    refusing itself: its own snapshot is the one standing in the way.
- */
-template <>
-constexpr bool refuses_at_transaction<clear_pair_t> = true;
 
 /**
  *  @brief Store surfaces a transaction @b should carry and does not yet.

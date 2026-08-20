@@ -879,8 +879,11 @@ class reference_store {
                 return visited;
             if (failed(collecting)) return collecting;
 
+            // A member the walk saw and somebody else erased in between is already gone, which is what
+            // this call was asking for rather than a key the caller misnamed.
             for (identifier_t const &identifier : doomed)
-                if (status_t const staged = erase(identifier); failed(staged)) return staged;
+                if (status_t const staged = erase(identifier); failed(staged) && staged != key_not_found_k)
+                    return staged;
             return success_k;
         }
 
@@ -946,6 +949,14 @@ class reference_store {
         [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept {
             return erase_accepted_([&](value_t const &member) noexcept { return changes_.key_comp()(member, upper); },
                                    std::forward<callback_type_>(callback));
+        }
+
+        /**
+         *  @brief Stages a tombstone for every member this transaction reads, so a commit empties the store.
+         *    Unlike the bounded erases it names no key at all, so it serves an unordered core too.
+         */
+        [[nodiscard]] status_t clear() noexcept {
+            return erase_accepted_([](value_t const &) noexcept { return true; }, no_op_t {});
         }
 
         /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */

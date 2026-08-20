@@ -1209,7 +1209,7 @@ void test_stateful_comparator_is_consulted() {
     // Above every key, so the first strict successor under a descending order is the largest key.
     constexpr std::size_t above_every_key_k = 1000;
 
-    auto built = make_around_comparator<container_type_>(comparator_t {ordering_t::descending_k});
+    auto built = make_around_comparator<container_type_>(comparator_t {stateful_comparator_ordering_t::descending_k});
     st_verify_(built.has_value() && "a container must be constructible around a comparator instance");
     auto &container = *built;
 

@@ -1,9 +1,16 @@
 /**
- *  @brief Test instantiations for the thread-safety wrappers. Both wrappers forward to a transactional AVL tree, so the
- *      same suites apply unchanged.
+ *  @brief Test instantiations for the thread-safety wrappers, over every core and every isolation rung
+ *      a wrapper is expected to carry unchanged.
  *  @author Ash Vardanian
  *  @file scripts/test_partitioned.cpp
  *  @date August 16, 2026
+ *
+ *  @section test_partitioned_stores The Stores Under The Wrappers
+ *
+ *  @c locked_store and @c partitioned_store are both meant to be invisible, so what they wrap is varied
+ *  rather than fixed: AVL and weight-balanced trees, an open-addressed table with no ordering at all,
+ *  the monotonic, snapshot and serializable families, and @c refusing_store to drive the refusal paths.
+ *  A suite runs against whichever of those carries the surface and the level it asks about.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -247,10 +254,18 @@ static_assert(optimistically_concurrent_store<partitioned_store<locked_store<sna
 
 #pragma region Suites
 
-/** @brief Walkers crossing a sharded map while an eraser churns it, with heap-owning keys. */
+/** @brief Walkers crossing a sharded map while an eraser churns it. */
 static void sharded_concurrency_walks_never_race_erasures() {
     test_sharded_walks_never_race_erasures<transactional_composite_map_t>();
     test_sharded_walks_never_race_erasures<standard_mutex_map_t>();
+}
+
+/** @brief Range walks crossing a writer that empties and refills the span underneath them. */
+static void sharded_concurrency_range_walks_share_partitions() {
+    test_sharded_range_walks_share_partitions<transactional_composite_map_t>();
+    test_sharded_range_walks_share_partitions<standard_mutex_map_t>();
+    test_sharded_lower_bound_probes_twice<transactional_composite_map_t>();
+    test_sharded_lower_bound_probes_twice<standard_mutex_map_t>();
 }
 
 /** @brief The same suites against @c std::shared_mutex, so the substituted lock stays exercised. */
@@ -562,6 +577,8 @@ template <typename wrapper_type_, typename inner_type_>
 static void test_forwarded_strict_insert() {
 
     using member_t = typename wrapper_type_::value_type;
+    using bare_transaction_t = typename inner_type_::transaction_t;
+    using wrapped_transaction_t = typename wrapper_type_::transaction_t;
 
     expected<inner_type_> bare_made = built_store<inner_type_>();
     inner_type_ &bare = *bare_made;
@@ -578,12 +595,12 @@ static void test_forwarded_strict_insert() {
     st_verify_eq_(wrapped.size(), 2u);
 
     // The same refusal staged rather than published, which is the level a binding reaches for.
-    expected<typename inner_type_::transaction_t> bare_writer = bare.transaction();
+    expected<bare_transaction_t> bare_writer = bare.transaction();
     st_verify_((bare_writer) && "the bare store must open a transaction");
     status_t const bare_staged_refusal = bare_writer->insert(trivial_id_to_member<member_t>(7));
     st_verify_eq_(bare_staged_refusal, status_t::key_already_exists_k);
 
-    expected<typename wrapper_type_::transaction_t> wrapped_writer = wrapped.transaction();
+    expected<wrapped_transaction_t> wrapped_writer = wrapped.transaction();
     st_verify_((wrapped_writer) && "the wrapped store must open a transaction");
     st_verify_eq_(wrapped_writer->insert(trivial_id_to_member<member_t>(7)), bare_staged_refusal);
     st_verify_(wrapped_writer->insert(trivial_id_to_member<member_t>(9)));
@@ -597,6 +614,7 @@ template <typename wrapper_type_, typename inner_type_>
 static void test_forwarded_strict_update() {
 
     using member_t = typename wrapper_type_::value_type;
+    using transaction_t = typename wrapper_type_::transaction_t;
 
     expected<inner_type_> bare_made = built_store<inner_type_>();
     inner_type_ &bare = *bare_made;
@@ -612,7 +630,7 @@ static void test_forwarded_strict_update() {
     st_verify_(wrapped.update(trivial_id_to_member<member_t>(3)));
     st_verify_eq_(wrapped.size(), 1u);
 
-    expected<typename wrapper_type_::transaction_t> writer = wrapped.transaction();
+    expected<transaction_t> writer = wrapped.transaction();
     st_verify_((writer) && "the wrapped store must open a transaction");
     st_verify_eq_(writer->update(trivial_id_to_member<member_t>(4)), status_t::key_not_found_k);
     st_verify_(writer->update(trivial_id_to_member<member_t>(3)));
@@ -847,8 +865,8 @@ static void test_forwarded_for_each(std::size_t count = 200) {
 template <typename wrapper_type_>
 static void test_forwarded_transaction_moves_as_a_value() {
 
-    using transaction_t = typename wrapper_type_::transaction_t;
     using member_t = typename wrapper_type_::value_type;
+    using transaction_t = typename wrapper_type_::transaction_t;
 
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
@@ -885,6 +903,7 @@ template <typename wrapper_type_>
 static void test_forwarded_equal_range() {
 
     using member_t = typename wrapper_type_::value_type;
+    using transaction_t = typename wrapper_type_::transaction_t;
 
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
@@ -899,7 +918,7 @@ static void test_forwarded_equal_range() {
     st_verify_(store.equal_range(trivial_id_to_key<member_t>(99), [&](member_t const &) noexcept { ++matched; }));
     st_verify_eq_(matched, 0u);
 
-    expected<typename wrapper_type_::transaction_t> writer = store.transaction();
+    expected<transaction_t> writer = store.transaction();
     st_verify_((writer) && "the wrapped store must open a transaction");
     matched = 0;
     st_verify_(writer->equal_range(trivial_id_to_key<member_t>(3), [&](member_t const &) noexcept { ++matched; }));
@@ -939,12 +958,13 @@ template <typename wrapper_type_>
 static void test_forwarded_transaction_staged_surface() {
 
     using member_t = typename wrapper_type_::value_type;
+    using transaction_t = typename wrapper_type_::transaction_t;
 
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
     st_verify_(store.upsert(trivial_id_to_member<member_t>(1)));
 
-    expected<typename wrapper_type_::transaction_t> writer = store.transaction();
+    expected<transaction_t> writer = store.transaction();
     st_verify_((writer) && "the wrapped store must open a transaction");
     st_verify_(!writer->has_changes());
     st_verify_eq_(writer->changes_count(), 0u);
@@ -969,24 +989,47 @@ static void test_forwarded_transaction_staged_surface() {
     st_verify_eq_(store.size(), 2u);
 }
 
-/** @brief The version bookkeeping a snapshot store keeps must be readable through both wrappers. */
+/**
+ *  @brief The version bookkeeping a snapshot store keeps must be readable through both wrappers.
+ *
+ *  A reader is held open across the overwrite, because a superseded version nothing is reading is
+ *  reclaimed where it stands: with no snapshot pinned there is no history to count, and an exact count
+ *  taken then would pass a store that keeps none.
+ */
 template <typename wrapper_type_>
-static void test_forwarded_version_bookkeeping() {
+static void test_forwarded_version_bookkeeping(std::size_t count = 4) {
 
     using member_t = typename wrapper_type_::value_type;
+    using transaction_t = typename wrapper_type_::transaction_t;
 
     expected<wrapper_type_> made = built_store<wrapper_type_>();
     wrapper_type_ &store = *made;
-    for (std::size_t identifier = 0; identifier != 4; ++identifier)
+    for (std::size_t identifier = 0; identifier != count; ++identifier)
         st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
+
+    // One version per key, and the overwrite below adds the only second one.
+    expected<transaction_t> reader = store.transaction();
+    st_verify_((reader) && "a reader must open to pin the version the overwrite supersedes");
+    auto const pinned_mark = store.low_water_mark();
     st_verify_(store.upsert(trivial_id_to_member<member_t>(0)));
 
-    st_verify_ge_(store.versions_count(), 4u);
-    st_verify_ge_(store.versions_count(trivial_id_to_key<member_t>(0)), 1u);
-    [[maybe_unused]] auto const mark = store.low_water_mark();
+    st_verify_eq_(store.versions_count(), count + 1);
+    st_verify_eq_(store.versions_count(trivial_id_to_key<member_t>(0)), 2u);
+    st_verify_eq_(store.low_water_mark(), pinned_mark, "an open snapshot holds the mark a sweep prunes to");
+
+    // A sweep cannot take what the reader still holds, and must take it once the reader lets go.
+    [[maybe_unused]] expected<std::size_t> const held = store.vacuum();
+    st_verify_eq_(store.versions_count(), count + 1, "a sweep must keep what an open snapshot still reads");
+    {
+        transaction_t closing = std::move(*reader);
+        st_verify_(closing.reset());
+    }
+    st_verify_gt_(store.low_water_mark(), pinned_mark, "the mark must move once nothing holds it down");
 
     [[maybe_unused]] expected<std::size_t> const reclaimed = store.vacuum();
-    st_verify_eq_(store.size(), 4u);
+    st_verify_eq_(store.versions_count(), count, "a sweep must take the version nothing reads any more");
+    st_verify_eq_(store.versions_count(trivial_id_to_key<member_t>(0)), 1u);
+    st_verify_eq_(store.size(), count);
 }
 
 #pragma endregion Forwarded Surface
@@ -1224,14 +1267,14 @@ static void ordered_cursor_matches_the_range() {
  *  before that happens - a walk seeded from a default key hands over members ordered below it.
  */
 static void ordered_cursor_begins_at_the_bound_it_was_given() {
-    transactional_trivial_set_t store = seeded_sharded_set(200);
+    constexpr trivial_id_t size_k = 200, from = 137;
+    transactional_trivial_set_t store = seeded_sharded_set(size_k);
 
-    trivial_id_t const from = 137;
-    std::vector<trivial_id_t> const walked = drain_cursor(store, from, 400);
+    std::vector<trivial_id_t> const walked = drain_cursor(store, from, 2 * size_k);
 
-    st_verify_eq_(walked.size(), std::size_t {200} - from);
-    for (trivial_id_t identifier : walked) st_verify_ge_(identifier, from, "no key below the bound is handed over");
-    st_verify_eq_(walked.front(), from);
+    st_verify_eq_(walked.size(), size_k - from);
+    for (std::size_t position = 0; position != walked.size(); ++position)
+        st_verify_eq_(walked[position], from + position, "the walk must ascend from the bound with no gap");
 }
 
 /** @brief A bounded cursor stops before the key it was given, on the same half-open terms as a range. */
@@ -1245,19 +1288,24 @@ static void test_cursor_stops_at_its_bound(std::size_t count = 64) {
     for (std::size_t identifier = 0; identifier != count; ++identifier)
         st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
+    // The store is contiguous from zero, so each window is the keys its own bounds name.
+    constexpr trivial_id_t lower_k = 8, upper_k = 20, capped_k = 5;
+
     std::vector<trivial_id_t> walked;
-    for (auto walking = container.cursor_range(trivial_id_to_key<member_t>(8), trivial_id_to_key<member_t>(20));
+    for (auto walking =
+             container.cursor_range(trivial_id_to_key<member_t>(lower_k), trivial_id_to_key<member_t>(upper_k));
          !walking.exhausted();)
         walking.next([&](member_t const &member) noexcept { walked.push_back(member.unique_id); });
-    st_verify_eq_(walked.size(), std::size_t {12});
-    st_verify_eq_(walked.front(), trivial_id_t {8});
-    st_verify_eq_(walked.back(), trivial_id_t {19});
+    st_verify_eq_(walked.size(), upper_k - lower_k);
+    for (std::size_t position = 0; position != walked.size(); ++position)
+        st_verify_eq_(walked[position], lower_k + position, "a bounded cursor must ascend from its lower bound");
 
     walked.clear();
-    for (auto walking = container.cursor_up_to(trivial_id_to_key<member_t>(5)); !walking.exhausted();)
+    for (auto walking = container.cursor_up_to(trivial_id_to_key<member_t>(capped_k)); !walking.exhausted();)
         walking.next([&](member_t const &member) noexcept { walked.push_back(member.unique_id); });
-    st_verify_eq_(walked.size(), std::size_t {5});
-    st_verify_eq_(walked.back(), trivial_id_t {4});
+    st_verify_eq_(walked.size(), capped_k);
+    for (std::size_t position = 0; position != walked.size(); ++position)
+        st_verify_eq_(walked[position], position, "an unbounded start must ascend from the smallest key");
 }
 
 /** @brief The bounded and unbounded walks read the same on both wrappers, which is what one shape means. */
@@ -1277,9 +1325,10 @@ static void ordered_cursor_survives_its_own_key_erased() {
 
     st_verify_(store.erase(trivial_id_to_key<trivial_key_t>(standing)));
 
+    // The store holds every key from zero, so the successor of the erased one is the very next.
     bool handed = false;
     walking.next([&](trivial_key_t const &member) noexcept {
-        st_verify_gt_(member.unique_id, standing, "a cursor must never hand back a key it already gave");
+        st_verify_eq_(member.unique_id, standing + 1, "a cursor must hand over the successor, not skip ahead");
         handed = true;
     });
     st_verify_((handed) && "erasing the key underneath a cursor must not end its walk");
@@ -1320,15 +1369,17 @@ static void ordered_cursor_sees_a_key_inserted_ahead() {
 
 /** @brief A cursor hands over every key exactly once, whatever partition each of them hashed into. */
 static void ordered_cursor_hands_every_key_once() {
-    transactional_trivial_set_t store = seeded_sharded_set(300);
+    constexpr trivial_id_t size_k = 300;
+    transactional_trivial_set_t store = seeded_sharded_set(size_k);
 
-    std::vector<std::size_t> handed(300, 0);
-    std::vector<trivial_id_t> const walked = drain_cursor(store, 0, 600);
+    // Drained past the size, so a cursor handing anything twice is counted rather than cut short.
+    std::vector<std::size_t> handed(size_k, 0);
+    std::vector<trivial_id_t> const walked = drain_cursor(store, 0, 2 * size_k);
     for (trivial_id_t identifier : walked) {
-        st_verify_lt_(identifier, 300, "a cursor must hand over only keys the store holds");
+        st_verify_lt_(identifier, size_k, "a cursor must hand over only keys the store holds");
         ++handed[identifier];
     }
-    for (std::size_t identifier = 0; identifier != 300; ++identifier) st_verify_eq_(handed[identifier], 1u);
+    for (std::size_t identifier = 0; identifier != size_k; ++identifier) st_verify_eq_(handed[identifier], 1u);
 }
 
 #pragma endregion Ordered Cursor
@@ -1412,12 +1463,16 @@ static void lock_cost_cursor_beats_stepping() {
     }
     std::size_t const cursor_locks = counting_mutex_t::taken();
 
+    constexpr std::size_t partitions_k = partitions_of_v<counted_sharded_set_t>;
     st_verify_eq_(walked, size_k);
-    st_verify_ge_(stepping_locks, stepped * 16, "stepping a bound must ask every partition per element");
-    // One acquisition per element handed over, plus the sixteen the first step seeds from.
-    st_verify_le_(cursor_locks, walked + partitions_of_v<counted_sharded_set_t>,
+    st_verify_eq_(stepped, size_k - 1, "the first key is not above itself, so stepping starts at the second");
+
+    // Every partition per step, and once more for the step that finds nothing left.
+    st_verify_eq_(stepping_locks, (stepped + 1) * partitions_k,
+                  "stepping a bound must ask every partition per element");
+    // One acquisition per element handed over, plus the one seeding pass over every partition.
+    st_verify_eq_(cursor_locks, walked + partitions_k,
                   "a cursor over a quiet store costs one partition acquisition per element");
-    st_verify_lt_(cursor_locks * 8, stepping_locks, "the cursor must cost a fraction of stepping a bound");
 }
 
 #pragma endregion Lock Cost
@@ -1554,9 +1609,11 @@ static void test_make_reports_why_it_could_not_build() {
 /** @brief A wrapper that cannot open a transaction reports why, rather than a default-constructed reason. */
 template <typename wrapper_type_>
 static void test_transaction_reports_why_it_could_not_open() {
+
+    using transaction_t = typename wrapper_type_::transaction_t;
     expected<wrapper_type_> made = wrapper_type_::make();
     st_verify_(made);
-    expected<typename wrapper_type_::transaction_t> opened = made->transaction();
+    expected<transaction_t> opened = made->transaction();
     st_verify_((!opened) && "the inner store refused, so the wrapper must refuse too");
     st_verify_eq_(opened.status(), status_t::out_of_memory_heap_k,
                   "the wrapper must relay the reason rather than lose it to a default");
@@ -1604,15 +1661,18 @@ static void sharded_ops_read_reports_what_it_could_not_record() {
 
 static void sharded_concurrency_commit_is_visible_to_what_opens_after_it() {
     using gated_map_t = mapping<std::int64_t, std::int64_t>;
-    // Pinned, because the test picks what it asserts from this level: a wrapper that dropped the rung
-    // would leave the strict instantiation asserting nothing and still reporting a pass.
-    static_assert(partitioned_store<strict_serializable_store<basic_avl_tree<gated_map_t, less_t>>,
-                                    hash<std::int64_t>>::isolation_k == isolation_t::strict_serializable_k,
-                  "a shard set over a strict store is strict");
     using serializable_gated_t =
         serializable_store<basic_avl_tree<gated_map_t, gated_less_t, std::allocator<gated_map_t>>>;
     using strict_gated_t =
         strict_serializable_store<basic_avl_tree<gated_map_t, gated_less_t, std::allocator<gated_map_t>>>;
+    // Pinned, because the test picks what it asserts from this level: a wrapper that dropped the rung
+    // would leave the strict instantiation asserting nothing and still reporting a pass.
+    static_assert(
+        partitioned_store<strict_gated_t, hash<std::int64_t>>::isolation_k == isolation_t::strict_serializable_k,
+        "a shard set over a strict store is strict");
+    static_assert(
+        partitioned_store<serializable_gated_t, hash<std::int64_t>>::isolation_k == isolation_t::serializable_k,
+        "a shard set over a serializable store is serializable");
     test_commit_is_visible_to_what_opens_after_it<partitioned_store<serializable_gated_t, hash<std::int64_t>>>();
     test_commit_is_visible_to_what_opens_after_it<partitioned_store<strict_gated_t, hash<std::int64_t>>>();
 }
@@ -1649,6 +1709,8 @@ int main() {
     failures += run_test(filter, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
     failures += run_test(filter, "sharded_concurrency.walks_never_race_erasures",
                          sharded_concurrency_walks_never_race_erasures);
+    failures += run_test(filter, "sharded_concurrency.range_walks_share_partitions",
+                         sharded_concurrency_range_walks_share_partitions);
     failures += run_test(filter, "sharded_ops.move_only_key_reaches_a_partition",
                          sharded_ops_move_only_key_reaches_a_partition);
     failures += run_test(filter, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);

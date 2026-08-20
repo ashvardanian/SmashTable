@@ -240,6 +240,9 @@ class locked_store {
             transaction.erase_from(key, callback);
             transaction.erase_up_to(key, callback);
         };
+    /** @brief Whether the wrapped transaction stages a tombstone for every member it reads. */
+    static constexpr bool inner_transaction_clears_k =
+        requires(inner_transaction_t &transaction) { transaction.clear(); };
     /** @brief Whether the wrapped transaction revises a window of its own members. */
     static constexpr bool inner_transaction_revises_range_k =
         requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
@@ -282,9 +285,8 @@ class locked_store {
     class transaction_t {
         friend class locked_store;
         /**
-         *  @brief The store this transaction reaches through, held by pointer rather than reference.
-         *    A reference member deletes the defaulted move assignment, and a transaction that moves but
-         *    cannot be move-assigned is one no container can hold.
+         *  @brief The store this transaction reaches through, never null after construction.
+         *    A pointer rather than a reference, which would delete the defaulted move assignment.
          */
         locked_store *store_;
         /** @brief The inner store's own transaction, which stages entirely outside the mutex. */
@@ -566,6 +568,14 @@ class locked_store {
             unique_lock _ {store_->mutex_};
             return inner_transaction_.erase_up_to(std::forward<upper_type_>(upper),
                                                   std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Stages a tombstone for every member this transaction reads. */
+        [[nodiscard]] status_t clear() noexcept
+            requires inner_transaction_clears_k
+        {
+            unique_lock _ {store_->mutex_};
+            return inner_transaction_.clear();
         }
 
         /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */

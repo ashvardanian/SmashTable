@@ -11,7 +11,7 @@
 
 #include <cstddef> // `std::size_t`
 
-#include <algorithm> // `std::sort`, `std::next_permutation`
+#include <algorithm> // `std::find`, `std::sort`, `std::next_permutation`
 #include <numeric>   // `std::iota`
 #include <optional>  // `std::optional`
 #include <random>    // `std::mt19937`
@@ -144,6 +144,24 @@ static expected<int> mapped_or_absent(readable_type_ const &readable, trivial_id
     st_verify_(readable.find(
         trivial_key_t {identifier}, [&](auto const &member) noexcept { observed = member.mapped; }, []() noexcept {}));
     return observed;
+}
+
+/** @brief The identifier at @p ordinal, or @c key_not_found_k where the ordinal is past the last key. */
+template <typename readable_type_>
+static expected<trivial_id_t> selected_or_absent(readable_type_ const &readable, std::size_t ordinal) noexcept {
+    expected<trivial_id_t> drawn {status_t::key_not_found_k};
+    st_verify_(
+        readable.select(ordinal, [&](auto const &member) noexcept { drawn = member.key.unique_id; }, []() noexcept {}));
+    return drawn;
+}
+
+/** @brief The ordinal of @p identifier, or @c key_not_found_k where no readable version holds it. */
+template <typename readable_type_>
+static expected<std::size_t> ranked_or_absent(readable_type_ const &readable, trivial_id_t identifier) noexcept {
+    expected<std::size_t> position {status_t::key_not_found_k};
+    st_verify_(readable.rank(
+        trivial_key_t {identifier}, [&](std::size_t ordinal) noexcept { position = ordinal; }, []() noexcept {}));
+    return position;
 }
 
 /** @brief How many versions a sweep reclaimed, insisting the sweep could run at all. */
@@ -617,13 +635,10 @@ static void test_bulk_sweep_keeps_every_reader_whole() {
 template <typename store_type_>
 static generation_t oldest_open_snapshot(
     store_type_ const &store, std::vector<std::optional<typename store_type_::transaction_t>> const &readers) {
+    // A reader opens at or below the stamp it found, so the published one is the answer when none is open.
     generation_t oldest = store.published_stamp();
-    bool anybody = false;
-    for (auto const &reader : readers) {
-        if (!reader) continue;
-        if (!anybody || reader->snapshot() < oldest) oldest = reader->snapshot();
-        anybody = true;
-    }
+    for (auto const &reader : readers)
+        if (reader) oldest = smaller_of(oldest, reader->snapshot());
     return oldest;
 }
 
@@ -1074,7 +1089,7 @@ static void test_erase_range_is_all_or_nothing() {
     st_verify_eq_(remaining[0], 0);
     st_verify_eq_(remaining[3], 9);
 
-    // The older snapshot keeps every key it opened on, all six of them, not a prefix.
+    // The older snapshot keeps every key it opened on, all ten of them, not a prefix.
     std::vector<trivial_id_t> const observed = keys_in_range(*reader, 0, 10);
     st_verify_eq_(observed.size(), 10);
     for (trivial_id_t identifier = 0; identifier != 10; ++identifier) st_verify_eq_(observed[identifier], identifier);
@@ -1353,43 +1368,17 @@ static void test_order_statistics_match_the_walk() {
     for (trivial_id_t identifier = 0; identifier != keys_k; identifier += erased_stride_k)
         commit_erase(store, identifier);
 
-    std::vector<trivial_id_t> const expected = keys_in_range(store, 0, keys_k);
-    st_verify_eq_(expected.size(), keys_k - keys_k / erased_stride_k);
+    std::vector<trivial_id_t> const expected_order = keys_in_range(store, 0, keys_k);
+    st_verify_eq_(expected_order.size(), keys_k - keys_k / erased_stride_k);
     st_verify_eq_(store.ranked_size(), store.size());
 
-    for (std::size_t ordinal = 0; ordinal != expected.size(); ++ordinal) {
-        trivial_id_t drawn = 0;
-        bool present = false;
-        st_verify_(store.select(
-            ordinal,
-            [&](auto const &member) noexcept {
-                drawn = member.key.unique_id;
-                present = true;
-            },
-            []() noexcept {}));
-        st_verify_(present);
-        st_verify_eq_(drawn, expected[ordinal]);
-
-        std::size_t ranked = 0;
-        bool ranked_found = false;
-        st_verify_(store.rank(
-            trivial_key_t {drawn},
-            [&](std::size_t position) noexcept {
-                ranked = position;
-                ranked_found = true;
-            },
-            []() noexcept {}));
-        st_verify_(ranked_found);
-        st_verify_eq_(ranked, ordinal);
+    for (std::size_t ordinal = 0; ordinal != expected_order.size(); ++ordinal) {
+        st_verify_eq_(selected_or_absent(store, ordinal), expected_order[ordinal]);
+        st_verify_eq_(ranked_or_absent(store, expected_order[ordinal]), ordinal);
     }
 
-    bool overshot = false;
-    st_verify_(store.select(expected.size(), [](auto const &) noexcept {}, [&]() noexcept { overshot = true; }));
-    st_verify_(overshot);
-
-    bool erased_ranked = false;
-    st_verify_(store.rank(trivial_key_t {0}, [&](std::size_t) noexcept { erased_ranked = true; }, []() noexcept {}));
-    st_verify_(!erased_ranked);
+    st_verify_eq_(selected_or_absent(store, expected_order.size()), status_t::key_not_found_k);
+    st_verify_eq_(ranked_or_absent(store, 0), status_t::key_not_found_k);
 }
 
 /** @brief Tests that the ordinal descends on the stored counts rather than walking the keys */
@@ -1405,22 +1394,18 @@ static void test_order_statistics_cost_a_logarithm() {
     st_verify_eq_(store.size(), size);
     st_verify_eq_(store.ranked_size(), size);
 
-    call_tally_t::reset();
-    trivial_id_t drawn = 0;
-    st_verify_(
-        store.select(size / 2, [&](auto const &member) noexcept { drawn = member.key.unique_id; }, []() noexcept {}));
+    counting_call_tally_t::reset();
+    expected<trivial_id_t> const drawn = selected_or_absent(store, size / 2);
     st_verify_eq_(drawn, size / 2);
     // A select reads only the stored subtree counts, so it never consults the comparator at all.
-    st_verify_eq_(call_tally_t::comparisons_count(), 0);
+    st_verify_eq_(counting_call_tally_t::comparisons_count(), 0);
 
-    call_tally_t::reset();
-    std::size_t ranked = 0;
-    st_verify_(store.rank(
-        trivial_key_t {size - 1}, [&](std::size_t position) noexcept { ranked = position; }, []() noexcept {}));
+    counting_call_tally_t::reset();
+    expected<std::size_t> const ranked = ranked_or_absent(store, size - 1);
     st_verify_eq_(ranked, size - 1);
     // Both halves of a rank on the last key: the probe deciding it is readable, and the descent summing
     // the counts to its left. Only the balance policy or the shape of that probe moves this.
-    st_verify_eq_(call_tally_t::comparisons_count(), 91);
+    st_verify_eq_(counting_call_tally_t::comparisons_count(), 91);
 }
 
 /** @brief Tests that a transaction's ordinal counts its own staged writes into the committed order */
@@ -1435,42 +1420,16 @@ static void test_transaction_order_statistics_merge() {
     st_verify_(writer->upsert(trivial_id_to_member<member_t>(5, 1)));
     st_verify_(writer->erase(trivial_key_t {4}));
 
-    std::vector<trivial_id_t> const expected = keys_in_range(*writer, 0, 10);
-    st_verify_eq_(expected.size(), 5);
+    std::vector<trivial_id_t> const expected_order = keys_in_range(*writer, 0, 10);
+    st_verify_eq_(expected_order.size(), 5);
 
-    for (std::size_t ordinal = 0; ordinal != expected.size(); ++ordinal) {
-        trivial_id_t drawn = 0;
-        bool present = false;
-        st_verify_(writer->select(
-            ordinal,
-            [&](auto const &member) noexcept {
-                drawn = member.key.unique_id;
-                present = true;
-            },
-            []() noexcept {}));
-        st_verify_(present);
-        st_verify_eq_(drawn, expected[ordinal]);
-
-        std::size_t ranked = 0;
-        bool ranked_found = false;
-        st_verify_(writer->rank(
-            trivial_key_t {drawn},
-            [&](std::size_t position) noexcept {
-                ranked = position;
-                ranked_found = true;
-            },
-            []() noexcept {}));
-        st_verify_(ranked_found);
-        st_verify_eq_(ranked, ordinal);
+    for (std::size_t ordinal = 0; ordinal != expected_order.size(); ++ordinal) {
+        st_verify_eq_(selected_or_absent(*writer, ordinal), expected_order[ordinal]);
+        st_verify_eq_(ranked_or_absent(*writer, expected_order[ordinal]), ordinal);
     }
 
-    bool overshot = false;
-    st_verify_(writer->select(expected.size(), [](auto const &) noexcept {}, [&]() noexcept { overshot = true; }));
-    st_verify_(overshot);
-
-    bool erased_ranked = false;
-    st_verify_(writer->rank(trivial_key_t {4}, [&](std::size_t) noexcept { erased_ranked = true; }, []() noexcept {}));
-    st_verify_(!erased_ranked);
+    st_verify_eq_(selected_or_absent(*writer, expected_order.size()), status_t::key_not_found_k);
+    st_verify_eq_(ranked_or_absent(*writer, 4), status_t::key_not_found_k);
 }
 
 /** @brief Tests that the augmented counts follow every publication path, not only the point writes */
@@ -1874,38 +1833,20 @@ static void test_ordinals_agree_with_the_oracle() {
     }
     st_verify_eq_(store.size(), oracle.size());
 
+    // An answer carries its own absence, so an engine that reports nothing cannot pass by holding a seed.
     for (std::size_t ordinal = 0; ordinal != oracle.size() + 2; ++ordinal) {
-        // Whether the ordinal was answered is kept apart from what it answered, so an engine that
-        // reports nothing cannot pass by holding whatever the seed was.
-        int oracle_mapped = 0, engine_mapped = 0;
-        bool oracle_answered = false, engine_answered = false;
-        st_verify_(oracle.select(
-            ordinal,
-            [&](auto const &member) noexcept {
-                oracle_mapped = member.mapped;
-                oracle_answered = true;
-            },
-            []() noexcept {}));
-        st_verify_(store.select(
-            ordinal,
-            [&](auto const &member) noexcept {
-                engine_mapped = member.mapped;
-                engine_answered = true;
-            },
-            []() noexcept {}));
-        st_verify_eq_(engine_answered, oracle_answered, "an ordinal one of them answered and the other did not");
-        if (oracle_answered) st_verify_eq_(engine_mapped, oracle_mapped);
+        expected<trivial_id_t> const expected_key = selected_or_absent(oracle, ordinal);
+        expected<trivial_id_t> const observed_key = selected_or_absent(store, ordinal);
+        st_verify_eq_(observed_key.status(), expected_key.status(),
+                      "an ordinal one of them answered and the other did not");
+        if (expected_key.has_value()) st_verify_eq_(observed_key, *expected_key);
     }
 
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
-        std::size_t expected_rank = keys_k;
-        std::size_t observed_rank = keys_k + 1;
-        st_verify_(oracle.rank(
-            trivial_key_t {identifier}, [&](std::size_t rank) noexcept { expected_rank = rank; }, []() noexcept {}));
-        st_verify_(store.rank(
-            trivial_key_t {identifier}, [&](std::size_t rank) noexcept { observed_rank = rank; },
-            [&]() noexcept { observed_rank = keys_k; }));
-        st_verify_eq_(expected_rank, observed_rank);
+        expected<std::size_t> const expected_rank = ranked_or_absent(oracle, identifier);
+        expected<std::size_t> const observed_rank = ranked_or_absent(store, identifier);
+        st_verify_eq_(observed_rank.status(), expected_rank.status(), "a key one of them ranked and the other did not");
+        if (expected_rank.has_value()) st_verify_eq_(observed_rank, *expected_rank);
     }
 }
 
@@ -1922,28 +1863,19 @@ static void test_oracle_transaction_ordinals_include_staged_writes() {
 
     // Committed 0, 2, 6 with 4 tombstoned, plus a staged 3, so the walk reads 0, 2, 3, 6.
     trivial_id_t const expected_order[4] = {0, 2, 3, 6};
-    for (std::size_t ordinal = 0; ordinal != 4; ++ordinal) {
-        trivial_id_t observed = 99;
-        st_verify_(staging->select(
-            ordinal, [&](auto const &member) noexcept { observed = member.key.unique_id; }, []() noexcept {}));
-        st_verify_eq_(observed, expected_order[ordinal]);
-    }
+    for (std::size_t ordinal = 0; ordinal != 4; ++ordinal)
+        st_verify_eq_(selected_or_absent(*staging, ordinal), expected_order[ordinal]);
 
-    std::size_t staged_rank = 99;
-    st_verify_(
-        staging->rank(trivial_key_t {3}, [&](std::size_t rank) noexcept { staged_rank = rank; }, []() noexcept {}));
-    st_verify_eq_(staged_rank, 2);
+    st_verify_eq_(ranked_or_absent(*staging, 3), std::size_t {2});
+    st_verify_eq_(ranked_or_absent(*staging, 4), status_t::key_not_found_k);
 
-    bool tombstoned_reported = false;
-    st_verify_(
-        staging->rank(trivial_key_t {4}, [](std::size_t) noexcept {}, [&]() noexcept { tombstoned_reported = true; }));
-    st_verify_(tombstoned_reported);
+    std::size_t staged_visits = 0;
+    st_verify_(staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++staged_visits; }));
+    st_verify_eq_(staged_visits, 1);
 
-    std::size_t counted = 0;
-    st_verify_(staging->equal_range(trivial_key_t {3}, [&](auto const &) noexcept { ++counted; }));
-    st_verify_eq_(counted, 1);
-    st_verify_(staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++counted; }));
-    st_verify_eq_(counted, 1);
+    std::size_t tombstoned_visits = 0;
+    st_verify_(staging->equal_range(trivial_key_t {4}, [&](auto const &) noexcept { ++tombstoned_visits; }));
+    st_verify_eq_(tombstoned_visits, 0);
 }
 
 /** @brief A single draw lands inside its window and never names a key the newest commit hides. */
@@ -2185,11 +2117,9 @@ static void test_sharded_range_admits_no_phantoms() {
 
     // A whole second generation of keys arrives across every partition, and none of it may appear.
     std::vector<trivial_id_t> intruders;
-    for (trivial_id_t candidate = 0; candidate != 64; ++candidate) {
-        bool named = false;
-        for (trivial_id_t identifier : identifiers) named = named || identifier == candidate;
-        if (!named) intruders.push_back(candidate);
-    }
+    for (trivial_id_t candidate = 0; candidate != 64; ++candidate)
+        if (std::find(identifiers.begin(), identifiers.end(), candidate) == identifiers.end())
+            intruders.push_back(candidate);
     commit_write_many(store, intruders, 900);
 
     st_verify_eq_(count_present(), before);
@@ -2336,9 +2266,8 @@ static void test_phantom_erase_refuses_the_walker() {
 /**
  *  @brief A scan by repeated bounds is refused by a key that appears in the window it crossed.
  *
- *  Navigating by @c lower_bound is the natural way to walk an ordered store, and it used to record
- *  nothing at all - so a serializable transaction that scanned a window and acted on what it counted
- *  committed happily while a key landed inside that window behind it.
+ *  Navigating by @c lower_bound is the natural way to walk an ordered store, so each bound has to record
+ *  the span it crossed - otherwise a key landing behind the scan leaves the commit unrefused.
  */
 static void test_phantom_refuses_a_bounded_scan() {
     using store_t = serializable_avl_map_t;
@@ -2353,19 +2282,15 @@ static void test_phantom_refuses_a_bounded_scan() {
     // Step the window [10, 40) the way a caller would, by bounds rather than by a range call.
     std::size_t counted = 0;
     trivial_id_t at = 10;
-    for (bool stepping = true; stepping;) {
-        bool landed = false;
-        trivial_id_t next = 0;
+    while (true) {
+        expected<trivial_id_t> next {status_t::key_not_found_k};
         st_verify_(reader->lower_bound(
             trivial_id_to_key<member_t>(at),
-            [&](member_t const &member) noexcept {
-                landed = true;
-                next = static_cast<trivial_id_t>(mapping_key_or_itself<member_t>(member).unique_id);
-            },
+            [&](member_t const &member) noexcept { next = mapping_key_or_itself<member_t>(member).unique_id; },
             no_op_t {}));
-        if (!landed || next >= 40) break;
+        if (!next || *next >= 40) break;
         ++counted;
-        at = next + 1;
+        at = *next + 1;
     }
     st_verify_eq_(counted, 2u);
 

@@ -639,7 +639,7 @@ struct budgeted_key_t {
 #pragma region Stateful Comparator
 
 /** @brief Which way a @c stateful_comparator orders, named so a call site never reads as a bare flag. */
-enum class ordering_t : bool { ascending_k, descending_k };
+enum class stateful_comparator_ordering_t : bool { ascending_k, descending_k };
 
 /**
  *  @brief Stateful comparator with runtime configuration.
@@ -651,14 +651,15 @@ struct stateful_comparator {
     using is_transparent = void;
 
     baseline_comparator_t baseline_comparator {};
-    ordering_t ordering {ordering_t::ascending_k};
+    stateful_comparator_ordering_t ordering {stateful_comparator_ordering_t::ascending_k};
 
     stateful_comparator() noexcept = default;
-    explicit stateful_comparator(ordering_t requested) noexcept : ordering(requested) {}
+    explicit stateful_comparator(stateful_comparator_ordering_t requested) noexcept : ordering(requested) {}
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        return ordering == ordering_t::descending_k ? baseline_comparator(rhs, lhs) : baseline_comparator(lhs, rhs);
+        return ordering == stateful_comparator_ordering_t::descending_k ? baseline_comparator(rhs, lhs)
+                                                                        : baseline_comparator(lhs, rhs);
     }
 };
 
@@ -674,7 +675,7 @@ using stateful_comparator_t = stateful_comparator<>;
  *  Reset immediately before the operation under test and read immediately after: a comparator is copied
  *  by value into every container that holds one, so there is nowhere else the count could live.
  */
-struct call_tally_t {
+struct counting_call_tally_t {
     static inline std::atomic<std::size_t> comparisons {0};
     static inline std::atomic<std::size_t> equalities {0};
     static inline std::atomic<std::size_t> hashes {0};
@@ -706,7 +707,7 @@ struct counting_comparator {
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        call_tally_t::note_comparison();
+        counting_call_tally_t::note_comparison();
         return baseline_comparator(lhs, rhs);
     }
 };
@@ -725,7 +726,7 @@ struct counting_equals {
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        call_tally_t::note_equality();
+        counting_call_tally_t::note_equality();
         return baseline_equals(lhs, rhs);
     }
 };
@@ -741,7 +742,7 @@ struct counting_hash_t {
 
     template <typename key_type_>
     std::size_t operator()(key_type_ const &key) const noexcept {
-        call_tally_t::note_hash();
+        counting_call_tally_t::note_hash();
         return hash<std::remove_cvref_t<key_type_>> {}(key);
     }
 };
