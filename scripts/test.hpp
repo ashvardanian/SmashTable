@@ -73,6 +73,12 @@ template <typename left_type_, typename right_type_>
     else return left == right;
 }
 
+/** @brief Whether the two differ, so every relation reads the same way round for the shared body. */
+template <typename left_type_, typename right_type_>
+[[nodiscard]] constexpr bool st_not_equal_(left_type_ const &left, right_type_ const &right) noexcept {
+    return !st_equal_(left, right);
+}
+
 /** @brief Whether the left side orders below the right, with the same cross-signedness parity. */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_less_(left_type_ const &left, right_type_ const &right) noexcept {
@@ -140,101 +146,49 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
             std::abort();                                                \
         }                                                                \
     } while (0)
-
 /**
- *  @brief Verification that two values match, naming both when they do not.
+ *  @brief The body every relational check shares: bind each side once, and on failure name the
+ *    relation, both operands, the caller's message and the line.
  *
- *  Stringifying the two expressions says which comparison broke and neither of the values it
- *  compared, which for a status is the whole of what a reader needs.
+ *  @p holds answers whether the assertion passed, so every relation reads the same way round.
+ *  Binding before comparing is what lets the message print an operand rather than the expression
+ *  that produced it - which for a status is the whole of what a reader needs.
  */
-#define st_verify_eq_(first, second, ...)                                           \
-    do {                                                                            \
-        auto const &st_left_ = (first);                                             \
-        auto const &st_right_ = (second);                                           \
-        if (!st_equal_(st_left_, st_right_)) {                                      \
-            std::fprintf(stderr, "Verification failed: %s == %s", #first, #second); \
-            st_print_operand_("left", st_left_);                                    \
-            st_print_operand_("right", st_right_);                                  \
-            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
-            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
-            std::abort();                                                           \
-        }                                                                           \
+#define st_verify_relation_(first, holds, symbol, second, ...)                              \
+    do {                                                                                    \
+        auto const &st_left_ = (first);                                                     \
+        auto const &st_right_ = (second);                                                   \
+        if (!holds(st_left_, st_right_)) {                                                  \
+            std::fprintf(stderr, "Verification failed: %s " symbol " %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                            \
+            st_print_operand_("right", st_right_);                                          \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                          \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                          \
+            std::abort();                                                                   \
+        }                                                                                   \
     } while (0)
+
+/** @brief Verification that two values match, naming both when they do not. */
+#define st_verify_eq_(first, second, ...) st_verify_relation_(first, st_equal_, "==", second __VA_OPT__(, ) __VA_ARGS__)
 
 /** @brief Verification that two values differ, naming both when they do not. */
-#define st_verify_ne_(first, second, ...)                                           \
-    do {                                                                            \
-        auto const &st_left_ = (first);                                             \
-        auto const &st_right_ = (second);                                           \
-        if (st_equal_(st_left_, st_right_)) {                                       \
-            std::fprintf(stderr, "Verification failed: %s != %s", #first, #second); \
-            st_print_operand_("left", st_left_);                                    \
-            st_print_operand_("right", st_right_);                                  \
-            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
-            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
-            std::abort();                                                           \
-        }                                                                           \
-    } while (0)
+#define st_verify_ne_(first, second, ...) \
+    st_verify_relation_(first, st_not_equal_, "!=", second __VA_OPT__(, ) __VA_ARGS__)
 
 /** @brief Verification that the first orders below the second, naming both when it does not. */
-#define st_verify_lt_(first, second, ...)                                          \
-    do {                                                                           \
-        auto const &st_left_ = (first);                                            \
-        auto const &st_right_ = (second);                                          \
-        if (!st_less_(st_left_, st_right_)) {                                      \
-            std::fprintf(stderr, "Verification failed: %s < %s", #first, #second); \
-            st_print_operand_("left", st_left_);                                   \
-            st_print_operand_("right", st_right_);                                 \
-            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                 \
-            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                 \
-            std::abort();                                                          \
-        }                                                                          \
-    } while (0)
+#define st_verify_lt_(first, second, ...) st_verify_relation_(first, st_less_, "<", second __VA_OPT__(, ) __VA_ARGS__)
 
 /** @brief Verification that the first never rises above the second, naming both when it does. */
-#define st_verify_le_(first, second, ...)                                           \
-    do {                                                                            \
-        auto const &st_left_ = (first);                                             \
-        auto const &st_right_ = (second);                                           \
-        if (!st_less_equal_(st_left_, st_right_)) {                                 \
-            std::fprintf(stderr, "Verification failed: %s <= %s", #first, #second); \
-            st_print_operand_("left", st_left_);                                    \
-            st_print_operand_("right", st_right_);                                  \
-            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
-            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
-            std::abort();                                                           \
-        }                                                                           \
-    } while (0)
+#define st_verify_le_(first, second, ...) \
+    st_verify_relation_(first, st_less_equal_, "<=", second __VA_OPT__(, ) __VA_ARGS__)
 
 /** @brief Verification that the first orders above the second, naming both when it does not. */
-#define st_verify_gt_(first, second, ...)                                          \
-    do {                                                                           \
-        auto const &st_left_ = (first);                                            \
-        auto const &st_right_ = (second);                                          \
-        if (!st_greater_(st_left_, st_right_)) {                                   \
-            std::fprintf(stderr, "Verification failed: %s > %s", #first, #second); \
-            st_print_operand_("left", st_left_);                                   \
-            st_print_operand_("right", st_right_);                                 \
-            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                 \
-            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                 \
-            std::abort();                                                          \
-        }                                                                          \
-    } while (0)
+#define st_verify_gt_(first, second, ...) \
+    st_verify_relation_(first, st_greater_, ">", second __VA_OPT__(, ) __VA_ARGS__)
 
 /** @brief Verification that the first never falls below the second, naming both when it does. */
-#define st_verify_ge_(first, second, ...)                                           \
-    do {                                                                            \
-        auto const &st_left_ = (first);                                             \
-        auto const &st_right_ = (second);                                           \
-        if (!st_greater_equal_(st_left_, st_right_)) {                              \
-            std::fprintf(stderr, "Verification failed: %s >= %s", #first, #second); \
-            st_print_operand_("left", st_left_);                                    \
-            st_print_operand_("right", st_right_);                                  \
-            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
-            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
-            std::abort();                                                           \
-        }                                                                           \
-    } while (0)
+#define st_verify_ge_(first, second, ...) \
+    st_verify_relation_(first, st_greater_equal_, ">=", second __VA_OPT__(, ) __VA_ARGS__)
 
 #pragma endregion Assertions
 
