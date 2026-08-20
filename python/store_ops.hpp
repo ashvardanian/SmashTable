@@ -71,6 +71,30 @@ struct store_bridge {
 
 #pragma region Lifetime
 
+    /**
+     *  @brief Builds @p object_type_ in storage CPython owns, so the binding's allocations are accounted
+     *    for by the same allocator every Python object uses and appear in @c tracemalloc.
+     *
+     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t, which the assertion below
+     *    pins - an over-aligned store would otherwise be constructed on a boundary it did not ask for.
+     */
+    template <typename object_type_, typename... arguments_type_>
+    [[nodiscard]] static object_type_ *own_in_python_storage(arguments_type_ &&...arguments) noexcept {
+        static_assert(alignof(object_type_) <= alignof(std::max_align_t),
+                      "an over-aligned type needs storage `PyObject_Malloc` does not promise");
+        void *raw = PyObject_Malloc(sizeof(object_type_));
+        if (!raw) return nullptr;
+        return std::construct_at(static_cast<object_type_ *>(raw), std::forward<arguments_type_>(arguments)...);
+    }
+
+    /** @brief Destroys and returns what @c own_in_python_storage handed out, tolerating a null. */
+    template <typename object_type_>
+    static void release_python_storage(void *owned) noexcept {
+        if (!owned) return;
+        std::destroy_at(static_cast<object_type_ *>(owned));
+        PyObject_Free(owned);
+    }
+
     static expected<void *> make(key_ops_t const *ops) noexcept {
         // Which arguments a store is built from is the one place the sharing strategy shows through:
         // a partitioned store routes keys by hash and so needs one, while a locked store forwards
@@ -97,14 +121,14 @@ struct store_bridge {
 
         // The store outlives the frame that built it, so it moves onto the heap rather than into the
         // container object, which no longer has a slot shaped like any one instantiation.
-        store_t *owned = new (std::nothrow) store_t(std::move(*built));
+        store_t *owned = own_in_python_storage<store_t>(std::move(*built));
         if (!owned) return expected<void *> {out_of_memory_heap_k};
-        return expected<void *> {static_cast<void *>(owned), success_k};
+        return expected<void *> {owned, success_k};
     }
 
     static void destroy(void *store) noexcept {
         deferring_store_call_t deferral;
-        delete static_cast<store_t *>(store);
+        release_python_storage<store_t>(store);
     }
 
 #pragma endregion Lifetime
@@ -322,14 +346,14 @@ struct store_bridge {
     static expected<void *> transaction_make(void *store) noexcept {
         auto opened = store_of(store).transaction();
         if (!opened) return expected<void *> {opened.status()};
-        transaction_t *owned = new (std::nothrow) transaction_t(std::move(*opened));
+        transaction_t *owned = own_in_python_storage<transaction_t>(std::move(*opened));
         if (!owned) return expected<void *> {out_of_memory_heap_k};
-        return expected<void *> {static_cast<void *>(owned), success_k};
+        return expected<void *> {owned, success_k};
     }
 
     static void transaction_destroy(void *transaction) noexcept {
         deferring_store_call_t deferral;
-        delete static_cast<transaction_t *>(transaction);
+        release_python_storage<transaction_t>(transaction);
     }
 
     static expected<bool> transaction_contains(void *transaction, key_variant_t const &key) noexcept {
