@@ -1,6 +1,6 @@
 /**
  *  @brief Vocabulary shared by every container - status codes, @c expected, key-value @c mapping, the versioning
- *      machinery transactions are built on, and the concepts stating what a container must offer to back one.
+ *    machinery transactions are built on, and the concepts stating what a container must offer to back one.
  *  @author Ash Vardanian
  *  @file include/smashtable/shared.hpp
  *  @date October 13, 2022
@@ -434,10 +434,8 @@ struct assume_unique_t {
 inline constexpr assume_unique_t assume_unique {};
 
 /**
- *  @brief Tag to assume input range is sorted, enable O(n) bulk construction.
- *    Allows building balanced tree from sorted range without individual insertions.
- *    Precondition: Elements must be in sorted order according to comparator.
- *  @warning If precondition violated (unsorted input), behavior is undefined.
+ *  @brief Tag to assume the input range is ascending, which buys an O(n) bulk build.
+ *  @warning An unsorted range is undefined behaviour, not a refusal.
  */
 struct assume_sorted_t {
     explicit assume_sorted_t() = default;
@@ -782,7 +780,8 @@ constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(st
  *  The top two differ only in when a commit becomes visible, never in what they refuse: both validate
  *  every read, so neither admits write skew or a phantom. @c strict_serializable_k additionally waits
  *  for its own publication before returning, so a transaction opening after a commit returned cannot
- *  be ordered before it - which @c serializable_k permits, and which costs whatever the wait costs.
+ *  be ordered before it. A transaction commit waits at both levels, so the difference reaches only a
+ *  sharded commit and a write made outside a transaction.
  *
  *  @see https://jepsen.io/consistency
  */
@@ -1304,9 +1303,10 @@ inline constexpr std::size_t atomic_alignment = atomic_ref<integral_type_>::requ
 
 /**
  *  @brief Relaxed atomic increment of a plain counter, returning the post-increment value.
- *    Relaxed suffices for a counter read by value - a statistic, or a version stamp compared for
- *    identity and recency - because one location has a total modification order. It publishes
- *    nothing: a caller needing the data a counter describes to be visible must order that itself.
+ *
+ *  Relaxed suffices for a counter read by value - a statistic, or a version stamp compared for
+ *  identity and recency - because one location has a total modification order. It publishes
+ *  nothing: a caller needing the data a counter describes to be visible must order that itself.
  */
 template <typename integral_type_>
 constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
@@ -1540,8 +1540,9 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 
 /**
  *  @brief What a store keeping no stamps contributes to a shard set, which is nothing at all.
- *    Named so a wrapper declares its clock and its reader's claim unconditionally, and pays nothing
- *    for either where there is no clock to share.
+ *
+ *  Named so a wrapper declares its clock and its reader's claim unconditionally, and pays nothing for
+ *  either where there is no clock to share.
  */
 struct no_clock_t {
     /** @brief The claim a reader of such a store never takes. */
@@ -1734,9 +1735,10 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
 
 /**
  *  @brief The owned element a core stores, as distinct from the view it hands out.
- *    A node-based container returns a reference to the element it holds, so the two coincide; an
- *    open-addressed table keeps keys and values in separate regions and can only view an entry as a
- *    pair of references, which nothing above it can own, copy, or version.
+ *
+ *  A node-based container returns a reference to the element it holds, so the two coincide; an
+ *  open-addressed table keeps keys and values in separate regions and can only view an entry as a
+ *  pair of references, which nothing above it can own, copy, or version.
  */
 template <typename collection_type_, typename = void>
 struct owned_value_of {
@@ -1799,6 +1801,23 @@ concept optimistically_concurrent_store =
         { transaction.rollback() } noexcept -> std::same_as<status_t>;
         { transaction.reset() } noexcept -> std::same_as<status_t>;
     };
+
+/**
+ *  @brief Whether an open transaction can be asked to commit in two steps rather than one.
+ *
+ *  A commit spanning several stores has to learn that every one of them may proceed before any of
+ *  them writes. A transaction offering only @c commit decides and writes in the same call, so a
+ *  caller cannot ask first, and a refusal from a later participant arrives over writes an earlier
+ *  one has already published.
+ *
+ *  @c publish_under is the no-stamp spelling: an engine keeping a clock draws its own stamp inside
+ *  it, and one keeping none orders its own versions. Neither can refuse.
+ */
+template <typename transaction_type_>
+concept splits_its_commit = requires(transaction_type_ &transaction) {
+    { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
+    transaction.publish_under();
+};
 
 /**
  *  @brief A two-phase commit over several stores at once.
@@ -1921,28 +1940,62 @@ class transaction_group {
     }
 
     /**
-     *  @brief Publishes every participant, drawing each one's commit stamp.
-     *    Refuses with @c consistency_k when a participant's watch was overwritten by a commit that
-     *    landed while this group sat staged; nothing else can turn a staged group away.
+     *  @brief Whether this group asks every participant before letting any of them write.
+     *
+     *  Needs all of them to offer the split, since one participant deciding and writing in the same
+     *  call puts a refusal from a later one over writes an earlier one already published. A lone
+     *  participant is excluded because it has nothing to tear against, and asking it separately would
+     *  only widen the window a wrapper's own lock closes when it commits in one call.
+     */
+    static constexpr bool asks_before_writing_k =
+        participants_k > 1 && (splits_its_commit<typename store_types_::transaction_t> && ...);
+
+    /**
+     *  @brief Publishes every participant, or none of them, drawing each one's commit stamp.
+     *
+     *  @return Success; whichever check turned a participant away, having published nothing; or
+     *    @c operation_not_permitted_k when the group is not staged.
+     *
+     *  Where @c asks_before_writing_k, every participant is asked before any writes, so a refusal
+     *  publishes nothing and the group stays staged and retryable. A participant may still be
+     *  committed over between the two passes - what the split buys is that the second pass cannot
+     *  refuse, not that nothing can change beneath it. Where it does not hold, each participant is
+     *  committed in turn and a refusal part-way leaves those before it published. Either way the
+     *  group stays staged, which is the one state @c rollback still accepts.
      */
     [[nodiscard]] status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
-        status_t result = success_k;
-        for (std::size_t position = 0; position != participants_k; ++position) {
-            status_t const one =
-                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
-            if (failed(one)) result = one;
+        if constexpr (asks_before_writing_k) {
+            for (std::size_t position = 0; position != participants_k; ++position)
+                if (status_t const refused = visit_at_(
+                        order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+                    failed(refused))
+                    return refused;
+
+            for (std::size_t position = 0; position != participants_k; ++position) {
+                [[maybe_unused]] status_t const published = visit_at_(order_[position], [](auto &transaction) noexcept {
+                    transaction.publish_under();
+                    return success_k;
+                });
+            }
+        }
+        else {
+            for (std::size_t position = 0; position != participants_k; ++position)
+                if (status_t const refused =
+                        visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
+                    failed(refused))
+                    return refused;
         }
         staging_ = staging_t::pending_k;
-        return result;
+        return success_k;
     }
 
     /** @brief Pulls every staged write back into its transaction, leaving the group retryable. */
     [[nodiscard]] status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         status_t result = success_k;
-        // Ascending store address, as every other pass takes, so a participant holding a lock across
-        // the phases meets the same order here and cannot deadlock against another group.
+        // Ascending store address, as every forward pass takes - only an unwind descends - so a
+        // participant holding a lock across the phases cannot deadlock against another group.
         for (std::size_t position = 0; position != participants_k; ++position) {
             status_t const one =
                 visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
@@ -2192,8 +2245,8 @@ template <algebra_t algebra_, typename first_type_, typename second_type_, typen
 
 /**
  *  @brief Whether every member of @p first is also in @p second.
- *  Settled at the first member @p second lacks, though the walk still runs to the end - @c for_each
- *  offers no way to halt it. What stops is the probing, which is the part that costs.
+ *    Settled at the first member @p second lacks, though the walk still runs to the end - @c for_each
+ *    offers no way to halt it. What stops is the probing, which is the part that costs.
  */
 template <typename first_type_, typename second_type_>
 [[nodiscard]] expected<bool> is_subset(first_type_ const &first, second_type_ const &second) noexcept {
@@ -2212,7 +2265,7 @@ template <typename first_type_, typename second_type_>
 
 /**
  *  @brief Whether the two sides share no member.
- *  Settled at the first shared member, on the same terms as @c is_subset.
+ *    Settled at the first shared member, on the same terms as @c is_subset.
  */
 template <typename first_type_, typename second_type_>
 [[nodiscard]] expected<bool> is_disjoint(first_type_ const &first, second_type_ const &second) noexcept {

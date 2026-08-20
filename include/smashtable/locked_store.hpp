@@ -1,6 +1,6 @@
 /**
  *  @brief Wraps any transactional store behind one shared mutex, making the store thread-safe while its
- *      transactions stay single-threaded.
+ *    transactions stay single-threaded.
  *  @author Ash Vardanian
  *  @file include/smashtable/locked_store.hpp
  *  @date October 13, 2022
@@ -276,17 +276,8 @@ class locked_store {
         transaction.reset_at(stamp);
     };
 
-    /**
-     *  @brief Whether the wrapped transaction decides and writes in two steps, stamping its own versions.
-     *
-     *  The engines keeping no shared clock split their commit the same way, but publish without being
-     *  handed a stamp - each orders its own versions. A shard set spanning them still has to learn that
-     *  every partition may commit before any of them writes, so this surface has to travel too.
-     */
-    static constexpr bool inner_transaction_splits_commit_k = requires(inner_transaction_t &transaction) {
-        { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
-        transaction.publish_under();
-    };
+    /** @brief Whether the wrapped transaction decides and writes in two steps rather than one. */
+    static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
 
     class transaction_t {
         friend class locked_store;
@@ -972,8 +963,8 @@ class locked_store {
 
     /**
      *  @brief Removes the smallest member and hands it over, or reports the store is empty.
-     *  The choice and the removal happen under one exclusive hold, so no writer can take the member
-     *  between the two.
+     *    The choice and the removal happen under one exclusive hold, so no writer can take the member
+     *    between the two.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},

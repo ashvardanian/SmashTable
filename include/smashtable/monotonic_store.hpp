@@ -1,11 +1,12 @@
 /**
- *  @brief Generic transactional container with ACID semantics, providing 2-phase commit transactions. Can be
- *      instantiated with any key-addressable core - AVL trees, weight-balanced trees, open-addressed tables -
- *      and gates its ordered surface behind the cores that supply an ordering.
- *      All operations use callback-based APIs and are exception-free via @c noexcept constraints.
+ *  @brief Generic transactional container promising Monotonic Atomic View, through 2-phase commits.
  *  @author Ash Vardanian
  *  @file include/smashtable/monotonic_store.hpp
  *  @date October 13, 2022
+ *
+ *  Can be instantiated with any key-addressable core - AVL trees, weight-balanced trees, open-addressed
+ *  tables - and gates its ordered surface behind the cores that supply an ordering. All operations use
+ *  callback-based APIs and are exception-free via @c noexcept constraints.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -23,21 +24,23 @@ namespace ashvardanian::smashtable {
 
 /**
  *  @brief  Generic transactional store providing 2-phase commits and "watch" operations.
- *    Can be instantiated with AVL trees, weight-balanced trees, or open-addressed hash tables.
- *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
+ *
+ *  Can be instantiated with AVL trees, weight-balanced trees, or open-addressed hash tables. Not
+ *  thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
  *  @section monotonic_store_design_goals Design Goals
  *
- *  All operations are atomic. When updating multiple values, you don't want to break in an intermediate state
- *  where only some updates succeeded. With two-phase commit transactions, you can stage many changes and commit
- *  them all at once, or rollback if something goes wrong. Common use case: synchronizing updates across multiple
- *  data stores while maintaining consistency guarantees.
+ *  A commit is all-or-nothing. When updating multiple values, you don't want to break in an intermediate
+ *  state where only some updates succeeded. With two-phase commit transactions, you can stage many changes
+ *  and commit them all at once, or rollback if something goes wrong. Common use case: synchronizing updates
+ *  across multiple data stores. Nothing here is durable - there is no log and no fsync - so a commit means
+ *  visible, not survived.
  *
  *  The API is simple, generalizable, and lightweight. This collection @b doesn't provide snapshots or full MVCC
  *  (Multi-Version Concurrency Control). If you start a transaction and "watch" values through it, there's no
  *  guarantee the value hasn't been updated before the transaction began and the entry was added to the watched
- *  list. Only "Monotonic Atomic View" consistency is guaranteed, including its inferior "Read Committed" and
- *  "Read Uncommitted" levels. Transactions cannot observe writes from other uncommitted transactions.
+ *  list. Only "Monotonic Atomic View" is guaranteed, which is rung two of the five @c isolation_t names and
+ *  so also gives "Read Committed". Transactions cannot observe writes from other uncommitted transactions.
  *
  *  The state management doesn't rely on entry pointers or iterators. Those could simplify the implementation,
  *  but introduce require validity constraints for re-allocations and modifications of the tree and underlying
@@ -231,8 +234,13 @@ class monotonic_store {
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
 
-        /** @brief Stages @p versioned under this transaction's generation, recording @p identifier as changed. */
+        /**
+         *  @brief Stages @p versioned under this transaction's generation, recording @p identifier as changed.
+         *    Refuses once the transaction is staged: staging reserved and validated exactly the changes
+         *    it found, so a later write would publish behind that check or be dropped by @c commit.
+         */
         [[nodiscard]] status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             auto reserve_status = changed_identifiers_.reserve(changed_identifiers_.size() + 1);
             if (failed(reserve_status)) return reserve_status;
             versioned.generation = generation_;
@@ -359,34 +367,32 @@ class monotonic_store {
 
       public:
         /**
-         *  @brief Stages an insert operation only if the key doesn't exist. Fails if key exists.
-         *    Checks both transaction changes and main store for existence.
+         *  @brief Stages @p value only where this transaction sees no such key, refusing where it does.
+         *
+         *  Asked of the transaction's own @c contains rather than the store's, so a key this transaction
+         *  erased reads as absent here exactly as its @c find reports it. Consulting the store directly
+         *  would let the three strict writers disagree with the reads beside them.
          *
          *  @param[in] value Element to insert (moved into the transaction).
          *  @return Success, or @c key_already_exists_k if key exists, or OOM error.
          */
         [[nodiscard]] status_t insert(value_t &&value) noexcept {
-            auto staged_iterator = changes_.find(value);
-            if (staged_iterator != changes_.end() && (*staged_iterator).presence == presence_t::present_k)
-                return key_already_exists_k;
-            expected<bool> const key_is_present = store_ref().contains(value);
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
             if (!key_is_present) return key_is_present.status();
             if (*key_is_present) return key_already_exists_k;
             return upsert(std::move(value));
         }
 
         /**
-         *  @brief Stages an insert operation only if key is missing. Silently skips if key exists (no error).
-         *    Checks both transaction changes and main store for existence.
+         *  @brief Stages @p value where this transaction sees no such key, and reports success where it does.
+         *
+         *  Asked of the transaction's own @c contains, for the reason @c insert gives.
          *
          *  @param[in] value Element to insert (moved into the transaction).
          *  @return Always succeeds (unless OOM). Returns success even if key exists.
          */
         [[nodiscard]] status_t insert_if_missing(value_t &&value) noexcept {
-            auto staged_iterator = changes_.find(value);
-            if (staged_iterator != changes_.end() && (*staged_iterator).presence == presence_t::present_k)
-                return success_k;
-            expected<bool> const key_is_present = store_ref().contains(value);
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
             if (!key_is_present) return key_is_present.status();
             if (*key_is_present) return success_k;
             return upsert(std::move(value));
@@ -408,17 +414,16 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Stages an update operation for existing keys only.
-         *    Fails if key doesn't exist anywhere (local changes or main store).
+         *  @brief Stages @p value only where this transaction already sees its key, refusing where it does not.
+         *
+         *  Asked of the transaction's own @c contains, for the reason @c insert gives - so a key this
+         *  transaction erased cannot be resurrected by an update that only the store can still see.
          *
          *  @param[in] value Element to update (moved into the transaction).
          *  @return Success, or @c key_not_found_k if key doesn't exist.
          */
         [[nodiscard]] status_t update(value_t &&value) noexcept {
-            auto staged_iterator = changes_.find(value);
-            if (staged_iterator != changes_.end() && (*staged_iterator).presence == presence_t::present_k)
-                return upsert(std::move(value));
-            expected<bool> const key_is_present = store_ref().contains(value);
+            expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
             if (!key_is_present) return key_is_present.status();
             if (!*key_is_present) return key_not_found_k;
             return upsert(std::move(value));
@@ -676,8 +681,8 @@ class monotonic_store {
 
         /**
          *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
-         *  The walk needs a key to start from and this level names no floor, so the lowest member the
-         *  transaction reads supplies one - which is why a caller never has to spell a layout's least key.
+         *    The walk needs a key to start from and this level names no floor, so the lowest member the
+         *    transaction reads supplies one - which is why a caller never has to spell a layout's least key.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -1102,12 +1107,14 @@ class monotonic_store {
 
 #pragma endregion Transaction Range Operations
         /**
-         *  If the staging fails, the transaction contents remain unchanged. On success, all
-         *  changes are merged into the main store but remain invisible until @c commit() is called.
-         *  Otherwise, the user may call @c rollback() to pull back the staged changes into the
-         *  transaction itself, or @c reset() to discard all changes and start fresh.
+         *  @brief Moves every pending write into the store, invisible, and reserves what a commit
+         *    would otherwise have to allocate.
          *
-         *  @return Success, @c operation_not_permitted_k when already staged, or an allocation failure.
+         *  A refusal leaves the transaction's contents untouched. After success the caller may
+         *  @c commit, @c rollback to pull the staged changes back, or @c reset to discard them.
+         *
+         *  @return Success, @c operation_not_permitted_k when already staged, @c read_conflict_k when
+         *    a watched key moved under this transaction, or an allocation failure.
          */
         [[nodiscard]] status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1158,6 +1165,7 @@ class monotonic_store {
             return success_k;
         }
 
+        /** @brief Discards everything staged and pending, along with every watch. */
         [[nodiscard]] status_t reset() noexcept {
             auto &store = store_ref();
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
@@ -1170,6 +1178,12 @@ class monotonic_store {
             return success_k;
         }
 
+        /**
+         *  @brief Pulls every staged version back into the transaction, leaving it retryable.
+         *    The watches are kept, since a read concern outlives the write that failed on it.
+         *  @return Success, @c operation_not_permitted_k when nothing was staged, @c consistency_k when
+         *    a staged version went missing before the rollback reached it, or an allocation failure.
+         */
         [[nodiscard]] status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
@@ -1209,7 +1223,7 @@ class monotonic_store {
          *  leaves the transaction staged and retryable - and a caller spreading one commit across
          *  several stores asks every one of them before any of them writes.
          *
-         *  @return Success, @c consistency_k when a watched key moved under this transaction, or
+         *  @return Success, @c read_conflict_k when a watched key moved under this transaction, or
          *    @c operation_not_permitted_k when nothing was staged.
          */
         [[nodiscard]] status_t validate_for_commit() const noexcept {
@@ -2043,8 +2057,8 @@ class monotonic_store {
      */
     /**
      *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
-     *  The one ordering every read here descends on; a caller comparing keys any other way is
-     *  ordering them differently from the store that holds them.
+     *    The one ordering every read here descends on; a caller comparing keys any other way is
+     *    ordering them differently from the store that holds them.
      */
     [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
 
@@ -2551,7 +2565,7 @@ class monotonic_store {
 
 /**
  *  @brief STL-style transactional set using AVL tree.
- *    Stores unique elements in sorted order with ACID transaction semantics.
+ *    Stores unique elements in sorted order, with all-or-nothing commits at Monotonic Atomic View.
  *
  *  @tparam value_type_ Type of elements stored in the set.
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
@@ -2563,7 +2577,7 @@ using monotonic_avl_set = monotonic_store<basic_avl_tree<value_type_, comparator
 
 /**
  *  @brief STL-style transactional map using AVL tree.
- *    Stores key-value pairs in sorted order with ACID transaction semantics.
+ *    Stores key-value pairs in sorted order, with all-or-nothing commits at Monotonic Atomic View.
  *
  *  @tparam key_type_ Type of keys stored in the map.
  *  @tparam value_type_ Type of values stored in the map.
@@ -2576,10 +2590,11 @@ using monotonic_avl_map =
     monotonic_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
 
 /**
- *  @brief STL-style transactional set using weight-balanced tree with order statistics support.
- *    Stores unique elements in sorted order with ACID transaction semantics, and answers @c rank and
- *    @c select - by an ordered walk, not a descent: a subtree weight here counts versions rather than
- *    visible values, so the counts cannot be indexed into.
+ *  @brief STL-style transactional set using a weight-balanced tree, so it answers @c rank and @c select.
+ *
+ *  Stores unique elements in sorted order, with all-or-nothing commits at Monotonic Atomic View. The
+ *  ordinals come from an ordered walk rather than a descent: a subtree weight here counts versions
+ *  rather than visible values, so the counts cannot be indexed into.
  *
  *  @tparam value_type_ Type of elements stored in the set.
  *  @tparam comparator_type_ Comparator for ordering elements. Define @c is_transparent for heterogeneous lookups.
@@ -2590,9 +2605,10 @@ template <typename value_type_, typename comparator_type_ = less_t,
 using monotonic_wb_set = monotonic_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /**
- *  @brief STL-style transactional map using weight-balanced tree with order statistics support.
- *    Stores key-value pairs in sorted order with ACID transaction semantics, and answers @c rank and
- *    @c select - by an ordered walk, not a descent, for the reason @c monotonic_wb_set names.
+ *  @brief STL-style transactional map using a weight-balanced tree, so it answers @c rank and @c select.
+ *
+ *  Stores key-value pairs in sorted order, with all-or-nothing commits at Monotonic Atomic View. The
+ *  ordinals come from an ordered walk rather than a descent, for the reason @c monotonic_wb_set names.
  *
  *  @tparam key_type_ Type of keys stored in the map.
  *  @tparam value_type_ Type of values stored in the map.

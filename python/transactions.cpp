@@ -63,11 +63,12 @@ static participant_t *part_of_or_raise(view_object_t *view, module_state_t *stat
 }
 
 /**
- *  @brief Runs one participant operation under its transaction's lock, refusing once the transaction has finished.
+ *  @brief Runs one participant operation under its transaction's lock, refusing once the group has finished.
  *  @return 0 when @p operation ran; -1 with a @c StateError set when the transaction was already finished.
  *
  *  The state test and the operation are one span, so a concurrent commit either happens entirely
- *  before this or entirely after, never between the test and the write it guards.
+ *  before this or entirely after, never between the test and the write it guards. A write reaching a
+ *  staged transaction is refused by the store itself, and its status travels back through @c raise_for.
  */
 template <typename operation_type_>
 static int run_over_participant(view_object_t *view, module_state_t *state, operation_type_ &&operation) noexcept {
@@ -705,15 +706,28 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
         unstaged = group->state != group_state_t::staged_k;
         if (unstaged) return;
-        for (auto &participant : group->parts) {
-            status = participant.commit();
-            if (failed(status)) break;
+        // Every participant is asked whether it may publish before any of them does, so a refusal
+        // leaves the group staged with nothing written and the caller may retry or roll back. A lone
+        // participant is committed in one call instead: it has nothing to tear against, and its own
+        // store holds one lock across a whole commit where the split would drop it between the two
+        // phases. A participant that cannot be asked at all drops the group to the same path. Either
+        // way the group stays staged, since that is the one state `rollback` and `reset` accept.
+        bool const asks_first = group->parts.size() > 1 &&
+                                std::all_of(group->parts.begin(), group->parts.end(),
+                                            [](participant_t const &part) noexcept { return part.splits_commit(); });
+        if (asks_first) {
+            for (auto &participant : group->parts) {
+                status = participant.validate_for_commit();
+                if (failed(status)) return;
+            }
+            for (auto &participant : group->parts) participant.publish_under();
         }
-        // A refusal part-way leaves the participants before it published and those after it still
-        // staged. Calling that finished would seal a torn group: `rollback` and `reset` both refuse
-        // a finished one, so the staged remainder could only be dropped by the destructor. It stays
-        // staged instead, which is the one state from which the caller can still unwind it.
-        if (succeeded(status)) group->state = group_state_t::finished_k;
+        else
+            for (auto &participant : group->parts) {
+                status = participant.commit();
+                if (failed(status)) return;
+            }
+        group->state = group_state_t::finished_k;
     });
 
     if (unstaged) {
@@ -749,7 +763,10 @@ static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
             status = participant.rollback();
             if (failed(status)) break;
         }
-        group->state = group_state_t::open_k;
+        // Only a rollback that reached every participant reopens the group. Reopening after a refusal
+        // would advertise a group whose later participants are still staged, and the next `stage()`
+        // would stage a second time over the first.
+        if (succeeded(status)) group->state = group_state_t::open_k;
     });
 
     if (unstaged) {
@@ -872,23 +889,21 @@ PyType_Spec transaction_spec = {
 #pragma region Opening a Group
 
 PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept {
+    // Both entry points hand over at least one container, so an empty group cannot arrive here.
     Py_ssize_t const count = PyTuple_GET_SIZE(containers);
-    if (count == 0) {
-        PyErr_SetString(PyExc_TypeError, "atomic() needs at least one container");
-        return nullptr;
-    }
 
     // Every participant must be a store, and no container may appear twice - two participants over
     // one store would each believe they owned its staged state.
     for (Py_ssize_t index = 0; index != count; ++index) {
         PyObject *candidate = PyTuple_GET_ITEM(containers, index);
         if (!is_container(state, candidate)) {
-            PyErr_Format(PyExc_TypeError, "atomic() takes a SmashTable container, not %s", Py_TYPE(candidate)->tp_name);
+            PyErr_Format(PyExc_TypeError, "transaction() takes a SmashTable container, not %s",
+                         Py_TYPE(candidate)->tp_name);
             return nullptr;
         }
         for (Py_ssize_t earlier = 0; earlier != index; ++earlier)
             if (PyTuple_GET_ITEM(containers, earlier) == candidate) {
-                PyErr_SetString(PyExc_ValueError, "atomic() cannot take the same container twice");
+                PyErr_SetString(PyExc_ValueError, "transaction() cannot take the same container twice");
                 return nullptr;
             }
     }

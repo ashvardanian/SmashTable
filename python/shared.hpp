@@ -650,6 +650,8 @@ struct store_ops_t {
 
     status_t (*transaction_stage)(releases_t &releases, void *transaction) noexcept;
     status_t (*transaction_commit)(releases_t &releases, void *transaction) noexcept;
+    status_t (*transaction_validate)(releases_t &releases, void *transaction) noexcept;
+    void (*transaction_publish)(releases_t &releases, void *transaction) noexcept;
     status_t (*transaction_rollback)(releases_t &releases, void *transaction) noexcept;
     status_t (*transaction_reset)(releases_t &releases, void *transaction) noexcept;
 };
@@ -733,7 +735,7 @@ object_type_ *object_as(PyObject *object) noexcept {
  *  tables their types install.
  *
  *  @c ordinal is what stops two groups deadlocking on each other. A transaction stages its participants in
- *  ordinal order rather than argument order, so @c atomic(a, b) on one thread and @c atomic(b, a) on
+ *  ordinal order rather than argument order, so @c transaction(a, b) on one thread and @c transaction(b, a) on
  *  another acquire the same partition locks in the same sequence; without it each would hold what the
  *  other waits for. Any consistent total order would do - creation order is used because it is
  *  reproducible across runs, which an address is not, and a hang is the one failure worth being able
@@ -963,6 +965,16 @@ struct participant_t {
     }
     [[nodiscard]] status_t stage() noexcept { return table->transaction_stage(*releases, transaction); }
     [[nodiscard]] status_t commit() noexcept { return table->transaction_commit(*releases, transaction); }
+    [[nodiscard]] status_t validate_for_commit() noexcept {
+        return table->transaction_validate(*releases, transaction);
+    }
+    void publish_under() noexcept { table->transaction_publish(*releases, transaction); }
+    /**
+     *  @brief Whether this participant can be asked whether it may commit before any of them writes.
+     *    A store deciding and writing in one call leaves the pair null, and a group holding one falls
+     *    back to committing each participant in turn.
+     */
+    [[nodiscard]] bool splits_commit() const noexcept { return table->transaction_validate != nullptr; }
     [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(*releases, transaction); }
     [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(*releases, transaction); }
 };

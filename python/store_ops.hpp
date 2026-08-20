@@ -492,6 +492,14 @@ struct store_bridge {
         shared_lock deferral {releases};
         return transaction_of(transaction).commit();
     }
+    static status_t transaction_validate(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
+        return transaction_of(transaction).validate_for_commit();
+    }
+    static void transaction_publish(releases_t &releases, void *transaction) noexcept {
+        shared_lock deferral {releases};
+        transaction_of(transaction).publish_under();
+    }
     static status_t transaction_rollback(releases_t &releases, void *transaction) noexcept {
         shared_lock deferral {releases};
         return transaction_of(transaction).rollback();
@@ -576,6 +584,12 @@ struct store_bridge {
         }
         built.transaction_stage = &transaction_stage;
         built.transaction_commit = &transaction_commit;
+        // Null where the engine decides and writes in one call, which is what a partitioned store does;
+        // the group reads the null and falls back to committing each participant in turn.
+        if constexpr (splits_its_commit<transaction_t>) {
+            built.transaction_validate = &transaction_validate;
+            built.transaction_publish = &transaction_publish;
+        }
         built.transaction_rollback = &transaction_rollback;
         built.transaction_reset = &transaction_reset;
         return built;
