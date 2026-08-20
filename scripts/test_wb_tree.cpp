@@ -800,7 +800,21 @@ static_assert(sizeof(ordered_node_t) == sizeof(unaugmented_reference_layout_t),
               "The default augmentation must not add a byte to the node");
 static_assert(alignof(ordered_node_t) == alignof(unaugmented_reference_layout_t),
               "The default augmentation must not change the node's alignment");
-static_assert(sizeof(plain_map_t::node_t) == sizeof(unaugmented_reference_layout_t),
+/**
+ *  @brief The layout an unaugmented @b map node must match, whose element is a pair rather than a key.
+ *
+ *  Kept apart from the set's reference because the two only agree where the padding after a lone @c int
+ *  happens to swallow the difference: on LP64 both come to 32 bytes, and on a 32-bit target the set's is
+ *  16 while the map's is 20.
+ */
+struct unaugmented_map_reference_layout_t {
+    mapping<int, int> fruit;
+    void *left;
+    void *right;
+    std::size_t size;
+};
+
+static_assert(sizeof(plain_map_t::node_t) == sizeof(unaugmented_map_reference_layout_t),
               "A map node is the same shape once the default policy is elided");
 static_assert(sizeof(augmented_node_t) == sizeof(plain_map_t::node_t) + sizeof(std::size_t),
               "An augmented node pays exactly one counter, and nothing else");
