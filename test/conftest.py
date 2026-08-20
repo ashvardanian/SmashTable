@@ -24,8 +24,14 @@ def pytest_report_header() -> list[str]:
 
 
 @pytest.fixture
-def seed(__pytest_repeat_step_number: int = 0) -> int:
-    """A per-test seed that moves with the repeat step, so repetitions differ but reproduce."""
+def seed(__pytest_repeat_step_number) -> int:
+    """A per-test seed that moves with the repeat step, so repetitions differ but reproduce.
+
+    The parameter carries no default on purpose: pytest builds a fixture's closure from the
+    parameters that have none, so a defaulted one is never injected and every repeat replays the
+    first step's draws. `pytest-repeat` hands `None` to a test that is not repeated, which is what
+    the `or 0` is for.
+    """
     return _RUN_SEED + (__pytest_repeat_step_number or 0)
 
 

@@ -42,6 +42,7 @@ sorted_map_names = [map_class_names[0]]
 sorted_set_names = [set_class_names[0]]
 sorted_class_names = [map_class_names[0], set_class_names[0]]
 hash_map_names = [map_class_names[1]]
+hash_set_names = [set_class_names[1]]
 
 # Classes whose contents can be walked, which is what the structural oracle needs: it compares
 # against `dict` and `set`, and cannot run against a container it cannot enumerate.
@@ -114,6 +115,11 @@ def exported_container_names() -> list[str]:
 def is_sorted_class(container_class: type) -> bool:
     """Whether iteration over this class promises key order."""
     return container_class.__name__.startswith("Sorted")
+
+
+def ordering_of(container_class: type) -> str:
+    """Named ordering of this class: "ordered" carries `popmin`, "unordered" does not."""
+    return "ordered" if is_sorted_class(container_class) else "unordered"
 
 
 def is_map_class(container_class: type) -> bool:
@@ -386,8 +392,12 @@ def apply_op(container, model, op: Op) -> None:
     assert_same_state(container, model)
 
 
-def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: int) -> list[Op]:
-    """A weighted walk over the mapping surface, biased toward mutation and toward key reuse."""
+def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: int, *, ordering: str) -> list[Op]:
+    """A weighted walk over the mapping surface, biased toward mutation and toward key reuse.
+
+    `ordering` is what `ordering_of` reports: only an ordered store carries `popmin`, so an
+    unordered one spends that roll on a read instead of dropping the op and shortening the walk.
+    """
     ops: list[Op] = []
     for _ in range(count):
         key = rng.choice(keys)
@@ -401,7 +411,7 @@ def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: 
         elif roll < 0.60:
             ops.append(Op("setdefault", (key, rng.choice(values))))
         elif roll < 0.66:
-            ops.append(Op("popmin", (), compare="member"))
+            ops.append(Op("popmin", (), compare="member") if ordering == "ordered" else Op("contains", (key,)))
         elif roll < 0.70:
             ops.append(Op("update", ({other: rng.choice(values) for other in rng.sample(list(keys), 3)},)))
         elif roll < 0.72:
@@ -413,8 +423,8 @@ def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: 
     return ops
 
 
-def random_set_ops(rng: random.Random, members: Sequence, count: int) -> list[Op]:
-    """The same walk over the set surface."""
+def random_set_ops(rng: random.Random, members: Sequence, count: int, *, ordering: str) -> list[Op]:
+    """The same walk over the set surface, with the same `ordering` rule for `popmin`."""
     ops: list[Op] = []
     for _ in range(count):
         member = rng.choice(members)
@@ -426,7 +436,7 @@ def random_set_ops(rng: random.Random, members: Sequence, count: int) -> list[Op
         elif roll < 0.62:
             ops.append(Op("remove", (member,)))
         elif roll < 0.68:
-            ops.append(Op("popmin", (), compare="member"))
+            ops.append(Op("popmin", (), compare="member") if ordering == "ordered" else Op("contains", (member,)))
         elif roll < 0.72:
             ops.append(Op("update", (rng.sample(list(members), 3),)))
         elif roll < 0.74:
@@ -446,3 +456,74 @@ def replay(container, model, ops: Iterable[Op]) -> None:
 
 
 # endregion Oracle
+
+
+# region Groups
+
+
+@dataclasses.dataclass(frozen=True)
+class Participant:
+    """One container in a group, beside the stdlib model standing in for it."""
+
+    container: object
+    model: object
+    keys: Sequence
+    values: Sequence
+
+    @property
+    def is_map(self) -> bool:
+        return isinstance(self.model, dict)
+
+
+def make_participants(rng: random.Random, specs: Sequence[tuple], count_each: int = 12) -> list[Participant]:
+    """Builds one participant per spec, each a `(class_name, key_type, value_mode, isolation, sharing)`.
+
+    Mixing the specs is the point: a group spanning a sorted map and a hashed set, or a scalar
+    container and an object one, exercises the group-wide passes that pick the strictest mode and
+    the canonical order, which a group of identical containers cannot.
+    """
+    participants = []
+    for class_name, key_type, value_mode, isolation, sharing in specs:
+        container_class = getattr(st, class_name)
+        container = make(container_class, key_type, value_mode, isolation, sharing)
+        keys = make_keys(key_type, count_each, rng)
+        values = [rng.randrange(1000) for _ in range(count_each)]
+        model = {} if is_map_class(container_class) else set()
+        participants.append(Participant(container, model, keys, values))
+    return participants
+
+
+def stage_group_writes(views, participants: Sequence[Participant], shadows, rng: random.Random) -> None:
+    """Writes a random batch through every view, advancing the shadow model in step."""
+    for view, participant, shadow in zip(views, participants, shadows):
+        for _ in range(rng.randint(1, 4)):
+            key = rng.choice(participant.keys)
+            if participant.is_map:
+                value = rng.choice(participant.values)
+                view[key] = value
+                shadow[key] = value
+            else:
+                view.add(key)
+                shadow.add(key)
+
+
+def assert_group_state(participants: Sequence[Participant]) -> None:
+    """Every participant agrees with its own model, which is what all-or-nothing means here."""
+    for index, participant in enumerate(participants):
+        try:
+            assert_same_state(participant.container, participant.model)
+        except AssertionError as error:
+            raise AssertionError(f"participant {index} diverged\n{error}") from None
+
+
+def shadows_of(participants: Sequence[Participant]) -> list[dict | set]:
+    """A copy of every model, to be adopted only if the group publishes."""
+    return [dict(one.model) if one.is_map else set(one.model) for one in participants]
+
+
+def adopt_shadows(participants: Sequence[Participant], shadows) -> list[Participant]:
+    """Replaces each participant's model with the shadow the round advanced."""
+    return [dataclasses.replace(one, model=shadow) for one, shadow in zip(participants, shadows)]
+
+
+# endregion Groups

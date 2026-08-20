@@ -7,8 +7,11 @@
  *  @section test_environment_variables Environment Variables
  *
  *  - @c SMASHTABLE_FILTER : substring matched against a test's "suite.name" label; only matching tests
- *    run. Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, so a
- *    mistyped filter reads as a skip rather than as an empty suite.
+ *    run. Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, and
+ *    a filter that matched nothing fails the binary rather than reporting an empty suite as passing.
+ *
+ *  - @c SMASHTABLE_SEED : the seed every randomized suite draws from, so a failure names the run that
+ *    produced it. Unset means @c default_seed_k, which keeps an unattended build deterministic.
  *
  *  @section test_failure_model Failure Model
  *
@@ -19,10 +22,11 @@
  */
 #pragma once
 #include <cstdio>  // `std::fprintf`, `std::setvbuf`
-#include <cstdlib> // `std::abort`, `std::getenv`
+#include <cstdlib> // `std::abort`, `std::getenv`, `std::strtoul`
 #include <csignal> // `std::signal`, `SIGSEGV`, `SIGABRT`
 #include <cstring> // `std::strstr`
 
+#include <atomic>      // `std::atomic`
 #include <chrono>      // `std::chrono::steady_clock`
 #include <exception>   // `std::exception`
 #include <format>      // `std::format_to`, `std::format_string`
@@ -277,6 +281,47 @@ inline void print_line(std::FILE *stream, std::format_string<args_types_...> pat
 #endif
 }
 
+/** @brief The seed a randomized suite draws from when @c SMASHTABLE_SEED is unset. */
+inline constexpr unsigned int default_seed_k = 42;
+
+/**
+ *  @brief Reads @c SMASHTABLE_SEED, or @c default_seed_k when it is unset or unparsable.
+ *
+ *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a defect
+ *  nobody can reproduce. The seed is therefore an input the runner prints, so a failing run names the
+ *  sequence that produced it and a sweep is a loop in the shell rather than an edit to the source.
+ */
+[[nodiscard]] inline unsigned int test_seed() noexcept {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    char const *const requested = std::getenv("SMASHTABLE_SEED");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (!requested || requested[0] == '\0') return default_seed_k;
+    // Through the end pointer rather than the value, so a deliberate seed of zero is a seed rather
+    // than a parse failure wearing the same answer.
+    char *past_digits = nullptr;
+    unsigned long const parsed = std::strtoul(requested, &past_digits, 10);
+    return past_digits != requested ? static_cast<unsigned int>(parsed) : default_seed_k;
+}
+
+/**
+ *  @brief Process-wide count of the tests that actually ran, which is what a filter can zero out.
+ *
+ *  Kept here rather than threaded through @c run_test's signature because that signature is called
+ *  several hundred times across nine suites, while @c report_test_failures - the one function that
+ *  decides the exit code - is called nine times.
+ */
+struct test_tally_t {
+    static inline std::atomic<std::size_t> executed {0};
+
+    static void note_execution() noexcept { executed.fetch_add(1, std::memory_order_relaxed); }
+    static std::size_t executed_count() noexcept { return executed.load(std::memory_order_relaxed); }
+};
+
 /**
  *  @brief Runs one named test, honoring @p filter, timing it, and reporting the outcome.
  *  @param[in] filter Substring matched against @p name, or @c nullptr to run everything.
@@ -299,6 +344,7 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
         return 0;
     }
 
+    test_tally_t::note_execution();
     print_line(stdout, "- {} ...", name);
     std::fflush(stdout);
     auto const started = std::chrono::steady_clock::now();
@@ -316,10 +362,19 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
     return 0;
 }
 
-/** @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status. */
+/**
+ *  @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status.
+ *
+ *  A filter that matched nothing fails here rather than passing: every test skipping leaves no failures
+ *  to count, so a mistyped filter would otherwise be indistinguishable from a green suite.
+ */
 inline int report_test_failures(std::size_t failures) noexcept {
     if (failures != 0) {
         print_line(stderr, "\n{} test(s) failed.", failures);
+        return 1;
+    }
+    if (char const *const filter = test_filter(); filter && filter[0] != '\0' && test_tally_t::executed_count() == 0) {
+        print_line(stderr, "\nSMASHTABLE_FILTER=\"{}\" matched no test, so nothing ran.", filter);
         return 1;
     }
     print_line(stdout, "\nAll tests passed!");
