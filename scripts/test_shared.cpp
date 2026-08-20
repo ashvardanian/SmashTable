@@ -10,6 +10,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`, `SIZE_MAX`
 
+#include <array>      // `std::array`
 #include <atomic>     // `std::atomic`
 #include <chrono>     // `std::chrono::steady_clock`
 #include <functional> // `std::equal_to`, `std::hash`, `std::less`
@@ -367,7 +368,38 @@ static void shared_mutex_admits_every_writer() {
 
 #pragma region Transaction Group Tests
 
-/** @brief A store that records the order its phases are visited in, and nothing else. */
+/** @brief The lifecycle step a logged entry names, packed with the participant's label. */
+enum class phase_t : int {
+    open_k = 1,
+    stage_k = 2,
+    validate_k = 3,
+    publish_k = 4,
+    commit_k = 5,
+    rollback_k = 6,
+    reset_k = 7,
+};
+
+/** @brief Whether a store's transaction offers the two-step commit a group prefers over one call. */
+enum class commit_shape_t : bool {
+    one_call_k,
+    split_k,
+};
+
+/**
+ *  @brief What one store hands back from each step, so a group can be steered into any refusal.
+ *    Every member is that step's own status, and @c success_k lets it through.
+ */
+struct refusals_t {
+    status_t opening {success_k};
+    status_t stage {success_k};
+    status_t validate_for_commit {success_k};
+    status_t commit {success_k};
+    status_t rollback {success_k};
+    status_t reset {success_k};
+};
+
+/** @brief A store that records the order its steps are visited in, and refuses where it is told to. */
+template <commit_shape_t shape_ = commit_shape_t::one_call_k>
 struct recording_store_t {
     using is_transactional = std::true_type;
     using identifier_t = int;
@@ -375,82 +407,231 @@ struct recording_store_t {
 
     std::vector<int> *log {nullptr};
     int label {0};
+    refusals_t refusals {};
 
     struct transaction_t {
         std::vector<int> *log {nullptr};
         int label {0};
+        refusals_t const *refusals {nullptr};
 
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
         transaction_t(transaction_t const &) = delete;
         transaction_t &operator=(transaction_t const &) = delete;
-        transaction_t(std::vector<int> *log, int label) noexcept : log(log), label(label) {}
+        transaction_t(std::vector<int> *log, int label, refusals_t const *refusals) noexcept
+            : log(log), label(label), refusals(refusals) {}
 
         [[nodiscard]] status_t reserve(std::size_t) noexcept { return success_k; }
         [[nodiscard]] status_t watch(identifier_t) noexcept { return success_k; }
-        [[nodiscard]] status_t stage() noexcept { return record(1); }
-        [[nodiscard]] status_t commit() noexcept { return record(2); }
-        [[nodiscard]] status_t rollback() noexcept { return record(3); }
-        [[nodiscard]] status_t reset() noexcept { return record(4); }
+        [[nodiscard]] status_t stage() noexcept { return record(phase_t::stage_k, refusals->stage); }
+        [[nodiscard]] status_t commit() noexcept { return record(phase_t::commit_k, refusals->commit); }
+        [[nodiscard]] status_t rollback() noexcept { return record(phase_t::rollback_k, refusals->rollback); }
+        [[nodiscard]] status_t reset() noexcept { return record(phase_t::reset_k, refusals->reset); }
+
+        [[nodiscard]] status_t validate_for_commit() noexcept
+            requires(shape_ == commit_shape_t::split_k)
+        {
+            return record(phase_t::validate_k, refusals->validate_for_commit);
+        }
+
+        void publish_under() noexcept
+            requires(shape_ == commit_shape_t::split_k)
+        {
+            [[maybe_unused]] status_t const published = record(phase_t::publish_k, success_k);
+        }
 
       private:
-        status_t record(int phase) noexcept {
-            log->push_back(phase * 100 + label);
-            return success_k;
+        status_t record(phase_t phase, status_t status) noexcept {
+            log->push_back(static_cast<int>(phase) * 100 + label);
+            return status;
         }
     };
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
-        return expected<transaction_t> {transaction_t {log, label}, success_k};
+        if (failed(refusals.opening)) return refusals.opening;
+        log->push_back(static_cast<int>(phase_t::open_k) * 100 + label);
+        return expected<transaction_t> {transaction_t {log, label, &refusals}, success_k};
     }
 };
+
+/** @brief The labels @p log holds for @p phase, in the order the group visited them. */
+static std::vector<int> labels_of(std::vector<int> const &log, phase_t phase) {
+    std::vector<int> labels;
+    for (int const entry : log)
+        if (entry / 100 == static_cast<int>(phase)) labels.push_back(entry % 100);
+    return labels;
+}
 
 /** @brief Every phase walks the participants in one address order, rollback included. */
 static void transaction_group_walks_one_order() {
     std::vector<int> log;
-    recording_store_t first {&log, 1}, second {&log, 2}, third {&log, 3};
+    recording_store_t<> first {&log, 1}, second {&log, 2}, third {&log, 3};
 
     auto group_result = make_transaction_group(first, second, third);
     st_verify_(group_result);
     auto &group = *group_result;
 
     st_verify_eq_(group.stage(), success_k);
-    std::vector<int> const staged = log;
-    st_verify_eq_(staged.size(), 3u);
-
+    std::vector<int> const ordered = labels_of(log, phase_t::stage_k);
+    st_verify_eq_(ordered.size(), 3u);
     st_verify_eq_(group.rollback(), success_k);
+
+    // Staging a second time takes that same order, and rollback follows it too.
     log.clear();
-
     st_verify_eq_(group.stage(), success_k);
-    st_verify_(log == staged);
+    st_verify_(labels_of(log, phase_t::stage_k) == ordered);
     st_verify_eq_(group.rollback(), success_k);
+    st_verify_(labels_of(log, phase_t::rollback_k) == ordered);
 
-    // Rollback visits the same participants in the same order as staging did.
-    std::vector<int> rolled;
-    for (int const phase : log)
-        if (phase / 100 == 3) rolled.push_back(phase % 100);
-    std::vector<int> ordered;
-    for (int const phase : staged) ordered.push_back(phase % 100);
-    st_verify_(rolled == ordered);
-
-    // Commit and reset take that same order.
+    // Commit and reset take it as well.
     log.clear();
     st_verify_eq_(group.stage(), success_k);
     st_verify_eq_(group.commit(), success_k);
-    std::vector<int> committed;
-    for (int const phase : log)
-        if (phase / 100 == 2) committed.push_back(phase % 100);
-    st_verify_(committed == ordered);
+    st_verify_(labels_of(log, phase_t::commit_k) == ordered);
 
     log.clear();
     st_verify_eq_(group.reset(), success_k);
-    std::vector<int> discarded;
-    for (int const phase : log) discarded.push_back(phase % 100);
-    st_verify_(discarded == ordered);
+    st_verify_(labels_of(log, phase_t::reset_k) == ordered);
 
     // The phases refuse to run out of turn.
     st_verify_eq_(group.rollback(), operation_not_permitted_k);
     st_verify_eq_(group.commit(), operation_not_permitted_k);
+}
+
+/** @brief A refused rollback stops where it was refused and leaves the group staged. */
+static void transaction_group_rollback_stops_at_refusal() {
+    std::vector<int> log;
+    // Array members ascend in address, so the group visits these in the order they are named.
+    std::array<recording_store_t<>, 3> stores {{{&log, 1}, {&log, 2}, {&log, 3}}};
+    stores[1].refusals.rollback = operation_would_block_k;
+
+    auto group_result = make_transaction_group(stores[0], stores[1], stores[2]);
+    st_verify_(group_result);
+    auto &group = *group_result;
+
+    st_verify_eq_(group.stage(), success_k);
+    log.clear();
+    st_verify_eq_(group.rollback(), operation_would_block_k);
+
+    // The participant past the refusal was never asked, so it is still staged.
+    std::vector<int> const reached {1, 2};
+    st_verify_(labels_of(log, phase_t::rollback_k) == reached);
+
+    // And the group still says so, which is what keeps the next `stage` from staging twice over.
+    st_verify_eq_(group.staging(), staging_t::staged_k);
+    st_verify_eq_(group.stage(), operation_not_permitted_k);
+
+    // Lifting the refusal lets the rollback reach every participant and reopen the group.
+    stores[1].refusals.rollback = success_k;
+    log.clear();
+    st_verify_eq_(group.rollback(), success_k);
+    std::vector<int> const every {1, 2, 3};
+    st_verify_(labels_of(log, phase_t::rollback_k) == every);
+    st_verify_eq_(group.staging(), staging_t::pending_k);
+}
+
+/** @brief One store named twice is refused before either participant is opened. */
+static void transaction_group_refuses_a_duplicate_store() {
+    std::vector<int> log;
+    recording_store_t<> only {&log, 1}, other {&log, 2};
+
+    auto duplicated = make_transaction_group(only, only);
+    st_verify_eq_(duplicated.status(), invalid_argument_k);
+    st_verify_(log.empty());
+
+    // A repeat is caught wherever it sits, not only next to itself.
+    auto separated = make_transaction_group(only, other, only);
+    st_verify_eq_(separated.status(), invalid_argument_k);
+    st_verify_(log.empty());
+
+    // Two distinct stores are what the refusal is not about.
+    auto distinct = make_transaction_group(only, other);
+    st_verify_(distinct);
+    std::vector<int> const opened {1, 2};
+    st_verify_(labels_of(log, phase_t::open_k) == opened);
+}
+
+/** @brief A store refusing to open reports its own status, and the caller hears the first of them. */
+static void transaction_group_reports_what_refused_to_open() {
+    std::vector<int> log;
+    recording_store_t<> first {&log, 1}, second {&log, 2};
+
+    second.refusals.opening = operation_not_permitted_k;
+    auto refused = make_transaction_group(first, second);
+    st_verify_eq_(refused.status(), operation_not_permitted_k);
+
+    // Two refusals fold to the one the caller named first, in argument order.
+    first.refusals.opening = capacity_exhausted_k;
+    auto both_refused = make_transaction_group(first, second);
+    st_verify_eq_(both_refused.status(), capacity_exhausted_k);
+}
+
+/** @brief A commit that published nothing stays staged, and one that tore drops to pending. */
+static void transaction_group_torn_commit_stops_claiming_staged() {
+    using store_t = recording_store_t<>;
+    static_assert(!transaction_group<store_t, store_t, store_t>::asks_before_writing_k,
+                  "a one-call commit is what leaves a group able to tear");
+
+    std::vector<int> log;
+    // Array members ascend in address, so the group visits these in the order they are named.
+    std::array<store_t, 3> stores {{{&log, 1}, {&log, 2}, {&log, 3}}};
+
+    // The first participant refusing publishes nothing, so the group is staged and still retryable.
+    stores[0].refusals.commit = write_conflict_k;
+    auto intact_result = make_transaction_group(stores[0], stores[1], stores[2]);
+    st_verify_(intact_result);
+    auto &intact = *intact_result;
+    st_verify_eq_(intact.stage(), success_k);
+    st_verify_eq_(intact.commit(), write_conflict_k);
+    st_verify_eq_(intact.staging(), staging_t::staged_k);
+    st_verify_eq_(intact.rollback(), success_k);
+
+    // A refusal after one participant published cannot be pulled back, so the group stops saying staged.
+    stores[0].refusals.commit = success_k;
+    stores[1].refusals.commit = write_conflict_k;
+    auto torn_result = make_transaction_group(stores[0], stores[1], stores[2]);
+    st_verify_(torn_result);
+    auto &torn = *torn_result;
+    st_verify_eq_(torn.stage(), success_k);
+    st_verify_eq_(torn.commit(), write_conflict_k);
+    st_verify_eq_(torn.staging(), staging_t::pending_k);
+
+    // Neither phase that needs a staged group will run, and `reset` is what clears the rest.
+    st_verify_eq_(torn.commit(), operation_not_permitted_k);
+    st_verify_eq_(torn.rollback(), operation_not_permitted_k);
+    log.clear();
+    st_verify_eq_(torn.reset(), success_k);
+    std::vector<int> const every {1, 2, 3};
+    st_verify_(labels_of(log, phase_t::reset_k) == every);
+}
+
+/** @brief Where every participant splits its commit, a refusal publishes nothing at all. */
+static void transaction_group_split_commit_publishes_nothing_on_refusal() {
+    using store_t = recording_store_t<commit_shape_t::split_k>;
+    static_assert(transaction_group<store_t, store_t>::asks_before_writing_k,
+                  "two split participants are asked before either writes");
+
+    std::vector<int> log;
+    std::array<store_t, 2> stores {{{&log, 1}, {&log, 2}}};
+    stores[1].refusals.validate_for_commit = write_conflict_k;
+
+    auto group_result = make_transaction_group(stores[0], stores[1]);
+    st_verify_(group_result);
+    auto &group = *group_result;
+
+    st_verify_eq_(group.stage(), success_k);
+    log.clear();
+    st_verify_eq_(group.commit(), write_conflict_k);
+    st_verify_(labels_of(log, phase_t::publish_k).empty());
+
+    // Nothing was written, so the group is staged and the caller may still unwind or retry it.
+    st_verify_eq_(group.staging(), staging_t::staged_k);
+    stores[1].refusals.validate_for_commit = success_k;
+    log.clear();
+    st_verify_eq_(group.commit(), success_k);
+    std::vector<int> const every {1, 2};
+    st_verify_(labels_of(log, phase_t::publish_k) == every);
+    st_verify_eq_(group.staging(), staging_t::pending_k);
 }
 
 #pragma endregion Transaction Group Tests
@@ -672,6 +853,16 @@ int main() {
     failures += run_test(filter, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
 
     failures += run_test(filter, "transaction_group.walks_one_order", transaction_group_walks_one_order);
+    failures +=
+        run_test(filter, "transaction_group.rollback_stops_at_refusal", transaction_group_rollback_stops_at_refusal);
+    failures +=
+        run_test(filter, "transaction_group.refuses_a_duplicate_store", transaction_group_refuses_a_duplicate_store);
+    failures += run_test(filter, "transaction_group.reports_what_refused_to_open",
+                         transaction_group_reports_what_refused_to_open);
+    failures += run_test(filter, "transaction_group.torn_commit_stops_claiming_staged",
+                         transaction_group_torn_commit_stops_claiming_staged);
+    failures += run_test(filter, "transaction_group.split_commit_publishes_nothing",
+                         transaction_group_split_commit_publishes_nothing_on_refusal);
 
     failures += run_test(filter, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
 

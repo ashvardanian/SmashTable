@@ -1885,16 +1885,30 @@ class transaction_group {
 
     /**
      *  @brief Opens one transaction per store, or none at all.
-     *    A store that refuses leaves the already-opened transactions to their destructors, which is
-     *    why they must unwind themselves.
+     *
+     *  @return The group; @c invalid_argument_k when one store is named twice; or the first store's
+     *    own refusal, which leaves the transactions opened before it to their destructors.
+     *
+     *  A store named twice would take two participants over one snapshot, neither seeing the other's
+     *  writes, so the later commit overwrites the earlier one and no conflict is reported.
      */
     [[nodiscard]] static expected<transaction_group> make(store_types_ &...stores) noexcept {
-        std::tuple<expected<typename store_types_::transaction_t>...> opened {stores.transaction()...};
-        bool const all_opened =
-            std::apply([](auto const &...maybe) noexcept { return (static_cast<bool>(maybe) && ...); }, opened);
-        if (!all_opened) return status_t::out_of_memory_heap_k;
-
         std::array<void const *, participants_k> const addresses {static_cast<void const *>(&stores)...};
+        // Quadratic over a handful of participants known at compile time, which beats a set here.
+        for (std::size_t position = 1; position != participants_k; ++position)
+            for (std::size_t earlier = 0; earlier != position; ++earlier)
+                if (addresses[position] == addresses[earlier]) return status_t::invalid_argument_k;
+
+        std::tuple<expected<typename store_types_::transaction_t>...> opened {stores.transaction()...};
+        status_t const refused = std::apply(
+            [](auto const &...maybe) noexcept {
+                status_t first = success_k;
+                ((first = first_failure(first, maybe.status())), ...);
+                return first;
+            },
+            opened);
+        if (failed(refused)) return refused;
+
         auto moved = std::apply([](auto &...maybe) noexcept { return transactions_t {std::move(*maybe)...}; }, opened);
         return transaction_group {std::move(moved), addresses};
     }
@@ -1957,11 +1971,15 @@ class transaction_group {
      *    @c operation_not_permitted_k when the group is not staged.
      *
      *  Where @c asks_before_writing_k, every participant is asked before any writes, so a refusal
-     *  publishes nothing and the group stays staged and retryable. A participant may still be
-     *  committed over between the two passes - what the split buys is that the second pass cannot
-     *  refuse, not that nothing can change beneath it. Where it does not hold, each participant is
-     *  committed in turn and a refusal part-way leaves those before it published. Either way the
-     *  group stays staged, which is the one state @c rollback still accepts.
+     *  publishes nothing and the group stays staged, which is the one state @c rollback accepts. A
+     *  participant may still be committed over between the two passes - what the split buys is that
+     *  the second pass cannot refuse, not that nothing can change beneath it.
+     *
+     *  Where it does not hold, each participant is committed in turn. A refusal by the first has
+     *  published nothing and leaves the group staged too, but a refusal after one has published tears
+     *  the commit: what is published cannot be pulled back, so the group drops to pending and refuses
+     *  both @c commit and @c rollback. Only @c reset then clears what the later participants still
+     *  hold staged.
      */
     [[nodiscard]] status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1983,26 +2001,38 @@ class transaction_group {
             for (std::size_t position = 0; position != participants_k; ++position)
                 if (status_t const refused =
                         visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
-                    failed(refused))
+                    failed(refused)) {
+                    // Whatever the earlier participants published is out, so the group stops calling
+                    // itself staged and leaves `reset` to discard the rest.
+                    if (position != 0) staging_ = staging_t::pending_k;
                     return refused;
+                }
         }
         staging_ = staging_t::pending_k;
         return success_k;
     }
 
-    /** @brief Pulls every staged write back into its transaction, leaving the group retryable. */
+    /**
+     *  @brief Pulls every staged write back into its transaction, leaving the group retryable.
+     *
+     *  @return Success; the refusal it stopped at; or @c operation_not_permitted_k when the group is
+     *    not staged.
+     *
+     *  Only a rollback that reached every participant clears the staged flag. Clearing it after a
+     *  refusal would advertise a group whose later participants are still staged, and the next
+     *  @c stage would stage a second time over the first.
+     */
     [[nodiscard]] status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
-        status_t result = success_k;
         // Ascending store address, as every forward pass takes - only an unwind descends - so a
         // participant holding a lock across the phases cannot deadlock against another group.
-        for (std::size_t position = 0; position != participants_k; ++position) {
-            status_t const one =
-                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
-            if (failed(one)) result = one;
-        }
+        for (std::size_t position = 0; position != participants_k; ++position)
+            if (status_t const refused =
+                    visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
+                failed(refused))
+                return refused;
         staging_ = staging_t::pending_k;
-        return result;
+        return success_k;
     }
 
     /** @brief Discards every participant's staged and pending changes. */
