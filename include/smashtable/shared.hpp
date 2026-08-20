@@ -1347,13 +1347,13 @@ constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type
  *  @sa The same @c const-path caveat as @c atomic_load applies to the cast.
  */
 template <typename integral_type_>
-void atomic_wait(integral_type_ const &counter, integral_type_ observed) noexcept {
+constexpr void atomic_wait(integral_type_ const &counter, integral_type_ observed) noexcept {
     atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).wait(observed, memory_order_relaxed_k);
 }
 
 /** @brief Wakes every waiter parked on @p counter. The mirror of @c atomic_wait. */
 template <typename integral_type_>
-void atomic_notify_all(integral_type_ &counter) noexcept {
+constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
     atomic_ref<integral_type_>(counter).notify_all();
 }
 

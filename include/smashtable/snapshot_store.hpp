@@ -371,7 +371,9 @@ class snapshot_clock_t {
     /** @brief Takes over @p other's stamps, for a store that is being moved and has nothing open. */
     void adopt(snapshot_clock_t const &other) noexcept {
         assert(!oldest_lease_ && !other.oldest_lease_ && "a lease names the clock it was drawn from");
-        generation_ = atomic_load(other.generation_);
+        // `generation_` moves atomically because `next_generation` increments it that way; `commits_`
+        // is guarded by `mutex_`.
+        atomic_store<generation_t>(generation_, atomic_load(other.generation_));
         commits_ = other.commits_;
         atomic_store<generation_t>(published_stamp_, atomic_load(other.published_stamp_));
         atomic_store<generation_t>(low_water_mark_, atomic_load(other.low_water_mark_));

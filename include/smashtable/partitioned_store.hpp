@@ -460,8 +460,9 @@ class partitioned_store {
 
     /** @brief Records that a partition changed, ordered so its new contents are visible with the count. */
     static void note_written_(epoch_t &epoch) noexcept {
-        atomic_ref<epoch_t> counter {epoch};
-        counter.store(counter.load(memory_order_relaxed_k) + 1, memory_order_release_k);
+        // Indivisible: `for_all` counts a whole-store write after releasing every partition, where it
+        // can interleave with a single-partition write counting under its own lock.
+        atomic_ref<epoch_t>(epoch).fetch_add(1, memory_order_release_k);
     }
 
     /** @brief The count a reader last saw, paired with whatever it read under it. */
