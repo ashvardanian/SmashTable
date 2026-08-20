@@ -6,6 +6,7 @@
  *  @date January 12, 2023
  */
 #pragma once
+#include <compare> // `std::compare_three_way`
 #include <utility> // `std::move`
 #include <vector>  // `std::vector`
 
@@ -54,6 +55,13 @@ inline constexpr isolation_t repeatable_reads_from_k = isolation_t::snapshot_k;
 
 /** @brief The level at which a predicate repeated inside one transaction must see the same members. */
 inline constexpr isolation_t stable_predicates_from_k = isolation_t::snapshot_k;
+
+/**
+ *  @brief The level at which one commit reaches a reader whole, rather than half of it at a time.
+ *    Below it a walk spanning several partitions is free to meet two commits at once, and the suite
+ *    asserts that it does - which is the anomaly Monotonic Atomic View is named for denying.
+ */
+inline constexpr isolation_t whole_commits_from_k = isolation_t::monotonic_atomic_view_k;
 
 /**
  *  @brief The level at which two blind writers to one key are separated, rather than one overwriting
@@ -1451,29 +1459,32 @@ void test_group_commits_participants_together() {
 }
 
 /**
- *  @brief When one participant refuses to stage, no participant is left staged.
+ *  @brief Drives one refused group stage, with @p refusing_index_ naming the participant that refuses.
  *
- *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made are
- *  still pending afterwards and the group can be retried without rebuilding them.
+ *  The caller picks that index from the store addresses rather than from the argument order, because
+ *  the group stages ascending by address and only a refusal above the first one leaves a staged
+ *  prefix for the undo to walk.
  */
-template <typename container_type_>
-void test_group_unwinds_every_participant_on_conflict() {
+template <std::size_t refusing_index_, typename container_type_>
+void verify_group_unwind_refused_at(container_type_ &first, container_type_ &second) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+    constexpr std::size_t surviving_index_k = 1 - refusing_index_;
 
-    container_t first, second;
-    st_verify_(second.upsert(trivial_id_to_member<member_t>(7, 700)));
+    container_t &refusing = refusing_index_ == 0 ? first : second;
+    container_t &surviving = surviving_index_k == 0 ? first : second;
+    st_verify_(refusing.upsert(trivial_id_to_member<member_t>(7, 700)));
 
     auto group = make_transaction_group(first, second);
     st_verify_(group.has_value());
-    st_verify_(group->template participant<1>().watch(trivial_id_to_key<member_t>(7)));
-    st_verify_(group->template participant<0>().upsert(trivial_id_to_member<member_t>(3, 300)));
-    st_verify_(group->template participant<1>().upsert(trivial_id_to_member<member_t>(4, 400)));
+    st_verify_(group->template participant<refusing_index_>().watch(trivial_id_to_key<member_t>(7)));
+    st_verify_(group->template participant<surviving_index_k>().upsert(trivial_id_to_member<member_t>(3, 300)));
+    st_verify_(group->template participant<refusing_index_>().upsert(trivial_id_to_member<member_t>(4, 400)));
 
     // Move the watched key from outside, so this group's stage must be refused.
     {
-        auto interloper = second.transaction();
+        auto interloper = refusing.transaction();
         st_verify_(interloper->upsert(trivial_id_to_member<member_t>(7, 777)));
         st_verify_(interloper->stage());
         st_verify_(interloper->commit());
@@ -1484,11 +1495,44 @@ void test_group_unwinds_every_participant_on_conflict() {
     st_verify_eq_(status, status_t::read_conflict_k);
 
     // Nothing may be left staged in the participant that did succeed.
-    st_verify_(group->reset());
-    st_verify_((!first.find_copy(trivial_id_to_key<member_t>(3)).has_value()) &&
+    st_verify_((!surviving.find_copy(trivial_id_to_key<member_t>(3)).has_value()) &&
                "a refused group must leave no participant staged");
-    st_verify_((!second.find_copy(trivial_id_to_key<member_t>(4)).has_value()) &&
+    st_verify_((!refusing.find_copy(trivial_id_to_key<member_t>(4)).has_value()) &&
                "a refused group must leave no participant staged");
+
+    // A reset would have emptied the change set, and leaving the prefix staged would have moved it
+    // into the store, so a pending write here is what says the undo rolled back.
+    st_verify_ne_(group->template participant<surviving_index_k>().changes_count(), std::size_t {0},
+                  "an unwound participant must keep the writes it staged");
+
+    // Retrying is what the surviving writes were kept for. A sharded participant drops its partition
+    // marks when it rolls back, so it has nothing left to stage and is left out here.
+    if constexpr (!requires { container_t::partitions_k; }) {
+        st_verify_(group->template participant<refusing_index_>().reset());
+        st_verify_(group->stage());
+        st_verify_(group->commit());
+        auto republished = surviving.find_copy(trivial_id_to_key<member_t>(3));
+        st_verify_((republished.has_value()) && "a rolled-back write must publish on the retry");
+        st_verify_eq_((republished->mapped), (300), "a rolled-back write must publish the value it carried");
+    }
+}
+
+/**
+ *  @brief When one participant refuses to stage, no participant is left staged.
+ *
+ *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made are
+ *  still pending afterwards and the group can be retried without rebuilding them.
+ */
+template <typename container_type_>
+void test_group_unwinds_every_participant_on_conflict() {
+
+    container_type_ first, second;
+
+    // Ordered by the same total order the group's own constructor asks for, since a builtin `>` over
+    // pointers into unrelated objects is unspecified and would leave the undo untested on some layouts.
+    if (std::compare_three_way {}(static_cast<void const *>(&second), static_cast<void const *>(&first)) > 0)
+        verify_group_unwind_refused_at<1>(first, second);
+    else verify_group_unwind_refused_at<0>(first, second);
 }
 
 #pragma endregion Transaction Groups

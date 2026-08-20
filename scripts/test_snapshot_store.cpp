@@ -24,6 +24,7 @@
 #include "test.hpp"
 #include "test_basic.hpp"
 #include "test_consistency.hpp"
+#include "test_fuzz.hpp"
 #include "test_sharded_concurrency.hpp"
 #include "test_surface_parity.hpp"
 
@@ -2914,8 +2915,26 @@ int main(int, char **) {
                          test_repeated_range_matches_isolation<sharded_snapshot_map_t>);
     failures += run_test(filter, "sharded.refused_commit_publishes_nothing",
                          []() { test_refused_commit_publishes_nothing<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "sharded.snapshot_spans_partitions",
-                         []() { test_snapshot_spans_partitions<sharded_snapshot_map_t>(); });
+    failures += run_test(filter, "sharded.commit_spans_partitions.snapshot",
+                         []() { test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>(); });
+    failures += run_test(filter, "sharded.commit_spans_partitions.monotonic",
+                         []() { test_commit_spans_partitions_matches_isolation<sharded_monotonic_map_t>(); });
+
+    failures += run_test(filter, "fuzz.writes_match_the_oracle.snapshot",
+                         []() { test_random_writes_match_the_oracle<snapshot_avl_map_t>(); });
+    failures += run_test(filter, "fuzz.writes_match_the_oracle.monotonic",
+                         []() { test_random_writes_match_the_oracle<monotonic_avl_map_t>(); });
+    failures += run_test(filter, "fuzz.writes_match_the_oracle.serializable",
+                         []() { test_random_writes_match_the_oracle<serializable_avl_map_t>(); });
+    failures += run_test(filter, "fuzz.windows_match_the_oracle.snapshot",
+                         []() { test_random_windows_match_the_oracle<snapshot_avl_map_t>(); });
+    failures += run_test(filter, "fuzz.windows_match_the_oracle.sharded_snapshot",
+                         []() { test_random_windows_match_the_oracle<sharded_snapshot_map_t>(); });
+    failures += run_test(filter, "fuzz.refused_group_publishes_nothing",
+                         []() { test_a_refused_group_publishes_nothing<snapshot_avl_map_t, snapshot_avl_map_t>(); });
+    failures += run_test(filter, "fuzz.accepted_group_publishes_everything", []() {
+        test_an_accepted_group_publishes_everything<snapshot_avl_map_t, serializable_avl_map_t>();
+    });
 
     return report_test_failures(failures);
 }

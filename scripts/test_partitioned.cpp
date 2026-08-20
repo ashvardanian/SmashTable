@@ -193,6 +193,9 @@ using snapshot_trivial_map_t =
 using snapshot_hash_store_t =
     snapshot_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
 
+/** Sharded and stamped, so sixteen partitions draw one snapshot and publish under one stamp. */
+using sharded_snapshot_map_t = partitioned_store<snapshot_trivial_map_t>;
+
 /**
  *  Every public surface of every shipped store, against every wrapper nesting.
  *
@@ -261,6 +264,18 @@ static void sharded_concurrency_distinct_generations() {
 /** @brief A refused stage must leave no partition holding an unpublishable reservation. */
 static void sharded_concurrency_stage_unwinds_on_partial_failure() {
     test_sharded_stage_unwinds_on_partial_failure<transactional_trivial_map_t>();
+    test_sharded_stage_unwinds_on_partial_failure<sharded_refusing_map_t>();
+}
+
+/**
+ *  @brief What a commit spanning partitions looks like to a reader, at both levels a shard set reaches.
+ *
+ *  A stamped part keeps its promise whole through the sharding, and a part without a stamp is capped
+ *  at @c read_committed_k - so the same walk must tear against one and never against the other.
+ */
+static void sharded_concurrency_commit_spans_partitions() {
+    test_commit_spans_partitions_matches_isolation<transactional_trivial_map_t>();
+    test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>();
 }
 
 /** @brief Tests operations on empty container don't crash */
@@ -1616,6 +1631,8 @@ int main() {
                          sharded_concurrency_standard_mutex_substitutes);
     failures += run_test(filter, "sharded_concurrency.stage_unwinds_on_partial_failure",
                          sharded_concurrency_stage_unwinds_on_partial_failure);
+    failures +=
+        run_test(filter, "sharded_concurrency.commit_spans_partitions", sharded_concurrency_commit_spans_partitions);
     failures += run_test(filter, "basic_ops.single_element_operations", basic_ops_single_element_operations);
     failures += run_test(filter, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
     failures += run_test(filter, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);

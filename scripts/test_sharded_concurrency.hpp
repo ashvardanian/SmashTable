@@ -24,6 +24,7 @@
 #include <smashtable/locked_store.hpp>
 
 #include "test.hpp"
+#include "test_consistency.hpp"
 
 namespace ashvardanian::smashtable::scripts {
 
@@ -361,27 +362,61 @@ void test_concurrent_transactions_get_distinct_generations(std::size_t per_threa
  *  Staging walks the partitions a transaction wrote, one lock at a time. Returning on the first
  *  refusal leaves the partitions before it holding reservations no commit will ever publish and no
  *  rollback will ever find, so the undo has to walk back over them.
+ *
+ *  A watch moved from outside is what refuses, since the per-store refusal plan is spent by the
+ *  store's own methods and a transaction reaches its partitions without passing through them.
  */
 template <typename container_type_>
 void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+    using hash_t = typename container_t::hash_t;
 
     // Both a collection and a transaction are built out of the same per-partition array builder, so
     // its bookkeeping is checked here rather than given a suite of its own.
     test_partition_array_leaves_no_scratch_behind();
 
     container_t container;
+
+    // The stage takes the partitions ascending, so the refusal is aimed at the highest one this
+    // transaction reaches and every partition below it stages before the undo walks back.
+    std::size_t conflicting_identifier = 0;
+    std::size_t conflicting_partition = 0;
+    for (std::size_t identifier = 0; identifier < key_span; ++identifier) {
+        std::size_t const partition = hash_t {}(trivial_id_to_key<member_t>(identifier)) % container_t::partitions_k;
+        if (partition < conflicting_partition) continue;
+        conflicting_partition = partition;
+        conflicting_identifier = identifier;
+    }
+    st_verify_ne_(conflicting_partition, std::size_t {0},
+                  "the refusal must land above the first partition, or the undo has nothing to walk");
+
     auto transaction = container.transaction();
     st_verify_((transaction) && "a transaction must open");
+    st_verify_(transaction->watch(trivial_id_to_key<member_t>(conflicting_identifier)));
 
     // Spread writes across partitions, so a refusal partway through has predecessors to undo.
     for (std::size_t identifier = 0; identifier < key_span; ++identifier)
         st_verify_(transaction->upsert(trivial_id_to_member<member_t>(identifier, identifier)));
 
-    st_verify_(transaction->stage());
-    st_verify_(transaction->rollback());
+    // Publish over the watched key from outside, so the stage is refused where the watch sits.
+    {
+        auto interloper = container.transaction();
+        st_verify_((interloper) && "the interloping transaction must open");
+        st_verify_(interloper->upsert(trivial_id_to_member<member_t>(conflicting_identifier, key_span)));
+        st_verify_(interloper->stage());
+        st_verify_(interloper->commit());
+    }
+
+    status_t const refused = transaction->stage();
+    st_verify_((failed(refused)) && "a moved watch must refuse the stage");
+    st_verify_eq_(refused, status_t::read_conflict_k);
+
+    // An undo that never ran leaves the staged prefix holding its writes, so a change set that is
+    // whole again is what says every partition handed them back.
+    st_verify_eq_(transaction->changes_count(), key_span,
+                  "a refused stage must roll every partition it staged back into the transaction");
 
     // Whatever the outcome, nothing may be visible and nothing may be left reserved: a later
     // transaction writing the same keys must find every one of them free to take.
@@ -443,22 +478,20 @@ inline void test_locked_store_forwards_construction_and_writes() {
 }
 
 /**
- *  @brief A reader crossing a commit that spans partitions must see all of that commit, or none of it.
+ *  @brief Whether a reader crossing a commit that spans partitions sees all of it, or may see half.
  *
  *  A commit takes and releases one partition lock at a time, so its writes land one partition after
  *  another and a reader opening in the middle of the walk can catch half of them. What denies that is
  *  the stamp: the reader fixes one snapshot for every partition, the commit draws one stamp for every
- *  partition, and the watermark only moves once the last partition has been written. A snapshot drawn
- *  per partition instead - which is what a partition-local clock leaves - shows up here within a few
- *  rounds as two rounds read at once.
+ *  partition, and the watermark only moves once the last partition has been written. A part that
+ *  keeps no stamp leaves a snapshot drawn per partition instead, which caps the shard set at
+ *  @c read_committed_k and shows up here within a few rounds as two rounds read at once.
  */
 template <typename container_type_>
-void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rounds = 300) {
+void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16, std::size_t rounds = 300) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
-    static_assert(container_t::isolation_k == isolation_t::snapshot_k,
-                  "a store that does not promise a snapshot cannot be asked to keep one");
 
     container_t container;
     for (std::size_t identifier = 0; identifier != keys_count; ++identifier)
@@ -468,6 +501,7 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
     std::atomic<std::size_t> torn_across_keys {0};
     std::atomic<std::size_t> unrepeatable_reads {0};
     std::atomic<std::size_t> reads_taken {0};
+    std::atomic<std::size_t> refused_reads {0};
     /** @brief Holds the writer until every reader is inside its loop, so the two provably overlap. */
     std::atomic<std::size_t> readers_ready {0};
     std::vector<std::thread> threads;
@@ -491,15 +525,21 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
 
     for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
         threads.emplace_back([&]() noexcept {
+            std::size_t mine_torn = 0;
+            std::size_t mine_unrepeatable = 0;
+            std::size_t mine_taken = 0;
+            std::size_t mine_refused = 0;
+
             auto read_every_key = [&](auto &reader, std::size_t &agreed_value) noexcept {
                 std::size_t disagreements = 0;
                 agreed_value = 0;
                 for (std::size_t identifier = 0; identifier != keys_count; ++identifier) {
                     std::size_t observed = 0;
-                    st_verify_(reader.find(
+                    status_t const read = reader.find(
                         trivial_id_to_key<member_t>(identifier),
                         [&](auto const &member) noexcept { observed = static_cast<std::size_t>(member.mapped); },
-                        [&]() noexcept { ++disagreements; }));
+                        [&]() noexcept { ++disagreements; });
+                    if (failed(read)) ++mine_refused;
                     if (identifier == 0) agreed_value = observed;
                     else if (observed != agreed_value) ++disagreements;
                 }
@@ -512,11 +552,16 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
                 if (!reader) continue;
                 std::size_t first_pass_value = 0;
                 std::size_t second_pass_value = 0;
-                if (read_every_key(*reader, first_pass_value) != 0) ++torn_across_keys;
-                if (read_every_key(*reader, second_pass_value) != 0) ++torn_across_keys;
-                if (first_pass_value != second_pass_value) ++unrepeatable_reads;
-                ++reads_taken;
+                if (read_every_key(*reader, first_pass_value) != 0) ++mine_torn;
+                if (read_every_key(*reader, second_pass_value) != 0) ++mine_torn;
+                if (first_pass_value != second_pass_value) ++mine_unrepeatable;
+                ++mine_taken;
             }
+
+            torn_across_keys += mine_torn;
+            unrepeatable_reads += mine_unrepeatable;
+            reads_taken += mine_taken;
+            refused_reads += mine_refused;
         });
 
     for (auto &thread : threads) thread.join();
@@ -524,8 +569,15 @@ void test_snapshot_spans_partitions(std::size_t keys_count = 16, std::size_t rou
     // The gate above starts the writer only once every reader is looping, so this can only trip if a
     // reader gave up before taking a single pass.
     st_verify_ne_(reads_taken.load(), 0, "no reader ever crossed the writer, so this proves nothing");
-    st_verify_eq_(torn_across_keys.load(), 0, "a reader saw one commit half applied across partitions");
-    st_verify_eq_(unrepeatable_reads.load(), 0, "one transaction read two different commits");
+    st_verify_eq_(refused_reads.load(), 0, "a point read inside an open transaction must not fail");
+
+    if constexpr (at_least(container_t::isolation_k, whole_commits_from_k))
+        st_verify_eq_(torn_across_keys.load(), 0, "a reader saw one commit half applied across partitions");
+    else st_verify_ne_(torn_across_keys.load(), 0, "a level that licenses a torn walk never produced one");
+
+    // Repeating the walk inside one transaction is a separate promise, which only a snapshot makes.
+    if constexpr (at_least(container_t::isolation_k, repeatable_reads_from_k))
+        st_verify_eq_(unrepeatable_reads.load(), 0, "one transaction read two different commits");
 }
 
 /**
