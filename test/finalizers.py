@@ -132,7 +132,7 @@ def test_a_finalizer_may_touch_its_container_during_collection(sharing):
 
     class Nasty:
         def __init__(self, owner):
-            self.owner = owner  # closes the cycle: container -> Nasty -> container
+            self.owner = owner  # closes the cycle: container → Nasty → container
 
         def __del__(self):
             observed.append(len(self.owner))

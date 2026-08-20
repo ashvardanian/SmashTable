@@ -38,11 +38,17 @@ check_generated_artifacts() {
 
 # ASCII "->" arrows inside comments & docstrings - prose uses the Unicode arrow (→). Lines quoting
 # C++ trailing return types inside @code blocks are the one legitimate use, so they are exempt.
+#
+# The arrow is the shape worth matching mechanically, not the whole rule. Prose in this project reads
+# as typeset text rather than as source: ≤ ≥ ≠ ≈ × ÷ ± − for relations and arithmetic, … for an
+# ellipsis, ⁰¹²³ and ₀₁₂₃ for indices and exponents, ∈ ∉ ⊆ ∪ ∩ ∅ for set talk, ∞ for a bound that has
+# none, and │ ├ └ ─ for a tree a diagram would otherwise draw in pipes and dashes. A rule can only
+# name the one case it can spot without arguing; the rest is the author's to reach for.
 check_ascii_arrows() {
     local arrows
     arrows=$(printf '%s\n' "$added" | grep -E '((//|/\*|#|^\+[[:space:]]*\*).* -> )' | grep -v '@code' || true)
     [ -z "$arrows" ] || fail "$arrows" \
-        "$file uses the ASCII '->' arrow in a comment - prose arrows are the Unicode →:"
+        "$file writes an arrow as '->' in a comment - prose takes the Unicode → , and the same goes for ≤ ≥ ≠ × … ∈ where prose reaches for them:"
 }
 
 # An unqualified `memcpy` reaches for the C library through a name the standard only promises inside

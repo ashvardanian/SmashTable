@@ -1008,6 +1008,17 @@ class partitioned_store {
          *  refusal is reported. Marks each partition as it goes, since @c stage and @c commit walk
          *  only the marked ones and would otherwise never publish what this staged.
          */
+        /**
+         *  @brief Marks every partition, which is what a read seeding all of them has reached.
+         *
+         *  An ordered walk seeds each partition and files a read in each, so a commit asking only the
+         *  partitions a write happened to touch would validate none of them.
+         */
+        void mark_every_part_() const noexcept {
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
+                touched_.mark(partition_index);
+        }
+
         template <typename callable_type_>
         status_t for_parts_(callable_type_ &&callable) noexcept {
             status_t status = success_k;
@@ -1262,6 +1273,7 @@ class partitioned_store {
             requires inner_transaction_lower_bounds_k
         {
             settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
             status_t seeded = success_k;
             status_t const merged = store_t::first_merged_(
                 store_->comparator_, partitions_, store_->mutexes_,
@@ -1282,6 +1294,7 @@ class partitioned_store {
             requires inner_transaction_is_ordered_k
         {
             settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
             status_t seeded = success_k;
             status_t const merged = store_t::first_merged_(
                 store_->comparator_, partitions_, store_->mutexes_,
@@ -1311,6 +1324,7 @@ class partitioned_store {
             requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
         {
             settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             status_t reached = success_k;
             status_t const walked = store_t::walk_merged_(
@@ -1335,6 +1349,7 @@ class partitioned_store {
             requires inner_transaction_names_its_smallest_k && inner_transaction_is_ordered_k
         {
             settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             status_t reached = success_k;
             status_t const walked = store_t::walk_merged_(
@@ -1356,6 +1371,7 @@ class partitioned_store {
             requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
         {
             settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             status_t reached = success_k;
             status_t const walked = store_t::walk_merged_(
@@ -1459,6 +1475,7 @@ class partitioned_store {
         {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
+            if constexpr (inner_records_reads_k) touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].equal_range(std::forward<comparable_type_>(comparable),
                                                             std::forward<callback_type_>(callback));
@@ -1473,6 +1490,7 @@ class partitioned_store {
         {
             settle_snapshot_();
             std::size_t const partition_index = store_->bucket_(comparable);
+            if constexpr (inner_records_reads_k) touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].count(std::forward<comparable_type_>(comparable));
         }
@@ -1605,6 +1623,7 @@ class partitioned_store {
             requires inner_transaction_enumerates_k
         {
             settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 shared_lock_t lock {store_->mutexes_[partition_index]};
                 if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))

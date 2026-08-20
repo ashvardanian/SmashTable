@@ -873,6 +873,58 @@ void test_commit_is_visible_to_what_opens_after_it() {
     st_verify_(later_is_current);
 }
 
-#pragma endregion Sharded Concurrency
+/**
+ *  @brief A window a sharded transaction read is validated at commit, where the level says reads are.
+ *
+ *  A partitioned transaction publishes only the partitions it marked, so an ordered read that seeds
+ *  every partition and marks none files its window where the commit never looks. The key committed
+ *  into that window is then missed by a store advertising the level whose whole point is catching it.
+ *
+ *  Timeline:
+ *    T1:  range(20, 80) over every partition  →  upsert(a key outside it)
+ *
+ *    T2:  upsert(45), inside T1's window  →  stage()  →  commit()
+ *
+ *    T1:  stage()  →  commit()  →  phantom from @c validated_reads_from_k up, lands below it
+ */
+template <typename container_type_>
+void test_sharded_window_read_is_validated() {
 
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    static_assert(container_t::is_associative::value, "Container must be key-value");
+    static_assert(container_t::is_transactional::value, "Container must be transactional");
+
+    constexpr trivial_id_t span_k = 200;
+    container_t container;
+    for (trivial_id_t identifier = 0; identifier < span_k; identifier += 10)
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, int(identifier))));
+
+    auto reader = container.transaction();
+    st_verify_(reader);
+    std::size_t seen = 0;
+    st_verify_(reader->range(trivial_key_t {20}, trivial_key_t {80}, [&](auto const &) noexcept { ++seen; }));
+    st_verify_ne_(seen, 0, "the window must hold something, or this proves nothing");
+
+    // Written outside the window, so only the recorded read can refuse this transaction.
+    st_verify_(reader->upsert(trivial_id_to_member<member_t>(span_k + 1, 1)));
+
+    auto other = container.transaction();
+    st_verify_(other);
+    st_verify_(other->upsert(trivial_id_to_member<member_t>(45, 45)));
+    st_verify_(other->stage());
+    st_verify_(other->commit());
+
+    status_t const staged = reader->stage();
+    status_t const answered = succeeded(staged) ? reader->commit() : staged;
+
+    if constexpr (at_least(container_t::isolation_k, validated_reads_from_k)) {
+        st_verify_eq_(answered, status_t::phantom_conflict_k,
+                      "a key committed into a scanned window must refuse the commit");
+    }
+    else { st_verify_(answered); }
+}
+
+#pragma endregion Sharded Concurrency
 } // namespace ashvardanian::smashtable::scripts

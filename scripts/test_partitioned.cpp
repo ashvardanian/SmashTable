@@ -196,6 +196,11 @@ using snapshot_hash_store_t =
 /** Sharded and stamped, so sixteen partitions draw one snapshot and publish under one stamp. */
 using sharded_snapshot_map_t = partitioned_store<snapshot_trivial_map_t>;
 
+/** Sharded and validating its reads, which is the level a recorded window has to be checked at. */
+using serializable_trivial_map_t =
+    serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
+using sharded_serializable_map_t = partitioned_store<serializable_trivial_map_t>;
+
 /**
  *  Every public surface of every shipped store, against every wrapper nesting.
  *
@@ -276,6 +281,17 @@ static void sharded_concurrency_stage_unwinds_on_partial_failure() {
 static void sharded_concurrency_commit_spans_partitions() {
     test_commit_spans_partitions_matches_isolation<transactional_trivial_map_t>();
     test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>();
+}
+
+/**
+ *  @brief Both sides of whether a sharded window read is validated at commit.
+ *
+ *  The snapshot store records no reads, so a key landing in a window it walked cannot refuse it; the
+ *  serializable one records the window and must. One walk, one key, two levels, opposite answers.
+ */
+static void sharded_concurrency_window_read_is_validated() {
+    test_sharded_window_read_is_validated<sharded_snapshot_map_t>();
+    test_sharded_window_read_is_validated<sharded_serializable_map_t>();
 }
 
 /** @brief Tests operations on empty container don't crash */
@@ -1633,6 +1649,8 @@ int main() {
                          sharded_concurrency_stage_unwinds_on_partial_failure);
     failures +=
         run_test(filter, "sharded_concurrency.commit_spans_partitions", sharded_concurrency_commit_spans_partitions);
+    failures +=
+        run_test(filter, "sharded_concurrency.window_read_is_validated", sharded_concurrency_window_read_is_validated);
     failures += run_test(filter, "basic_ops.single_element_operations", basic_ops_single_element_operations);
     failures += run_test(filter, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
     failures += run_test(filter, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);
