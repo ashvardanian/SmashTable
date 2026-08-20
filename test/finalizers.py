@@ -15,6 +15,7 @@ Run:
 """
 
 import gc
+import pathlib
 import subprocess
 import sys
 
@@ -103,8 +104,15 @@ def test_no_release_path_deadlocks():
     mutex held, so a finalizer touching that container waited on a lock its own write was holding.
     """
     try:
+        # Anchored to the directory holding the `test` package rather than to the caller's cwd: an
+        # installed wheel is tested from somewhere else entirely, and `-m test.finalizers` would fail
+        # there for the wrong reason and read as the deadlock this is watching for.
         finished = subprocess.run(
-            [sys.executable, "-m", "test.finalizers"], capture_output=True, text=True, timeout=60, cwd="."
+            [sys.executable, "-m", "test.finalizers"],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            cwd=pathlib.Path(__file__).resolve().parent.parent,
         )
     except subprocess.TimeoutExpired:
         pytest.fail("deadlocked: a finalizer reaching into its own container hung on a store lock")

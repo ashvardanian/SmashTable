@@ -119,6 +119,9 @@ elseif (MSVC)
     # message, so the test suite is a wall of C2760 without this. The conforming preprocessor has handled it
     # since 2019 16.6.
     target_compile_options(smashtable_warnings INTERFACE /Zc:preprocessor)
+    # C4324 fires on a type that asked to be over-aligned, which the alignment tests do on purpose;
+    # under `/WX` it would fail the build for doing exactly what it was told.
+    target_compile_options(smashtable_warnings INTERFACE /wd4324)
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE /WX)
     endif ()
