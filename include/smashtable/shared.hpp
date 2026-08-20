@@ -29,6 +29,7 @@
  *  non-template function, and every such body here belongs to a template.
  */
 #pragma once
+
 #include <cerrno>  // `ENOMEM`, `EINVAL`, and the rest of the errno space
 #include <climits> // `CHAR_BIT`
 #include <cstddef> // `std::byte`, `std::size_t`
@@ -1340,6 +1341,22 @@ constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type
     return atomic_ref<integral_type_>(counter).fetch_sub(subtrahend, memory_order_relaxed_k) - subtrahend;
 }
 
+/**
+ *  @brief Parks until @p counter stops reading @p observed, so a waiter costs no core while it waits.
+ *  @warning Wakes only where the writer calls @c atomic_notify_all; a bare @c atomic_store wakes nobody.
+ *  @sa The same @c const-path caveat as @c atomic_load applies to the cast.
+ */
+template <typename integral_type_>
+void atomic_wait(integral_type_ const &counter, integral_type_ observed) noexcept {
+    atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).wait(observed, memory_order_relaxed_k);
+}
+
+/** @brief Wakes every waiter parked on @p counter. The mirror of @c atomic_wait. */
+template <typename integral_type_>
+void atomic_notify_all(integral_type_ &counter) noexcept {
+    atomic_ref<integral_type_>(counter).notify_all();
+}
+
 #pragma endregion Device Portability
 
 #pragma region Numeric Helpers
@@ -1956,15 +1973,6 @@ template <optimistically_concurrent_store... store_types_>
 
 #pragma region Shared Mutex
 
-/** @brief Hints the core that the caller is spinning, so a sibling thread gets the pipeline. */
-inline void pause_briefly() noexcept {
-#if defined(__x86_64__) || defined(__i386__)
-    __builtin_ia32_pause();
-#elif defined(__aarch64__)
-    __asm__ __volatile__("yield" ::: "memory");
-#endif
-}
-
 /**
  *  @brief A reader-writer lock that spins briefly, then parks on @c std::atomic::wait.
  *
@@ -1974,10 +1982,11 @@ inline void pause_briefly() noexcept {
  *  turns new readers away, so a steady read load cannot starve any of them indefinitely.
  *
  *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
- *  timed acquisition, no upgrading. Both collection wrappers take the mutex as a template parameter,
- *  so this is the default rather than the only choice.
+ *  timed acquisition, no upgrading. The spin is a bare retry loop with no architecture hint in it:
+ *  both collection wrappers take the mutex as a template parameter, so a deployment that cares about
+ *  what its cores do while waiting supplies its own rather than being served a per-target guess.
  */
-class spin_shared_mutex {
+class spin_shared_mutex_t {
     /** @brief Set while one writer owns the lock; the reader count is zero for as long as it is. */
     static constexpr std::uint32_t writer_held_k = 1u << 31;
     /** @brief One unit of the waiting-writer tally, which occupies the fifteen bits below the held bit. */
@@ -1995,9 +2004,9 @@ class spin_shared_mutex {
     std::atomic<std::uint32_t> state_ {0};
 
   public:
-    constexpr spin_shared_mutex() noexcept = default;
-    spin_shared_mutex(spin_shared_mutex const &) = delete;
-    spin_shared_mutex &operator=(spin_shared_mutex const &) = delete;
+    constexpr spin_shared_mutex_t() noexcept = default;
+    spin_shared_mutex_t(spin_shared_mutex_t const &) = delete;
+    spin_shared_mutex_t &operator=(spin_shared_mutex_t const &) = delete;
 
     [[nodiscard]] bool try_lock() noexcept {
         std::uint32_t expected = 0;
@@ -2018,7 +2027,6 @@ class spin_shared_mutex {
             if (state_.compare_exchange_weak(expected, writer_held_k, std::memory_order_acquire,
                                              std::memory_order_relaxed))
                 return;
-            pause_briefly();
         }
 
         // Joining the tally is what stops a stream of readers from renewing the lock forever. A tally
@@ -2051,7 +2059,6 @@ class spin_shared_mutex {
                 state_.compare_exchange_weak(observed, observed + 1, std::memory_order_acquire,
                                              std::memory_order_relaxed))
                 return;
-            pause_briefly();
         }
 
         while (true) {

@@ -204,7 +204,7 @@ class snapshot_clock_t {
 
   private:
     /** @brief Guards the census and the in-flight list, both of which are read and written together. */
-    mutable spin_shared_mutex mutex_ {};
+    mutable spin_shared_mutex_t mutex_ {};
     /** @brief Dates transactions rather than their visibility, and is drawn without the lock. */
     alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
     /** @brief The newest stamp handed to a commit, whether or not that commit has landed. */
@@ -246,7 +246,7 @@ class snapshot_clock_t {
 
     /** @brief Puts @p replacement in @p held 's place, for a lease that is being moved. */
     void relink_lease_(snapshot_lease_t &held, snapshot_lease_t &replacement) noexcept {
-        unique_lock<spin_shared_mutex> _ {mutex_};
+        unique_lock<spin_shared_mutex_t> _ {mutex_};
         replacement.older_ = held.older_;
         replacement.newer_ = held.newer_;
         (held.older_ ? held.older_->newer_ : oldest_lease_) = &replacement;
@@ -258,7 +258,7 @@ class snapshot_clock_t {
 
     /** @brief Gives one reader's claim back, which only @c snapshot_lease_t is allowed to do. */
     void retire_snapshot_(snapshot_lease_t &lease) noexcept {
-        unique_lock<spin_shared_mutex> _ {mutex_};
+        unique_lock<spin_shared_mutex_t> _ {mutex_};
         unlink_(lease);
         republish_mark_();
     }
@@ -283,7 +283,7 @@ class snapshot_clock_t {
      *  drawn. Under a shard set that overlap is ordinary rather than a corner case.
      */
     [[nodiscard]] generation_t drawn_stamp() const noexcept {
-        shared_lock<spin_shared_mutex> _ {mutex_};
+        shared_lock<spin_shared_mutex_t> _ {mutex_};
         return commits_;
     }
 
@@ -292,7 +292,7 @@ class snapshot_clock_t {
      *  @return The snapshot the lease now reads at.
      */
     generation_t take_snapshot(snapshot_lease_t &lease) noexcept {
-        unique_lock<spin_shared_mutex> _ {mutex_};
+        unique_lock<spin_shared_mutex_t> _ {mutex_};
         if (lease.clock_) unlink_(lease);
         generation_t const snapshot = atomic_load(published_stamp_);
         lease.clock_ = this;
@@ -306,7 +306,7 @@ class snapshot_clock_t {
 
     /** @brief Draws the stamp @p node publishes under, and records that it has not landed yet. */
     void begin_commit(commit_in_flight_t &node) noexcept {
-        unique_lock<spin_shared_mutex> _ {mutex_};
+        unique_lock<spin_shared_mutex_t> _ {mutex_};
         node.stamp_ = ++commits_;
         node.older_ = newest_in_flight_;
         node.newer_ = nullptr;
@@ -320,13 +320,16 @@ class snapshot_clock_t {
      *    when none is: a commit is whole only once every commit before it is.
      */
     void end_commit(commit_in_flight_t &node) noexcept {
-        unique_lock<spin_shared_mutex> _ {mutex_};
+        unique_lock<spin_shared_mutex_t> _ {mutex_};
         (node.older_ ? node.older_->newer_ : oldest_in_flight_) = node.newer_;
         (node.newer_ ? node.newer_->older_ : newest_in_flight_) = node.older_;
         node.older_ = nullptr;
         node.newer_ = nullptr;
         generation_t const whole = oldest_in_flight_ ? oldest_in_flight_->stamp_ - 1 : commits_;
         atomic_store<generation_t>(published_stamp_, whole);
+        // A store wakes nobody, so anyone parked in `await_published` sleeps through the very
+        // publication it waits for unless the wake goes out here.
+        atomic_notify_all(published_stamp_);
         // With nobody reading, the mark is the watermark, so publishing one moves the other.
         republish_mark_();
     }
@@ -337,7 +340,10 @@ class snapshot_clock_t {
      */
     void await_published(commit_stamp_t stamp) noexcept {
         generation_t const wanted = static_cast<generation_t>(stamp);
-        while (atomic_load(published_stamp_) < wanted) pause_briefly();
+        // Parked rather than spun: this waits on another thread's commit, which is unbounded, and a
+        // spinner would hold a core for the whole of it.
+        for (generation_t seen = atomic_load(published_stamp_); seen < wanted; seen = atomic_load(published_stamp_))
+            atomic_wait(published_stamp_, seen);
     }
 
     /**
@@ -356,7 +362,7 @@ class snapshot_clock_t {
 
     /** @brief How many readers currently hold a snapshot, counted off the census. */
     [[nodiscard]] std::size_t open_snapshots() const noexcept {
-        shared_lock<spin_shared_mutex> _ {mutex_};
+        shared_lock<spin_shared_mutex_t> _ {mutex_};
         std::size_t counted = 0;
         for (snapshot_lease_t const *lease = oldest_lease_; lease; lease = lease->newer_) ++counted;
         return counted;

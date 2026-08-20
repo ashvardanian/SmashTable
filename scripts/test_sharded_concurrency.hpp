@@ -655,7 +655,7 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
     for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
         walkers.emplace_back([&]() noexcept {
             std::vector<std::size_t> visits(stable_count + churn_count, 0);
-            while (!churn_started.load()) pause_briefly();
+            while (!churn_started.load()) {}
             do {
                 for (std::size_t &seen : visits) seen = 0;
                 st_verify_(container.for_each([&](member_t const &member) noexcept {
