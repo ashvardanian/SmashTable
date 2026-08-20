@@ -33,7 +33,6 @@
 #include <cstdint> // `std::int64_t`
 
 #include <atomic>   // `std::atomic`
-#include <mutex>    // `std::mutex`
 #include <optional> // `std::optional`
 #include <string>   // `std::string`
 #include <utility>  // `std::exchange`, `std::swap`
@@ -207,29 +206,6 @@ enum class value_mode_t : std::uint8_t { scalars_k, objects_k };
 
 #pragma region GIL Policy
 
-/**
- *  @brief A per-object lock, distinct from the partition locks a store keeps.
- *
- *  A cursor and a transaction carry mutable state of their own - a walk position, a transaction state -
- *  that no store lock covers, and every operation over it drops the GIL part-way. @c PyMutex exists
- *  only from CPython 3.13, so 3.12 gets a @c std::mutex instead.
- *
- *  @warning Never hold this across anything that needs the GIL. A holder that stops to reacquire the
- *    GIL while another thread waits here already holding it is a deadlock; confining the critical
- *    section to plain data is what makes waiting safe whether or not the waiter holds the GIL.
- */
-struct object_lock_t {
-#if PY_VERSION_HEX >= 0x030D0000
-    PyMutex handle {0};
-    void lock() noexcept { PyMutex_Lock(&handle); }
-    void unlock() noexcept { PyMutex_Unlock(&handle); }
-#else
-    std::mutex handle;
-    void lock() noexcept { handle.lock(); }
-    void unlock() noexcept { handle.unlock(); }
-#endif
-};
-
 #pragma region Deferred Releases
 
 /**
@@ -254,7 +230,7 @@ class releases_t {
     /** @brief How many store calls are in flight on this container, across every thread. */
     alignas(atomic_alignment<std::size_t>) std::size_t calls_in_flight_ {0};
     /** @brief Guards @c recorded_, which a partitioned store appends to from several threads at once. */
-    object_lock_t guard_;
+    spin_shared_mutex guard_;
     /** @brief What has been dropped and not yet given back. */
     basic_vector<PyObject *> recorded_;
 
@@ -348,7 +324,7 @@ void run_over_values(value_mode_t mode, operation_type_ &&operation) noexcept {
  *  back, so no thread ever blocks on it while holding the GIL.
  */
 template <typename operation_type_>
-void run_over_values(value_mode_t mode, object_lock_t &lock, operation_type_ &&operation) noexcept {
+void run_over_values(value_mode_t mode, spin_shared_mutex &lock, operation_type_ &&operation) noexcept {
     Py_BEGIN_ALLOW_THREADS;
     lock.lock();
     if (mode == value_mode_t::objects_k) {
@@ -819,7 +795,7 @@ enum class cursor_yields_t : std::uint8_t { keys_k, values_k, items_k };
  */
 struct cursor_object_t {
     PyObject_HEAD PyObject *owner;
-    object_lock_t lock;
+    spin_shared_mutex lock;
     /** @brief The store's walk, closed through the same table that opened it. */
     void *walk;
     /** @brief How many steps are left, or negative when the walk is uncounted. */
@@ -1021,7 +997,7 @@ enum class group_state_t : std::uint8_t { open_k, staged_k, finished_k };
 struct transaction_object_t {
     PyObject_HEAD PyObject *containers;
     PyObject *views;
-    object_lock_t lock;
+    spin_shared_mutex lock;
     basic_vector<participant_t> parts;
     group_state_t state;
 };

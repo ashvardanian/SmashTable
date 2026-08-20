@@ -421,7 +421,7 @@ static void cursor_dealloc(PyObject *self) noexcept {
         owner->store_ops->cursor_destroy(owner->releases, walk->walk);
     }
     Py_CLEAR(walk->owner);
-    walk->lock.~object_lock_t();
+    walk->lock.~spin_shared_mutex();
     PyTypeObject *type = Py_TYPE(self);
     PyObject_GC_Del(self);
     Py_DECREF(type); // Heap types are reference-counted by their instances
@@ -522,7 +522,7 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
     // dealloc gives back exactly one. Taking a second immortalises the type in practice.
 
     // Placement-new the owned members, since `PyObject_GC_New` only hands back raw storage.
-    new (&walk->lock) object_lock_t {};
+    new (&walk->lock) spin_shared_mutex {};
 
     walk->owner = Py_NewRef(container);
     walk->yields = yields;
