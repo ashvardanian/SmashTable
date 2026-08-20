@@ -268,7 +268,7 @@ static void allocator_refuses_overflowing_counts() {
 
 /** @brief Exclusion holds: a writer never overlaps a reader or another writer. */
 static void shared_mutex_excludes() {
-    spin_shared_mutex mutex;
+    spin_shared_mutex_t mutex;
     std::atomic<int> readers_inside {0};
     std::atomic<int> writers_inside {0};
     std::atomic<bool> violated {false};
@@ -282,7 +282,7 @@ static void shared_mutex_excludes() {
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         threads.emplace_back([&]() noexcept {
             for (std::size_t iteration = 0; iteration != writes_per_writer_k; ++iteration) {
-                unique_lock<spin_shared_mutex> guard {mutex};
+                unique_lock<spin_shared_mutex_t> guard {mutex};
                 if (writers_inside.fetch_add(1) != 0 || readers_inside.load() != 0) violated.store(true);
                 ++guarded_left;
                 ++guarded_right;
@@ -294,7 +294,7 @@ static void shared_mutex_excludes() {
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         threads.emplace_back([&]() noexcept {
             while (reading.load(std::memory_order_relaxed)) {
-                shared_lock<spin_shared_mutex> guard {mutex};
+                shared_lock<spin_shared_mutex_t> guard {mutex};
                 readers_inside.fetch_add(1);
                 if (writers_inside.load() != 0) violated.store(true);
                 if (guarded_left != guarded_right) violated.store(true);
@@ -317,7 +317,7 @@ static void shared_mutex_excludes() {
  *    stream slips back in and parks them forever.
  */
 static void shared_mutex_admits_every_writer() {
-    spin_shared_mutex mutex;
+    spin_shared_mutex_t mutex;
     std::atomic<bool> reading {true};
     std::atomic<std::size_t> finished_writers {0};
 
@@ -334,7 +334,7 @@ static void shared_mutex_admits_every_writer() {
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         readers.emplace_back([&]() noexcept {
             while (reading.load(std::memory_order_relaxed)) {
-                shared_lock<spin_shared_mutex> guard {mutex};
+                shared_lock<spin_shared_mutex_t> guard {mutex};
                 for (int spin = 0; spin != reader_hold_spins_k; ++spin)
                     std::atomic_signal_fence(std::memory_order_seq_cst);
             }
@@ -345,7 +345,7 @@ static void shared_mutex_admits_every_writer() {
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         writers.emplace_back([&]() noexcept {
             for (std::size_t iteration = 0; iteration != acquisitions_per_writer_k; ++iteration) {
-                unique_lock<spin_shared_mutex> guard {mutex};
+                unique_lock<spin_shared_mutex_t> guard {mutex};
                 for (int spin = 0; spin != 2000; ++spin) std::atomic_signal_fence(std::memory_order_seq_cst);
             }
             finished_writers.fetch_add(1);

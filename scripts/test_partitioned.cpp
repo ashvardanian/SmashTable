@@ -1299,7 +1299,7 @@ static void ordered_cursor_hands_every_key_once() {
  *  only ever use in a test.
  */
 class counting_mutex_t {
-    spin_shared_mutex held_;
+    spin_shared_mutex_t held_;
 
   public:
     static inline std::atomic<std::size_t> acquisitions {0};

@@ -34,7 +34,7 @@ namespace ashvardanian::smashtable {
  *    empty and whose mutex guards nothing, so commits land nowhere and report success. Move only a
  *    store no transaction is open on and no other thread is touching.
  */
-template <typename store_type_, typename shared_mutex_type_ = spin_shared_mutex>
+template <typename store_type_, typename shared_mutex_type_ = spin_shared_mutex_t>
 class locked_store {
 
   public:
@@ -1301,11 +1301,11 @@ class locked_store {
  *  does naming @c locked_map over a store of plain keys. Two aliases that accept the same arguments
  *  would name the same type and catch nothing.
  */
-template <set_shaped_store set_store_type_, typename shared_mutex_type_ = spin_shared_mutex>
+template <set_shaped_store set_store_type_, typename shared_mutex_type_ = spin_shared_mutex_t>
 using locked_set = locked_store<set_store_type_, shared_mutex_type_>;
 
 /** @brief A map-shaped store behind one shared mutex, spelled @c locked_map<monotonic_avl_map<key_t, value_t>>. */
-template <map_shaped_store map_store_type_, typename shared_mutex_type_ = spin_shared_mutex>
+template <map_shaped_store map_store_type_, typename shared_mutex_type_ = spin_shared_mutex_t>
 using locked_map = locked_store<map_store_type_, shared_mutex_type_>;
 
 #pragma endregion Aliases

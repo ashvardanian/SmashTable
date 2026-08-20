@@ -120,12 +120,12 @@ static_assert(!erases_open_ended<snapshot_hash_map_t>,
 
 static_assert(sharded_snapshot_map_t::isolation_k == isolation_t::snapshot_k,
               "sixteen partitions sharing one clock keep the promise the part makes alone");
-static_assert(partitioned_store<snapshot_avl_map_t, hash<trivial_key_t>, spin_shared_mutex, 1>::isolation_k ==
+static_assert(partitioned_store<snapshot_avl_map_t, hash<trivial_key_t>, spin_shared_mutex_t, 1>::isolation_k ==
                   isolation_t::snapshot_k,
               "a single partition never had anything to weaken");
 static_assert(sharded_monotonic_map_t::isolation_k == isolation_t::read_committed_k,
               "a part without a stamp is still caught between two partition locks");
-static_assert(partitioned_store<monotonic_avl_map_t, hash<trivial_key_t>, spin_shared_mutex, 1>::isolation_k ==
+static_assert(partitioned_store<monotonic_avl_map_t, hash<trivial_key_t>, spin_shared_mutex_t, 1>::isolation_k ==
                   monotonic_avl_map_t::isolation_k,
               "one partition of an unstamped part is exactly the part");
 

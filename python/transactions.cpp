@@ -546,7 +546,7 @@ static void Transaction_dealloc(PyObject *self) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     PyObject_GC_UnTrack(self);
     group->parts.~basic_vector();
-    group->lock.~spin_shared_mutex();
+    group->lock.~spin_shared_mutex_t();
     Py_CLEAR(group->views);
     Py_CLEAR(group->containers);
     PyTypeObject *type = Py_TYPE(self);
@@ -914,7 +914,7 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     // dealloc gives back exactly one. Taking a second immortalises the type in practice.
     // Constructed before anything can fail, so an early `Py_DECREF` always meets a live vector.
     new (&group->parts) basic_vector<participant_t> {};
-    new (&group->lock) spin_shared_mutex {};
+    new (&group->lock) spin_shared_mutex_t {};
     group->containers = Py_NewRef(containers);
     group->views = nullptr;
     group->state = group_state_t::open_k;

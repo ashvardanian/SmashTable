@@ -230,7 +230,7 @@ class releases_t {
     /** @brief How many store calls are in flight on this container, across every thread. */
     alignas(atomic_alignment<std::size_t>) std::size_t calls_in_flight_ {0};
     /** @brief Guards @c recorded_, which a partitioned store appends to from several threads at once. */
-    spin_shared_mutex guard_;
+    spin_shared_mutex_t guard_;
     /** @brief What has been dropped and not yet given back. */
     basic_vector<PyObject *> recorded_;
 
@@ -324,7 +324,7 @@ void run_over_values(value_mode_t mode, operation_type_ &&operation) noexcept {
  *  back, so no thread ever blocks on it while holding the GIL.
  */
 template <typename operation_type_>
-void run_over_values(value_mode_t mode, spin_shared_mutex &lock, operation_type_ &&operation) noexcept {
+void run_over_values(value_mode_t mode, spin_shared_mutex_t &lock, operation_type_ &&operation) noexcept {
     Py_BEGIN_ALLOW_THREADS;
     lock.lock();
     if (mode == value_mode_t::objects_k) {
@@ -795,7 +795,7 @@ enum class cursor_yields_t : std::uint8_t { keys_k, values_k, items_k };
  */
 struct cursor_object_t {
     PyObject_HEAD PyObject *owner;
-    spin_shared_mutex lock;
+    spin_shared_mutex_t lock;
     /** @brief The store's walk, closed through the same table that opened it. */
     void *walk;
     /** @brief How many steps are left, or negative when the walk is uncounted. */
@@ -997,7 +997,7 @@ enum class group_state_t : std::uint8_t { open_k, staged_k, finished_k };
 struct transaction_object_t {
     PyObject_HEAD PyObject *containers;
     PyObject *views;
-    spin_shared_mutex lock;
+    spin_shared_mutex_t lock;
     basic_vector<participant_t> parts;
     group_state_t state;
 };
