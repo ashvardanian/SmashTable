@@ -2647,6 +2647,14 @@ class snapshot_store {
     }
 
     /**
+     *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
+     *
+     *  The one ordering every read here descends on; a caller comparing keys any other way is ordering
+     *  them differently from the store that holds them.
+     */
+    [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
+
+    /**
      *  @brief Hands @p callback_found the smallest member the newest published commit shows.
      *
      *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens with:
@@ -2655,13 +2663,6 @@ class snapshot_store {
      *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
      */
-    /**
-     *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
-     *    The one ordering every read here descends on; a caller comparing keys any other way is
-     *    ordering them differently from the store that holds them.
-     */
-    [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
-
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept

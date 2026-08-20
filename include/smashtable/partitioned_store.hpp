@@ -1010,14 +1010,6 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Runs @p callable over every partition, in ascending order, and never stops early.
-         *
-         *  Stopping on the first refusal would leave the partitions after it untouched while the ones
-         *  before it had already acted, and nothing would record which side each fell on. The last
-         *  refusal is reported. Marks each partition as it goes, since @c stage and @c commit walk
-         *  only the marked ones and would otherwise never publish what this staged.
-         */
-        /**
          *  @brief Marks every partition, which is what a read seeding all of them has reached.
          *
          *  An ordered walk seeds each partition and files a read in each, so a commit asking only the
@@ -1028,6 +1020,14 @@ class partitioned_store {
                 touched_.mark(partition_index);
         }
 
+        /**
+         *  @brief Runs @p callable over every partition, in ascending order, and never stops early.
+         *
+         *  Stopping on the first refusal would leave the partitions after it untouched while the ones
+         *  before it had already acted, and nothing would record which side each fell on. The last
+         *  refusal is reported. Marks each partition as it goes, since @c stage and @c commit walk
+         *  only the marked ones and would otherwise never publish what this staged.
+         */
         template <typename callable_type_>
         status_t for_parts_(callable_type_ &&callable) noexcept {
             status_t status = success_k;
@@ -1331,14 +1331,6 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Hands @p callback every member of [ @p lower, @p upper ) this transaction reads, in order.
-         *
-         *  Merged across the partitions rather than concatenated, so a transactional scan answers in the
-         *  order an ordered container promises.
-         *
-         *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
-         */
-        /**
          *  @brief Hands @p callback every member at or after @p lower, with no upper end.
          *  @warning Every partition is held shared for the walk, as @c range holds them.
          */
@@ -1388,6 +1380,14 @@ class partitioned_store {
             return first_failure(reached, walked);
         }
 
+        /**
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ) this transaction reads, in order.
+         *
+         *  Merged across the partitions rather than concatenated, so a transactional scan answers in the
+         *  order an ordered container promises.
+         *
+         *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
+         */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept

@@ -38,12 +38,12 @@ static value_mode_t group_mode(transaction_object_t const *group) noexcept {
 }
 
 /**
- *  @brief This view's participant. Its layout and family are fixed for the transaction's life.
+ *  @brief The participant this view speaks for, or null once the collector has cleared its owner.
  *
- *  Whether the transaction is still open is not, so only the immutable parts - @c ops, @c mode and which
- *  alternative is engaged - may be read from it outside @c run_over_participant.
+ *  Its layout and family are fixed for the transaction's life; whether the transaction is still open is
+ *  not, so only the immutable parts - @c ops, @c mode and which alternative is engaged - may be read
+ *  from it outside @c run_over_participant.
  */
-/** @brief The participant this view speaks for, or null once the collector has cleared its owner. */
 static participant_t *part_of(view_object_t *view) noexcept {
     if (!view->owner) return nullptr;
     auto *group = object_as<transaction_object_t>(view->owner);

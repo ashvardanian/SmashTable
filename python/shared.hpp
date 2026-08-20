@@ -1106,10 +1106,6 @@ bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases
 bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &result) noexcept;
 
 /**
- *  @brief Builds a new Python object from a stored key.
- *  @return A new reference, or @c nullptr with an exception set.
- */
-/**
  *  @brief Reads the @c (start, stop, limit) a windowed call takes, in both spellings.
  *  @param[in] called The method's name, which every message here quotes.
  *  @param[out] start Borrowed bound object, or null; @c Py_None counts as null.
@@ -1120,6 +1116,10 @@ bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &resu
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
                         PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept;
 
+/**
+ *  @brief Builds a new Python object from a stored key.
+ *  @return A new reference, or @c nullptr with an exception set.
+ */
 PyObject *key_to_python(key_variant_t const &key) noexcept;
 
 /**
