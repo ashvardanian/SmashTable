@@ -479,6 +479,7 @@ def test_set_algebra_propagates_a_real_error(container):
 # region Batched writes
 
 
+@pytest.mark.iterations(1)
 @pytest.mark.thread_unsafe(
     reason="the refused batch is the test - a parallel copy sharing the container would apply the same pairs before this one looks"
 )
@@ -501,6 +502,7 @@ def test_map_update_applies_as_one_unit(container, keygen):
     assert len(container) == 3
 
 
+@pytest.mark.iterations(1)
 @pytest.mark.thread_unsafe(
     reason="the refused batch is the test - a parallel copy sharing the container would apply the same members before this one looks"
 )

@@ -10,6 +10,7 @@ Run:
 
 import gc
 import sys
+import weakref
 
 import pytest
 
@@ -407,17 +408,28 @@ def test_a_cycle_through_a_container_is_collectable(container_class, key_type, k
     Asserts the collection rather than merely surviving it. The container reports what it holds
     through `tp_traverse`, so the collector can see the cycle, and drops it through `tp_clear`, so
     it can break it; without either the pair is reachable forever and this reads as a slow leak.
+
+    A weak reference to a witness inside each cycle, rather than a census of `gc.get_objects()`:
+    that count is process-global, so anything the interpreter allocates between the two readings
+    lands in the difference. It drifts even negative on a second pass, which no leak can do, and it
+    names no culprit when it trips. The witness stands in for the container, which is not weakly
+    referenceable, and dies exactly when the cycle holding it is collected.
     """
-    gc.collect()
-    before = len(gc.get_objects())
+
+    class Witness:
+        """Reachable only through the cycle, so its weak reference outliving `gc` means a leak."""
+
+    witnesses = []
     for _ in range(50):
         container = make(container_class, key_type, "object")
-        cycle = {"self": container}
+        witness = Witness()
+        cycle = {"self": container, "witness": witness}
         container[keygen(1)[0]] = cycle
-        del cycle, container
+        witnesses.append(weakref.ref(witness))
+        del cycle, container, witness
     gc.collect()
-    retained = len(gc.get_objects()) - before
-    assert retained == 0, f"{retained} objects survived a collection of 50 container cycles"
+    survivors = [held for held in witnesses if held() is not None]
+    assert not survivors, f"{len(survivors)} of 50 container cycles survived a collection"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
