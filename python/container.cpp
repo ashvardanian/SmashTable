@@ -952,9 +952,8 @@ static PyObject *Set_isdisjoint(PyObject *self, PyObject *other) noexcept {
     PyObject *member = nullptr;
     bool disjoint = true;
     while (disjoint && (member = PyIter_Next(iterator)) != nullptr) {
-        // Converted here rather than asked through `__contains__`, which answers False for anything
-        // it cannot hold and clears the reason. A member of a foreign type is genuinely not in this
-        // set, but a failing `__hash__` or an interrupt is not an answer and must not read as one.
+        // Converted here rather than asked through `__contains__`, which answers False for what it
+        // cannot hold: a failing `__hash__` or an interrupt is not an answer and must not read as one.
         key_variant_t needle;
         bool const convertible = key_from_python(member, container->ops, needle);
         Py_DECREF(member);
@@ -1242,11 +1241,14 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
     return PyBool_FromLong((operation == Py_EQ) == equal);
 }
 
-/** @brief Whether every member of @p self is also in @p other. */
+/**
+ *  @brief Whether every member of @p self is also in @p other.
+ *
+ *  Reached with either side first, since @c >= asks it the other way round, so @p self may be a plain
+ *  @c set carrying no module state of ours. That is ordinary rather than a failure: the general path
+ *  answers it, and the lookup's own exception is cleared with that in mind.
+ */
 static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept {
-    // Reached with either side first, since `>=` asks this the other way round, so `self` may be a
-    // plain `set` with no module state of ours. That is the ordinary case rather than a failure, and
-    // the general path below answers it - the lookup's own exception is cleared with that in mind.
     module_state_t *state = state_of_type(self);
     if (state)
         if (auto *twin = same_layout_set(self, other)) {

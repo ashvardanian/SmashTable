@@ -20,6 +20,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 /** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack */
@@ -454,6 +456,8 @@ static void std_store_defects_transaction_bounds_skip_locally_erased() {
     test_transaction_bounds_skip_locally_erased<transactional_composite_map_t>();
     test_transaction_bounds_skip_locally_erased<transactional_heavy_map_t>();
 }
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

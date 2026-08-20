@@ -25,6 +25,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 using tree_trivial_set_t = monotonic_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
@@ -1572,6 +1574,8 @@ static void sharded_concurrency_commit_is_visible_to_what_opens_after_it() {
     test_commit_is_visible_to_what_opens_after_it<partitioned_store<serializable_gated_t, hash<std::int64_t>>>();
     test_commit_is_visible_to_what_opens_after_it<partitioned_store<strict_gated_t, hash<std::int64_t>>>();
 }
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

@@ -95,28 +95,35 @@ struct store_bridge {
         PyObject_Free(owned);
     }
 
+    /**
+     *  @brief Builds the core, with whatever its sharing strategy is addressed by.
+     *
+     *  The one place that strategy shows through: a partitioned store routes keys by hash and needs
+     *  one, a locked store forwards what its core takes, and neither default-constructs because
+     *  @c key_less_t has no default constructor. An ordered core takes the comparator chosen for this
+     *  layout, an unordered one the equality, and builds its own hasher - which is why that hasher is
+     *  stateless rather than the function-pointer form.
+     */
+    static auto built_core(key_ops_t const *ops) noexcept {
+        if constexpr (ordered_k) {
+            if constexpr (partitioned_k) return store_t::make(key_less_t {ops->less}, key_hash_t {ops->hash});
+            else return store_t::make(key_less_t {ops->less}, std::allocator<value_t> {});
+        }
+        else {
+            if constexpr (partitioned_k) return store_t::make(key_variant_equal_t {}, key_hash_t {ops->hash});
+            else return store_t::make(key_variant_equal_t {}, std::allocator<value_t> {});
+        }
+    }
+
+    /**
+     *  @brief Puts a built core on the heap, handing back the pointer @c destroy owns.
+     *
+     *  The probe in @c built_core asks for the member type rather than trying the call, since a store
+     *  forwarding its arguments variadically accepts every signature at the declaration and refuses
+     *  only inside the body, where a @c requires expression cannot see.
+     */
     static expected<void *> make(key_ops_t const *ops) noexcept {
-        // Which arguments a store is built from is the one place the sharing strategy shows through:
-        // a partitioned store routes keys by hash and so needs one, while a locked store forwards
-        // whatever its inner core takes. Neither can be default-constructed, because `key_less_t`
-        // deliberately has no default constructor.
-        //
-        // The probe asks for the member type rather than trying the call, because a store that
-        // forwards its arguments variadically accepts every signature at the declaration and only
-        // refuses inside the body, where a `requires` expression cannot see.
-        // What a core is addressed by: an ordered one takes the comparator chosen for this layout,
-        // an unordered one takes the equality and builds its own hasher, which is why that hasher
-        // has to be stateless rather than the function-pointer form.
-        auto built = [&]() noexcept {
-            if constexpr (ordered_k) {
-                if constexpr (partitioned_k) return store_t::make(key_less_t {ops->less}, key_hash_t {ops->hash});
-                else return store_t::make(key_less_t {ops->less}, std::allocator<value_t> {});
-            }
-            else {
-                if constexpr (partitioned_k) return store_t::make(key_variant_equal_t {}, key_hash_t {ops->hash});
-                else return store_t::make(key_variant_equal_t {}, std::allocator<value_t> {});
-            }
-        }();
+        auto built = built_core(ops);
         if (!built) return expected<void *> {built.status()};
 
         // The store outlives the frame that built it, so it moves onto the heap rather than into the
@@ -311,15 +318,20 @@ struct store_bridge {
 
     static cursor_t &cursor_of(void *cursor) noexcept { return *static_cast<cursor_t *>(cursor); }
 
+    /** @brief Opens the walk the pair of bounds names; a null bound is unbounded on that side. */
+    static cursor_t opened_cursor(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept
+        requires ordered_k
+    {
+        if (from && upper) return store_of(store).cursor_range(key_variant_t(*from), key_variant_t(*upper));
+        if (from) return store_of(store).cursor_from(key_variant_t(*from));
+        if (upper) return store_of(store).cursor_up_to(key_variant_t(*upper));
+        return store_of(store).cursor();
+    }
+
     static expected<void *> cursor_make(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept
         requires ordered_k
     {
-        auto opened = [&]() noexcept -> cursor_t {
-            if (from && upper) return store_of(store).cursor_range(key_variant_t(*from), key_variant_t(*upper));
-            if (from) return store_of(store).cursor_from(key_variant_t(*from));
-            if (upper) return store_of(store).cursor_up_to(key_variant_t(*upper));
-            return store_of(store).cursor();
-        }();
+        cursor_t opened = opened_cursor(store, from, upper);
         cursor_t *owned = own_in_python_storage<cursor_t>(std::move(opened));
         if (!owned) return expected<void *> {out_of_memory_heap_k};
         return expected<void *> {owned, success_k};

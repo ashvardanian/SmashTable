@@ -65,9 +65,8 @@ static std::size_t key_hash_str(key_variant_t const &key) noexcept {
 }
 
 static std::size_t key_hash_bytes(key_variant_t const &key) noexcept {
-    // Salted apart from the text hash so a `str` and a `bytes` container with the same octets do not
-    // share a partition layout by accident. The two never mix inside one container, so this only
-    // affects which shard a key lands in.
+    // Salted apart from the text hash so `str` and `bytes` with the same octets do not share a
+    // partition layout by accident; the two never mix in one container, so only sharding sees it.
     return std::hash<std::string> {}(assume_layout<bytes_t>(key).data) ^ 0x9E3779B97F4A7C15ull;
 }
 

@@ -29,6 +29,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 /**
@@ -1190,6 +1192,8 @@ static void fixture_coverage_rollback_balances_counted_keys() {
 }
 
 #pragma endregion Fixture Coverage
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

@@ -28,6 +28,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Instrumented Value
 
 /**
@@ -651,6 +653,8 @@ static_assert(!optimistically_concurrent_store<counted_t>, "a plain value is not
 static_assert(at_least(avl_store_t::isolation_k, isolation_t::read_committed_k), "the floor the concept states");
 
 #pragma endregion Optimistic Concurrency Tests
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

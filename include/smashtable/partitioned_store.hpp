@@ -454,11 +454,12 @@ class partitioned_store {
         every_part_lock &operator=(every_part_lock const &) = delete;
     };
 
-    // A cursor keeps one key per partition between its steps, so it needs to know which partitions a
-    // writer touched since it last looked. Counting writes answers that without taking every lock on
-    // every step, which is what makes a resumable walk cheaper than probing all sixteen per element.
-
-    /** @brief Records that a partition changed, ordered so its new contents are visible with the count. */
+    /**
+     *  @brief Records that a partition changed, ordered so its new contents are visible with the count.
+     *
+     *  A cursor caches one key per partition between steps, so comparing counts tells it which to
+     *  re-read without locking all sixteen each time.
+     */
     static void note_written_(epoch_t &epoch) noexcept {
         // Indivisible: `for_all` counts a whole-store write after releasing every partition, where it
         // can interleave with a single-partition write counting under its own lock.

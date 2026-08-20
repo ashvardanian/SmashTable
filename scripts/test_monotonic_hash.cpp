@@ -25,6 +25,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 /**
@@ -639,6 +641,8 @@ using budgeted_transactional_set_t = monotonic_hash_set<budgeted_key_t>;
 static void fixture_coverage_find_copy_reports_a_refused_copy() {
     test_find_copy_reports_a_refused_copy<budgeted_transactional_set_t>();
 }
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

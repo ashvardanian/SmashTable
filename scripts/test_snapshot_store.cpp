@@ -30,6 +30,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 /**
@@ -2610,6 +2612,8 @@ static void transaction_range_surface_sees_its_own_writes() {
                   "the commit publishes what the transaction staged");
     st_verify_eq_(store.count(trivial_id_to_key<member_t>(100)), std::size_t {1});
 }
+
+} // namespace
 
 int main(int, char **) {
     install_test_signal_handlers();

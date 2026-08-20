@@ -1282,14 +1282,14 @@ class reference_store {
     /**
      *  @brief Publishes the version stamped @p generation_to_unmask and drops every other visible one.
      *  @return Whether that version was there to publish, which a commit reports to its caller.
+     *
+     *  The unmasked entry survives wherever it sits in the order. Keeping whichever came last would
+     *  erase it again whenever a higher-generation revision is already published, which is what a
+     *  transaction opening early and committing late produces.
      */
     unmask_outcome_t unmask_and_compact_(entry_iterator_t begin, entry_iterator_t end,
                                          generation_t generation_to_unmask, commit_stamp_t stamp) noexcept {
-        // The entry being unmasked is the one that survives, wherever it sits in the set's order.
-        // Keeping whichever came last instead would erase it again the moment a revision with a
-        // higher generation is already published, which happens whenever a transaction opens early
-        // and commits late. Every other published revision gives way; other transactions' staged
-        // ones are untouched, since they are not this commit's to decide.
+        // Every other published revision gives way; other transactions' staged ones are untouched.
         auto outcome = unmask_outcome_t::version_missing_k;
         entry_iterator_t current = begin;
         while (current != end) {

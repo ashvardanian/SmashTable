@@ -17,6 +17,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 /**
@@ -283,6 +285,8 @@ static void unordered_concurrency_update_and_erase() {
 using counting_set_t = hash_set<trivial_key_t, counting_hash_t, counting_equals_t>;
 
 static void fixture_coverage_hash_lookup_cost_is_bounded() { test_hash_lookup_cost_is_bounded<counting_set_t>(); }
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

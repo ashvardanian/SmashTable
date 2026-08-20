@@ -606,13 +606,6 @@ struct store_ops_t {
     expected<value_variant_t> (*insert_if_missing)(releases_t &releases, void *store, key_variant_t const &key,
                                                    value_variant_t &&value) noexcept;
 
-    // The two bounds answer through out-parameters rather than an `expected`, which is the idiom
-    // everywhere else here. They are the walk, and a walk reuses one key across every step: assigning
-    // into an existing `key_variant_t` reuses its string buffer, while returning a fresh one allocates
-    // once per element for the text layouts. The composite also has no honest erased type - a map's
-    // element is a key and a value, a set's is a key alone. Both reasons end when the cursor comes
-    // from C++ and hands its key and value back separately.
-
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(releases_t &releases, void *store, key_variant_t const *lower,
                             key_variant_t const *upper) noexcept;

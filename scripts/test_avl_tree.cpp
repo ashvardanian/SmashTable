@@ -31,6 +31,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Type Aliases
 
 /**
@@ -1069,6 +1071,8 @@ static void failure_policy_budgeted_distinct_causes() {
 }
 
 #pragma endregion Failure Policy
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();

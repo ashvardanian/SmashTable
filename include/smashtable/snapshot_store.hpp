@@ -352,11 +352,8 @@ class snapshot_clock_t {
      *    while a later one stays open moves it up to that later one rather than leaving it behind.
      */
     [[nodiscard]] generation_t low_water_mark() const noexcept {
-        // Read without the lock, because reclamation asks this on every direct write. The mark is
-        // only ever written under the lock and only ever to the census minimum of that moment, and
-        // that minimum never falls: a snapshot is drawn at the watermark, so an arriving reader is
-        // never older than one already there. A stale read is therefore an older mark, which keeps
-        // versions nobody needs rather than freeing one somebody still names.
+        // Read without the lock: the mark is only written under it and never falls, so a stale read is
+        // an older mark - keeping versions nobody needs rather than freeing one somebody still names.
         return atomic_load(low_water_mark_);
     }
 

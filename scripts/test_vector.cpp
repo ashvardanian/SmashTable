@@ -21,6 +21,8 @@
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
+namespace {
+
 #pragma region Element Types
 
 /**
@@ -83,8 +85,9 @@ struct budgeted_element_t {
  */
 template <typename value_type_>
 struct recording_allocator {
-    static inline std::size_t largest_request = 0;
-    static inline std::size_t requests_count = 0;
+    // Read only for the instantiation a test names; the rebound ones only ever record.
+    [[maybe_unused]] static inline std::size_t largest_request = 0;
+    [[maybe_unused]] static inline std::size_t requests_count = 0;
 
     using value_type = value_type_;
     using propagate_on_container_move_assignment = std::true_type;
@@ -263,6 +266,8 @@ static void vector_move_semantics() {
 }
 
 #pragma endregion Tests
+
+} // namespace
 
 int main() {
     install_test_signal_handlers();
