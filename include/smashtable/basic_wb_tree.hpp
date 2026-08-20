@@ -51,9 +51,10 @@ struct no_augmentation_t {};
 
 /**
  *  @brief Contract a wrapper satisfies to keep a second subtree count beside @c size.
- *    @c augmented_count reads the entry and returns 0 or 1. The tree recomputes it from the entry alone on
- *    every rotation, join, and split, so a predicate that depends on anything else - a sibling entry, a
- *    global stamp - has to be materialized into the entry by the wrapper before the tree can aggregate it.
+ *
+ *  @c augmented_count reads the entry and returns 0 or 1. The tree recomputes it from the entry alone on
+ *  every rotation, join, and split, so a predicate that depends on anything else - a sibling entry, a
+ *  global stamp - has to be materialized into the entry by the wrapper before the tree can aggregate it.
  */
 template <typename augmentation_type_, typename value_type_>
 concept wb_augmentation = requires(value_type_ const &fruit) {
@@ -491,6 +492,7 @@ class basic_wb_node {
 
     /**
      *  @brief Single right rotation.
+     *
      *  @code
      *      y              x
      *     / \            / \
@@ -514,6 +516,7 @@ class basic_wb_node {
 
     /**
      *  @brief Single left rotation.
+     *
      *  @code
      *    x                y
      *   / \              / \
@@ -537,9 +540,10 @@ class basic_wb_node {
 
     /**
      *  @brief Weight of a subtree, counting the empty tree as 1.
-     *    Hirai and Yamamoto state the invariant over @c size+1; comparing raw sizes makes
-     *    every node with an empty child look unbalanced and asks for rotations that cannot
-     *    be performed, since the pivot's child is null.
+     *
+     *  Hirai and Yamamoto state the invariant over @c size+1; comparing raw sizes makes
+     *  every node with an empty child look unbalanced and asks for rotations that cannot
+     *  be performed, since the pivot's child is null.
      */
     static size_t get_weight(node_t *node) noexcept { return get_size(node) + 1; }
 

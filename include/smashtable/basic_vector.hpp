@@ -10,7 +10,7 @@
  *  - Never throws exceptions - returns @c status_t or @c expected<T> for fallible operations
  *  - For both @c noexcept-constructible elements and ones with fallible @c .make() methods
  *  - Offers performance variants with @c assume_reserved tag for pre-checked hot paths
- *  - Guarantees atomicity for batch operations like @c resize()
+ *  - Batch operations like @c resize() are all-or-nothing on failure, leaving the elements as they were
  *
  *  @section basic_vector_requirements Requirements
  *

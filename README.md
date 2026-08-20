@@ -1,7 +1,8 @@
 # SmashTable
 
 SmashTable makes __one update span several containers__.
-Either every change lands or none does, and the containers never disagree about which happened.
+Either every change lands or none does: a group stages into every container or into none, and a commit spanning two or more of them asks each for permission before the first one writes.
+A partitioned container is the one that cannot be asked, so a group holding one publishes its participants in turn.
 It's implemented in __C++ 20__ as header-only templates, and exposed to __Python 3__ through the raw CPython API.
 
 Three `std::map`s cannot do this, and neither can three `dict`s.
@@ -30,28 +31,28 @@ Every row below the cores wraps something: a transactional store wraps a plain c
 So a usable type reads `locked_store<snapshot_store<basic_avl_tree<…>>>` for one lock over the whole store, or `partitioned_store<…>` for sixteen.
 Nesting the two wrappers is redundant rather than clever: every call would take an inner lock inside a partition lock that already excludes.
 
-|                             | Isolation               | Write concurrency | Transactions |      Ordered      |
-| --------------------------- | ----------------------- | :---------------: | :----------: | :---------------: |
-| `basic_vector`              | —                       |    one thread     |      —       |         —         |
-| `basic_avl_tree`            | —                       |    one thread     |      —       |         ✔         |
-| `basic_wb_tree`             | —                       |    one thread     |      —       | `rank` · `select` |
-| `basic_hash_table`          | —                       |    one thread     |      —       |         —         |
-| `atomic_hash_table`         | — ⁴                     |    per slot ⁴     |      —       |         —         |
-| `monotonic_store`           | Monotonic Atomic View ⁶ |    one thread     |      ✔       |     inherits      |
-| `snapshot_store`            | Snapshot ⁷              |    one thread     |      ✔       |    inherits ²     |
-| `serializable_store`        | Serializable ⁸          |    one thread     |      ✔       |    inherits ²     |
-| `strict_serializable_store` | Strict Serializable ⁹   |    one thread     |      ✔       |    inherits ²     |
-| `reference_store` ⁵         | Monotonic Atomic View ⁶ |    one thread     |      ✔       |         ✔         |
-| `locked_store`              | inherits                |     one call      |      ✔       |     inherits      |
-| `partitioned_store`         | inherits ¹              |   per partition   |      ✔       |    inherits ³     |
+|                             | Isolation               |    Writers    | Transactions |      Ordered      |
+| --------------------------- | ----------------------- | :-----------: | :----------: | :---------------: |
+| `basic_vector`              | —                       |  one thread   |      —       |         —         |
+| `basic_avl_tree`            | —                       |  one thread   |      —       |         ✔         |
+| `basic_wb_tree`             | —                       |  one thread   |      —       | `rank` · `select` |
+| `basic_hash_table`          | —                       |  one thread   |      —       |         —         |
+| `atomic_hash_table`         | — ⁴                     |  per slot ⁴   |      —       |         —         |
+| `monotonic_store`           | Monotonic Atomic View ⁶ |  one thread   |      ✔       |     inherits      |
+| `snapshot_store`            | Snapshot ⁷              |  one thread   |      ✔       |    inherits ²     |
+| `serializable_store`        | Serializable ⁸          |  one thread   |      ✔       |    inherits ²     |
+| `strict_serializable_store` | Strict Serializable ⁹   |  one thread   |      ✔       |    inherits ²     |
+| `reference_store` ⁵         | Monotonic Atomic View ⁶ |  one thread   |      ✔       |         ✔         |
+| `locked_store`              | inherits                |   one call    |      ✔       |     inherits      |
+| `partitioned_store`         | inherits ¹              | per partition |      ✔       |    inherits ³     |
 
 > ¹ A stamp-based store keeps its level: one clock, and the watermark moves only once the last partition has published, so a reader sees a whole commit or none.
 > A clock-less store has no stamp to hold, so only Read Committed survives; atomicity costs in proportion to the partitions touched.
 > ² `select` and `rank` are exact at the newest commit; an older snapshot gets a merged walk, since one count per node cannot answer an unbounded parameter.
 > ³ A bound, a range and an ordinal hold every partition's lock for the whole walk, so each is decided at one moment rather than by probes that can disagree.
-> An unbounded enumeration and the cursor behind iteration take one partition at a time, unordered.
+> An unbounded enumeration takes one partition at a time and answers unordered, while the cursor behind iteration walks the merged order and holds no lock between its steps.
 > ⁴ Per-slot spin locks: atomic over one slot and nothing wider, so `size()` is a relaxed read, a stalled thread blocks its slot, and there are no transactions.
-> ⁵ A `std::set`-backed oracle, tested against rather than shipped.
+> ⁵ A `std::set`-backed oracle: it installs alongside every other header, and the suites hold the tree containers against it.
 > ⁶ Permits a [lost update](https://jepsen.io/consistency/phenomena/p4) and a repeated read that moves.
 > ⁷ Refuses both; permits [write skew](https://jepsen.io/consistency/phenomena/a5b), since a read you did not `watch` is not validated.
 > ⁸ Refuses write skew and phantoms too: every key and window read is re-checked at commit.
@@ -146,13 +147,22 @@ group.commit()     # flips visibility
 
 Separating the fallible phase from the applying phase is what lets independent transactions compose into one all-or-nothing unit.
 `stage` is where a conflict or an allocation failure normally surfaces.
-`commit` validates again and can still refuse, because a watched key may be committed over while the group sits staged - and with more than one container that leaves the ones already published, so the group stays staged rather than finished, which is the state it can still be unwound from.
+Between the two the participants take no more writes: `ids[43] = 'dave'` after `stage()` raises `StateError`, since staging already reserved and validated what the transaction would change.
+A read still answers.
+`commit` validates again and can still refuse, because a watched key may be committed over while the group sits staged.
+A group of two or more containers, none of them partitioned, is asked in full before any of them writes, so a refusal there publishes nothing and leaves the group staged and retryable.
+A lone participant commits in one call, having nothing to tear against, and so does a group holding a `sharing='partitioned'` container, where a refusal part-way leaves the participants before it published.
+Either way the group stays staged rather than finished, which is the state `rollback()` still accepts.
+Even where every participant is asked first, one of them may be committed over between the two passes: what the split buys is that the second pass cannot refuse, not that nothing moves beneath it.
 
 ### What It Guarantees, and What It Does Not
 
-- __A group applies in full or not at all.__
+- __A group stages in full or not at all.__
   A body that raises resets every participant.
   A stage that fails on one participant unwinds them all.
+- __A commit publishes in full or not at all, wherever every participant can be asked first.__
+  That is a group of two or more containers, none of them partitioned.
+  Elsewhere the participants publish in turn and a refusal part-way leaves the ones before it published — staged either way, so `rollback()` still accepts the group.
 - __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
 - __A transaction reads its own writes, until it stages.__
   `view[k]` sees what `view[k] = v` put there; after `stage()` the write is in the store carrying no stamp, so it is invisible to everyone including its own transaction until `commit()`.
@@ -361,29 +371,26 @@ The standard library has loose ends around failure.
 `std::set::insert(first, last)` has no defined behaviour on partial failure, and in practice an allocation failure leaves some elements inserted and the rest not:
 
 ```cpp
-struct failing_allocator_state_t {
-    std::size_t count = 0, limit = 0;
-};
+struct budget_t { std::size_t used = 0, limit = 0; };
 
-template <typename value_type_>
-struct failing_allocator { // ? rebind, converting constructor and `deallocate` elided
+template <typename value_type_> // ? rebind, converting constructor and `deallocate` elided
+struct failing_allocator {
     using value_type = value_type_;
-    failing_allocator_state_t *state_ {};
+    budget_t *budget {};
 
     value_type_ *allocate(std::size_t count) {
-        if (!state_ || state_->count + count > state_->limit) throw std::bad_alloc {};
-        state_->count += count;
+        if (!budget || budget->used + count > budget->limit) throw std::bad_alloc {};
+        budget->used += count;
         return static_cast<value_type_ *>(::operator new(count * sizeof(value_type_)));
     }
 };
 
 int main() {
-    failing_allocator_state_t state {0, 3};
-    std::set<int, std::less<>, failing_allocator<int>> values {std::less<> {}, failing_allocator<int> {&state}};
-    std::vector<int> inputs {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    budget_t budget {0, 3};
+    std::set<int, std::less<>, failing_allocator<int>> values {std::less<> {}, failing_allocator<int> {&budget}};
 
-    try { values.insert(inputs.begin(), inputs.end()); }
-    catch (std::bad_alloc const &) { std::println("std::bad_alloc after {} allocations", state.count); }
+    try { for (int value : {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}) values.insert(value); }
+    catch (std::bad_alloc const &) { std::println("std::bad_alloc after {} allocations", budget.used); }
 
     std::println("set contains {} elements:", values.size());
     for (int value : values) std::print("{} ", value);
@@ -567,8 +574,7 @@ Thirty-two slots share one 64-bit header holding two parallel bitmasks, encoding
 Sixty-four bits is the widest atomic every target supports, which is what lets a whole bucket header move in one instruction.
 
 Growing repoints the key, value and header regions that every live slot reference has cached, so a table that can grow can never be read concurrently.
-That used to be a sentence here that nothing enforced.
-It is now two types, neither of which includes the other's header.
+The type system enforces that rather than a sentence: two types, neither of which includes the other's header.
 `basic_hash_table` grows, iterates and rehashes; `atomic_hash_table` is pinned and atomic over the slot each operation touches.
 What passes between them is the allocation itself — a `hash_storage` — so the hand-off is a move of a value rather than one table reaching into the other:
 
@@ -604,7 +610,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-`SMASHTABLE_FILTER` selects a subset by substring, matched against `suite.name`:
+`SMASHTABLE_FILTER` selects a subset by substring, matched against `suite.name`, and fails the binary when it matches nothing:
 
 ```bash
 SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree

@@ -1,10 +1,12 @@
 /**
- *  @brief Ordered "Adelson-Velsky and Landis" @b AVL Binary Search Tree implementation. Provides exception-free,
- *      allocator-aware ordered collection similar to @c std::set. Not thread-safe by itself. Doesn't raise any
- *      exceptions unlike STL-based alternatives.
+ *  @brief Ordered "Adelson-Velsky and Landis" @b AVL binary search tree, offering what @c std::set
+ *    offers without ever raising.
  *  @author Ash Vardanian
  *  @file include/smashtable/basic_avl_tree.hpp
  *  @date October 13, 2022
+ *
+ *  Exception-free and allocator-aware: a failure arrives as a @c status_t rather than as a throw.
+ *  Not thread-safe by itself.
  *
  *  @section basic_avl_tree_design_characteristics Design Characteristics
  *
@@ -87,7 +89,7 @@ namespace ashvardanian::smashtable {
  *
  *  AVL trees are self-balancing binary search trees where the height difference between left and right subtrees
  *  is at most 1. This "node" class implements the core tree logic including rotations and rebalancing, but
- *  doesn't participate in memory management or provide atomicity guarantees - those are handled by @c basic_avl_tree.
+ *  doesn't participate in memory management or promise anything all-or-nothing - @c basic_avl_tree does both.
  *
  *  Features:
  *  - Never throws exceptions, even on allocation failure
@@ -2068,7 +2070,7 @@ class basic_avl_tree {
 
     /**
      *  @brief Constructs an element in-place. Matches @c std::set::emplace() semantics.
-     *         Does not insert if key already exists.
+     *    Does not insert if key already exists.
      *
      *  @tparam args_types_ Types of arguments to forward to value_t constructor.
      *  @param[in] args Arguments to forward to value_t constructor.
@@ -2106,8 +2108,8 @@ class basic_avl_tree {
     iterator insert(const_iterator, value_t &&) noexcept = delete;
 
     /**
-     *  @brief Inserts a range of entries only if ALL keys are new (transactional all-or-nothing).
-     *    Builds a temporary tree from the range, validates no conflicts, then merges atomically.
+     *  @brief Inserts a range of entries only if ALL keys are new, all-or-nothing on failure.
+     *    Builds a temporary tree from the range, validates no conflicts, then merges it in one step.
      *    On allocation failure or key conflict, this tree remains unchanged.
      *
      *  @tparam input_iterator_type_ Type of input iterator.
@@ -2117,13 +2119,13 @@ class basic_avl_tree {
      *  @param[in] last End of range to insert.
      *  @param[in] tags Optional tags to control insertion behavior.
      *  @return Success if all keys inserted, @c out_of_memory_heap_k on OOM,
-     *    or @c operation_not_permitted_k if any key already exists.
+     *    or @c key_already_exists_k if any key already exists.
      *
      *  @note Complexity:
      *    - With @c assume_sorted_t : O(n) build + O(m+n) validation + O(merge) time
      *    - Without: O(n log n) build + O(m+n) validation + O(merge) time
      *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
-     *  @note Transactional semantics: If ANY key exists, entire operation fails atomically.
+     *  @note All-or-nothing on failure: if ANY key exists, nothing is inserted.
      *    Temp tree is destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
@@ -2133,7 +2135,7 @@ class basic_avl_tree {
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
 
-        // Build temporary tree, then merge atomically
+        // Build temporary tree, then merge it in one step
         basic_avl_tree temp_tree(allocator_);
 
         // O(n): Build perfectly balanced tree from sorted range
@@ -2156,7 +2158,7 @@ class basic_avl_tree {
                 if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
         }
 
-        // TRANSACTIONAL VALIDATION: Check if ANY key already exists - O(m+n)
+        // Check if ANY key already exists - O(m+n)
         if (has_any_key(temp_tree))
             return status_t::key_already_exists_k; // Temp tree auto-destructs, this tree unchanged
 
@@ -2167,7 +2169,7 @@ class basic_avl_tree {
 
     /**
      *  @brief Inserts elements from an initializer list if keys don't exist.
-     *    Builds a temporary tree from the list, then merges atomically.
+     *    Builds a temporary tree from the list, then merges it in one step.
      *    On allocation failure during tree construction, this tree is unchanged.
      *
      *  @param[in] ilist Initializer list of entries to insert.
@@ -2255,8 +2257,8 @@ class basic_avl_tree {
     }
 
     /**
-     *  @brief Updates a range of existing entries (transactional all-or-nothing).
-     *    Builds a temporary tree from the range, validates all keys exist, then updates atomically.
+     *  @brief Updates a range of existing entries, all-or-nothing on failure.
+     *    Builds a temporary tree from the range, validates all keys exist, then updates in one step.
      *    On allocation failure or any missing key, this tree remains unchanged.
      *
      *  @tparam input_iterator_type_ Type of input iterator.
@@ -2272,7 +2274,7 @@ class basic_avl_tree {
      *    - With @c assume_sorted_t : O(n) build + O(m+n) validation + O(m log n) update
      *    - Without: O(n log n) build + O(m+n) validation + O(m log n) update
      *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
-     *  @note Transactional semantics: If ANY key missing, entire operation fails atomically.
+     *  @note All-or-nothing on failure: if ANY key is missing, nothing is updated.
      *    Temp tree is destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
@@ -2304,7 +2306,7 @@ class basic_avl_tree {
                 if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
         }
 
-        // TRANSACTIONAL VALIDATION: Check if ALL keys exist - O(m+n)
+        // Check if ALL keys exist - O(m+n)
         if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
 
         // All keys exist - safe to upsert (will only update, never insert)
@@ -2334,7 +2336,7 @@ class basic_avl_tree {
 
     /**
      *  @brief Returns the function object that compares values.
-     *         For sets, this is the same as key_comp().
+     *    For sets, this is the same as key_comp().
      *  @return The comparison function object.
      */
     comparator_t value_comp() const noexcept { return comparator_; }

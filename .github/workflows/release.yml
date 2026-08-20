@@ -59,7 +59,6 @@ jobs:
         with:
           token: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
           branch: main-dev
-          unprotect_reviews: True
           force: True
 
   build_wheels:

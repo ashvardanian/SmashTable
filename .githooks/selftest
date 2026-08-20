@@ -236,6 +236,27 @@ assert_rejects "bare @section" "@section without an anchor" src/probe.hpp <<'FIX
 void probe();
 FIXTURE
 
+assert_rejects "@section run into its body" "runs an @section into its body" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *
+ *  @section probe_overview Overview
+ *  Doxygen swallows this line into the title unless a blank line separates them.
+ */
+void probe();
+FIXTURE
+
+assert_accepts "@section separated from its body" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *
+ *  @section probe_overview Overview
+ *
+ *  A blank line keeps the title a title.
+ */
+void probe();
+FIXTURE
+
 assert_rejects "markdown emphasis in a docblock" "Markdown emphasis in a Doxygen block" src/probe.hpp <<'FIXTURE'
 /**
  *  @brief A **probe**.

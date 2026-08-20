@@ -216,6 +216,16 @@ check_section_anchors() {
         "$file has an @section without an anchor - write '@section <anchor> <Title>':"
 }
 
+# Doxygen runs an @section title into the paragraph below it unless a blank line separates them.
+check_section_spacing() {
+    local run_on
+    run_on=$(printf '%s\n' "$added" | awk '
+        /^\+[[:space:]]*\*[[:space:]]*@section[[:space:]]+[a-z_]/ { title = $0; next }
+        title != "" { if ($0 ~ /^\+[[:space:]]*\*[[:space:]]*[^[:space:]*\/]/) print title; title = "" }' || true)
+    [ -z "$run_on" ] || fail "$run_on" \
+        "$file runs an @section into its body - leave a blank ' *' line after the title:"
+}
+
 # Markdown emphasis prints literally through Doxygen. One or two tokens take @b instead.
 check_markdown_doxygen() {
     local emphasis
@@ -331,6 +341,7 @@ while IFS= read -r -d '' file; do
         check_orphan_docblocks
         check_param_directions
         check_section_anchors
+        check_section_spacing
         check_markdown_doxygen
         check_doxygen_backticks
         check_mangled_literals
