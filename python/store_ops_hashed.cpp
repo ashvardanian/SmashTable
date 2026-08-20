@@ -1,7 +1,7 @@
 /**
  *  @brief The @c store_ops_t tables for the unordered core, which supplies no ordering at all.
  *  @author Ash Vardanian
- *  @file python/smashtable/store_ops_hashed.cpp
+ *  @file python/store_ops_hashed.cpp
  *  @date August 18, 2026
  *
  *  A separate translation unit from the ordered core because the cores are what pull in the heavy

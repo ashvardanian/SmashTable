@@ -1,7 +1,7 @@
 /**
  *  @brief Turns one store instantiation into a @c store_ops_t table of function pointers.
  *  @author Ash Vardanian
- *  @file python/smashtable/store_ops.hpp
+ *  @file python/store_ops.hpp
  *  @date August 18, 2026
  *
  *  Every operation the binding performs on a store passes through here exactly once, at compile time.
@@ -167,6 +167,72 @@ struct store_bridge {
         return removed;
     }
 
+    static expected<entry_t> pop_smallest(void *store) noexcept
+        requires ordered_k
+    {
+        deferring_store_call_t deferral;
+        expected<entry_t> removed {entry_t {}, success_k};
+        status_t const status = store_of(store).pop_smallest(
+            [&](value_t const &element) noexcept {
+                auto key = mapping_key_or_itself<value_t>(element).copy();
+                if (!key) return void(removed = expected<entry_t> {key.status()});
+                entry_t taken;
+                taken.key = std::move(*key);
+                if constexpr (associative_k) {
+                    auto held = element.mapped.copy();
+                    if (!held) return void(removed = expected<entry_t> {held.status()});
+                    taken.mapped = std::move(*held);
+                }
+                removed = std::move(taken);
+            },
+            no_op_t {});
+        if (failed(status)) return expected<entry_t> {status};
+        return removed;
+    }
+
+    /** @brief Runs one algebra, dispatching the compile-time parameter from the runtime request. */
+    static status_t set_algebra(void *first, void *second, void *result, algebra_t algebra) noexcept
+        requires(!associative_k)
+    {
+        deferring_store_call_t deferral;
+        status_t absorbed = success_k;
+        auto keep = [&](value_t const &member) noexcept {
+            if (failed(absorbed)) return;
+            auto copied = copy_safely(member);
+            if (!copied) return void(absorbed = copied.status());
+            absorbed = store_of(result).upsert(std::move(*copied));
+        };
+
+        status_t walked = success_k;
+        switch (algebra) {
+        case algebra_t::union_k:
+            walked = walk_algebra<algebra_t::union_k>(store_of(first), store_of(second), keep);
+            break;
+        case algebra_t::intersection_k:
+            walked = walk_algebra<algebra_t::intersection_k>(store_of(first), store_of(second), keep);
+            break;
+        case algebra_t::difference_k:
+            walked = walk_algebra<algebra_t::difference_k>(store_of(first), store_of(second), keep);
+            break;
+        case algebra_t::symmetric_difference_k:
+            walked = walk_algebra<algebra_t::symmetric_difference_k>(store_of(first), store_of(second), keep);
+            break;
+        }
+        return first_failure(walked, absorbed);
+    }
+
+    static expected<bool> is_subset(void *first, void *second) noexcept
+        requires(!associative_k)
+    {
+        return smashtable::is_subset(store_of(first), store_of(second));
+    }
+
+    static expected<bool> is_disjoint(void *first, void *second) noexcept
+        requires(!associative_k)
+    {
+        return smashtable::is_disjoint(store_of(first), store_of(second));
+    }
+
     static expected<value_variant_t> insert_if_missing(void *store, key_variant_t const &key,
                                                        value_variant_t &&value) noexcept {
         deferring_store_call_t deferral;
@@ -191,33 +257,6 @@ struct store_bridge {
 
 #pragma region Ordered Surface
 
-    /** @brief Copies out the element a bound landed on, which is the key alone for a set. */
-    static void take(value_t const &element, key_variant_t &key, value_variant_t *value) noexcept {
-        key = mapping_key_or_itself<value_t>(element);
-        if constexpr (associative_k)
-            if (value) *value = element.mapped;
-    }
-
-    static status_t lower_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
-                                bool &found) noexcept
-        requires ordered_k
-    {
-        deferring_store_call_t deferral;
-        found = false;
-        return store_of(store).lower_bound(
-            from, [&](value_t const &element) noexcept { take(element, key, value), found = true; }, no_op_t {});
-    }
-
-    static status_t upper_bound(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
-                                bool &found) noexcept
-        requires ordered_k
-    {
-        deferring_store_call_t deferral;
-        found = false;
-        return store_of(store).upper_bound(
-            from, [&](value_t const &element) noexcept { take(element, key, value), found = true; }, no_op_t {});
-    }
-
     /**
      *  @brief Erases the half-open window, with either end open.
      *
@@ -240,6 +279,45 @@ struct store_bridge {
 #pragma endregion Ordered Surface
 
 #pragma region Transactions
+
+    using cursor_t = typename store_t::ordered_cursor_t;
+
+    static cursor_t &cursor_of(void *cursor) noexcept { return *static_cast<cursor_t *>(cursor); }
+
+    static expected<void *> cursor_make(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept
+        requires ordered_k
+    {
+        auto opened = [&]() noexcept -> cursor_t {
+            if (from && upper) return store_of(store).cursor_range(key_variant_t(*from), key_variant_t(*upper));
+            if (from) return store_of(store).cursor_from(key_variant_t(*from));
+            if (upper) return store_of(store).cursor_up_to(key_variant_t(*upper));
+            return store_of(store).cursor();
+        }();
+        cursor_t *owned = own_in_python_storage<cursor_t>(std::move(opened));
+        if (!owned) return expected<void *> {out_of_memory_heap_k};
+        return expected<void *> {owned, success_k};
+    }
+
+    static void cursor_destroy(void *cursor) noexcept
+        requires ordered_k
+    {
+        deferring_store_call_t deferral;
+        release_python_storage<cursor_t>(cursor);
+    }
+
+    static bool cursor_next(void *cursor, key_variant_t &key, value_variant_t *value) noexcept
+        requires ordered_k
+    {
+        bool handed = false;
+        if (cursor_of(cursor).exhausted()) return false;
+        cursor_of(cursor).next([&](value_t const &element) noexcept {
+            key = mapping_key_or_itself<value_t>(element);
+            if constexpr (associative_k)
+                if (value) *value = element.mapped;
+            handed = true;
+        });
+        return handed;
+    }
 
     static expected<void *> transaction_make(void *store) noexcept {
         auto opened = store_of(store).transaction();
@@ -304,15 +382,14 @@ struct store_bridge {
      *
      *  Which walk answers depends on which ends are named, because each records a different read and
      *  the level is validated against exactly what was recorded: a closed window records that window,
-     *  an open upper end is stepped so each step records its own, and a window with no ends at all is
-     *  the whole keyspace and says so. An upper bound arrives with a lower one, since only the caller
-     *  can spell a layout's floor.
+     *  an open end records one running to that end of the keyspace, and a window with no ends at all is
+     *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
+     *  against is the one the caller asked for rather than one this layer chose.
      */
     static status_t transaction_scan(void *transaction, key_variant_t const *lower, key_variant_t const *upper,
                                      std::size_t limit, basic_vector<entry_t> &collected) noexcept
         requires ordered_k
     {
-        assert((lower || !upper) && "an upper bound needs a lower one; the caller supplies the layout's floor");
         deferring_store_call_t deferral;
         auto &self = transaction_of(transaction);
         status_t collecting = success_k;
@@ -326,30 +403,12 @@ struct store_bridge {
             return first_failure(walked, collecting);
         }
         if (lower) {
-            // An open upper end has no key to halt a merged walk at, so the window is stepped instead -
-            // `lower_bound` once and `upper_bound` after, which is the loop the store's own cursor runs.
-            // The step's key is copied out rather than aliased, because the next call reads the bound it
-            // was handed while the walk that produced it is already gone.
-            key_variant_t position;
-            key_variant_t reached;
-            bool landed = false;
-            auto seed = [&](value_t const &element) noexcept {
-                auto seen = mapping_key_or_itself<value_t>(element).copy();
-                if (!seen) {
-                    collecting = seen.status();
-                    return;
-                }
-                reached = std::move(*seen);
-                landed = true;
-                step(element);
-            };
-            status_t walked = self.lower_bound(*lower, seed, no_op_t {});
-            while (succeeded(walked) && succeeded(collecting) && landed && collected.size() != limit) {
-                position = std::move(reached);
-                landed = false;
-                walked = self.upper_bound(position, seed, no_op_t {});
-            }
-            return failed(walked) ? walked : collecting;
+            status_t const walked = self.range_from(*lower, step);
+            return first_failure(walked, collecting);
+        }
+        if (upper) {
+            status_t const walked = self.range_up_to(*upper, step);
+            return first_failure(walked, collecting);
         }
 
         status_t const walked = self.for_each(step);
@@ -446,10 +505,18 @@ struct store_bridge {
         built.erase = &erase;
         built.insert_if_missing = associative_k ? &insert_if_missing : nullptr;
 
+        if constexpr (!associative_k) {
+            built.set_algebra = &set_algebra;
+            built.is_subset = &is_subset;
+            built.is_disjoint = &is_disjoint;
+        }
+
         if constexpr (ordered_k) {
-            built.lower_bound = &lower_bound;
-            built.upper_bound = &upper_bound;
             built.erase_range = &erase_range;
+            built.pop_smallest = &pop_smallest;
+            built.cursor_make = &cursor_make;
+            built.cursor_destroy = &cursor_destroy;
+            built.cursor_next = &cursor_next;
         }
 
         if constexpr (enumerable_k && associative_k) built.visit_values = &visit_values;

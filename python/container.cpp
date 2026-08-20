@@ -1,7 +1,7 @@
 /**
  *  @brief The container classes - @c SortedMap, @c SortedSet and their unordered siblings.
  *  @author Ash Vardanian
- *  @file python/smashtable/container.cpp
+ *  @file python/container.cpp
  *  @date August 18, 2026
  *
  *  One file for every class, because behind @c store_ops_t they differ only in which methods their
@@ -20,12 +20,6 @@
 namespace ashvardanian::smashtable::py {
 
 #pragma region Construction
-
-/** @brief Casts a fast-convention function into the table's slot without tripping -Wcast-function-type. */
-template <typename function_type_>
-static PyCFunction as_pycfunction(function_type_ function) noexcept {
-    return reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(function));
-}
 
 bool is_container(module_state_t *state, PyObject *object) noexcept {
     return Py_IS_TYPE(object, state->sorted_map_type) || Py_IS_TYPE(object, state->sorted_set_type) ||
@@ -49,7 +43,8 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
     expected<void *> made = store_ops->make(ops);
     if (!made) {
         Py_DECREF(self);
-        return PyErr_NoMemory();
+        [[maybe_unused]] int const raised = raise_for(state, made.status());
+        return nullptr;
     }
     self->ops = ops;
     self->store_ops = store_ops;
@@ -280,8 +275,14 @@ static PyObject *Map_subscript(PyObject *self, PyObject *key) noexcept {
     expected<value_variant_t> found {key_not_found_k};
     run_over_values(container->mode, [&]() noexcept { found = container->store_ops->find(container->store, needle); });
 
-    if (!found) {
+    // A key nobody holds and a read nobody could answer are different facts, and only the first is a
+    // `KeyError`. Collapsing them would let `get()` hand back its default for a refusal.
+    if (found.status() == key_not_found_k) {
         PyErr_SetObject(PyExc_KeyError, key);
+        return nullptr;
+    }
+    if (!found) {
+        [[maybe_unused]] int const raised = raise_for(state_of_type(self), found.status(), key);
         return nullptr;
     }
     return value_to_python(*found);
@@ -470,54 +471,33 @@ static PyObject *Map_popmin(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    key_variant_t smallest_key;
-    expected<value_variant_t> removed {key_not_found_k};
-    run_over_values(container->mode, [&]() noexcept {
-        key_variant_t floor;
-        container->ops->least(floor);
-        // Two locked spans, because no store offers "remove the smallest" as one. The pair reported
-        // is the one the erase actually took, not the one the seek saw, so a key that vanished in
-        // between reads as absent rather than as a pair nobody removed. A key inserted below it in
-        // between is still missed, which is what a `pop_smallest` on the store would close.
-        bool found = false;
-        if (status_t const sought =
-                container->store_ops->lower_bound(container->store, floor, smallest_key, nullptr, found);
-            failed(sought)) {
-            removed = expected<value_variant_t> {sought};
-            return;
-        }
-        if (!found) return;
-        removed = container->store_ops->erase(container->store, smallest_key);
-    });
+    // One store call, so the pair handed back is the one that was removed and no key can be inserted
+    // below it between a seek and an erase.
+    expected<entry_t> removed {key_not_found_k};
+    run_over_values(container->mode,
+                    [&]() noexcept { removed = container->store_ops->pop_smallest(container->store); });
 
     if (!removed) {
-        // The seek found nothing, or the key it found was taken before the erase reached it. Either
-        // way there is no pair to hand back, and only a genuine failure is worth raising.
+        // Nothing was there, and only a genuine failure is worth raising over an empty store.
         if (removed.status() != key_not_found_k && raise_for(state, removed.status()) != 0) return nullptr;
         PyErr_SetString(PyExc_KeyError, "popmin(): store is empty");
         return nullptr;
     }
 
-    PyObject *key_object = key_to_python(smallest_key);
-    if (!key_object) return nullptr;
-    PyObject *value_object = value_to_python(*removed);
-    if (!value_object) {
-        Py_DECREF(key_object);
-        return nullptr;
-    }
-    PyObject *pair = PyTuple_Pack(2, key_object, value_object);
-    Py_DECREF(key_object);
-    Py_DECREF(value_object);
-    return pair;
+    return pair_to_python(removed->key, removed->mapped);
 }
 
-static char const doc_setdefault[] =                                                //
-    "setdefault(key, default=None, /)\n"                                            //
-    "\n"                                                                            //
-    "Value for a key, inserting default first when the key is absent.\n"            //
-    "\n"                                                                            //
-    "The insertion is one strict operation rather than a lookup followed by a\n"    //
-    "write, so two threads racing on the same key cannot both believe they won.\n"; //
+static char const doc_setdefault[] =                                               //
+    "setdefault(key, default=None, /)\n"                                           //
+    "\n"                                                                           //
+    "Value for a key, inserting default first when the key is absent.\n"           //
+    "\n"                                                                           //
+    "The insertion is one strict operation rather than a lookup followed by a\n"   //
+    "write, so two threads racing on the same key cannot both believe they won.\n" //
+    "\n"                                                                           //
+    "Raises:\n"                                                                    //
+    "  TypeError: If key is not of this store's key type, or default is not a\n"   //
+    "    value this store can hold.\n";                                            //
 
 static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
     auto *container = object_as<container_object_t>(self);
@@ -552,19 +532,20 @@ static char const doc_map_update[] =                                            
     "\n"                                                                           //
     "The batch lands as one unit: the store stages it and commits it once, so a\n" //
     "failure part-way leaves nothing applied. This is stronger than dict, which\n" //
-    "applies pairs one at a time.\n";                                              //
+    "applies pairs one at a time.\n"                                               //
+    "\n"                                                                           //
+    "Raises:\n"                                                                    //
+    "  TypeError: If other is neither a mapping nor an iterable of pairs, or a\n"  //
+    "    key or value in it is not one this store can hold.\n"                     //
+    "  ValueError: If an element of other is not a pair.\n";                       //
 
-static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
+static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
     auto *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "update() takes exactly one argument");
-        return nullptr;
-    }
 
-    bool const is_mapping = PyObject_HasAttrString(args[0], "keys");
-    PyObject *pairs = is_mapping ? PyMapping_Items(args[0]) : Py_NewRef(args[0]);
+    bool const is_mapping = PyObject_HasAttrString(other, "keys");
+    PyObject *pairs = is_mapping ? PyMapping_Items(other) : Py_NewRef(other);
     if (!pairs) return nullptr;
     PyObject *fast = PySequence_Fast(pairs, "update() needs a mapping or an iterable of pairs");
     Py_DECREF(pairs);
@@ -577,7 +558,8 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
     auto staged = basic_vector<entry_t>::make(static_cast<std::size_t>(total));
     if (!staged) {
         Py_DECREF(fast);
-        return PyErr_NoMemory();
+        [[maybe_unused]] int const raised = raise_for(state, staged.status());
+        return nullptr;
     }
 
     for (Py_ssize_t index = 0; index != total; ++index) {
@@ -604,9 +586,11 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
             Py_DECREF(fast);
             return nullptr;
         }
-        if (failed((*staged).push_back(assume_reserved, entry_t {std::move(key), std::move(value)}))) {
+        if (status_t const recorded = (*staged).push_back(assume_reserved, entry_t {std::move(key), std::move(value)});
+            failed(recorded)) {
             Py_DECREF(fast);
-            return PyErr_NoMemory();
+            [[maybe_unused]] int const raised = raise_for(state, recorded);
+            return nullptr;
         }
     }
     Py_DECREF(fast);
@@ -623,10 +607,13 @@ static PyObject *Map_update(PyObject *self, PyObject *const *args, Py_ssize_t co
 
 #pragma region Set Surface
 
-static char const doc_add[] = //
-    "add(member, /)\n"        //
-    "\n"                      //
-    "Insert a member. Adding one that is already present does nothing.\n";
+static char const doc_add[] =                                             //
+    "add(member, /)\n"                                                    //
+    "\n"                                                                  //
+    "Insert a member. Adding one that is already present does nothing.\n" //
+    "\n"                                                                  //
+    "Raises:\n"                                                           //
+    "  TypeError: If member is not of this set's key type.\n";            //
 
 static PyObject *Set_add(PyObject *self, PyObject *member) noexcept {
     auto *container = object_as<container_object_t>(self);
@@ -637,9 +624,9 @@ static PyObject *Set_add(PyObject *self, PyObject *member) noexcept {
     if (!key_from_python(member, container->ops, stored)) return nullptr;
 
     status_t status = success_k;
-    Py_BEGIN_ALLOW_THREADS;
-    status = container->store_ops->upsert(container->store, std::move(stored), nullptr);
-    Py_END_ALLOW_THREADS;
+    run_over_values(container->mode, [&]() noexcept {
+        status = container->store_ops->upsert(container->store, std::move(stored), nullptr);
+    });
     if (raise_for(state, status, member) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -654,16 +641,15 @@ static int set_erase(PyObject *self, PyObject *member, bool *was_present) noexce
     if (!key_from_python(member, container->ops, stored)) return -1;
 
     status_t status = success_k;
-    bool present = false;
-    Py_BEGIN_ALLOW_THREADS;
-    expected<value_variant_t> const removed = container->store_ops->erase(container->store, stored);
-    present = static_cast<bool>(removed);
-    status = removed.status();
-    Py_END_ALLOW_THREADS;
+    run_over_values(container->mode,
+                    [&]() noexcept { status = container->store_ops->erase(container->store, stored).status(); });
 
-    *was_present = present;
-    if (!present) return 0;
-    return raise_for(state, status, member);
+    // Absence is `key_not_found_k`, which is the caller's answer rather than a failure; anything else
+    // genuinely went wrong and is raised here, or `discard` would swallow a write conflict and
+    // `remove` would report one as a missing member.
+    *was_present = succeeded(status);
+    if (status != key_not_found_k) return raise_for(state, status, member);
+    return 0;
 }
 
 static char const doc_discard[] = //
@@ -718,29 +704,18 @@ static PyObject *Set_popmin(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    key_variant_t smallest;
-    bool present = false;
-    status_t status = success_k;
-    Py_BEGIN_ALLOW_THREADS;
-    key_variant_t floor;
-    container->ops->least(floor);
-    // See the map's popmin: the member reported is the one the erase took, not the one the seek saw.
-    bool found = false;
-    status_t const sought = container->store_ops->lower_bound(container->store, floor, smallest, nullptr, found);
-    if (failed(sought)) status = sought;
-    else if (found) {
-        expected<value_variant_t> const removed = container->store_ops->erase(container->store, smallest);
-        present = static_cast<bool>(removed);
-        status = removed.status();
-    }
-    Py_END_ALLOW_THREADS;
+    // One store call, so the member reported is the one that was removed. See the map's popmin.
+    expected<entry_t> removed {key_not_found_k};
+    run_over_values(container->mode,
+                    [&]() noexcept { removed = container->store_ops->pop_smallest(container->store); });
 
-    if (!present) {
+    if (!removed) {
+        // Nothing was there, and only a genuine failure is worth raising over an empty set.
+        if (removed.status() != key_not_found_k && raise_for(state, removed.status()) != 0) return nullptr;
         PyErr_SetString(PyExc_KeyError, "popmin(): set is empty");
         return nullptr;
     }
-    if (raise_for(state, status) != 0) return nullptr;
-    return key_to_python(smallest);
+    return key_to_python(removed->key);
 }
 
 static char const doc_set_update[] =                                               //
@@ -750,18 +725,18 @@ static char const doc_set_update[] =                                            
     "\n"                                                                           //
     "The batch lands as one unit: the store stages it and commits it once, so a\n" //
     "failure part-way leaves nothing applied. This is stronger than set, which\n"  //
-    "adds members one at a time.\n";                                               //
+    "adds members one at a time.\n"                                                //
+    "\n"                                                                           //
+    "Raises:\n"                                                                    //
+    "  TypeError: If other is not iterable, or a member of it is not of this\n"    //
+    "    set's key type.\n";                                                       //
 
-static PyObject *Set_update(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
+static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
     auto *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "update() takes exactly one argument");
-        return nullptr;
-    }
 
-    PyObject *fast = PySequence_Fast(args[0], "update() needs an iterable of members");
+    PyObject *fast = PySequence_Fast(other, "update() needs an iterable of members");
     if (!fast) return nullptr;
     Py_ssize_t const total = PySequence_Fast_GET_SIZE(fast);
 
@@ -770,7 +745,8 @@ static PyObject *Set_update(PyObject *self, PyObject *const *args, Py_ssize_t co
     auto staged = basic_vector<key_variant_t>::make(static_cast<std::size_t>(total));
     if (!staged) {
         Py_DECREF(fast);
-        return PyErr_NoMemory();
+        [[maybe_unused]] int const raised = raise_for(state, staged.status());
+        return nullptr;
     }
     for (Py_ssize_t index = 0; index != total; ++index) {
         key_variant_t member;
@@ -778,17 +754,18 @@ static PyObject *Set_update(PyObject *self, PyObject *const *args, Py_ssize_t co
             Py_DECREF(fast);
             return nullptr;
         }
-        if (failed((*staged).push_back(assume_reserved, std::move(member)))) {
+        if (status_t const recorded = (*staged).push_back(assume_reserved, std::move(member)); failed(recorded)) {
             Py_DECREF(fast);
-            return PyErr_NoMemory();
+            [[maybe_unused]] int const raised = raise_for(state, recorded);
+            return nullptr;
         }
     }
     Py_DECREF(fast);
 
     status_t status = success_k;
-    Py_BEGIN_ALLOW_THREADS;
-    status = container->store_ops->upsert_members(container->store, (*staged).data(), (*staged).size());
-    Py_END_ALLOW_THREADS;
+    run_over_values(container->mode, [&]() noexcept {
+        status = container->store_ops->upsert_members(container->store, (*staged).data(), (*staged).size());
+    });
     if (raise_for(state, status) != 0) return nullptr;
     Py_RETURN_NONE;
 }
@@ -796,9 +773,6 @@ static PyObject *Set_update(PyObject *self, PyObject *const *args, Py_ssize_t co
 #pragma endregion Set Surface
 
 #pragma region Algebra
-
-/** @brief Which members of the walked side end up in the result. */
-enum class algebra_t : std::uint8_t { union_k, intersection_k, difference_k, symmetric_difference_k };
 
 /** @brief Builds a fresh set of the same class, layout and store configuration, ready to receive results. */
 static PyObject *set_like(PyObject *self) noexcept {
@@ -821,75 +795,6 @@ static container_object_t *same_layout_set(PyObject *self, PyObject *other) noex
     return theirs->ops == mine->ops && theirs->store_ops == mine->store_ops ? theirs : nullptr;
 }
 
-/** @brief Whether the side being walked holds a member the other side also has. */
-enum class membership_t : std::uint8_t { absent_k, shared_k };
-
-/** @brief Which of the two sets a member is being drawn from. */
-enum class side_t : std::uint8_t { mine_k, theirs_k };
-
-/**
- *  @brief Whether a member belongs in the result of @p operation.
- *  @param[in] operation Which algebra is being computed.
- *  @param[in] membership Whether the other side holds this member too.
- *  @param[in] side Which set the member came from.
- */
-static bool keeps_member(algebra_t operation, membership_t membership, side_t side) noexcept {
-    bool const shared = membership == membership_t::shared_k;
-    bool const from_mine = side == side_t::mine_k;
-    switch (operation) {
-    case algebra_t::union_k: return true;
-    case algebra_t::intersection_k: return from_mine && shared;
-    case algebra_t::difference_k: return from_mine && !shared;
-    case algebra_t::symmetric_difference_k: return !shared;
-    }
-    return false;
-}
-
-/**
- *  @brief Computes the algebra entirely in C++, for two sets sharing a key layout.
- *
- *  No member becomes a Python object at any point: each is compared and copied as a stored scalar.
- *  The general path below has to build one per member, and then convert it back on the way into the
- *  result, which is three conversions for a value that never needed to leave the store.
- *
- *  @return True when the result was filled; false with an exception set.
- */
-static status_t set_algebra_natively(container_object_t *mine, container_object_t *theirs, container_object_t *result,
-                                     algebra_t operation) noexcept {
-    status_t outcome = success_k;
-    store_ops_t const *table = mine->store_ops;
-
-    auto absorb = [&](key_variant_t const &member, membership_t membership, side_t side) noexcept {
-        if (failed(outcome) || !keeps_member(operation, membership, side)) return;
-        auto copied = member.copy();
-        if (!copied) {
-            outcome = copied.status();
-            return;
-        }
-        outcome = table->upsert(result->store, std::move(*copied), nullptr);
-    };
-
-    auto membership_in = [&](void *store, key_variant_t const &member) noexcept {
-        expected<bool> const held = table->contains(store, member);
-        if (!held) outcome = held.status();
-        return held && *held ? membership_t::shared_k : membership_t::absent_k;
-    };
-
-    for_each_in_order(mine, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-        absorb(member, membership_in(theirs->store, member), side_t::mine_k);
-    });
-
-    // Union and symmetric difference also need what only the other side holds.
-    if (operation == algebra_t::union_k || operation == algebra_t::symmetric_difference_k)
-        for_each_in_order(theirs, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-            absorb(member, membership_in(mine->store, member), side_t::theirs_k);
-        });
-
-    // The status is threaded out rather than collapsed into a memory error: a table that ran out of
-    // probe slots is not a heap that ran out of memory, and the two want different remedies.
-    return outcome;
-}
-
 static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operation) noexcept {
     if (!PyObject_HasAttrString(other, "__contains__")) Py_RETURN_NOTIMPLEMENTED;
 
@@ -899,7 +804,7 @@ static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operatio
     if (auto *twin = same_layout_set(self, other)) {
         auto *mine = object_as<container_object_t>(self);
         auto *filled = object_as<container_object_t>(result);
-        status_t const outcome = set_algebra_natively(mine, twin, filled, operation);
+        status_t const outcome = mine->store_ops->set_algebra(mine->store, twin->store, filled->store, operation);
         if (raise_for(state_of_type(self), outcome) != 0) {
             Py_DECREF(result);
             return nullptr;
@@ -992,64 +897,37 @@ static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operatio
     return result;
 }
 
-static PyObject *Set_union(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "union() takes exactly one argument");
-        return nullptr;
-    }
-    return set_algebra(self, args[0], algebra_t::union_k);
+static PyObject *Set_union(PyObject *self, PyObject *other) noexcept {
+    return set_algebra(self, other, algebra_t::union_k);
 }
 
-static PyObject *Set_intersection(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "intersection() takes exactly one argument");
-        return nullptr;
-    }
-    return set_algebra(self, args[0], algebra_t::intersection_k);
+static PyObject *Set_intersection(PyObject *self, PyObject *other) noexcept {
+    return set_algebra(self, other, algebra_t::intersection_k);
 }
 
-static PyObject *Set_difference(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "difference() takes exactly one argument");
-        return nullptr;
-    }
-    return set_algebra(self, args[0], algebra_t::difference_k);
+static PyObject *Set_difference(PyObject *self, PyObject *other) noexcept {
+    return set_algebra(self, other, algebra_t::difference_k);
 }
 
-static PyObject *Set_symmetric_difference(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "symmetric_difference() takes exactly one argument");
-        return nullptr;
-    }
-    return set_algebra(self, args[0], algebra_t::symmetric_difference_k);
+static PyObject *Set_symmetric_difference(PyObject *self, PyObject *other) noexcept {
+    return set_algebra(self, other, algebra_t::symmetric_difference_k);
 }
 
-static PyObject *Set_isdisjoint(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "isdisjoint() takes exactly one argument");
-        return nullptr;
-    }
-
-    if (auto *twin = same_layout_set(self, args[0])) {
+static PyObject *Set_isdisjoint(PyObject *self, PyObject *other) noexcept {
+    if (auto *twin = same_layout_set(self, other)) {
         auto *mine = object_as<container_object_t>(self);
         store_ops_t const *table = mine->store_ops;
-        bool disjoint = true;
         // Probing the smaller side keeps this O(min(n, m) log max(n, m)) rather than always O(n log m).
-        auto const *smaller = table->size(mine->store) <= table->size(twin->store) ? mine : twin;
-        auto const *larger = smaller == mine ? twin : mine;
-        status_t asked = success_k;
-        for_each_in_order(smaller, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-            expected<bool> const held = table->contains(larger->store, member);
-            if (!held) asked = held.status();
-            disjoint = !(held && *held);
-            return disjoint;
-        });
-        if (failed(asked)) return raise_for(state_of_type(self), asked), nullptr;
-        return PyBool_FromLong(disjoint ? 1 : 0);
+        bool const mine_is_smaller = table->size(mine->store) <= table->size(twin->store);
+        void *smaller = mine_is_smaller ? mine->store : twin->store;
+        void *larger = mine_is_smaller ? twin->store : mine->store;
+        expected<bool> const apart = table->is_disjoint(smaller, larger);
+        if (!apart) return raise_for(state_of_type(self), apart.status()), nullptr;
+        return PyBool_FromLong(*apart ? 1 : 0);
     }
 
     auto const *container = object_as<container_object_t>(self);
-    PyObject *iterator = PyObject_GetIter(args[0]);
+    PyObject *iterator = PyObject_GetIter(other);
     if (!iterator) return nullptr;
     PyObject *member = nullptr;
     bool disjoint = true;
@@ -1075,7 +953,7 @@ static PyObject *Set_isdisjoint(PyObject *self, PyObject *const *args, Py_ssize_
         status_t const asked = held.status();
         bool const found = held && *held;
         if (failed(asked)) {
-            Py_DECREF(member);
+            // `member` was released as soon as it was converted, so only the iterator is still held.
             Py_DECREF(iterator);
             [[maybe_unused]] int const raised = raise_for(state_of_type(self), asked);
             return nullptr;
@@ -1124,7 +1002,8 @@ static char const doc_scan[] =                                                  
     "container itself when the whole range does not need to exist at once.\n"             //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
-    "  TypeError: If a bound is not of this store's key type.\n";                         //
+    "  TypeError: If a bound is not of this store's key type.\n"                          //
+    "  ValueError: If limit is negative.\n";                                              //
 
 /** @brief Drives the shared cursor into a list, so there is one traversal in the binding. */
 static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
@@ -1166,7 +1045,8 @@ static char const doc_set_scan[] =                                              
     "the set itself when the whole range does not need to exist at once.\n"        //
     "\n"                                                                           //
     "Raises:\n"                                                                    //
-    "  TypeError: If a bound is not of this set's key type.\n";                    //
+    "  TypeError: If a bound is not of this set's key type.\n"                     //
+    "  ValueError: If limit is negative.\n";                                       //
 
 static PyObject *Set_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
     return container_scan(self, args, count, keywords, cursor_yields_t::keys_k);
@@ -1291,41 +1171,51 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
 
     if (equal) {
         auto *twin = other_is_map ? object_as<container_object_t>(other) : nullptr;
-        for_each_in_order(container, [&](key_variant_t const &key, value_variant_t const &mapped) noexcept {
-            if (!equal || raised) return;
+        status_t const walked =
+            for_each_in_order(container, [&](key_variant_t const &key, value_variant_t const &mapped) noexcept {
+                if (!equal || raised) return;
 
-            value_variant_t theirs;
-            bool present = false;
-            PyObject *their_value = nullptr;
-            if (twin) {
-                // Same layout, so the key stays a stored scalar and never becomes a Python object.
-                auto probed = twin->store_ops->find(twin->store, key);
-                present = static_cast<bool>(probed);
-                if (present) theirs = std::move(*probed);
-            }
-            else {
-                PyObject *key_object = key_to_python(key);
-                if (!key_object) return void(raised = true);
-                their_value = PyDict_GetItemWithError(other, key_object); // Borrowed, or null
-                Py_DECREF(key_object);
-                present = their_value != nullptr;
-                if (!present && PyErr_Occurred()) return void(raised = true);
-            }
-            if (!present) return void(equal = false);
+                value_variant_t theirs;
+                bool present = false;
+                PyObject *their_value = nullptr;
+                if (twin) {
+                    // Same layout, so the key stays a stored scalar and never becomes a Python object.
+                    auto probed = twin->store_ops->find(twin->store, key);
+                    // A read that could not be answered is not a key the twin lacks, and must not settle
+                    // the comparison as though it were.
+                    if (!probed && probed.status() != key_not_found_k) {
+                        [[maybe_unused]] int const failed_read = raise_for(state_of_type(self), probed.status());
+                        return void(raised = true);
+                    }
+                    present = static_cast<bool>(probed);
+                    if (present) theirs = std::move(*probed);
+                }
+                else {
+                    PyObject *key_object = key_to_python(key);
+                    if (!key_object) return void(raised = true);
+                    their_value = PyDict_GetItemWithError(other, key_object); // Borrowed, or null
+                    Py_DECREF(key_object);
+                    present = their_value != nullptr;
+                    if (!present && PyErr_Occurred()) return void(raised = true);
+                }
+                if (!present) return void(equal = false);
 
-            PyObject *mine = value_to_python(mapped);
-            if (!mine) return void(raised = true);
-            PyObject *theirs_object = twin ? value_to_python(theirs) : Py_NewRef(their_value);
-            if (!theirs_object) {
+                PyObject *mine = value_to_python(mapped);
+                if (!mine) return void(raised = true);
+                PyObject *theirs_object = twin ? value_to_python(theirs) : Py_NewRef(their_value);
+                if (!theirs_object) {
+                    Py_DECREF(mine);
+                    return void(raised = true);
+                }
+                int const same = PyObject_RichCompareBool(mine, theirs_object, Py_EQ);
                 Py_DECREF(mine);
-                return void(raised = true);
-            }
-            int const same = PyObject_RichCompareBool(mine, theirs_object, Py_EQ);
-            Py_DECREF(mine);
-            Py_DECREF(theirs_object);
-            if (same < 0) return void(raised = true);
-            equal = same == 1;
-        });
+                Py_DECREF(theirs_object);
+                if (same < 0) return void(raised = true);
+                equal = same == 1;
+            });
+        // A walk that stopped short cannot settle equality, so the reason is raised rather than
+        // letting the elements it never reached read as matching.
+        if (failed(walked) && raise_for(state_of_type(self), walked) != 0) raised = true;
     }
 
     if (raised) return nullptr;
@@ -1334,21 +1224,21 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
 
 /** @brief Whether every member of @p self is also in @p other. */
 static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept {
+    // Reached with either side first, since `>=` asks this the other way round, so `self` may be a
+    // plain `set` with no module state of ours. That is the ordinary case rather than a failure, and
+    // the general path below answers it - the lookup's own exception is cleared with that in mind.
     module_state_t *state = state_of_type(self);
     if (state)
         if (auto *twin = same_layout_set(self, other)) {
             auto *mine = object_as<container_object_t>(self);
             store_ops_t const *table = mine->store_ops;
+            // A larger side cannot be contained in a smaller one, which spares the walk entirely.
             bool subset = table->size(mine->store) <= table->size(twin->store);
-            status_t asked = success_k;
-            if (subset)
-                for_each_in_order(mine, [&](key_variant_t const &member, value_variant_t const &) noexcept {
-                    expected<bool> const held = table->contains(twin->store, member);
-                    if (!held) asked = held.status();
-                    subset = held && *held;
-                    return subset;
-                });
-            if (failed(asked)) return raise_for(state, asked);
+            if (subset) {
+                expected<bool> const contained = table->is_subset(mine->store, twin->store);
+                if (!contained) return raise_for(state, contained.status());
+                subset = *contained;
+            }
             *answer = subset;
             return 0;
         }
@@ -1515,7 +1405,7 @@ static PyMethodDef SortedMap_methods[] = {
     {"pop", as_pycfunction(Map_pop), METH_FASTCALL, doc_pop},
     {"popmin", Map_popmin, METH_NOARGS, doc_popmin},
     {"setdefault", as_pycfunction(Map_setdefault), METH_FASTCALL, doc_setdefault},
-    {"update", as_pycfunction(Map_update), METH_FASTCALL, doc_map_update},
+    {"update", Map_update, METH_O, doc_map_update},
     {"keys", Map_keys, METH_NOARGS, "A lazy view over the keys, in order."},
     {"values", Map_values, METH_NOARGS, "A lazy view over the values, in key order."},
     {"scan", as_pycfunction(Map_scan), ST_METHOD_FLAGS_, doc_scan},
@@ -1529,13 +1419,13 @@ static PyMethodDef SortedSet_methods[] = {
     {"remove", Set_remove, METH_O, doc_remove},
     {"popmin", Set_popmin, METH_NOARGS, doc_set_popmin},
     {"clear", container_clear, METH_NOARGS, doc_clear},
-    {"update", as_pycfunction(Set_update), METH_FASTCALL, doc_set_update},
-    {"union", as_pycfunction(Set_union), METH_FASTCALL, "Members of either side, as a new set."},
-    {"intersection", as_pycfunction(Set_intersection), METH_FASTCALL, "Members of both sides."},
-    {"difference", as_pycfunction(Set_difference), METH_FASTCALL, "Members of this side only."},
-    {"symmetric_difference", as_pycfunction(Set_symmetric_difference), METH_FASTCALL, "Members of exactly one side."},
+    {"update", Set_update, METH_O, doc_set_update},
+    {"union", Set_union, METH_O, "Members of either side, as a new set."},
+    {"intersection", Set_intersection, METH_O, "Members of both sides."},
+    {"difference", Set_difference, METH_O, "Members of this side only."},
+    {"symmetric_difference", Set_symmetric_difference, METH_O, "Members of exactly one side."},
     {"scan", as_pycfunction(Set_scan), ST_METHOD_FLAGS_, doc_set_scan},
-    {"isdisjoint", as_pycfunction(Set_isdisjoint), METH_FASTCALL, "Whether the two sides share no member."},
+    {"isdisjoint", Set_isdisjoint, METH_O, "Whether the two sides share no member."},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -1617,7 +1507,7 @@ static PyMethodDef HashMap_methods[] = {
     {"clear", container_clear, METH_NOARGS, doc_clear},
     {"pop", as_pycfunction(Map_pop), METH_FASTCALL, doc_pop},
     {"setdefault", as_pycfunction(Map_setdefault), METH_FASTCALL, doc_setdefault},
-    {"update", as_pycfunction(Map_update), METH_FASTCALL, doc_map_update},
+    {"update", Map_update, METH_O, doc_map_update},
     {nullptr, nullptr, 0, nullptr},
 };
 
@@ -1626,7 +1516,7 @@ static PyMethodDef HashSet_methods[] = {
     {"discard", Set_discard, METH_O, doc_discard},
     {"remove", Set_remove, METH_O, doc_remove},
     {"clear", container_clear, METH_NOARGS, doc_clear},
-    {"update", as_pycfunction(Set_update), METH_FASTCALL, doc_set_update},
+    {"update", Set_update, METH_O, doc_set_update},
     {nullptr, nullptr, 0, nullptr},
 };
 

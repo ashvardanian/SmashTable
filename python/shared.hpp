@@ -1,7 +1,7 @@
 /**
  *  @brief Shared contract for the CPython extension - key layouts, stored values, module state, object layouts.
  *  @author Ash Vardanian
- *  @file python/smashtable/shared.hpp
+ *  @file python/shared.hpp
  *  @date October 30, 2025
  *
  *  Every translation unit includes this first and nothing else of ours. It exists so the per-domain files -
@@ -46,6 +46,12 @@ namespace ashvardanian::smashtable::py {
 
 /** @brief Every method taking arguments uses the fast convention; keywords are walked by hand. */
 #define ST_METHOD_FLAGS_ METH_FASTCALL | METH_KEYWORDS
+
+/** @brief Casts a fast-convention function into a method table's slot without tripping -Wcast-function-type. */
+template <typename function_type_>
+PyCFunction as_pycfunction(function_type_ function) noexcept {
+    return reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(function));
+}
 
 #pragma region Stored Values
 
@@ -354,9 +360,6 @@ using key_less_fn_t = bool (*)(key_variant_t const &, key_variant_t const &) noe
 /** @brief Hash of one key, used to pick its partition. Equal keys must hash equally. */
 using key_hash_fn_t = std::size_t (*)(key_variant_t const &) noexcept;
 
-/** @brief Writes the smallest key of a layout, which is where an unbounded walk starts. */
-using key_least_fn_t = void (*)(key_variant_t &) noexcept;
-
 /**
  *  @brief Everything a store needs to know about its key layout, resolved once at construction.
  *
@@ -372,7 +375,6 @@ struct key_ops_t {
     char const *name;
     key_less_fn_t less;
     key_hash_fn_t hash;
-    key_least_fn_t least;
 };
 
 extern key_ops_t const key_ops_i64;
@@ -538,6 +540,48 @@ struct store_ops_t {
      *  A set has no value to give back and answers with a default one; only its status means anything.
      */
     expected<value_variant_t> (*erase)(void *store, key_variant_t const &key) noexcept;
+
+    /**
+     *  @brief Removes the least member and hands back both halves, or reports @c key_not_found_k.
+     *
+     *  One store call rather than a seek and an erase, so the member reported is the one that was
+     *  taken. Null on an unordered core. A set fills only the key half.
+     */
+    expected<entry_t> (*pop_smallest)(void *store) noexcept;
+
+    /**
+     *  @brief Fills @p result with @p algebra over @p first and @p second, which share this table.
+     *
+     *  Only reachable when both sides were built from one table, which is what lets the second side
+     *  be driven through it. Null on a map, which has no set algebra.
+     */
+    status_t (*set_algebra)(void *first, void *second, void *result, algebra_t algebra) noexcept;
+
+    /**
+     *  @brief Opens the store's own ordered walk, optionally bounded at either end.
+     *
+     *  Both ends are the store's business: it holds the comparator, so a bound tested anywhere else
+     *  would be ordering keys differently from the store that holds them. Null on an unordered core.
+     */
+    expected<void *> (*cursor_make)(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept;
+
+    /** @brief Closes a walk opened by @c cursor_make. */
+    void (*cursor_destroy)(void *cursor) noexcept;
+
+    /**
+     *  @brief Takes one step, writing the key and, for a map, the value.
+     *  @return Whether a member was handed over; false once the walk is over.
+     *
+     *  The two halves are written into borrowed storage rather than returned, because a walk reuses one
+     *  key across every step and a text layout would otherwise allocate per element.
+     */
+    bool (*cursor_next)(void *cursor, key_variant_t &key, value_variant_t *value) noexcept;
+
+    /** @brief Whether every member of @p first is also in @p second, on the same terms. */
+    expected<bool> (*is_subset)(void *first, void *second) noexcept;
+
+    /** @brief Whether @p first and @p second share no member, on the same terms. */
+    expected<bool> (*is_disjoint)(void *first, void *second) noexcept;
     /**
      *  @brief Inserts only when absent, answering with the value that ended up stored.
      *
@@ -555,20 +599,6 @@ struct store_ops_t {
     // element is a key and a value, a set's is a key alone. Both reasons end when the cursor comes
     // from C++ and hands its key and value back separately.
 
-    /**
-     *  @brief First element at or after @p from, reporting through @p found whether there was one.
-     *
-     *  The answer is an out-parameter because the return carries the read's own status: a bound is a
-     *  read, and a read that records itself can refuse, so "nothing was there" and "the store could
-     *  not answer" are different facts that a lone @c bool would collapse.
-     *
-     *  Null on an unordered core.
-     */
-    status_t (*lower_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
-                            bool &found) noexcept;
-    /** @brief First element strictly after @p from, reporting through @p found. Null on an unordered core. */
-    status_t (*upper_bound)(void *store, key_variant_t const &from, key_variant_t &key, value_variant_t *value,
-                            bool &found) noexcept;
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(void *store, key_variant_t const *lower, key_variant_t const *upper) noexcept;
 
@@ -732,48 +762,24 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
 enum class cursor_yields_t : std::uint8_t { keys_k, values_k, items_k };
 
 /**
- *  @brief Where a walk stands.
+ *  @brief One lazy walk in key order, driven by the store's own cursor.
  *
- *  Three named states rather than a pair of flags, so "not begun" and "finished" cannot be confused
- *  or set at once. Fresh means nothing has been yielded and the next step seeks; walking means a key
- *  has been yielded and the next step advances strictly past it; exhausted means the walk ended, and
- *  it stays ended even if the store grows again.
- */
-enum class cursor_state_t : std::uint8_t { fresh_k, walking_k, exhausted_k };
-
-/**
- *  @brief The fixed limits of a walk: how far it may go and how many steps it may take.
- *
- *  Set once at construction and never written again, which is what separates them from the two
- *  members that move. An absent @c stop is unbounded above; a negative @c remaining is uncounted.
- */
-struct walk_limits_t {
-    std::optional<key_variant_t> stop;
-    Py_ssize_t remaining {-1};
-};
-
-/**
- *  @brief One lazy walk in key order, holding the last key by value rather than any node pointer.
- *
- *  The step is @c lower_bound while fresh and @c upper_bound after, which is the loop @c scan already
- *  ran - lifted out and made resumable, so the binding has exactly one traversal. Holding the position
- *  by value is what makes erasing the key it sits on harmless.
+ *  The walk itself belongs to the store: it holds the position, decides where a bound stops it, and
+ *  survives a concurrent write by re-probing rather than by holding a node. This object owns only the
+ *  Python side of it - the reference keeping the store alive, how many steps are left, and which half
+ *  of each element to hand back.
  *
  *  @c owner is a strong reference keeping the store alive for the walk, and is the only place the
  *  layout and the family are recorded - both are read back from it per step rather than cached here,
- *  so a cache can never disagree with the store it describes. @c limits are fixed at construction;
- *  @c position and @c state are the only members a step writes.
- *
- *  @c lock makes one step the unit of exclusion. A step drops the GIL, so two threads pulling from one
- *  iterator would otherwise both read @c position, both step from it, and both assign it back - a data
- *  race on a @c std::string for the two text layouts.
+ *  so a cache can never disagree with the store it describes.
  */
 struct cursor_object_t {
     PyObject_HEAD PyObject *owner;
     object_lock_t lock;
-    walk_limits_t limits;
-    key_variant_t position;
-    cursor_state_t state;
+    /** @brief The store's walk, closed through the same table that opened it. */
+    void *walk;
+    /** @brief How many steps are left, or negative when the walk is uncounted. */
+    Py_ssize_t remaining;
     cursor_yields_t yields;
 };
 
@@ -824,27 +830,21 @@ extern PyType_Spec hash_set_spec;
  *
  *  Only ever called on an ordered container, whose table carries the two bounds. A set hands the
  *  callback a value nothing wrote, since it has none.
+ *
+ *  @return The first refusal a step reported, so a caller folding this into an answer can tell a walk
+ *    that ended from one that stopped short.
  */
 template <typename callback_type_>
-void for_each_in_order(container_object_t const *container, callback_type_ &&callback) noexcept {
+[[nodiscard]] status_t for_each_in_order(container_object_t const *container, callback_type_ &&callback) noexcept {
     store_ops_t const *table = container->store_ops;
-    assert(table->lower_bound && table->upper_bound && "ordered walk over an unordered core");
+    assert(table->cursor_make && "ordered walk over an unordered core");
 
-    key_variant_t cursor;
-    container->ops->least(cursor);
+    expected<void *> opened = table->cursor_make(container->store, nullptr, nullptr);
+    if (!opened) return opened.status();
+
     key_variant_t found_key;
     value_variant_t found_value;
-    bool fresh = true;
-    while (true) {
-        bool advanced = false;
-        // A step the store could not answer ends the walk, the way an exhausted one does: this
-        // returns nothing to the caller, so there is nowhere to put a reason.
-        [[maybe_unused]] status_t const stepped =
-            fresh ? table->lower_bound(container->store, cursor, found_key, &found_value, advanced)
-                  : table->upper_bound(container->store, cursor, found_key, &found_value, advanced);
-        fresh = false;
-        if (!advanced) break;
-        cursor = found_key;
+    while (table->cursor_next(*opened, found_key, &found_value)) {
         // A callback answering `bool` stops the walk when it says so; one answering `void` is asking
         // for every element, and the difference is resolved here rather than by a flag.
         if constexpr (std::is_same_v<decltype(callback(found_key, found_value)), bool>) {
@@ -852,6 +852,8 @@ void for_each_in_order(container_object_t const *container, callback_type_ &&cal
         }
         else { callback(found_key, found_value); }
     }
+    table->cursor_destroy(*opened);
+    return success_k;
 }
 
 #pragma endregion Cursors
@@ -1096,6 +1098,12 @@ PyObject *key_to_python(key_variant_t const &key) noexcept;
  *  @return A new reference, or @c nullptr with an exception set.
  */
 PyObject *value_to_python(value_variant_t const &value) noexcept;
+
+/**
+ *  @brief Builds a @c (key, value) tuple from a stored pair, giving both halves back either way.
+ *  @return A new reference, or @c nullptr with an exception set.
+ */
+PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value) noexcept;
 
 #pragma endregion Conversion
 

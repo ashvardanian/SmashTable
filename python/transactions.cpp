@@ -1,18 +1,19 @@
 /**
  *  @brief @c Transaction and @c View - the transaction that makes one update span several containers.
  *  @author Ash Vardanian
- *  @file python/smashtable/transactions.cpp
+ *  @file python/transactions.cpp
  *  @date October 30, 2025
  *
  *  The unit of atomicity is the group, not the store: a @c with block opens one participant per
- *  container and the block either makes every change visible or none of them.
+ *  container, and the block either publishes every change or abandons every one. Publication walks
+ *  the participants in turn, so the group is all-or-nothing against failure rather than one instant.
  *
- *  @section transactions_alternatives Why the Participants Are a Variant
+ *  @section transactions_alternatives Why the Participants Are Type-Erased
  *
- *  A transaction may mix maps and sets, whose store types differ. That set of stores is closed and known at
- *  compile time, so participants are held in a @c std::variant rather than behind a base class: every
- *  uniform operation is one @c std::visit, which lowers to a switch with no vtable, no indirect call
- *  and no allocation per participant.
+ *  A transaction may mix maps and sets, whose store types differ. A participant holds its open
+ *  transaction behind a @c void* beside the @c store_ops_t table that drives it, so every uniform
+ *  operation is one indirect call with no vtable dispatch of its own and no arm to add when the store
+ *  matrix grows.
  *
  *  @section transactions_ordering Why the Order Is Canonical
  *
@@ -333,32 +334,22 @@ static char const doc_View_discard[] =                                          
     "  TypeError: If key is not of this store's key type.\n"                            //
     "  StateError: If the transaction has already finished.\n";                         //
 
-static PyObject *View_discard(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
+static PyObject *View_discard(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "discard() takes exactly one argument");
-        return nullptr;
-    }
     participant_t *part = part_of_or_raise(view, state);
     if (!part) return nullptr;
 
     key_variant_t stored;
-    if (!key_from_python(args[0], part->ops, stored)) return nullptr;
-    bool present = false;
+    if (!key_from_python(key, part->ops, stored)) return nullptr;
     status_t status = success_k;
     // One store call, which reports absence as `key_not_found_k`. Asking first and erasing after
     // would answer for a key another writer can remove in between, and under a monotonic view - where
     // a participant reads live published state - would raise for a key it did not remove.
     // `erase` on a map destroys the stored value, so this is a value operation even though its
     // argument is only a key.
-    if (run_over_participant(view, state, [&](participant_t &part) noexcept {
-            expected<bool> const held = part.contains(stored);
-            status = held.status();
-            present = held && *held;
-            if (present) status = part.erase(stored);
-        }) != 0)
+    if (run_over_participant(view, state, [&](participant_t &part) noexcept { status = part.erase(stored); }) != 0)
         return nullptr;
     if (status == key_not_found_k) Py_RETURN_FALSE;
     if (failed(status) && raise_for(state, status, key) != 0) return nullptr;
@@ -383,23 +374,19 @@ static char const doc_View_watch[] =                                            
     "  TypeError: If key is not of this store's key type.\n"                                //
     "  StateError: If the transaction has already finished.\n";                             //
 
-static PyObject *View_watch(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
+static PyObject *View_watch(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "watch() takes exactly one argument");
-        return nullptr;
-    }
     participant_t *part = part_of_or_raise(view, state);
     if (!part) return nullptr;
 
     key_variant_t stored;
-    if (!key_from_python(args[0], part->ops, stored)) return nullptr;
+    if (!key_from_python(key, part->ops, stored)) return nullptr;
     status_t status = success_k;
     if (run_over_participant(view, state, [&](participant_t &part) noexcept { status = part.watch(stored); }) != 0)
         return nullptr;
-    if (raise_for(state, status, args[0]) != 0) return nullptr;
+    if (raise_for(state, status, key) != 0) return nullptr;
     Py_RETURN_NONE;
 }
 
@@ -414,14 +401,11 @@ static char const doc_View_update[] =                                           
     "\n"                                                                                      //
     "Raises:\n"                                                                               //
     "  TypeError: If other is not a mapping, or a key is of the wrong type.\n"                //
+    "  ValueError: If an element of other is not a pair.\n"                                   //
     "  StateError: If the transaction has already finished.\n";                               //
 
-static PyObject *View_update(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
-    if (count != 1) {
-        PyErr_SetString(PyExc_TypeError, "update() takes exactly one argument");
-        return nullptr;
-    }
-    PyObject *pairs = PyMapping_Items(args[0]);
+static PyObject *View_update(PyObject *self, PyObject *other) noexcept {
+    PyObject *pairs = PyMapping_Items(other);
     if (!pairs) return nullptr;
     PyObject *fast = PySequence_Fast(pairs, "update() needs a mapping");
     Py_DECREF(pairs);
@@ -471,6 +455,7 @@ static char const doc_View_scan[] =                                             
     "\n"                                                                                           //
     "Raises:\n"                                                                                    //
     "  TypeError: If a bound is not of this store's key type, or this participant is unordered.\n" //
+    "  ValueError: If limit is negative.\n"                                                        //
     "  StateError: If the transaction has already finished.\n";                                    //
 
 static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
@@ -495,14 +480,6 @@ static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t cou
     bool has_start = start_object && start_object != Py_None;
     if (has_start && !key_from_python(start_object, part->ops, lower)) return nullptr;
     if (has_stop && !key_from_python(stop_object, part->ops, upper)) return nullptr;
-    // A closed window is one merged walk and records exactly itself, while an open lower end has no
-    // floor to start one from. Only the layout knows its smallest key, so it is spelled here rather
-    // than left to the walk, which would otherwise read the whole keyspace to answer a bounded ask.
-    if (has_stop && !has_start) {
-        part->ops->least(lower);
-        has_start = true;
-    }
-
     basic_vector<entry_t> collected;
     status_t status = success_k;
     std::size_t const wanted = limit < 0 ? std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(limit);
@@ -516,43 +493,23 @@ static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t cou
     PyObject *listed = PyList_New(static_cast<Py_ssize_t>(collected.size()));
     if (!listed) return nullptr;
     for (std::size_t index = 0; index != collected.size(); ++index) {
-        PyObject *key_object = key_to_python(collected[index].key);
-        if (!key_object) {
+        PyObject *element = associative ? pair_to_python(collected[index].key, collected[index].mapped)
+                                        : key_to_python(collected[index].key);
+        if (!element) {
             Py_DECREF(listed);
             return nullptr;
-        }
-        PyObject *element = key_object;
-        if (associative) {
-            PyObject *value_object = value_to_python(collected[index].mapped);
-            if (!value_object) {
-                Py_DECREF(key_object);
-                Py_DECREF(listed);
-                return nullptr;
-            }
-            element = PyTuple_Pack(2, key_object, value_object);
-            Py_DECREF(key_object);
-            Py_DECREF(value_object);
-            if (!element) {
-                Py_DECREF(listed);
-                return nullptr;
-            }
         }
         PyList_SET_ITEM(listed, static_cast<Py_ssize_t>(index), element);
     }
     return listed;
 }
 
-template <typename function_type_>
-static PyCFunction as_pycfunction(function_type_ function) noexcept {
-    return reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(function));
-}
-
 static PyMethodDef View_methods[] = {
     {"get", as_pycfunction(View_get), METH_FASTCALL, doc_View_get},
     {"add", View_add, METH_O, doc_View_add},
-    {"discard", as_pycfunction(View_discard), METH_FASTCALL, doc_View_discard},
-    {"watch", as_pycfunction(View_watch), METH_FASTCALL, doc_View_watch},
-    {"update", as_pycfunction(View_update), METH_FASTCALL, doc_View_update},
+    {"discard", View_discard, METH_O, doc_View_discard},
+    {"watch", View_watch, METH_O, doc_View_watch},
+    {"update", View_update, METH_O, doc_View_update},
     {"scan", as_pycfunction(View_scan), ST_METHOD_FLAGS_, doc_View_scan},
     {nullptr, nullptr, 0, nullptr},
 };
@@ -668,7 +625,10 @@ static char const doc_begin[] =                                                 
     "Participants stage in a process-wide canonical order rather than argument order,\n" //
     "which is what lets two groups naming the same containers in opposite orders run\n"  //
     "concurrently without deadlocking. The views you receive ignore that and follow\n"   //
-    "your arguments.\n";                                                                 //
+    "your arguments.\n"                                                                  //
+    "\n"                                                                                 //
+    "Raises:\n"                                                                          //
+    "  StateError: If the transaction has already finished.\n";                          //
 
 static PyObject *Transaction_begin(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
@@ -694,8 +654,8 @@ static char const doc_stage[] =                                                 
     "Validate every watch and reserve the writes. Nothing becomes visible.\n"            //
     "\n"                                                                                 //
     "This is the first of the two phases. After it succeeds, commit() cannot fail for\n" //
-    "a reason this transaction could have avoided, which is what makes the group\n"      //
-    "all-or-nothing rather than merely usually-all.\n"                                   //
+    "a reason this transaction could have avoided. It can still refuse over a watched\n" //
+    "key another transaction published while this one sat staged.\n"                     //
     "\n"                                                                                 //
     "A partial stage is never observable: if one participant refuses, every other is\n"  //
     "unwound before this returns.\n"                                                     //
@@ -721,14 +681,19 @@ static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
 static char const doc_commit[] =                                                          //
     "commit()\n"                                                                          //
     "\n"                                                                                  //
-    "Publish every staged change at once, across every container in the group.\n"         //
+    "Publish every staged change, one container at a time.\n"                             //
     "\n"                                                                                  //
-    "A reader either sees none of the transaction's writes or all of them; there is no\n" //
-    "moment at which half the stores have moved. Readers are not blocked while\n"         //
-    "this runs.\n"                                                                        //
+    "Not a snapshot across containers. Each is applied in turn, so a thread reading\n"    //
+    "two of them while this runs may find one a step ahead of the other; a reader that\n" //
+    "needs the pair to agree should take its own transaction. Readers are never\n"        //
+    "blocked while this runs.\n"                                                          //
+    "\n"                                                                                  //
+    "A refusal part-way leaves the containers already published and the rest staged,\n"   //
+    "so the group stays staged rather than finished and can still be unwound.\n"          //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
-    "  StateError: If the transaction was not staged first.\n";                           //
+    "  StateError: If the transaction was not staged first.\n"                            //
+    "  ConflictError: If a watched key was published over while the group sat staged.\n"; //
 
 static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
@@ -870,20 +835,23 @@ static PyMethodDef Transaction_methods[] = {
     {nullptr, nullptr, 0, nullptr},
 };
 
-static char const doc_Transaction[] =                                                   //
-    "A transaction of containers updated all-or-nothing.\n"                             //
-    "\n"                                                                                //
-    "Atomicity spans the whole transaction: every store moves together or none does,\n" //
-    "including when the body raises. No transaction ever reads another's\n"             //
-    "uncommitted writes. What more than that is promised depends on the store: its\n"   //
-    "isolation property reports the level, and below 'snapshot' a value already\n"      //
-    "read may change underneath, so a read-modify-write needs watch() to be safe.\n"    //
-    "\n"                                                                                //
-    "Durability is memory-only: this is not a database and nothing survives the\n"      //
-    "process.\n"                                                                        //
-    "\n"                                                                                //
-    "Used as a context manager, the block is exactly begin(), the body, stage(),\n"     //
-    "commit(); an exception discards everything instead.\n";                            //
+static char const doc_Transaction[] =                                                    //
+    "A transaction of containers staged together and then published in turn.\n"          //
+    "\n"                                                                                 //
+    "Either every store is published or none is: a body that raises resets each\n"       //
+    "participant, and a stage that one refuses unwinds the rest. Publication itself\n"   //
+    "walks the containers in turn rather than moving them at one instant, so a thread\n" //
+    "reading two of them while a commit runs may find one a step ahead - take a\n"       //
+    "transaction of your own if the pair must agree. No transaction ever reads\n"        //
+    "another's uncommitted writes. What more is promised depends on the store: its\n"    //
+    "isolation property reports the level, and below 'snapshot' a value already\n"       //
+    "read may change underneath, so a read-modify-write needs watch() to be safe.\n"     //
+    "\n"                                                                                 //
+    "Durability is memory-only: this is not a database and nothing survives the\n"       //
+    "process.\n"                                                                         //
+    "\n"                                                                                 //
+    "Used as a context manager, the block is exactly begin(), the body, stage(),\n"      //
+    "commit(); an exception discards everything instead.\n";                             //
 
 static PyType_Slot transaction_slots[] = {
     {Py_tp_dealloc, reinterpret_cast<void *>(Transaction_dealloc)},
@@ -952,9 +920,10 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     group->state = group_state_t::open_k;
 
     // The only allocation `parts` ever attempts, so every append below lands in reserved storage.
-    if (failed(group->parts.reserve(static_cast<std::size_t>(count)))) {
+    if (status_t const reserved = group->parts.reserve(static_cast<std::size_t>(count)); failed(reserved)) {
         Py_DECREF(group);
-        return PyErr_NoMemory();
+        [[maybe_unused]] int const raised = raise_for(state, reserved);
+        return nullptr;
     }
 
     for (Py_ssize_t position = 0; position != count; ++position) {

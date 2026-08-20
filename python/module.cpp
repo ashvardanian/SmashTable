@@ -1,7 +1,7 @@
 /**
  *  @brief Module definition, per-interpreter state, exception types and the @c atomic entry point.
  *  @author Ash Vardanian
- *  @file python/smashtable/module.cpp
+ *  @file python/module.cpp
  *  @date October 30, 2025
  *
  *  Multi-phase initialization with heap types is required rather than stylistic: @c Py_mod_gil is
@@ -75,11 +75,6 @@ static PyObject *container_transaction(PyObject *self, PyObject *) noexcept {
     PyObject *group = make_transaction(state, containers);
     Py_DECREF(containers);
     return group;
-}
-
-template <typename function_type_>
-static PyCFunction as_pycfunction(function_type_ function) noexcept {
-    return reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(function));
 }
 
 static PyMethodDef module_methods[] = {

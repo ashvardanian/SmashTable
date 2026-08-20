@@ -13,6 +13,7 @@ import pytest
 from .base import (
     Op,
     all_class_names,
+    make,
     apply_op,
     assert_same_state,
     enumerable_class_names,
@@ -518,3 +519,117 @@ def test_set_update_applies_as_one_unit(container, keygen):
 
 
 # endregion Batched writes
+
+
+# region Two containers of one layout
+
+# Every algebra and comparison method has a second implementation, taken when the other side is a
+# container of this one's exact type: the keys stay stored scalars and never become Python objects.
+# The stdlib-baseline tests above never reach it, because a `set` or `dict` argument fails the type
+# check that selects it. These sweep the same properties through that path.
+
+
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("operation", ["union", "intersection", "difference", "symmetric_difference"])
+def test_set_algebra_over_a_twin_matches_set(
+    container, container_class, key_type, value_mode, isolation, sharing, keygen, operation
+):
+    """Every algebra method agrees with the stdlib set when the argument is a container, not a set."""
+    keys = keygen(6)
+    mine, theirs = keys[:4], keys[2:]
+    model = populate(container, mine, mine)
+    twin = make(container_class, key_type, value_mode, isolation, sharing)
+    populate(twin, theirs, theirs)
+
+    got = getattr(container, operation)(twin)
+    want = getattr(model, operation)(set(theirs))
+    assert sorted(map(repr, got)) == sorted(map(repr, want))
+
+
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_isdisjoint_over_a_twin_matches_set(
+    container, container_class, key_type, value_mode, isolation, sharing, keygen
+):
+    """isdisjoint agrees with the stdlib set against a container argument, holding and not."""
+    keys = keygen(4)
+    model = populate(container, keys[:2], keys[:2])
+
+    apart = make(container_class, key_type, value_mode, isolation, sharing)
+    populate(apart, keys[2:], keys[2:])
+    assert container.isdisjoint(apart) == model.isdisjoint(set(keys[2:]))
+
+    overlapping = make(container_class, key_type, value_mode, isolation, sharing)
+    populate(overlapping, keys[:1], keys[:1])
+    assert container.isdisjoint(overlapping) == model.isdisjoint(set(keys[:1]))
+
+
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_subset_and_superset_over_a_twin_match_set(
+    container, container_class, key_type, value_mode, isolation, sharing, keygen
+):
+    """The four ordering comparisons agree with the stdlib set against a container argument."""
+    keys = keygen(4)
+    model = populate(container, keys[:2], keys[:2])
+    bigger = make(container_class, key_type, value_mode, isolation, sharing)
+    populate(bigger, keys, keys)
+
+    assert (container <= bigger) == (model <= set(keys))
+    assert (container < bigger) == (model < set(keys))
+    assert (container >= bigger) == (model >= set(keys))
+    assert (container > bigger) == (model > set(keys))
+
+
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_twin_holding_the_same_members_is_equal(
+    container, container_class, key_type, value_mode, isolation, sharing, keygen
+):
+    """Equality against a container argument answers on members, not on identity."""
+    keys = keygen(3)
+    populate(container, keys, keys)
+    twin = make(container_class, key_type, value_mode, isolation, sharing)
+    populate(twin, keys, keys)
+    assert container == twin
+
+    twin.discard(keys[0])
+    assert container != twin
+
+
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_twin_holding_the_same_pairs_is_equal(
+    container, container_class, key_type, value_mode, isolation, sharing, keygen
+):
+    """Equality against a map argument compares values, and a differing value settles it."""
+    keys = keygen(3)
+    populate(container, keys, [1, 2, 3])
+    twin = make(container_class, key_type, value_mode, isolation, sharing)
+    populate(twin, keys, [1, 2, 3])
+    assert container == twin
+
+    twin[keys[0]] = 99
+    assert container != twin
+
+
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_twin_compares_values_by_python_numeric_rules(
+    container, container_class, key_type, value_mode, isolation, sharing, keygen
+):
+    """`{k: 1} == {k: 1.0}` holds between two containers, as it does against a dict.
+
+    Values are compared by Python's rules rather than by how they are stored, so an integer and the
+    float equal to it agree. A comparison written against the stored representation would answer
+    False here, because the two are held as different alternatives.
+    """
+    key = keygen(1)[0]
+    container[key] = 1
+    twin = make(container_class, key_type, value_mode, isolation, sharing)
+    twin[key] = 1.0
+    assert container == twin
+
+
+# endregion Two containers of one layout

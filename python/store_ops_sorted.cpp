@@ -1,7 +1,7 @@
 /**
  *  @brief The @c store_ops_t tables for the ordered cores, and the resolver every constructor goes through.
  *  @author Ash Vardanian
- *  @file python/smashtable/store_ops_sorted.cpp
+ *  @file python/store_ops_sorted.cpp
  *  @date August 18, 2026
  *
  *  One translation unit per core, because the cores are what pull in the heavy templates: an isolation

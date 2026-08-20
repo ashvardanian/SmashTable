@@ -798,6 +798,24 @@ constexpr bool at_least(isolation_t offered, isolation_t required) noexcept {
     return static_cast<std::uint8_t>(offered) >= static_cast<std::uint8_t>(required);
 }
 
+/** @brief Where a cursor's next step begins, which is a different question before and after the first. */
+enum class cursor_seed_t : std::uint8_t {
+    /** @brief No bound was given and nothing has been handed over, so the walk starts at the least key. */
+    the_smallest_k,
+    /** @brief A bound was given and nothing has been handed over, so that bound is inclusive. */
+    the_given_bound_k,
+    /** @brief A key has been handed over, so the walk continues strictly above it. */
+    past_the_last_k,
+};
+
+/**
+ *  @brief Whether a cursor stops at a key it was given, or only when the store runs out.
+ *
+ *  Carried by the cursor rather than tested by the caller, because the comparator is the store's and
+ *  a caller comparing a delivered key against a bound would be ordering keys the store owns.
+ */
+enum class cursor_limit_t : bool { the_whole_keyspace_k, up_to_the_bound_k };
+
 /**
  *  @brief Whether a transaction's writes are sitting in the store, invisible, or not there yet.
  *
@@ -2086,6 +2104,125 @@ shared_lock(mutex_type_ &) -> shared_lock<mutex_type_>;
 #pragma endregion Shared Mutex
 
 #pragma endregion Transaction Group
+
+#pragma region Set Algebra
+
+/** @brief Which members of the two sides a walk keeps. */
+enum class algebra_t : std::uint8_t {
+    union_k,
+    intersection_k,
+    difference_k,
+    symmetric_difference_k,
+};
+
+/** @brief Whether the side being walked is the only one holding a member, or both are. */
+enum class membership_t : bool { on_one_side_k, on_both_sides_k };
+
+/** @brief Whether a member of the first side, at @p membership, is kept by @c algebra_. */
+template <algebra_t algebra_>
+[[nodiscard]] constexpr bool algebra_keeps_first(membership_t membership) noexcept {
+    if constexpr (algebra_ == algebra_t::union_k) return true;
+    else if constexpr (algebra_ == algebra_t::intersection_k) return membership == membership_t::on_both_sides_k;
+    else return membership == membership_t::on_one_side_k;
+}
+
+/**
+ *  @brief Whether @c algebra_ needs the second side walked as well as the first.
+ *    Only the two that can keep a member the first side never saw.
+ */
+template <algebra_t algebra_>
+[[nodiscard]] constexpr bool algebra_walks_both() noexcept {
+    return algebra_ == algebra_t::union_k || algebra_ == algebra_t::symmetric_difference_k;
+}
+
+/**
+ *  @brief Whether a member of the second side is kept, which needs no algebra to answer.
+ *
+ *  The second side is walked only to pick up what the first never had, so both algebras that reach it
+ *  keep the same members - anything already shared was handed over by the first sweep.
+ */
+[[nodiscard]] constexpr bool algebra_keeps_second(membership_t membership) noexcept {
+    return membership == membership_t::on_one_side_k;
+}
+
+/**
+ *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
+ *
+ *  @warning Neither side is held between elements, and the two have separate clocks, so a member
+ *    written to either during the walk may be seen or missed. Pass transactions rather than stores
+ *    where that matters - a common instant is something only the caller can arrange.
+ */
+template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
+[[nodiscard]] status_t walk_algebra(first_type_ const &first, second_type_ const &second,
+                                    callback_type_ &&callback) noexcept {
+
+    status_t probed = success_k;
+    auto sweep = [&](auto const &walked, auto const &probing, auto keeps) noexcept {
+        return walked.for_each([&](auto const &member) noexcept {
+            if (failed(probed)) return;
+            expected<bool> const shared = probing.contains(member);
+            if (!shared) {
+                probed = shared.status();
+                return;
+            }
+            membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+            if (keeps(membership)) callback(member);
+        });
+    };
+
+    status_t walked = sweep(first, second,
+                            [](membership_t membership) noexcept { return algebra_keeps_first<algebra_>(membership); });
+    if (failed(walked)) return walked;
+    if (failed(probed)) return probed;
+
+    if constexpr (algebra_walks_both<algebra_>()) {
+        walked =
+            sweep(second, first, [](membership_t membership) noexcept { return algebra_keeps_second(membership); });
+        if (failed(walked)) return walked;
+    }
+    return probed;
+}
+
+/**
+ *  @brief Whether every member of @p first is also in @p second.
+ *  Settled at the first member @p second lacks, though the walk still runs to the end - @c for_each
+ *  offers no way to halt it. What stops is the probing, which is the part that costs.
+ */
+template <typename first_type_, typename second_type_>
+[[nodiscard]] expected<bool> is_subset(first_type_ const &first, second_type_ const &second) noexcept {
+    bool subset = true;
+    status_t probed = success_k;
+    status_t const walked = first.for_each([&](auto const &member) noexcept {
+        if (!subset || failed(probed)) return;
+        expected<bool> const shared = second.contains(member);
+        if (!shared) return void(probed = shared.status());
+        subset = *shared;
+    });
+    if (failed(walked)) return walked;
+    if (failed(probed)) return probed;
+    return subset;
+}
+
+/**
+ *  @brief Whether the two sides share no member.
+ *  Settled at the first shared member, on the same terms as @c is_subset.
+ */
+template <typename first_type_, typename second_type_>
+[[nodiscard]] expected<bool> is_disjoint(first_type_ const &first, second_type_ const &second) noexcept {
+    bool disjoint = true;
+    status_t probed = success_k;
+    status_t const walked = first.for_each([&](auto const &member) noexcept {
+        if (!disjoint || failed(probed)) return;
+        expected<bool> const shared = second.contains(member);
+        if (!shared) return void(probed = shared.status());
+        disjoint = !*shared;
+    });
+    if (failed(walked)) return walked;
+    if (failed(probed)) return probed;
+    return disjoint;
+}
+
+#pragma endregion Set Algebra
 
 } // namespace ashvardanian::smashtable
 

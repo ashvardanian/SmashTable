@@ -1,7 +1,7 @@
 /**
  *  @brief Machinery every container shares - key layouts, scalar conversion, errors, and the cursor.
  *  @author Ash Vardanian
- *  @file python/smashtable/shared.cpp
+ *  @file python/shared.cpp
  *  @date August 17, 2026
  *
  *  Mirrors @c include/smashtable/shared.hpp on the C++ side: one place for the vocabulary the
@@ -74,19 +74,15 @@ static std::size_t key_hash_bytes(key_variant_t const &key) noexcept {
 // An unbounded walk needs a value strictly below every stored key, and a default-constructed variant
 // would carry the wrong alternative for three of the four layouts - reading a `std::string` out of an
 // `int64_t`. Each layout names its own floor instead.
-static void key_least_i64(key_variant_t &key) noexcept { key = key_variant_t {std::int64_t {INT64_MIN}}; }
-static void key_least_u64(key_variant_t &key) noexcept { key = key_variant_t {std::uint64_t {0}}; }
-static void key_least_str(key_variant_t &key) noexcept { key = key_variant_t {utf8_t {}}; }
-static void key_least_bytes(key_variant_t &key) noexcept { key = key_variant_t {bytes_t {}}; }
 
 #pragma endregion Key Layout Functions
 
 #pragma region Key Layout Tables
 
-key_ops_t const key_ops_i64 {key_type_t::i64_k, "int", &key_less_i64, &key_hash_i64, &key_least_i64};
-key_ops_t const key_ops_u64 {key_type_t::u64_k, "uint", &key_less_u64, &key_hash_u64, &key_least_u64};
-key_ops_t const key_ops_str {key_type_t::str_k, "str", &key_less_str, &key_hash_str, &key_least_str};
-key_ops_t const key_ops_bytes {key_type_t::bytes_k, "bytes", &key_less_bytes, &key_hash_bytes, &key_least_bytes};
+key_ops_t const key_ops_i64 {key_type_t::i64_k, "int", &key_less_i64, &key_hash_i64};
+key_ops_t const key_ops_u64 {key_type_t::u64_k, "uint", &key_less_u64, &key_hash_u64};
+key_ops_t const key_ops_str {key_type_t::str_k, "str", &key_less_str, &key_hash_str};
+key_ops_t const key_ops_bytes {key_type_t::bytes_k, "bytes", &key_less_bytes, &key_hash_bytes};
 
 #pragma endregion Key Layout Tables
 
@@ -347,6 +343,21 @@ PyObject *value_to_python(value_variant_t const &value) noexcept {
     return Py_XNewRef(held->held);
 }
 
+PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value) noexcept {
+    PyObject *key_object = key_to_python(key);
+    if (!key_object) return nullptr;
+    PyObject *value_object = value_to_python(value);
+    if (!value_object) {
+        Py_DECREF(key_object);
+        return nullptr;
+    }
+    // The tuple takes its own reference to each half, so both are given back whether it was built or not.
+    PyObject *pair = PyTuple_Pack(2, key_object, value_object);
+    Py_DECREF(key_object);
+    Py_DECREF(value_object);
+    return pair;
+}
+
 #pragma endregion Converting Back Out
 
 #pragma region Errors
@@ -387,53 +398,26 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
     case status_t::capacity_exhausted_k:
         PyErr_SetString(state->error, "the table's probe sequence is full and it could not grow");
         break;
-    default: PyErr_Format(state->error, "operation failed with status %d", static_cast<int>(status)); break;
+    // A bounded retry that gave up, which no store produces yet but which the vocabulary names.
+    case status_t::operation_would_block_k:
+        PyErr_SetString(state->error, "the operation gave up rather than block");
+        break;
+    // Anything the vocabulary names but this mapping has not claimed, spelled rather than numbered:
+    // a reader tracing an unexpected failure gets the enumerator, not a number to go look up.
+    default: PyErr_Format(state->error, "operation failed with status %s", name_of(status)); break;
     }
     return -1;
 }
 
 #pragma endregion Errors
 
-#pragma region Cursor Stepping
-
-/**
- *  @brief Advances one step, writing the key and, for a map, the value.
- *  @param[in] self The cursor to advance.
- *  @param[in] container The container being walked, which carries both tables.
- *  @param[out] found_key The key yielded, written only when the step succeeded.
- *  @param[out] found_value The mapped value, written only for a map step that succeeded.
- *  @return True when a key was produced, false when the walk is over.
- */
-static bool cursor_step(cursor_object_t *self, container_object_t const *container, key_variant_t &found_key,
-                        value_variant_t *found_value) noexcept {
-    store_ops_t const *table = container->store_ops;
-    bool advanced = false;
-    // A step that could not be answered ends the walk rather than reporting, because a cursor's
-    // `__next__` has only "a key" or "no more" to say. The store keeps the reason for the commit.
-    [[maybe_unused]] status_t const stepped =
-        self->state == cursor_state_t::fresh_k
-            ? table->lower_bound(container->store, self->position, found_key, found_value, advanced)
-            : table->upper_bound(container->store, self->position, found_key, found_value, advanced);
-    if (!advanced) return false;
-
-    // A stop bound is exclusive, so a key that is not below it ends the walk without yielding.
-    if (self->limits.stop && !container->ops->less(found_key, *self->limits.stop)) return false;
-
-    self->state = cursor_state_t::walking_k;
-    self->position = found_key;
-    return true;
-}
-
-#pragma endregion Cursor Stepping
-
 #pragma region Cursor Type
 
 static void cursor_dealloc(PyObject *self) noexcept {
     auto *walk = object_as<cursor_object_t>(self);
     PyObject_GC_UnTrack(self);
+    if (walk->walk && walk->owner) object_as<container_object_t>(walk->owner)->store_ops->cursor_destroy(walk->walk);
     Py_CLEAR(walk->owner);
-    walk->position.~key_variant_t();
-    walk->limits.~walk_limits_t();
     walk->lock.~object_lock_t();
     PyTypeObject *type = Py_TYPE(self);
     PyObject_GC_Del(self);
@@ -471,17 +455,9 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     // ask for the GIL back. No Python object is built until it is back either way.
     value_mode_t const step_mode = over_a_map ? header->mode : value_mode_t::scalars_k;
     run_over_values(step_mode, walk->lock, [&]() noexcept {
-        if (walk->state == cursor_state_t::exhausted_k) return;
-        if (walk->limits.remaining == 0) {
-            walk->state = cursor_state_t::exhausted_k;
-            return;
-        }
-        advanced = cursor_step(walk, header, found_key, over_a_map ? &found_value : nullptr);
-        if (!advanced) {
-            walk->state = cursor_state_t::exhausted_k;
-            return;
-        }
-        if (walk->limits.remaining > 0) --walk->limits.remaining;
+        if (!walk->walk || walk->remaining == 0) return;
+        advanced = header->store_ops->cursor_next(walk->walk, found_key, over_a_map ? &found_value : nullptr);
+        if (advanced && walk->remaining > 0) --walk->remaining;
     });
 
     // No exception set, which CPython reads as `StopIteration`
@@ -490,19 +466,7 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     switch (walk->yields) {
     case cursor_yields_t::keys_k: return key_to_python(found_key);
     case cursor_yields_t::values_k: return value_to_python(found_value);
-    case cursor_yields_t::items_k: {
-        PyObject *key_object = key_to_python(found_key);
-        if (!key_object) return nullptr;
-        PyObject *value_object = value_to_python(found_value);
-        if (!value_object) {
-            Py_DECREF(key_object);
-            return nullptr;
-        }
-        PyObject *pair = PyTuple_Pack(2, key_object, value_object);
-        Py_DECREF(key_object);
-        Py_DECREF(value_object);
-        return pair;
-    }
+    case cursor_yields_t::items_k: return pair_to_python(found_key, found_value);
     }
     return nullptr;
 }
@@ -538,30 +502,29 @@ PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t
         return nullptr;
     }
 
+    // Opened before the object is built, so a store that cannot open a walk raises rather than
+    // handing back a cursor that would end on its first step.
+    expected<void *> opened = header->store_ops->cursor_make(header->store, start, stop);
+    if (!opened) {
+        [[maybe_unused]] int const raised = raise_for(state, opened.status());
+        return nullptr;
+    }
+
     auto *walk = PyObject_GC_New(cursor_object_t, state->cursor_type);
-    if (!walk) return nullptr;
+    if (!walk) {
+        header->store_ops->cursor_destroy(*opened);
+        return nullptr;
+    }
     // No incref of the type here: `PyObject_GC_New` already took one, and the matching decref in
     // dealloc gives back exactly one. Taking a second immortalises the type in practice.
 
     // Placement-new the owned members, since `PyObject_GC_New` only hands back raw storage.
     new (&walk->lock) object_lock_t {};
-    new (&walk->position) key_variant_t {};
-    new (&walk->limits) walk_limits_t {};
 
-    auto const *ops = header->ops;
     walk->owner = Py_NewRef(container);
     walk->yields = yields;
-    walk->state = cursor_state_t::fresh_k;
-    walk->limits.remaining = limit;
-
-    // An unbounded walk starts at the layout's own floor. A default-constructed key would carry the
-    // wrong alternative for three of the four layouts, so the ops table supplies it.
-    if (start) walk->position = *start;
-    else ops->least(walk->position);
-
-    // `lower_bound` is inclusive, so an explicit start is itself a candidate. An absent stop is an
-    // empty optional rather than a flag, so "unbounded" cannot disagree with the bound beside it.
-    if (stop) walk->limits.stop = *stop;
+    walk->walk = *opened;
+    walk->remaining = limit;
 
     PyObject_GC_Track(walk);
     return reinterpret_cast<PyObject *>(walk);
