@@ -68,7 +68,7 @@ struct bytes_t {
     bool operator==(bytes_t const &other) const noexcept { return data == other.data; }
 };
 
-struct releases_t;
+class releases_t;
 
 /**
  *  @brief One owned Python reference, for a store whose values may be arbitrary objects.

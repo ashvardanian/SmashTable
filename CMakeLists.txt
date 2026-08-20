@@ -104,24 +104,22 @@ add_library(smashtable_warnings INTERFACE)
 
 option(SMASHTABLE_WERROR "Treat compiler warnings as errors" OFF)
 
-# `#pragma region` markers are ignored by Clang and GCC, but GCC still warns about them.
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    target_compile_options(smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wno-unknown-pragmas)
+    # GCC warns about the `#pragma region` markers Clang and GCC both ignore. `-Wshadow` is what these legs
+    # need to reject a shadowed local here rather than three minutes later as MSVC's C4456.
+    target_compile_options(smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wshadow -Wno-unknown-pragmas)
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE -Werror)
     endif ()
 elseif (MSVC)
-    # Without a branch here MSVC compiles at its default warning level and `SMASHTABLE_WERROR` silently does nothing, so
-    # the Windows leg of CI reports green on code the other two legs reject. `/permissive-` matters for a template-heavy
-    # header: it turns on two-phase name lookup, which is what GCC and Clang already do.
-    target_compile_options(smashtable_warnings INTERFACE /W4 /permissive- /utf-8)
-    # MSVC's traditional preprocessor rejects `__VA_OPT__`, which the assertion macros use to append a caller's
-    # message, so the test suite is a wall of C2760 without this. The conforming preprocessor has handled it
-    # since 2019 16.6.
-    target_compile_options(smashtable_warnings INTERFACE /Zc:preprocessor)
-    # C4324 fires on a type that asked to be over-aligned, which the alignment tests do on purpose;
-    # under `/WX` it would fail the build for doing exactly what it was told.
-    target_compile_options(smashtable_warnings INTERFACE /wd4324)
+    # Without this branch MSVC compiles at its default warning level and `SMASHTABLE_WERROR` silently does nothing.
+    # `/permissive-` buys two-phase lookup, `/Zc:preprocessor` buys the `__VA_OPT__` the assertion macros are built
+    # on, and `/bigobj` is cheap insurance: the partitioned suite already emits 2k sections against a 64k ceiling.
+    target_compile_options(smashtable_warnings INTERFACE /W4 /permissive- /utf-8 /Zc:preprocessor /bigobj)
+    # C4324 fires on the over-alignment the alignment tests ask for on purpose. C4702 judges reachability per
+    # instantiation after inlining, so the dead arm of an `if constexpr` and the `return` past a test callback
+    # that asserts it can never fire both trip it; GCC and Clang judge the template and say nothing.
+    target_compile_options(smashtable_warnings INTERFACE /wd4324 /wd4702)
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE /WX)
     endif ()

@@ -889,7 +889,7 @@ class partitioned_store {
 
                     if (delivered) {
                         states_[smallest.index] = front_state_t::exhausted_k;
-                        [[maybe_unused]] status_t const bounded = part.upper_bound(
+                        [[maybe_unused]] status_t const refilled = part.upper_bound(
                             position_,
                             [&](value_t const &element) noexcept {
                                 fronts_[smallest.index] = identifier_t(element);
