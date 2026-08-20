@@ -35,6 +35,15 @@
 # The Python extension is not built here: `setup.py` compiles the translation units under
 # `python/` directly, as a wheel build has no use for the test and install machinery below.
 cmake_minimum_required(VERSION 3.21)
+
+# Leverage `ccache` where it is installed, which turns a rebuild of an unchanged translation unit into a
+# lookup. This tree compiles 16 of them, several taking tens of seconds, so the cache earns its keep.
+find_program(CCACHE_PROGRAM ccache)
+if (CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
+    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
+endif ()
 project(
     smashtable
     VERSION 0.1.0
@@ -106,6 +115,10 @@ elseif (MSVC)
     # the Windows leg of CI reports green on code the other two legs reject. `/permissive-` matters for a template-heavy
     # header: it turns on two-phase name lookup, which is what GCC and Clang already do.
     target_compile_options(smashtable_warnings INTERFACE /W4 /permissive- /utf-8)
+    # MSVC's traditional preprocessor rejects `__VA_OPT__`, which the assertion macros use to append a caller's
+    # message, so the test suite is a wall of C2760 without this. The conforming preprocessor has handled it
+    # since 2019 16.6.
+    target_compile_options(smashtable_warnings INTERFACE /Zc:preprocessor)
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE /WX)
     endif ()

@@ -3,8 +3,10 @@ name: Pre-Release
 on:
   push:
     branches: ["main-dev"]
+    paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
   pull_request:
-    branches: ["main-dev"]
+    branches: ["main", "main-dev"]
+    paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
 
 env:
   GH_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
@@ -16,13 +18,14 @@ permissions:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: true
 
 jobs:
 
   versioning:
     name: Update Version
     runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -48,6 +51,7 @@ jobs:
   test_headers:
     name: Headers Compile Standalone (${{ matrix.compiler }})
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
@@ -81,6 +85,7 @@ jobs:
     name: ${{ matrix.name }}
     needs: test_headers
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -130,6 +135,7 @@ jobs:
     name: Ubuntu (CUDA)
     needs: test_headers
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     env:
       CC: gcc-14
       CXX: g++-14
@@ -155,12 +161,14 @@ jobs:
       - name: Build
         run: cmake --build build --parallel 2
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 900
+        # Only the CUDA suite: the nine CPU tests here are the same ones `Ubuntu (GCC 14)` just ran.
+        run: ctest --test-dir build -R test_atomic_cuda --output-on-failure --timeout 900
 
   test_32bit:
     name: Linux 32-bit (i386)
     needs: test_headers
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -178,8 +186,8 @@ jobs:
 
   test_macos:
     name: macOS (AppleClang)
-    needs: test_headers
     runs-on: macos-15
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -192,8 +200,8 @@ jobs:
 
   test_windows:
     name: Windows (MSVC)
-    needs: test_headers
     runs-on: windows-2025
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -206,8 +214,8 @@ jobs:
 
   test_python:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
-    needs: test_headers
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -220,6 +228,7 @@ jobs:
         uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
+          cache: "pip"
       - name: Install Test Dependencies
         run: |
           python -m pip install --upgrade pip
@@ -246,8 +255,9 @@ jobs:
   # A smoke subset only. The full matrix runs on release, where an unbuildable wheel is fatal.
   build_wheels:
     name: Wheels ${{ matrix.os }} cp${{ matrix.python-version }}
-    needs: test_python
+    needs: test_headers
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
