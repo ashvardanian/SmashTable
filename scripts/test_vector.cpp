@@ -161,14 +161,14 @@ static void vector_reserve_refuses_wrapping_capacity() {
     st_verify_eq_(vector.reserve(max_capacity), status_t::out_of_memory_heap_k);
     st_verify_eq_(vector.capacity(), 0u);
     st_verify_eq_(recording_allocator<long long>::requests_count, 1u);
-    st_verify_(recording_allocator<long long>::largest_request <= max_capacity);
+    st_verify_le_(recording_allocator<long long>::largest_request, max_capacity);
 
     // Ordinary growth is untouched by the guard, and still at least doubles.
     basic_vector<long long> heap_vector;
     st_verify_(heap_vector.reserve(1));
     st_verify_eq_(heap_vector.capacity(), 4u);
     st_verify_(heap_vector.reserve(5));
-    st_verify_(heap_vector.capacity() >= 8u);
+    st_verify_ge_(heap_vector.capacity(), 8u);
     st_verify_(heap_vector.push_back(11));
     st_verify_eq_(heap_vector[0], 11);
 }
@@ -178,15 +178,15 @@ static void vector_growth_is_amortized() {
     basic_vector<int> vector;
     for (int value = 0; value < 100; ++value) st_verify_(vector.push_back(int {value}));
     st_verify_eq_(vector.size(), 100u);
-    st_verify_(vector.capacity() >= 100u);
-    st_verify_(vector.capacity() < 200u);
+    st_verify_ge_(vector.capacity(), 100u);
+    st_verify_lt_(vector.capacity(), 200u);
     for (int value = 0; value < 100; ++value) st_verify_eq_(vector[static_cast<std::size_t>(value)], value);
 
     vector.pop_back();
     st_verify_eq_(vector.size(), 99u);
     vector.clear();
     st_verify_(vector.empty());
-    st_verify_(vector.capacity() >= 100u);
+    st_verify_ge_(vector.capacity(), 100u);
 }
 
 /** @brief A failed @c resize leaves the elements alone, whatever it did to the capacity. */
@@ -243,7 +243,7 @@ static void vector_move_semantics() {
     auto made = basic_vector<int>::make(16);
     st_verify_(static_cast<bool>(made));
     basic_vector<int> vector = std::move(*made);
-    st_verify_(vector.capacity() >= 16u);
+    st_verify_ge_(vector.capacity(), 16u);
     for (int value = 0; value < 16; ++value) st_verify_(vector.push_back(assume_reserved, int {value}));
 
     basic_vector<int> moved = std::move(vector);

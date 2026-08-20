@@ -696,7 +696,7 @@ struct call_tally_t {
      */
     static void verify_comparisons_logarithmic(std::size_t size, std::size_t multiple) noexcept {
         std::size_t const allowed = multiple * (logarithm_of(size) + 1);
-        st_verify_((comparisons_count() <= allowed) && "the operation compared more than a logarithm of times");
+        st_verify_le_(comparisons_count(), allowed, "the operation compared more than a logarithm of times");
     }
 };
 
@@ -1135,10 +1135,10 @@ void test_range_query_head_state(std::size_t size = 100) {
                                        max_key = std::max(max_key, mapping_key_or_itself<member_t>(member));
                                        count++;
                                    }));
-        st_verify_((count) > (0));
+        st_verify_gt_(count, 0);
         if (count > 0) {
-            st_verify_((min_key) >= (trivial_id_to_key<member_t>(index)));
-            st_verify_((max_key) <= (trivial_id_to_key<member_t>(index + 10)));
+            st_verify_ge_(min_key, trivial_id_to_key<member_t>(index));
+            st_verify_le_(max_key, trivial_id_to_key<member_t>(index + 10));
         }
     }
 
@@ -1146,14 +1146,14 @@ void test_range_query_head_state(std::size_t size = 100) {
         auto idx_key = trivial_id_to_key<member_t>(index);
         auto maybe_member = container.upper_bound_copy(idx_key);
         st_verify_(maybe_member);
-        st_verify_((mapping_key_or_itself(*maybe_member)) >= (idx_key));
+        st_verify_ge_(mapping_key_or_itself(*maybe_member), idx_key);
     }
 
     for (std::size_t index = 0; index < size - 1; ++index) {
         auto idx_key = trivial_id_to_key<member_t>(index);
         auto maybe_member = container.lower_bound_copy(idx_key);
         st_verify_(maybe_member);
-        st_verify_((mapping_key_or_itself(*maybe_member)) >= (idx_key));
+        st_verify_ge_(mapping_key_or_itself(*maybe_member), idx_key);
     }
 }
 

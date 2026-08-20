@@ -161,6 +161,16 @@ struct shard_protocol_surface_t {
         store.transaction_at(stamp, stamp);
     };
 };
+struct smallest_surface_t {
+    template <typename store_type_>
+    static constexpr bool offered =
+        requires(store_type_ const &store, no_op_t callback) { store.smallest(callback, callback); };
+};
+struct pop_smallest_surface_t {
+    template <typename store_type_>
+    static constexpr bool offered =
+        requires(store_type_ &store, no_op_t callback) { store.pop_smallest(callback, callback); };
+};
 struct heterogeneous_erase_surface_t {
     template <typename store_type_>
     static constexpr bool offered =
@@ -326,13 +336,15 @@ constexpr bool every_surface_survives = (parity_witness<surfaces_, wrapper_, sto
 
 /** @brief The whole public store surface against one wrapper. */
 template <typename wrapper_, typename store_type_>
-constexpr bool store_surface_survives = every_surface_survives<
-    wrapper_, store_type_, sample_one_surface_t, sample_reservoir_surface_t, equal_range_surface_t, select_surface_t,
-    rank_surface_t, ranked_size_surface_t, for_each_surface_t, lower_bound_surface_t, upper_bound_surface_t,
-    range_surface_t, erase_range_surface_t, erase_from_surface_t, erase_up_to_surface_t, update_range_surface_t,
-    insert_surface_t, insert_if_missing_surface_t, insert_or_assign_surface_t, update_surface_t, find_copy_surface_t,
-    vacuum_surface_t, vacuum_window_surface_t, versions_count_surface_t, low_water_mark_surface_t,
-    visible_cursor_surface_t, shard_protocol_surface_t, heterogeneous_erase_surface_t>;
+constexpr bool store_surface_survives =
+    every_surface_survives<wrapper_, store_type_, sample_one_surface_t, sample_reservoir_surface_t,
+                           equal_range_surface_t, select_surface_t, rank_surface_t, ranked_size_surface_t,
+                           for_each_surface_t, lower_bound_surface_t, upper_bound_surface_t, range_surface_t,
+                           erase_range_surface_t, erase_from_surface_t, erase_up_to_surface_t, update_range_surface_t,
+                           insert_surface_t, insert_if_missing_surface_t, insert_or_assign_surface_t, update_surface_t,
+                           find_copy_surface_t, vacuum_surface_t, vacuum_window_surface_t, versions_count_surface_t,
+                           low_water_mark_surface_t, visible_cursor_surface_t, shard_protocol_surface_t,
+                           heterogeneous_erase_surface_t, smallest_surface_t, pop_smallest_surface_t>;
 
 /** @brief The whole transaction surface against one wrapper. */
 template <typename wrapper_, typename store_type_>
@@ -573,8 +585,9 @@ constexpr bool refuses_at_transaction<clear_pair_t> = true;
  *  @brief Store surfaces a transaction @b should carry and does not yet.
  *
  *  Every entry here is work outstanding, not a decision, and each should be deleted from this list by
- *  the change that implements it rather than by anyone judging it unnecessary. The fold below counts
- *  them, so removing a method without removing its entry leaves the count wrong and fails.
+ *  the change that implements it rather than by anyone judging it unnecessary. Listing a pair only
+ *  excuses it from the assertion below, and nothing notices an entry the implementing change left
+ *  behind, so the deletion has to travel with the implementation.
  */
 template <typename pair_>
 constexpr bool unimplemented_at_transaction = false;

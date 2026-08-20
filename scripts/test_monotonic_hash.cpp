@@ -548,8 +548,8 @@ static void test_reserve_reaches_the_slab() {
         st_verify_eq_(ledger.granted_count, std::size_t {0});
 
         st_verify_(container.reserve(64));
-        st_verify_(ledger.granted_count > 0);
-        st_verify_(ledger.largest_request_elements() > 0);
+        st_verify_gt_(ledger.granted_count, 0);
+        st_verify_gt_(ledger.largest_request_elements(), 0);
 
         for (trivial_id_t identifier = 0; identifier != 64; ++identifier)
             st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 1)));

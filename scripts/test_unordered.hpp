@@ -214,7 +214,7 @@ void test_unordered_empty_container_operations() {
     container_t reserved = *std::move(allocated);
     st_verify_(reserved.empty());
     st_verify_eq_(reserved.size(), 0u);
-    st_verify_((reserved.bucket_count()) > (0u));
+    st_verify_gt_(reserved.bucket_count(), 0u);
     unordered_verify_absent(reserved, 1);
     st_verify_eq_(reserved.begin(), reserved.end(), "a reserved but empty container iterates over nothing");
     st_verify_eq_(unordered_keys_by_for_each(reserved).first.size(), 0u);
@@ -294,7 +294,7 @@ void test_unordered_growth_through_rehashes(std::size_t size = 4000) {
         }
     }
 
-    st_verify_((rehashes) > (3) && "growing to thousands of elements must rehash repeatedly");
+    st_verify_gt_(rehashes, 3, "growing to thousands of elements must rehash repeatedly");
     unordered_verify_against_oracle(container, oracle, size + 100);
 }
 
@@ -448,7 +448,7 @@ void test_unordered_capacity_management(std::size_t size = 800) {
     st_verify_eq_(container.reserve(size / 2), reserve_result_t::unchanged_k,
                   "shrinking through reserve must be a no-op");
     auto const reserved_buckets = container.bucket_count();
-    st_verify_((reserved_buckets) > (0u));
+    st_verify_gt_(reserved_buckets, 0u);
 
     std::unordered_map<std::size_t, std::size_t> oracle;
     for (std::size_t identifier = 0; identifier < size; ++identifier) {
@@ -467,13 +467,13 @@ void test_unordered_capacity_management(std::size_t size = 800) {
 
     // Shrinking gives the memory back without losing anything.
     container.shrink_to_fit();
-    st_verify_((container.bucket_count()) <= (reserved_buckets * 4));
+    st_verify_le_(container.bucket_count(), reserved_buckets * 4);
     unordered_verify_against_oracle(container, oracle, size);
 
     container.clear();
     st_verify_(container.empty());
     st_verify_eq_(container.size(), 0u);
-    st_verify_((container.bucket_count()) > (0u) && "clear keeps the memory");
+    st_verify_gt_(container.bucket_count(), 0u, "clear keeps the memory");
     unordered_verify_absent(container, 0);
 
     container.shrink_to_fit();
@@ -500,9 +500,9 @@ void test_unordered_load_factor_consistency(std::size_t size = 3000) {
 
         // The header lives in whole buckets, and the table never runs past three quarters full.
         st_verify_eq_(container.bucket_count() * hash_bucket_capacity_k, container.slots_count().raw);
-        st_verify_((container.size() * 4) <= (container.slots_count().raw * 3) &&
-                   "the load factor must stay under the 75% cap");
-        st_verify_((container.size()) <= (container.capacity()));
+        st_verify_le_(container.size() * 4, container.slots_count().raw * 3,
+                      "the load factor must stay under the 75% cap");
+        st_verify_le_(container.size(), container.capacity());
     }
 
     // Erasures lower the size without lowering the slot count.
@@ -585,25 +585,28 @@ void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) 
     // Exactly one allocation is granted, so the table gets its first buffer and can never grow again.
     allocation_ledger_t ledger;
     ledger.allow(1);
-    auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
-    st_verify_((allocated) && "the one permitted allocation must succeed");
-    container_t container = *std::move(allocated);
-    std::size_t const slots = container.slots_count().raw;
-    st_verify_((slots) > (0u));
+    {
+        auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
+        st_verify_((allocated) && "the one permitted allocation must succeed");
+        container_t container = *std::move(allocated);
+        std::size_t const slots = container.slots_count().raw;
+        st_verify_gt_(slots, 0u);
 
-    std::unordered_map<std::size_t, std::size_t> oracle;
-    for (std::size_t identifier = 0; identifier < attempts; ++identifier) {
-        std::size_t const size_before = container.size();
-        unordered_emplace(container, identifier);
-        if (container.size() != size_before) oracle[identifier] = identifier;
-        // Neither the counters nor the layout may run past the single buffer that was handed out.
-        st_verify_((container.size() + container.deleted_count()) <= (slots));
-        st_verify_eq_(container.slots_count().raw, slots);
+        std::unordered_map<std::size_t, std::size_t> oracle;
+        for (std::size_t identifier = 0; identifier < attempts; ++identifier) {
+            std::size_t const size_before = container.size();
+            unordered_emplace(container, identifier);
+            if (container.size() != size_before) oracle[identifier] = identifier;
+            // Neither the counters nor the layout may run past the single buffer that was handed out.
+            st_verify_le_(container.size() + container.deleted_count(), slots);
+            st_verify_eq_(container.slots_count().raw, slots);
+        }
+
+        st_verify_lt_(container.size(), attempts, "a table that cannot grow must refuse most of the range");
+        st_verify_eq_(container.size(), oracle.size());
+        for (auto const &entry : oracle) unordered_verify_present(container, entry.first, entry.second);
     }
-
-    st_verify_((container.size()) < (attempts) && "a table that cannot grow must refuse most of the range");
-    st_verify_eq_(container.size(), oracle.size());
-    for (auto const &entry : oracle) unordered_verify_present(container, entry.first, entry.second);
+    ledger.verify_balanced();
 }
 
 /** @brief Inserts the element for @p identifier through the reporting overload of @c emplace. */
@@ -656,25 +659,28 @@ void test_unordered_insert_reports_refusal() {
     // and the table has no way to make room.
     allocation_ledger_t ledger;
     ledger.allow(1);
-    auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
-    st_verify_((allocated) && "the one permitted allocation must succeed");
-    container_t container = *std::move(allocated);
-    std::size_t const slots = container.slots_count().raw;
-    for (std::size_t identifier = 0; identifier < slots; ++identifier)
-        unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
-    st_verify_eq_(container.size(), slots);
+    {
+        auto allocated = container_t::make(std::size_t {64}, {}, {}, stateful_allocator<std::byte> {ledger});
+        st_verify_((allocated) && "the one permitted allocation must succeed");
+        container_t container = *std::move(allocated);
+        std::size_t const slots = container.slots_count().raw;
+        for (std::size_t identifier = 0; identifier < slots; ++identifier)
+            unordered_emplace(container, identifier, assume_reserved_t {}, assume_unique_t {});
+        st_verify_eq_(container.size(), slots);
 
-    // Both calls promise the reservation, so neither asks the refusing allocator for room and the
-    // only thing separating them is what the probe found.
-    auto const duplicate = unordered_emplace_reporting(container, 0, assume_reserved_t {});
-    st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a saturated table still updates what it holds");
-    st_verify_(!(duplicate.failed()));
+        // Both calls promise the reservation, so neither asks the refusing allocator for room and the
+        // only thing separating them is what the probe found.
+        auto const duplicate = unordered_emplace_reporting(container, 0, assume_reserved_t {});
+        st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a saturated table still updates what it holds");
+        st_verify_(!(duplicate.failed()));
 
-    auto const refused = unordered_emplace_reporting(container, slots + 1, assume_reserved_t {});
-    st_verify_eq_(refused.outcome, upsert_result_t::no_slot_k, "a table with no room must report the refusal");
-    st_verify_((refused.failed()) && "a refusal is the only way an insertion fails");
-    st_verify_eq_(refused.position, container.end(), "a refusal names no slot");
-    st_verify_eq_(container.size(), slots);
+        auto const refused = unordered_emplace_reporting(container, slots + 1, assume_reserved_t {});
+        st_verify_eq_(refused.outcome, upsert_result_t::no_slot_k, "a table with no room must report the refusal");
+        st_verify_((refused.failed()) && "a refusal is the only way an insertion fails");
+        st_verify_eq_(refused.position, container.end(), "a refusal names no slot");
+        st_verify_eq_(container.size(), slots);
+    }
+    ledger.verify_balanced();
 }
 
 /**
@@ -691,50 +697,54 @@ void test_unordered_present_key_needs_no_room() {
 
     // The table is sized so that its load factor leaves no headroom once it is filled below.
     allocation_ledger_t ledger;
-    auto allocated = container_t::make(std::size_t {24}, {}, {}, stateful_allocator<std::byte> {ledger});
-    st_verify_((allocated) && "the first allocation must succeed");
-    container_t container = *std::move(allocated);
-    std::size_t const threshold = container.capacity();
-    st_verify_((threshold) > (0u));
+    {
+        auto allocated = container_t::make(std::size_t {24}, {}, {}, stateful_allocator<std::byte> {ledger});
+        st_verify_((allocated) && "the first allocation must succeed");
+        container_t container = *std::move(allocated);
+        std::size_t const threshold = container.capacity();
+        st_verify_gt_(threshold, 0u);
 
-    for (std::size_t identifier = 0; identifier < threshold; ++identifier) unordered_emplace(container, identifier);
-    st_verify_eq_(container.size(), threshold);
-    std::size_t const slots_before = container.slots_count().raw;
-    std::size_t const granted_before = ledger.granted_count;
+        for (std::size_t identifier = 0; identifier < threshold; ++identifier) unordered_emplace(container, identifier);
+        st_verify_eq_(container.size(), threshold);
+        std::size_t const slots_before = container.slots_count().raw;
+        std::size_t const granted_before = ledger.granted_count;
 
-    // From here the allocator answers nothing, so anything asking it for a slot fails.
-    ledger.refuse_everything();
+        // From here the allocator answers nothing, so anything asking it for a slot fails.
+        ledger.refuse_everything();
 
-    for (std::size_t identifier = 0; identifier < threshold; ++identifier) {
-        status_t const overwritten = unordered_upsert(container, identifier, identifier + threshold);
-        st_verify_eq_(overwritten, success_k, "an overwrite needs no room and must not report a refusal");
+        for (std::size_t identifier = 0; identifier < threshold; ++identifier) {
+            status_t const overwritten = unordered_upsert(container, identifier, identifier + threshold);
+            st_verify_eq_(overwritten, success_k, "an overwrite needs no room and must not report a refusal");
+        }
+        st_verify_eq_(ledger.granted_count, granted_before);
+        st_verify_eq_(ledger.refused_count, std::size_t {0});
+        st_verify_eq_(container.slots_count().raw, slots_before);
+        st_verify_eq_(container.size(), threshold);
+        for (std::size_t identifier = 0; identifier < threshold; ++identifier)
+            unordered_verify_present(container, identifier, identifier + threshold);
+
+        // The reporting insertion answers the same question, and an update is not a failure.
+        auto const duplicate = unordered_emplace_reporting(container, 0);
+        st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a key already there is an update, not a refusal");
+        st_verify_(!(duplicate.failed()) && "an overwrite the allocator never saw cannot have failed");
+        st_verify_ne_(duplicate.position, container.end(), "an update must name the slot the key sits in");
+        st_verify_eq_(ledger.refused_count, std::size_t {0});
+
+        // A genuinely new key does need a slot, and that refusal is the one the heap is to blame for.
+        status_t const refused = unordered_upsert(container, threshold, threshold);
+        st_verify_eq_(refused, out_of_memory_heap_k,
+                      "a new key the table cannot make room for is an allocation failure");
+        st_verify_eq_(container.size(), threshold);
+        st_verify_eq_(container.slots_count().raw, slots_before);
+
+        auto const refused_report = unordered_emplace_reporting(container, threshold + 1);
+        st_verify_eq_(refused_report.outcome, upsert_result_t::no_memory_k,
+                      "a refused growth must not be reported as an exhausted probe");
+        st_verify_((refused_report.failed()) && "nothing was stored, so the insertion failed");
+        st_verify_eq_(refused_report.position, container.end(), "a refusal names no slot");
+        st_verify_eq_(container.size(), threshold);
     }
-    st_verify_eq_(ledger.granted_count, granted_before);
-    st_verify_eq_(ledger.refused_count, std::size_t {0});
-    st_verify_eq_(container.slots_count().raw, slots_before);
-    st_verify_eq_(container.size(), threshold);
-    for (std::size_t identifier = 0; identifier < threshold; ++identifier)
-        unordered_verify_present(container, identifier, identifier + threshold);
-
-    // The reporting insertion answers the same question, and an update is not a failure.
-    auto const duplicate = unordered_emplace_reporting(container, 0);
-    st_verify_eq_(duplicate.outcome, upsert_result_t::updated_k, "a key already there is an update, not a refusal");
-    st_verify_(!(duplicate.failed()) && "an overwrite the allocator never saw cannot have failed");
-    st_verify_ne_(duplicate.position, container.end(), "an update must name the slot the key sits in");
-    st_verify_eq_(ledger.refused_count, std::size_t {0});
-
-    // A genuinely new key does need a slot, and that refusal is the one the heap is to blame for.
-    status_t const refused = unordered_upsert(container, threshold, threshold);
-    st_verify_eq_(refused, out_of_memory_heap_k, "a new key the table cannot make room for is an allocation failure");
-    st_verify_eq_(container.size(), threshold);
-    st_verify_eq_(container.slots_count().raw, slots_before);
-
-    auto const refused_report = unordered_emplace_reporting(container, threshold + 1);
-    st_verify_eq_(refused_report.outcome, upsert_result_t::no_memory_k,
-                  "a refused growth must not be reported as an exhausted probe");
-    st_verify_((refused_report.failed()) && "nothing was stored, so the insertion failed");
-    st_verify_eq_(refused_report.position, container.end(), "a refusal names no slot");
-    st_verify_eq_(container.size(), threshold);
+    ledger.verify_balanced();
 }
 
 /**
@@ -805,7 +815,7 @@ void test_unordered_rehash_to_nothing(std::size_t size = 300) {
     }
 
     st_verify_ne_(container.rehash(0), reserve_result_t::failed_k, "a rehash to nothing must still succeed");
-    st_verify_((container.bucket_count()) > (0u) && "the survivors need slots to live in");
+    st_verify_gt_(container.bucket_count(), 0u, "the survivors need slots to live in");
     st_verify_eq_(container.deleted_count(), 0u);
     unordered_verify_against_oracle(container, oracle, size);
 
@@ -927,7 +937,7 @@ void test_unordered_pinned_saturation() {
     st_verify_((allocated) && "the growable table must build");
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     std::size_t const slots = container.slots_count();
-    st_verify_((slots) > (0u));
+    st_verify_gt_(slots, 0u);
 
     // A pinned table has no load factor to respect, so every slot can be taken.
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
@@ -983,7 +993,7 @@ void test_unordered_pinned_tombstone_saturation() {
     st_verify_((allocated) && "the growable table must build");
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
     std::size_t const slots = container.slots_count();
-    st_verify_((slots) > (0u));
+    st_verify_gt_(slots, 0u);
 
     for (std::size_t identifier = 0; identifier < slots; ++identifier) {
         status_t const stored =
@@ -1024,7 +1034,7 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
     auto allocated = container_t::make(total * 2);
     st_verify_((allocated) && "the growable table must build");
     auto container = unordered_pinned<container_t>::adopt((*std::move(allocated)).release());
-    st_verify_((container.capacity() >= total) && "the pinned table must hold what the writers will store");
+    st_verify_ge_(container.capacity(), total, "the pinned table must hold what the writers will store");
     auto const slots_before = container.slots_count();
 
     std::vector<std::thread> threads;
@@ -1105,7 +1115,7 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
     st_verify_eq_(growable.size(), total);
 
     auto container = unordered_pinned<container_t>::adopt(std::move(growable).release());
-    st_verify_((container.capacity() >= total) && "the pinned table must hold every key it was filled with");
+    st_verify_ge_(container.capacity(), total, "the pinned table must hold every key it was filled with");
 
     // Every key already exists, so every update must land.
     std::atomic<std::size_t> updates_landed {0};

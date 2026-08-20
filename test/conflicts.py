@@ -8,6 +8,7 @@ Run:
     python -m pytest test/conflicts.py -v
 """
 
+import concurrent.futures
 import threading
 
 import pytest
@@ -223,7 +224,7 @@ def test_a_refused_stage_keeps_the_pending_writes(key_type, keygen):
     refuses[keys[0]] = "original"
 
     group = st.transaction(staged_first, refuses)
-    (early, late) = group.begin()
+    early, late = group.begin()
     early[keys[1]] = "the caller's own write"
     late.watch(keys[0])
     late[keys[2]] = "and this one"
@@ -281,12 +282,9 @@ def test_a_refused_commit_applied_nothing(sharing):
                             if any(container[key] == marker for key in keys):
                                 ghosts.append(marker)
 
-        threads = [threading.Thread(target=writer, args=(index,)) for index in range(3)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join(timeout=120)
-        assert not any(thread.is_alive() for thread in threads), "a writer never finished"
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
+            for future in [pool.submit(writer, index) for index in range(3)]:
+                future.result(timeout=120)
 
         assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
         if refusals[0]:

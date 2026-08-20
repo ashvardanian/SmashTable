@@ -681,7 +681,7 @@ static void test_rolling_readers_keep_reclamation_moving() {
 
         st_verify_eq_(store.open_snapshots(), 1);
         st_verify_eq_(store.low_water_mark(), holding->snapshot());
-        st_verify_(store.versions_count(trivial_key_t {1}) <= 3);
+        st_verify_le_(store.versions_count(trivial_key_t {1}), 3);
     }
 
     holding.reset();
@@ -704,7 +704,7 @@ static void test_long_lived_reader_holds_its_own_snapshot() {
     commit_write(store, 1, 1);
     auto keeper = store.transaction();
     st_verify_(keeper.has_value());
-    st_verify_(early->snapshot() < keeper->snapshot());
+    st_verify_lt_(early->snapshot(), keeper->snapshot());
 
     early.reset();
     st_verify_eq_(store.low_water_mark(), keeper->snapshot());
@@ -1235,7 +1235,7 @@ static void test_bounded_vacuum_sweeps_whole_runs() {
 
     st_verify_eq_(store.open_snapshots(), 0);
     std::size_t const carried = store.versions_count();
-    st_verify_(carried > 6);
+    st_verify_gt_(carried, 6);
 
     [[maybe_unused]] std::size_t const swept = vacuumed(store, trivial_key_t {0}, trivial_key_t {3});
     for (trivial_id_t identifier = 0; identifier != 3; ++identifier)
@@ -1928,7 +1928,8 @@ static void test_sample_one_draws_from_the_visible_window() {
     for (int attempt = 0; attempt != 256; ++attempt)
         st_verify_(store.sample_one(trivial_key_t {4}, trivial_key_t {12}, generator, [&](auto const &member) noexcept {
             ++drawn;
-            st_verify_(member.key.unique_id >= 4 && member.key.unique_id < 12);
+            st_verify_ge_(member.key.unique_id, 4);
+            st_verify_lt_(member.key.unique_id, 12);
             st_verify_(member.key.unique_id % 2 == 1);
             saw_lowest |= member.key.unique_id == 5;
             saw_highest |= member.key.unique_id == 11;
@@ -2475,30 +2476,33 @@ static void test_a_read_reports_what_it_could_not_record() {
     using member_t = typename store_t::value_type;
 
     allocation_ledger_t ledger;
-    store_t store {typename store_t::allocator_t(ledger)};
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(2, 1)));
+    {
+        store_t store {typename store_t::allocator_t(ledger)};
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(2, 1)));
 
-    auto reader = store.transaction();
-    st_verify_(reader);
+        auto reader = store.transaction();
+        st_verify_(reader);
 
-    // Everything the transaction needed is already allocated, so the next request is the read set's.
-    ledger.refuse_everything();
-    std::size_t seen = 0;
-    status_t const answered = reader->find(
-        trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
-        no_op_t {});
-    st_verify_eq_(answered, status_t::out_of_memory_heap_k,
-                  "a read that could not be recorded must say so at the read");
-    st_verify_eq_(seen, 1u, "and it must still answer, because what it read is not in doubt");
+        // Everything the transaction needed is already allocated, so the next request is the read set's.
+        ledger.refuse_everything();
+        std::size_t seen = 0;
+        status_t const answered = reader->find(
+            trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
+            no_op_t {});
+        st_verify_eq_(answered, status_t::out_of_memory_heap_k,
+                      "a read that could not be recorded must say so at the read");
+        st_verify_eq_(seen, 1u, "and it must still answer, because what it read is not in doubt");
 
-    // A commit lands, so validation has to consult the read set rather than take its fast path.
-    ledger.reset();
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(3, 1)));
-    st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 5)));
-    st_verify_eq_(reader->stage(), status_t::read_conflict_k,
-                  "a read it cannot name is a read it cannot prove untouched");
-    st_verify_(reader->reset());
+        // A commit lands, so validation has to consult the read set rather than take its fast path.
+        ledger.allow(unlimited_budget_k);
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(3, 1)));
+        st_verify_(reader->upsert(trivial_id_to_member<member_t>(2, 5)));
+        st_verify_eq_(reader->stage(), status_t::read_conflict_k,
+                      "a read it cannot name is a read it cannot prove untouched");
+        st_verify_(reader->reset());
+    }
+    ledger.verify_balanced();
 }
 
 /** @brief One rung down nothing is recorded, so the same refused allocator leaves the read untouched. */
@@ -2507,19 +2511,22 @@ static void test_an_unvalidated_read_records_nothing_to_lose() {
     using member_t = typename store_t::value_type;
 
     allocation_ledger_t ledger;
-    store_t store {typename store_t::allocator_t(ledger)};
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+    {
+        store_t store {typename store_t::allocator_t(ledger)};
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
 
-    auto reader = store.transaction();
-    st_verify_(reader);
+        auto reader = store.transaction();
+        st_verify_(reader);
 
-    ledger.refuse_everything();
-    std::size_t seen = 0;
-    st_verify_(reader->find(
-        trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
-        no_op_t {}));
-    st_verify_eq_(seen, 1u);
-    ledger.reset();
+        ledger.refuse_everything();
+        std::size_t seen = 0;
+        st_verify_(reader->find(
+            trivial_key_t {1}, [&](member_t const &held) noexcept { seen = static_cast<std::size_t>(held.mapped); },
+            no_op_t {}));
+        st_verify_eq_(seen, 1u);
+        ledger.allow(unlimited_budget_k);
+    }
+    ledger.verify_balanced();
 }
 
 /**

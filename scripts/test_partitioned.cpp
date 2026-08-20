@@ -688,6 +688,55 @@ static void test_forwarded_update_range(std::size_t count = 32) {
     }
 }
 
+/** @brief A wrapper names the least member of the whole store, not of one partition. */
+template <typename wrapper_type_>
+static void test_forwarded_smallest(std::size_t count = 64) {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &container = *made;
+
+    bool empty_answered = false;
+    st_verify_(container.smallest(no_op_t {}, [&]() noexcept { empty_answered = true; }));
+    st_verify_((empty_answered) && "an empty store reports its emptiness rather than a member");
+
+    // Inserted back to front, so a wrapper answering from insertion order rather than key order fails.
+    for (std::size_t identifier = count; identifier != 0; --identifier)
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
+
+    trivial_id_t least = 0;
+    st_verify_(container.smallest([&](member_t const &member) noexcept { least = member.unique_id; }));
+    st_verify_eq_(least, trivial_id_t {1});
+}
+
+/** @brief Popping the least member removes exactly it, and drains the store in ascending order. */
+template <typename wrapper_type_>
+static void test_forwarded_pop_smallest(std::size_t count = 64) {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &container = *made;
+
+    bool empty_answered = false;
+    st_verify_eq_(container.pop_smallest(no_op_t {}, [&]() noexcept { empty_answered = true; }),
+                  status_t::key_not_found_k);
+    st_verify_((empty_answered) && "an empty store refuses rather than handing over a member");
+
+    for (std::size_t identifier = count; identifier != 0; --identifier)
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
+
+    for (std::size_t expected_id = 1; expected_id <= count; ++expected_id) {
+        trivial_id_t popped = 0;
+        st_verify_(container.pop_smallest([&](member_t const &member) noexcept { popped = member.unique_id; }));
+        st_verify_eq_(popped, static_cast<trivial_id_t>(expected_id));
+        st_verify_eq_(container.contains(trivial_id_to_key<member_t>(expected_id)), false);
+        st_verify_eq_(container.size(), count - expected_id);
+    }
+    st_verify_eq_(container.pop_smallest(), status_t::key_not_found_k);
+}
+
 /** @brief The open-ended erasures must each take their own half of the keyspace and no more. */
 template <typename wrapper_type_>
 static void test_forwarded_open_ended_erase(std::size_t count = 32) {
@@ -888,8 +937,8 @@ static void test_forwarded_version_bookkeeping() {
         st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier)));
     st_verify_(store.upsert(trivial_id_to_member<member_t>(0)));
 
-    st_verify_(store.versions_count() >= 4u);
-    st_verify_(store.versions_count(trivial_id_to_key<member_t>(0)) >= 1u);
+    st_verify_ge_(store.versions_count(), 4u);
+    st_verify_ge_(store.versions_count(trivial_id_to_key<member_t>(0)), 1u);
     [[maybe_unused]] auto const mark = store.low_water_mark();
 
     [[maybe_unused]] expected<std::size_t> const reclaimed = store.vacuum();
@@ -936,6 +985,18 @@ static void forwarded_surface_update_range() {
 static void forwarded_surface_open_ended_erase() {
     test_forwarded_open_ended_erase<locked_store<tree_trivial_set_t>>();
     test_forwarded_open_ended_erase<partitioned_store<tree_trivial_set_t>>();
+}
+
+static void forwarded_surface_smallest() {
+    test_forwarded_smallest<locked_store<tree_trivial_set_t>>();
+    test_forwarded_smallest<partitioned_store<tree_trivial_set_t>>();
+    test_forwarded_smallest<partitioned_store<locked_store<tree_trivial_set_t>>>();
+}
+
+static void forwarded_surface_pop_smallest() {
+    test_forwarded_pop_smallest<locked_store<tree_trivial_set_t>>();
+    test_forwarded_pop_smallest<partitioned_store<tree_trivial_set_t>>();
+    test_forwarded_pop_smallest<partitioned_store<locked_store<tree_trivial_set_t>>>();
 }
 
 static void forwarded_surface_for_each() {
@@ -1082,10 +1143,11 @@ static void merged_order_inclusive_bound_is_one_probe() {
 
 #pragma region Ordered Cursor
 
-/** @brief Every key the cursor hands over, in the order it handed them over. */
-static std::vector<trivial_id_t> drain_cursor(transactional_trivial_set_t const &store, std::size_t limit) {
+/** @brief Every key the cursor hands over from @p from onward, in the order it handed them over. */
+static std::vector<trivial_id_t> drain_cursor(transactional_trivial_set_t const &store, trivial_id_t from,
+                                              std::size_t limit) {
     std::vector<trivial_id_t> walked;
-    auto walking = store.cursor_from(trivial_id_to_key<trivial_key_t>(0));
+    auto walking = store.cursor_from(trivial_id_to_key<trivial_key_t>(from));
     for (std::size_t step = 0; step != limit; ++step) {
         bool handed = false;
         walking.next([&](trivial_key_t const &member) noexcept {
@@ -1105,10 +1167,60 @@ static void ordered_cursor_matches_the_range() {
     st_verify_(store.range(trivial_id_to_key<trivial_key_t>(0), trivial_id_to_key<trivial_key_t>(200),
                            [&](trivial_key_t const &member) noexcept { ranged.push_back(member.unique_id); }));
 
-    std::vector<trivial_id_t> const walked = drain_cursor(store, 400);
+    std::vector<trivial_id_t> const walked = drain_cursor(store, 0, 400);
     st_verify_eq_(walked.size(), ranged.size());
     for (std::size_t position = 0; position != walked.size(); ++position)
         st_verify_eq_(walked[position], ranged[position]);
+}
+
+/**
+ *  @brief A cursor begun at a bound starts there, rather than at the smallest key of each partition.
+ *
+ *  Every front is read against the bound when the cursor settles, so the bound has to be in place
+ *  before that happens - a walk seeded from a default key hands over members ordered below it.
+ */
+static void ordered_cursor_begins_at_the_bound_it_was_given() {
+    transactional_trivial_set_t store = seeded_sharded_set(200);
+
+    trivial_id_t const from = 137;
+    std::vector<trivial_id_t> const walked = drain_cursor(store, from, 400);
+
+    st_verify_eq_(walked.size(), std::size_t {200} - from);
+    for (trivial_id_t identifier : walked) st_verify_ge_(identifier, from, "no key below the bound is handed over");
+    st_verify_eq_(walked.front(), from);
+}
+
+/** @brief A bounded cursor stops before the key it was given, on the same half-open terms as a range. */
+template <typename wrapper_type_>
+static void test_cursor_stops_at_its_bound(std::size_t count = 64) {
+
+    using member_t = typename wrapper_type_::value_type;
+
+    expected<wrapper_type_> made = built_store<wrapper_type_>();
+    wrapper_type_ &container = *made;
+    for (std::size_t identifier = 0; identifier != count; ++identifier)
+        st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
+
+    std::vector<trivial_id_t> walked;
+    for (auto walking = container.cursor_range(trivial_id_to_key<member_t>(8), trivial_id_to_key<member_t>(20));
+         !walking.exhausted();)
+        walking.next([&](member_t const &member) noexcept { walked.push_back(member.unique_id); });
+    st_verify_eq_(walked.size(), std::size_t {12});
+    st_verify_eq_(walked.front(), trivial_id_t {8});
+    st_verify_eq_(walked.back(), trivial_id_t {19});
+
+    walked.clear();
+    for (auto walking = container.cursor_up_to(trivial_id_to_key<member_t>(5)); !walking.exhausted();)
+        walking.next([&](member_t const &member) noexcept { walked.push_back(member.unique_id); });
+    st_verify_eq_(walked.size(), std::size_t {5});
+    st_verify_eq_(walked.back(), trivial_id_t {4});
+}
+
+/** @brief The bounded and unbounded walks read the same on both wrappers, which is what one shape means. */
+static void ordered_cursor_stops_at_its_bound() {
+    test_cursor_stops_at_its_bound<locked_store<tree_trivial_set_t>>();
+    test_cursor_stops_at_its_bound<partitioned_store<tree_trivial_set_t>>();
+    test_cursor_stops_at_its_bound<partitioned_store<locked_store<tree_trivial_set_t>>>();
 }
 
 /** @brief Erasing the key a cursor stands on hands over the successor rather than losing the walk. */
@@ -1123,7 +1235,7 @@ static void ordered_cursor_survives_its_own_key_erased() {
 
     bool handed = false;
     walking.next([&](trivial_key_t const &member) noexcept {
-        st_verify_((member.unique_id > standing) && "a cursor must never hand back a key it already gave");
+        st_verify_gt_(member.unique_id, standing, "a cursor must never hand back a key it already gave");
         handed = true;
     });
     st_verify_((handed) && "erasing the key underneath a cursor must not end its walk");
@@ -1167,9 +1279,9 @@ static void ordered_cursor_hands_every_key_once() {
     transactional_trivial_set_t store = seeded_sharded_set(300);
 
     std::vector<std::size_t> handed(300, 0);
-    std::vector<trivial_id_t> const walked = drain_cursor(store, 600);
+    std::vector<trivial_id_t> const walked = drain_cursor(store, 0, 600);
     for (trivial_id_t identifier : walked) {
-        st_verify_((identifier < 300) && "a cursor must hand over only keys the store holds");
+        st_verify_lt_(identifier, 300, "a cursor must hand over only keys the store holds");
         ++handed[identifier];
     }
     for (std::size_t identifier = 0; identifier != 300; ++identifier) st_verify_eq_(handed[identifier], 1u);
@@ -1257,11 +1369,11 @@ static void lock_cost_cursor_beats_stepping() {
     std::size_t const cursor_locks = counting_mutex_t::taken();
 
     st_verify_eq_(walked, size_k);
-    st_verify_((stepping_locks >= stepped * 16) && "stepping a bound must ask every partition per element");
+    st_verify_ge_(stepping_locks, stepped * 16, "stepping a bound must ask every partition per element");
     // One acquisition per element handed over, plus the sixteen the first step seeds from.
-    st_verify_((cursor_locks <= walked + partitions_of_v<counted_sharded_set_t>) &&
-               "a cursor over a quiet store costs one partition acquisition per element");
-    st_verify_((cursor_locks * 8 < stepping_locks) && "the cursor must cost a fraction of stepping a bound");
+    st_verify_le_(cursor_locks, walked + partitions_of_v<counted_sharded_set_t>,
+                  "a cursor over a quiet store costs one partition acquisition per element");
+    st_verify_lt_(cursor_locks * 8, stepping_locks, "the cursor must cost a fraction of stepping a bound");
 }
 
 #pragma endregion Lock Cost
@@ -1340,7 +1452,7 @@ static void sharded_ops_commit_publishes_all_or_nothing() {
     // The watch is invalidated after staging, which is the window the engines re-check for.
     st_verify_(store.upsert(trivial_id_to_member<member_t>(watched, 2)));
 
-    st_verify_eq_(writer->commit(), status_t::consistency_k);
+    st_verify_eq_(writer->commit(), status_t::read_conflict_k);
 
     // Nothing this transaction wrote may be readable, since its caller was told it did not commit.
     expected<bool> const landed = store.contains(trivial_id_to_key<member_t>(written));
@@ -1427,20 +1539,23 @@ static void sharded_ops_read_reports_what_it_could_not_record() {
     using member_t = typename store_t::value_type;
 
     allocation_ledger_t ledger;
-    expected<store_t> made = store_t::make(typename inner_t::allocator_t(ledger));
-    st_verify_(made);
-    store_t &store = *made;
-    st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
+    {
+        expected<store_t> made = store_t::make(typename inner_t::allocator_t(ledger));
+        st_verify_(made);
+        store_t &store = *made;
+        st_verify_(store.upsert(trivial_id_to_member<member_t>(1, 1)));
 
-    auto reader = store.transaction();
-    st_verify_(reader);
+        auto reader = store.transaction();
+        st_verify_(reader);
 
-    // Everything the transaction needed is already allocated, so the next request is the read set's.
-    ledger.refuse_everything();
-    status_t const answered = reader->find(trivial_key_t {1}, no_op_t {}, no_op_t {});
-    st_verify_eq_(answered, status_t::out_of_memory_heap_k, "a wrapper must relay what the read could not record");
-    ledger.reset();
-    st_verify_(reader->reset());
+        // Everything the transaction needed is already allocated, so the next request is the read set's.
+        ledger.refuse_everything();
+        status_t const answered = reader->find(trivial_key_t {1}, no_op_t {}, no_op_t {});
+        st_verify_eq_(answered, status_t::out_of_memory_heap_k, "a wrapper must relay what the read could not record");
+        ledger.allow(unlimited_budget_k);
+        st_verify_(reader->reset());
+    }
+    ledger.verify_balanced();
 }
 
 static void sharded_concurrency_commit_is_visible_to_what_opens_after_it() {
@@ -1469,6 +1584,9 @@ int main() {
     failures +=
         run_test(filter, "merged_order.inclusive_bound_is_one_probe", merged_order_inclusive_bound_is_one_probe);
     failures += run_test(filter, "ordered_cursor.matches_the_range", ordered_cursor_matches_the_range);
+    failures += run_test(filter, "ordered_cursor.stops_at_its_bound", ordered_cursor_stops_at_its_bound);
+    failures += run_test(filter, "ordered_cursor.begins_at_the_bound_it_was_given",
+                         ordered_cursor_begins_at_the_bound_it_was_given);
     failures +=
         run_test(filter, "ordered_cursor.survives_its_own_key_erased", ordered_cursor_survives_its_own_key_erased);
     failures += run_test(filter, "ordered_cursor.sees_a_key_inserted_ahead", ordered_cursor_sees_a_key_inserted_ahead);
@@ -1578,6 +1696,8 @@ int main() {
     failures += run_test(filter, "forwarded_surface.vacuum", forwarded_surface_vacuum);
     failures += run_test(filter, "forwarded_surface.update_range", forwarded_surface_update_range);
     failures += run_test(filter, "forwarded_surface.open_ended_erase", forwarded_surface_open_ended_erase);
+    failures += run_test(filter, "forwarded_surface.smallest", forwarded_surface_smallest);
+    failures += run_test(filter, "forwarded_surface.pop_smallest", forwarded_surface_pop_smallest);
     failures += run_test(filter, "forwarded_surface.for_each", forwarded_surface_for_each);
     failures += run_test(filter, "forwarded_surface.for_each_sees_every_stable_element",
                          forwarded_surface_for_each_sees_every_stable_element);

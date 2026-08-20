@@ -28,7 +28,7 @@
 #include <format>      // `std::format_to`, `std::format_string`
 #include <iterator>    // `std::output_iterator`
 #include <type_traits> // `std::is_void_v`
-#include <utility>     // `std::cmp_equal`
+#include <utility>     // `std::cmp_equal`, `std::cmp_less`
 
 #if defined(__linux__) && defined(__GLIBC__)
 #include <execinfo.h> // `backtrace`, `backtrace_symbols_fd`
@@ -49,6 +49,17 @@ inline void st_explain_(type_ const &answered) noexcept {
 }
 
 /**
+ *  @brief Whether both sides are whole numbers, which is what lets a comparison cross signedness.
+ *
+ *  @c bool is excluded because the promotion it would get is the answer everybody already expects,
+ *  and @c std::cmp_equal and friends refuse it outright.
+ */
+template <typename left_type_, typename right_type_>
+constexpr bool st_whole_numbers_ =
+    std::is_integral_v<std::remove_cvref_t<left_type_>> && std::is_integral_v<std::remove_cvref_t<right_type_>> &&
+    !std::is_same_v<std::remove_cvref_t<left_type_>, bool> && !std::is_same_v<std::remove_cvref_t<right_type_>, bool>;
+
+/**
  *  @brief Whether the two compare equal, across signedness where both sides are whole numbers.
  *
  *  Binding each side to a variable is what lets the message name it, and it also turns a literal
@@ -58,12 +69,36 @@ inline void st_explain_(type_ const &answered) noexcept {
  */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_equal_(left_type_ const &left, right_type_ const &right) noexcept {
-    using bare_left_t = std::remove_cvref_t<left_type_>;
-    using bare_right_t = std::remove_cvref_t<right_type_>;
-    constexpr bool both_whole_numbers_k = std::is_integral_v<bare_left_t> && std::is_integral_v<bare_right_t> &&
-                                          !std::is_same_v<bare_left_t, bool> && !std::is_same_v<bare_right_t, bool>;
-    if constexpr (both_whole_numbers_k) return std::cmp_equal(left, right);
+    if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_equal(left, right);
     else return left == right;
+}
+
+/** @brief Whether the left side orders below the right, with the same cross-signedness parity. */
+template <typename left_type_, typename right_type_>
+[[nodiscard]] constexpr bool st_less_(left_type_ const &left, right_type_ const &right) noexcept {
+    if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_less(left, right);
+    else return left < right;
+}
+
+/** @brief Whether the left side orders below the right or matches it. */
+template <typename left_type_, typename right_type_>
+[[nodiscard]] constexpr bool st_less_equal_(left_type_ const &left, right_type_ const &right) noexcept {
+    if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_less_equal(left, right);
+    else return left <= right;
+}
+
+/** @brief Whether the left side orders above the right. */
+template <typename left_type_, typename right_type_>
+[[nodiscard]] constexpr bool st_greater_(left_type_ const &left, right_type_ const &right) noexcept {
+    if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_greater(left, right);
+    else return left > right;
+}
+
+/** @brief Whether the left side orders above the right or matches it. */
+template <typename left_type_, typename right_type_>
+[[nodiscard]] constexpr bool st_greater_equal_(left_type_ const &left, right_type_ const &right) noexcept {
+    if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_greater_equal(left, right);
+    else return left >= right;
 }
 
 /** @brief Adds one side of a comparison to the message, naming a status rather than numbering it. */
@@ -133,6 +168,66 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
         auto const &st_right_ = (second);                                           \
         if (st_equal_(st_left_, st_right_)) {                                       \
             std::fprintf(stderr, "Verification failed: %s != %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                    \
+            st_print_operand_("right", st_right_);                                  \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
+            std::abort();                                                           \
+        }                                                                           \
+    } while (0)
+
+/** @brief Verification that the first orders below the second, naming both when it does not. */
+#define st_verify_lt_(first, second, ...)                                          \
+    do {                                                                           \
+        auto const &st_left_ = (first);                                            \
+        auto const &st_right_ = (second);                                          \
+        if (!st_less_(st_left_, st_right_)) {                                      \
+            std::fprintf(stderr, "Verification failed: %s < %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                   \
+            st_print_operand_("right", st_right_);                                 \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                 \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                 \
+            std::abort();                                                          \
+        }                                                                          \
+    } while (0)
+
+/** @brief Verification that the first never rises above the second, naming both when it does. */
+#define st_verify_le_(first, second, ...)                                           \
+    do {                                                                            \
+        auto const &st_left_ = (first);                                             \
+        auto const &st_right_ = (second);                                           \
+        if (!st_less_equal_(st_left_, st_right_)) {                                 \
+            std::fprintf(stderr, "Verification failed: %s <= %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                    \
+            st_print_operand_("right", st_right_);                                  \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                  \
+            std::abort();                                                           \
+        }                                                                           \
+    } while (0)
+
+/** @brief Verification that the first orders above the second, naming both when it does not. */
+#define st_verify_gt_(first, second, ...)                                          \
+    do {                                                                           \
+        auto const &st_left_ = (first);                                            \
+        auto const &st_right_ = (second);                                          \
+        if (!st_greater_(st_left_, st_right_)) {                                   \
+            std::fprintf(stderr, "Verification failed: %s > %s", #first, #second); \
+            st_print_operand_("left", st_left_);                                   \
+            st_print_operand_("right", st_right_);                                 \
+            __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                 \
+            std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                 \
+            std::abort();                                                          \
+        }                                                                          \
+    } while (0)
+
+/** @brief Verification that the first never falls below the second, naming both when it does. */
+#define st_verify_ge_(first, second, ...)                                           \
+    do {                                                                            \
+        auto const &st_left_ = (first);                                             \
+        auto const &st_right_ = (second);                                           \
+        if (!st_greater_equal_(st_left_, st_right_)) {                              \
+            std::fprintf(stderr, "Verification failed: %s >= %s", #first, #second); \
             st_print_operand_("left", st_left_);                                    \
             st_print_operand_("right", st_right_);                                  \
             __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                  \

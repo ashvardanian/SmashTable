@@ -371,7 +371,9 @@ def test_single_container_transaction_shorthand(container, keygen):
 
 
 @pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("object_first", [pytest.param(False, id="scalar-first"), pytest.param(True, id="object-first")])
+@pytest.mark.parametrize(
+    "object_first", [pytest.param(False, id="scalar-first"), pytest.param(True, id="object-first")]
+)
 def test_a_group_may_mix_value_modes(key_type, keygen, object_first):
     """Each participant writes under its own value mode, not under the group's first.
 

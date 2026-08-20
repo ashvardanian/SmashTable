@@ -160,6 +160,7 @@ def test_monotonic_does_not_repeat_its_reads(keygen):
     container[key] = "second"
     assert view[key] == "second"
 
+
 # endregion Guarantees
 
 # region Write Skew
@@ -249,7 +250,7 @@ def test_a_written_key_refuses_by_write_conflict(keygen):
     """Both transactions write one key, so the write set alone catches it."""
 
     def schedule(container, keygen):
-        key, = keygen(1)
+        (key,) = keygen(1)
         container[key] = 0
         hers = st.transaction(container)
         (her_view,) = hers.begin()
@@ -340,6 +341,47 @@ def _phantom_at(level: str, keygen):
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
+def _phantom_below(level: str, keygen):
+    """The same schedule for a window bounded only from above, which names no lower key at all.
+
+    The store decides what "everything below this" covers, so the window a commit is validated
+    against is the one that was asked for rather than one the binding chose by spelling a floor.
+    """
+    container = make(st.SortedMap, "int", isolation=level, sharing="locked")
+    # Sorted, so `inside` is genuinely below `upper` and the phantom lands in the window scanned.
+    inside, upper, written_key = sorted(keygen(3))
+
+    hers = st.transaction(container)
+    (her_view,) = hers.begin()
+    seen = her_view.scan(None, upper)
+
+    his = st.transaction(container)
+    (his_view,) = his.begin()
+    his_view[inside] = "phantom"
+    his.stage()
+    his.commit()
+
+    her_view[written_key] = "elsewhere"
+    try:
+        hers.stage()
+        hers.commit()
+        return None, seen
+    except st.ConflictError as refusal:
+        return refusal, seen
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
+@pytest.mark.parametrize("level", ["serializable", "strict_serializable"])
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_window_open_at_the_bottom_still_catches_a_phantom(keygen, level):
+    """A scan bounded only from above records a window, so a key committed into it refuses."""
+    refusal, seen = _phantom_below(level, keygen)
+    assert seen == [], "the window was empty, so only the window itself was read"
+    assert isinstance(refusal, st.PhantomConflictError)
+
+
 @pytest.mark.parametrize("level", ["serializable", "strict_serializable"])
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_scanned_window_refuses_by_phantom_conflict(keygen, level):

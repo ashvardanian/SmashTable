@@ -573,7 +573,8 @@ static subtree_shape_t verify_subtree(typename tree_type_::node_t const *node,
     std::ptrdiff_t const height = 1 + (left.height > right.height ? left.height : right.height);
     std::ptrdiff_t const balance = left.height - right.height;
     st_verify_eq_(node->height, height, "the stored height matches the walked one");
-    st_verify_(balance >= -1 && balance <= 1 && "AVL balance never exceeds one");
+    st_verify_ge_(balance, -1, "AVL balance never exceeds one");
+    st_verify_le_(balance, 1, "AVL balance never exceeds one");
 
     if (node->left)
         st_verify_(comparator(mapping_key_or_itself(node->left->fruit), mapping_key_or_itself(node->fruit)) &&
@@ -796,25 +797,28 @@ static void test_bulk_upsert_pays_only_while_staging() {
 
     allocation_ledger_t ledger;
     ledger.allow(64);
-    budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
-    for (trivial_id_t identifier : {1u, 2u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
+    {
+        budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
+        for (trivial_id_t identifier : {1u, 2u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
 
-    // Too little for the three-node temporary, so the whole batch fails and this tree is untouched.
-    std::vector<trivial_key_t> const members = {trivial_key_t(1), trivial_key_t(2), trivial_key_t(99)};
-    ledger.reset();
-    ledger.allow(2);
-    st_verify_eq_(tree.upsert(members.begin(), members.end()), status_t::out_of_memory_heap_k);
-    st_verify_eq_(tree.contains(trivial_key_t(99)), false);
-    st_verify_eq_(tree.size(), 2u);
+        // Too little for the three-node temporary, so the whole batch fails and this tree is untouched.
+        std::vector<trivial_key_t> const members = {trivial_key_t(1), trivial_key_t(2), trivial_key_t(99)};
+        ledger.allow(2);
+        st_verify_eq_(tree.upsert(members.begin(), members.end()), status_t::out_of_memory_heap_k);
+        st_verify_eq_(tree.contains(trivial_key_t(99)), false);
+        st_verify_eq_(tree.size(), 2u);
 
-    // Exactly enough for the temporary, and the merge relinks its nodes rather than asking for more.
-    ledger.reset();
-    ledger.allow(3);
-    st_verify_(tree.upsert(members.begin(), members.end()));
-    st_verify_eq_(tree.contains(trivial_key_t(99)), true);
-    st_verify_eq_(ledger.granted_count, std::size_t {3});
-    st_verify_eq_(ledger.refused_count, std::size_t {0});
-    verify_invariants(tree);
+        // Exactly enough for the temporary, and the merge relinks its nodes rather than asking for more.
+        std::size_t const granted_before_merge = ledger.granted_count;
+        std::size_t const refused_before_merge = ledger.refused_count;
+        ledger.allow(3);
+        st_verify_(tree.upsert(members.begin(), members.end()));
+        st_verify_eq_(tree.contains(trivial_key_t(99)), true);
+        st_verify_eq_(ledger.granted_count - granted_before_merge, std::size_t {3});
+        st_verify_eq_(ledger.refused_count - refused_before_merge, std::size_t {0});
+        verify_invariants(tree);
+    }
+    ledger.verify_balanced();
 }
 
 /**
@@ -828,25 +832,28 @@ static void test_upsert_reports_placement() {
     using placement_t = typename budget_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(1);
-    budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
+    {
+        budget_set_t tree {typename budget_set_t::allocator_t(ledger)};
 
-    auto const made = tree.upsert(trivial_key_t(1));
-    st_verify_eq_(made.placement, placement_t::made_k, "a fresh key must report a node of its own");
-    st_verify_(made);
-    st_verify_((made.node != nullptr));
+        auto const made = tree.upsert(trivial_key_t(1));
+        st_verify_eq_(made.placement, placement_t::made_k, "a fresh key must report a node of its own");
+        st_verify_(made);
+        st_verify_((made.node != nullptr));
 
-    auto const matched = tree.upsert(trivial_key_t(1));
-    st_verify_eq_(matched.placement, placement_t::matched_k, "a key already there must report a match");
-    st_verify_(succeeded(matched) && "an overwrite is not a failure");
-    st_verify_((matched.node != nullptr));
+        auto const matched = tree.upsert(trivial_key_t(1));
+        st_verify_eq_(matched.placement, placement_t::matched_k, "a key already there must report a match");
+        st_verify_(succeeded(matched) && "an overwrite is not a failure");
+        st_verify_((matched.node != nullptr));
 
-    // The budget is spent, so the second key has no node to live in - the outcome that shares a
-    // null match with nothing else.
-    auto const refused = tree.upsert(trivial_key_t(2));
-    st_verify_eq_(refused.placement, placement_t::refused_k, "a refused allocation must say so");
-    st_verify_(failed(refused));
-    st_verify_((refused.node == nullptr));
-    st_verify_eq_(tree.size(), 1u);
+        // The budget is spent, so the second key has no node to live in - the outcome that shares a
+        // null match with nothing else.
+        auto const refused = tree.upsert(trivial_key_t(2));
+        st_verify_eq_(refused.placement, placement_t::refused_k, "a refused allocation must say so");
+        st_verify_(failed(refused));
+        st_verify_((refused.node == nullptr));
+        st_verify_eq_(tree.size(), 1u);
+    }
+    ledger.verify_balanced();
 }
 
 /** @brief Move-only entries must survive the assignment operator of an upsert result. */
@@ -1054,6 +1061,15 @@ static void allocation_failure_insert_probes_before_allocating() {
 
 #pragma endregion Allocation Failure
 
+#pragma region Failure Policy
+
+/** @brief Every cause this store can produce, the refused heap included, reports a status of its own. */
+static void failure_policy_budgeted_distinct_causes() {
+    test_budgeted_store_maps_causes_to_distinct_statuses<transactional_tracking_map_t>();
+}
+
+#pragma endregion Failure Policy
+
 int main() {
     install_test_signal_handlers();
     char const *const filter = test_filter();
@@ -1197,6 +1213,8 @@ int main() {
 
     failures += run_test(filter, "fixture_coverage.container_honours_over_alignment",
                          fixture_coverage_container_honours_over_alignment);
+
+    failures += run_test(filter, "failure_policy.budgeted_distinct_causes", failure_policy_budgeted_distinct_causes);
 
     return report_test_failures(failures);
 }

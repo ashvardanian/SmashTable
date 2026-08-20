@@ -46,7 +46,7 @@ void test_container_balances_counted_keys(std::size_t size = 128) {
         for (std::size_t identifier = 0; identifier < size; identifier += 3) [[maybe_unused]]
             auto const erased = container.erase(trivial_id_to_key<member_t>(identifier));
 
-        st_verify_((counted_key_t::alive() > 0) && "the container must be holding keys at this point");
+        st_verify_gt_(counted_key_t::alive(), 0, "the container must be holding keys at this point");
         clear_container(container);
     }
 
@@ -184,8 +184,8 @@ void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
     }
 
     // A run is a constant multiple of the load factor, never a function of the table's size.
-    st_verify_((worst_equalities > 0) && "the probe must have compared something, or this proves nothing");
-    st_verify_((worst_equalities < 64) && "a lookup must walk its probe run, not the table");
+    st_verify_gt_(worst_equalities, 0, "the probe must have compared something, or this proves nothing");
+    st_verify_lt_(worst_equalities, 64, "a lookup must walk its probe run, not the table");
 }
 
 #pragma endregion Lookup Cost
@@ -232,7 +232,7 @@ void test_find_copy_reports_a_refused_copy() {
     copy_budget_t::allow(0);
     auto const refused = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_((!refused) && "a refused copy must not report a value");
-    st_verify_((copy_budget_t::refusals_count > 0) && "the budget must have been consulted");
+    st_verify_gt_(copy_budget_t::refusals_count, 0, "the budget must have been consulted");
 
     copy_budget_t::reset();
     auto const granted = container.find_copy(trivial_id_to_key<member_t>(1));

@@ -579,8 +579,8 @@ static subtree_counts_t verify_invariants(node_type_ *node) noexcept {
     st_verify_eq_(node->size, 1 + left.size + right.size);
 
     std::size_t const left_weight = left.size + 1, right_weight = right.size + 1;
-    st_verify_(left_weight <= node_type_::delta_k * right_weight);
-    st_verify_(right_weight <= node_type_::delta_k * left_weight);
+    st_verify_le_(left_weight, node_type_::delta_k * right_weight);
+    st_verify_le_(right_weight, node_type_::delta_k * left_weight);
 
     subtree_counts_t counts;
     counts.size = node->size;
@@ -977,17 +977,17 @@ static void augmented_select_is_logarithmic() {
         }
 
         // Δ=3 caps the height at log(n)/log(4/3) ≈ 2.41 log2(n), and `rank` spends two comparisons a level.
-        st_verify_(worst_select_steps <= 3 * budget + 4);
-        st_verify_(worst_rank_comparisons <= 6 * budget + 8);
-        st_verify_(worst_select_steps >= previous_select_steps);
-        st_verify_(worst_rank_comparisons >= previous_rank_comparisons);
+        st_verify_le_(worst_select_steps, 3 * budget + 4);
+        st_verify_le_(worst_rank_comparisons, 6 * budget + 8);
+        st_verify_ge_(worst_select_steps, previous_select_steps);
+        st_verify_ge_(worst_rank_comparisons, previous_rank_comparisons);
         previous_select_steps = worst_select_steps;
         previous_rank_comparisons = worst_rank_comparisons;
     }
 
     // A linear scan of the larger tree would have cost tens of thousands of steps, not a few dozen.
-    st_verify_(previous_select_steps < 64);
-    st_verify_(previous_rank_comparisons < 128);
+    st_verify_lt_(previous_select_steps, 64);
+    st_verify_lt_(previous_rank_comparisons, 128);
 }
 
 #pragma endregion Augmented Order Statistics
@@ -1024,29 +1024,32 @@ static void allocation_failure_preserves_the_argument() {
     using placement_t = traced_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(3);
-    traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
-    for (int element = 0; element < 3; ++element) {
-        traced_key_t key(element);
-        auto const made = tree.insert(std::move(key));
-        st_verify_(made.placement == placement_t::made_k);
-        st_verify_ne_(made.node, nullptr);
+    {
+        traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+        for (int element = 0; element < 3; ++element) {
+            traced_key_t key(element);
+            auto const made = tree.insert(std::move(key));
+            st_verify_(made.placement == placement_t::made_k);
+            st_verify_ne_(made.node, nullptr);
+        }
+
+        // Budget exhausted - the rejected entry must come back untouched.
+        traced_key_t rejected(99);
+        auto const refused = tree.insert(std::move(rejected));
+        st_verify_eq_(refused.node, nullptr);
+        st_verify_(refused.placement == placement_t::refused_k);
+        st_verify_(!rejected.moved_from);
+
+        // A duplicate key must likewise leave the argument alone and report the incumbent.
+        ledger.allow(10);
+        traced_key_t duplicate(1);
+        auto const matched = tree.insert(std::move(duplicate));
+        st_verify_ne_(matched.node, nullptr);
+        st_verify_(matched.placement == placement_t::matched_k);
+        st_verify_(!duplicate.moved_from);
+        st_verify_eq_(tree.size(), 3u);
     }
-
-    // Budget exhausted - the rejected entry must come back untouched.
-    traced_key_t rejected(99);
-    auto const refused = tree.insert(std::move(rejected));
-    st_verify_eq_(refused.node, nullptr);
-    st_verify_(refused.placement == placement_t::refused_k);
-    st_verify_(!rejected.moved_from);
-
-    // A duplicate key must likewise leave the argument alone and report the incumbent.
-    ledger.allow(10);
-    traced_key_t duplicate(1);
-    auto const matched = tree.insert(std::move(duplicate));
-    st_verify_ne_(matched.node, nullptr);
-    st_verify_(matched.placement == placement_t::matched_k);
-    st_verify_(!duplicate.moved_from);
-    st_verify_eq_(tree.size(), 3u);
+    ledger.verify_balanced();
 }
 
 /**
@@ -1059,25 +1062,28 @@ static void upsert_reports_placement() {
     using placement_t = traced_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(1);
-    traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+    {
+        traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
 
-    auto const made = tree.upsert(traced_key_t(1));
-    st_verify_eq_(made.placement, placement_t::made_k, "a fresh key must report a node of its own");
-    st_verify_(made);
-    st_verify_ne_(made.node, nullptr);
+        auto const made = tree.upsert(traced_key_t(1));
+        st_verify_eq_(made.placement, placement_t::made_k, "a fresh key must report a node of its own");
+        st_verify_(made);
+        st_verify_ne_(made.node, nullptr);
 
-    auto const matched = tree.upsert(traced_key_t(1));
-    st_verify_eq_(matched.placement, placement_t::matched_k, "a key already there must report a match");
-    st_verify_(succeeded(matched) && "an overwrite is not a failure");
-    st_verify_ne_(matched.node, nullptr);
+        auto const matched = tree.upsert(traced_key_t(1));
+        st_verify_eq_(matched.placement, placement_t::matched_k, "a key already there must report a match");
+        st_verify_(succeeded(matched) && "an overwrite is not a failure");
+        st_verify_ne_(matched.node, nullptr);
 
-    // The budget is spent, so the second key has no node to live in - the outcome that shares a
-    // null match with nothing else.
-    auto const refused = tree.upsert(traced_key_t(2));
-    st_verify_eq_(refused.placement, placement_t::refused_k, "a refused allocation must say so");
-    st_verify_(failed(refused));
-    st_verify_eq_(refused.node, nullptr);
-    st_verify_eq_(tree.size(), 1u);
+        // The budget is spent, so the second key has no node to live in - the outcome that shares a
+        // null match with nothing else.
+        auto const refused = tree.upsert(traced_key_t(2));
+        st_verify_eq_(refused.placement, placement_t::refused_k, "a refused allocation must say so");
+        st_verify_(failed(refused));
+        st_verify_eq_(refused.node, nullptr);
+        st_verify_eq_(tree.size(), 1u);
+    }
+    ledger.verify_balanced();
 }
 
 /** @brief @c insert_if_missing must separate "already there" from "out of memory". */
@@ -1085,23 +1091,26 @@ static void allocation_failure_is_distinct_from_presence() {
     using placement_t = traced_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
     ledger.allow(2);
-    traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
     {
-        traced_key_t key(1);
-        auto const made = tree.insert(std::move(key));
-        st_verify_(made.placement == placement_t::made_k);
-        st_verify_ne_(made.node, nullptr);
+        traced_set_t tree(traced_less_t {}, stateful_allocator<traced_set_t::node_t>(ledger));
+        {
+            traced_key_t key(1);
+            auto const made = tree.insert(std::move(key));
+            st_verify_(made.placement == placement_t::made_k);
+            st_verify_ne_(made.node, nullptr);
+        }
+
+        auto const on_present = tree.insert_if_missing(traced_key_t(1));
+        st_verify_eq_(on_present.placement, placement_t::matched_k, "an incumbent is not a refusal");
+        st_verify_ne_(on_present.position, tree.end());
+
+        ledger.refuse_everything();
+        auto const on_exhausted = tree.insert_if_missing(traced_key_t(2));
+        st_verify_eq_(on_exhausted.placement, placement_t::refused_k, "no node means no insertion");
+        st_verify_eq_(on_exhausted.position, tree.end());
+        st_verify_eq_(tree.size(), 1u);
     }
-
-    auto const on_present = tree.insert_if_missing(traced_key_t(1));
-    st_verify_eq_(on_present.placement, placement_t::matched_k, "an incumbent is not a refusal");
-    st_verify_ne_(on_present.position, tree.end());
-
-    ledger.refuse_everything();
-    auto const on_exhausted = tree.insert_if_missing(traced_key_t(2));
-    st_verify_eq_(on_exhausted.placement, placement_t::refused_k, "no node means no insertion");
-    st_verify_eq_(on_exhausted.position, tree.end());
-    st_verify_eq_(tree.size(), 1u);
+    ledger.verify_balanced();
 }
 
 #pragma endregion Allocation Failure

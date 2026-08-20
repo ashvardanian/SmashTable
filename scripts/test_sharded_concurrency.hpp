@@ -673,8 +673,8 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
     writer.join();
     for (auto &walker : walkers) walker.join();
 
-    st_verify_((walks_taken.load() >= sharded_threads_count_k) &&
-               "every walker must complete a walk begun after the writer started, or this proves nothing");
+    st_verify_ge_(walks_taken.load(), sharded_threads_count_k,
+                  "every walker must complete a walk begun after the writer started, or this proves nothing");
     st_verify_eq_(stable_misses.load(), 0, "an element present for the whole walk was missed or seen twice");
     st_verify_eq_(repeat_visits.load(), 0, "one walk handed the same key to the callback twice");
 }

@@ -267,7 +267,7 @@ struct status_of_cause<failure_cause_t::key_present_k> {
 };
 template <>
 struct status_of_cause<failure_cause_t::watch_conflicted_k> {
-    static constexpr status_t status_k = status_t::consistency_k;
+    static constexpr status_t status_k = status_t::read_conflict_k;
 };
 
 /** @brief The table read as an array, which is what makes it checkable rather than merely readable. */
@@ -324,7 +324,7 @@ struct observed_causes_t {
                               "two distinct causes reported the same status against this store");
             }
         }
-        st_verify_((driven_count >= 2) && "a store must expose at least two causes for distinctness to mean anything");
+        st_verify_ge_(driven_count, 2, "a store must expose at least two causes for distinctness to mean anything");
     }
 };
 
@@ -492,20 +492,23 @@ void test_budgeted_store_maps_causes_to_distinct_statuses(std::size_t size = 32)
     using allocator_t = typename store_t::allocator_t;
 
     allocation_ledger_t ledger;
-    auto built = store_t::make(allocator_t {ledger});
-    st_verify_((built.has_value()) && "the budgeted store under test must build");
-    store_t &store = *built;
-    for (std::size_t identifier = 0; identifier != size; ++identifier)
-        st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
+    {
+        auto built = store_t::make(allocator_t {ledger});
+        st_verify_((built.has_value()) && "the budgeted store under test must build");
+        store_t &store = *built;
+        for (std::size_t identifier = 0; identifier != size; ++identifier)
+            st_verify_(store.upsert(trivial_id_to_member<member_t>(identifier, identifier)));
 
-    observed_causes_t observed;
-    drive_heap_refusal_cause(store, ledger, observed, size);
-    drive_present_key_cause(store, observed, size);
-    drive_absent_key_cause(store, observed, size);
-    drive_watch_conflict_cause(store, observed, size);
-    observed.verify_distinct();
+        observed_causes_t observed;
+        drive_heap_refusal_cause(store, ledger, observed, size);
+        drive_present_key_cause(store, observed, size);
+        drive_absent_key_cause(store, observed, size);
+        drive_watch_conflict_cause(store, observed, size);
+        observed.verify_distinct();
 
-    clear_container(store);
+        clear_container(store);
+    }
+    ledger.verify_balanced();
 }
 
 /**
@@ -766,8 +769,8 @@ void sweep_bulk_methods(std::size_t size, std::size_t refusing_partition, std::i
  */
 template <typename store_type_>
 void test_bulk_methods_match_declared_policy(std::size_t size = 256, std::size_t refusing_partition = 4) {
-    st_verify_((refusing_partition + 1 < store_type_::partitions_k) &&
-               "the refusal has to land where partitions remain behind it, or the policies read alike");
+    st_verify_lt_(refusing_partition + 1, store_type_::partitions_k,
+                  "the refusal has to land where partitions remain behind it, or the policies read alike");
     sweep_bulk_methods<store_type_>(size, refusing_partition, std::make_index_sequence<bulk_methods_k> {});
 }
 
