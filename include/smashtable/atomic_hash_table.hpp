@@ -206,8 +206,7 @@ class atomic_hash_table {
     /**
      *  @brief Reports whether a key equivalent to @p wanted is present.
      *  @param[in] wanted Key to probe for.
-     *  @param[out] present Set to whether the key is here.
-     *  @return Always success; the probe takes each slot's lock and never allocates.
+     *  @return Whether the key is present. The probe takes each slot's lock and allocates nothing, so it never refuses.
      */
     template <typename comparable_key_type_>
     [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted) const noexcept {

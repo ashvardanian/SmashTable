@@ -573,14 +573,14 @@ static void validate_watches_catches_drift() {
         {1, resolved_entry_t {5, presence_t::present_k}},
         {2, resolved_entry_t {9, presence_t::present_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(bumped)), consistency_k);
+    st_verify_eq_(validate_watches(watches, resolve(bumped)), read_conflict_k);
 
     // A watched key was erased under us, which is a different shape from never having been there.
     std::vector<std::pair<int, resolved_entry_t>> erased {
         {1, resolved_entry_t {5, presence_t::present_k}},
         {2, resolved_entry_t {8, presence_t::erased_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(erased)), consistency_k);
+    st_verify_eq_(validate_watches(watches, resolve(erased)), read_conflict_k);
 
     // A key watched as absent that has since appeared.
     std::vector<std::pair<int, resolved_entry_t>> appeared {
@@ -588,7 +588,7 @@ static void validate_watches_catches_drift() {
         {2, resolved_entry_t {8, presence_t::present_k}},
         {3, resolved_entry_t {11, presence_t::present_k}},
     };
-    st_verify_eq_(validate_watches(watches, resolve(appeared)), consistency_k);
+    st_verify_eq_(validate_watches(watches, resolve(appeared)), read_conflict_k);
 
     // A committed tombstone resolves to missing, and the absent watch records that same shape, so
     // the two match rather than reporting a phantom conflict.
@@ -601,7 +601,7 @@ static void validate_watches_catches_drift() {
 
     // A key that vanished entirely, resolved through the missing callback.
     std::vector<std::pair<int, resolved_entry_t>> vanished {{2, resolved_entry_t {8, presence_t::present_k}}};
-    st_verify_eq_(validate_watches(watches, resolve(vanished)), consistency_k);
+    st_verify_eq_(validate_watches(watches, resolve(vanished)), read_conflict_k);
 
     // No watches at all is trivially consistent.
     std::vector<watched_t> const none;

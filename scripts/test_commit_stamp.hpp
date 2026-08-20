@@ -95,7 +95,7 @@ void test_lost_update_is_refused() {
     // increment underneath it.
     st_verify_(first->commit());
     auto const refused = second->commit();
-    st_verify_eq_(refused, status_t::consistency_k);
+    st_verify_eq_(refused, status_t::read_conflict_k);
 
     auto maybe_final = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(maybe_final.has_value());
@@ -129,7 +129,7 @@ void test_find_and_watch_records_absence() {
 
     st_verify_(reader->upsert(trivial_id_to_member<member_t>(7, 43)));
     auto const refused = reader->stage();
-    st_verify_eq_(refused, status_t::consistency_k);
+    st_verify_eq_(refused, status_t::read_conflict_k);
 }
 
 } // namespace ashvardanian::smashtable::scripts

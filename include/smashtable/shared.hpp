@@ -117,6 +117,24 @@ constexpr bool succeeded(bool is_satisfied) noexcept { return is_satisfied; }
 /** @brief The same of a plain condition, so @c succeeded and @c failed stay a pair for every shape. */
 constexpr bool failed(bool is_satisfied) noexcept { return !is_satisfied; }
 
+/**
+ *  @brief Keeps the first refusal of a walk that reports more than once, so the reason travels.
+ *
+ *  The discipline a @b read walk wants: the first thing that went wrong is what the caller asked about,
+ *  and nothing after it can be trusted anyway.
+ */
+constexpr status_t first_failure(status_t recorded, status_t next) noexcept {
+    return failed(recorded) ? recorded : next;
+}
+
+/**
+ *  @brief Keeps the last refusal of a walk that reports more than once.
+ *
+ *  The discipline a @b write walk wants, where stopping at the first refusal would leave the steps after
+ *  it untouched: the walk runs to the end regardless, so the reason it carries out is the last one it met.
+ */
+constexpr status_t last_failure(status_t recorded, status_t next) noexcept { return failed(next) ? next : recorded; }
+
 /** @brief The enumerator's own spelling, for a message a person reads rather than decodes. */
 constexpr char const *name_of(status_t status) noexcept {
     switch (status) {
@@ -841,10 +859,21 @@ struct watch_t {
 constexpr watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
 
 /**
+ *  @brief The watch a read resolving to @p resolved should record, or the missing shape when it resolves
+ *    to nothing. A key erased and a key never present record the same shape, which is what lets a watch
+ *    on an absent key compare equal to one on an erased key.
+ */
+template <typename versioned_type_>
+[[nodiscard]] constexpr watch_t watch_shape_of(versioned_type_ const *resolved) noexcept {
+    if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
+    return watch_t {resolved->generation, resolved->presence};
+}
+
+/**
  *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
  *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
  *  @param[in] resolve_latest Invoked as @c resolve_latest(identifier,on_found,on_missing) . Must be noexcept.
- *  @return @c success_k, or @c consistency_k for the first watch that fails to match.
+ *  @return @c success_k, or @c read_conflict_k for the first watch that fails to match.
  */
 template <typename watches_type_, typename resolver_type_>
 [[nodiscard]] status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
@@ -855,7 +884,7 @@ template <typename watches_type_, typename resolver_type_>
             identifier_and_watch.identifier,
             [&](auto const &entry) noexcept { drifted = entry != identifier_and_watch.watch; },
             [&]() noexcept { drifted = entry_missing != identifier_and_watch.watch; });
-        if (drifted) return status_t::consistency_k;
+        if (drifted) return status_t::read_conflict_k;
     }
     return success_k;
 }

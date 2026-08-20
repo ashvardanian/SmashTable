@@ -755,11 +755,6 @@ class snapshot_store {
             return success_k;
         }
 
-        /** @brief Keeps the first refusal of a walk that records more than once, so the reason travels. */
-        static status_t first_failure_(status_t recorded, status_t next) noexcept {
-            return failed(recorded) ? recorded : next;
-        }
-
         /**
          *  @brief Whether every key this transaction read is untouched since its snapshot.
          *    Asked twice - once when staging, once when publishing - because a commit landing in between
@@ -931,10 +926,28 @@ class snapshot_store {
 
         /**
          *  @brief Stages an erase of @p identifier as a tombstone, which only a commit turns into an absence.
-         *  @param[in] identifier Identifier of the element to erase.
-         *  @return Success unless an allocation failed.
+         *  @return @c key_not_found_k when this transaction reads no such key, so a caller need not look first.
+         *
+         *  The look happens whether or not callbacks were passed, so the answer never depends on how the
+         *  call was spelled. At @c serializable_k it records a read, which a blind delete did not.
          */
-        [[nodiscard]] status_t erase(identifier_t const &identifier) noexcept {
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
+                                     callback_missing_type_ &&callback_missing = {}) noexcept {
+            bool present = false;
+            status_t const looked_up = find(
+                identifier,
+                [&](value_t const &element) noexcept {
+                    present = true;
+                    callback_found(element);
+                },
+                no_op_t {});
+            if (failed(looked_up)) return looked_up;
+            if (!present) {
+                callback_missing();
+                return key_not_found_k;
+            }
+
             // The tombstone owns its own identifier and the changed list owns another, so a move-only
             // key needs two safe copies rather than one copy and one implicit one.
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
@@ -1062,15 +1075,15 @@ class snapshot_store {
                 [&](value_t const &value) noexcept {
                     landed = true;
                     identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    recorded = first_failure_(recorded, record_window_read_(comparable, key, access_t::none_k));
-                    recorded = first_failure_(recorded, record_read_(key));
+                    recorded = first_failure(recorded, record_window_read_(comparable, key, access_t::none_k));
+                    recorded = first_failure(recorded, record_read_(key));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
             // Nothing at or above the bound, so the read depended on everything above it.
             if (!landed)
                 recorded =
-                    first_failure_(recorded, record_window_read_(comparable, comparable, access_t::to_the_highest_k));
+                    first_failure(recorded, record_window_read_(comparable, comparable, access_t::to_the_highest_k));
             return recorded;
         }
 
@@ -1096,13 +1109,13 @@ class snapshot_store {
                 [&](value_t const &value) noexcept {
                     landed = true;
                     identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    recorded = first_failure_(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
-                    recorded = first_failure_(recorded, record_read_(key));
+                    recorded = first_failure(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
+                    recorded = first_failure(recorded, record_read_(key));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
             // Nothing readable at all, so the answer rests on the whole keyspace being empty.
-            if (!landed) recorded = first_failure_(recorded, record_whole_keyspace_read_());
+            if (!landed) recorded = first_failure(recorded, record_whole_keyspace_read_());
             return recorded;
         }
 
@@ -1121,14 +1134,14 @@ class snapshot_store {
                 [&](value_t const &value) noexcept {
                     landed = true;
                     identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    recorded = first_failure_(recorded, record_window_read_(comparable, key, access_t::none_k));
-                    recorded = first_failure_(recorded, record_read_(key));
+                    recorded = first_failure(recorded, record_window_read_(comparable, key, access_t::none_k));
+                    recorded = first_failure(recorded, record_read_(key));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
             if (!landed)
                 recorded =
-                    first_failure_(recorded, record_window_read_(comparable, comparable, access_t::to_the_highest_k));
+                    first_failure(recorded, record_window_read_(comparable, comparable, access_t::to_the_highest_k));
             return recorded;
         }
 
@@ -1148,6 +1161,41 @@ class snapshot_store {
             status_t const recorded = record_window_read_(lower, upper, access_t::none_k);
             auto const ordering = changes_.key_comp();
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
+                if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
+                if (version.presence == presence_t::present_k) callback(version.payload);
+                return probe_control_t::resume_k;
+            });
+            return recorded;
+        }
+
+        /**
+         *  @brief Hands @p callback every member at or after @p lower, with no upper end.
+         *  Records a window running to the highest key, so a commit into it is a phantom.
+         */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
+            requires ordered_core_k
+        {
+            status_t const recorded = record_window_read_(lower, lower, access_t::to_the_highest_k);
+            merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
+                if (version.presence == presence_t::present_k) callback(version.payload);
+                return probe_control_t::resume_k;
+            });
+            return recorded;
+        }
+
+        /**
+         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
+         *  Records a window running from the lowest key, so a caller never has to name a layout's floor
+         *  to say "everything below this".
+         */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
+            requires ordered_core_k
+        {
+            status_t const recorded = record_window_read_(upper, upper, access_t::from_the_lowest_k);
+            auto const ordering = changes_.key_comp();
+            merge_all_([&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
                 if (version.presence == presence_t::present_k) callback(version.payload);
                 return probe_control_t::resume_k;
@@ -1230,14 +1278,14 @@ class snapshot_store {
                 identifier_t const &key = mapping_key_or_itself<value_t>(version.payload);
                 // An ordinal is decided by how many keys precede it, so the window is everything
                 // below the one it lands on - a key appearing above cannot move it.
-                recorded = first_failure_(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
-                recorded = first_failure_(recorded, record_read_(key));
+                recorded = first_failure(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
+                recorded = first_failure(recorded, record_read_(key));
                 callback_found(version.payload);
                 found = true;
                 return probe_control_t::halt_k;
             });
             if (!found) {
-                recorded = first_failure_(recorded, record_whole_keyspace_read_());
+                recorded = first_failure(recorded, record_whole_keyspace_read_());
                 callback_missing();
             }
             return recorded;
@@ -1639,8 +1687,9 @@ class snapshot_store {
          *  until it answers, so a refusal leaves the transaction staged and retryable - and a caller
          *  spreading one commit across several stores asks every one of them before writing any.
          *
-         *  @return Success, @c consistency_k when a watched or written key moved under this
-         *    transaction, or @c operation_not_permitted_k when nothing was staged.
+         *  @return Success; @c write_conflict_k, @c read_conflict_k or @c phantom_conflict_k naming
+         *    which check turned this transaction away; or @c operation_not_permitted_k when nothing
+         *    was staged.
          */
         [[nodiscard]] status_t validate_for_commit() const noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -2538,9 +2587,10 @@ class snapshot_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const looked_up = find(
+        status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(looked_up)) return looked_up;
         return result;
     }
 
@@ -2553,6 +2603,13 @@ class snapshot_store {
      *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
      */
+    /**
+     *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
+     *  The one ordering every read here descends on; a caller comparing keys any other way is
+     *  ordering them differently from the store that holds them.
+     */
+    [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
+
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept
@@ -2564,6 +2621,35 @@ class snapshot_store {
         visible_keys().peek(std::forward<callback_found_type_>(callback_found),
                             std::forward<callback_missing_type_>(callback_missing));
         return success_k;
+    }
+
+    /**
+     *  @brief Removes the smallest member and hands it over, or reports the store is empty.
+     *  @return @c key_not_found_k when nothing was there, so emptiness needs no second probe.
+     *
+     *  The removal publishes a tombstone rather than dropping the version, so a store drained by
+     *  popping keeps its versions until a @c vacuum reclaims them.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
+                                        callback_missing_type_ &&callback_missing = {}) noexcept
+        requires ordered_core_k && std::is_copy_constructible_v<identifier_t>
+    {
+        identifier_t doomed;
+        bool found = false;
+        status_t const looked_up = smallest(
+            [&](value_t const &value) noexcept {
+                doomed = identifier_t(value);
+                found = true;
+            },
+            no_op_t {});
+        if (failed(looked_up)) return looked_up;
+        if (!found) {
+            callback_missing();
+            return status_t::key_not_found_k;
+        }
+        return erase(doomed, std::forward<callback_found_type_>(callback_found),
+                     std::forward<callback_missing_type_>(callback_missing));
     }
 
     /** @brief Finds the first member @b greater or equal to @p comparable. */
@@ -2612,9 +2698,10 @@ class snapshot_store {
         requires ordered_core_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = lower_bound(
+        status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -2624,9 +2711,10 @@ class snapshot_store {
         requires ordered_core_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = upper_bound(
+        status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 

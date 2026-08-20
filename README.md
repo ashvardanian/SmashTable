@@ -25,34 +25,39 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 ```
 
 Every store publishes what it promises as a compile-time `isolation_k`, and the suite checks that constant against behaviour rather than against itself — a container that quietly changes level fails.
+Each rung implies the ones beneath it, so one column names the highest a store reaches rather than five ticking the same fact five times.
+Every row below the cores wraps something: a transactional store wraps a plain container, and either thread-safety wrapper wraps a store.
+So a usable type reads `locked_store<snapshot_store<basic_avl_tree<…>>>` for one lock over the whole store, or `partitioned_store<…>` for sixteen.
+Nesting the two wrappers is redundant rather than clever: every call would take an inner lock inside a partition lock that already excludes.
 
-|                        | Read Committed | Monotonic Atomic View |   Snapshot   | Concurrency       | Transactions |        Ordered         |
-| ---------------------- | :------------: | :-------------------: | :----------: | ----------------- | :----------: | :--------------------: |
-| `basic_vector`         |       —        |           —           |      —       | one thread        |      —       |           —            |
-| `basic_avl_tree`       |       —        |           —           |      —       | one thread        |      —       |           ✓            |
-| `basic_wb_tree`        |       —        |           —           |      —       | one thread        |      —       |  ✓ `rank` · `select`   |
-| `basic_hash_table`     |       —        |           —           |      —       | one thread        |      —       |           —            |
-| `atomic_hash_table`    |       —        |           —           |      —       | per operation ⁴   |      —       |           —            |
-| `monotonic_store`      |       ✓        |           ✓           |      ✗       | one thread        |      ✓       | ✓ over an ordered core |
-| `snapshot_store`       |       ✓        |           ✓           |      ✓       | one thread        |      ✓       |          ✓ ²           |
-| `reference_store` ⁵    |       ✓        |           ✓           |      ✗       | one thread        |      ✓       |           ✓            |
-| `locked_store<S>`      |  inherits `S`  |     inherits `S`      | inherits `S` | whole transaction |      ✓       |      inherits `S`      |
-| `partitioned_store<S>` |       ✓        |     inherits `S` ¹    | inherits `S` ¹ | per partition   |      ✓       |          ✓ ³           |
+|                             | Isolation               | Write concurrency | Transactions |      Ordered      |
+| --------------------------- | ----------------------- | :---------------: | :----------: | :---------------: |
+| `basic_vector`              | —                       |    one thread     |      —       |         —         |
+| `basic_avl_tree`            | —                       |    one thread     |      —       |         ✔         |
+| `basic_wb_tree`             | —                       |    one thread     |      —       | `rank` · `select` |
+| `basic_hash_table`          | —                       |    one thread     |      —       |         —         |
+| `atomic_hash_table`         | — ⁴                     |    per slot ⁴     |      —       |         —         |
+| `monotonic_store`           | Monotonic Atomic View ⁶ |    one thread     |      ✔       |     inherits      |
+| `snapshot_store`            | Snapshot ⁷              |    one thread     |      ✔       |    inherits ²     |
+| `serializable_store`        | Serializable ⁸          |    one thread     |      ✔       |    inherits ²     |
+| `strict_serializable_store` | Strict Serializable ⁹   |    one thread     |      ✔       |    inherits ²     |
+| `reference_store` ⁵         | Monotonic Atomic View ⁶ |    one thread     |      ✔       |         ✔         |
+| `locked_store`              | inherits                |     one call      |      ✔       |     inherits      |
+| `partitioned_store`         | inherits ¹              |   per partition   |      ✔       |    inherits ³     |
 
-> ¹ A stamp-based inner store keeps its level across partitions, because visibility is a comparison against a commit stamp rather than a question about which locks are currently held.
-> Every partition draws from one shared clock, and the published watermark advances only once the last partition has published, so a reader sees a whole commit or none of it.
-> A monotonic inner store has no stamp for its reader to hold, so above a single partition only Read Committed survives; with `partitions_k == 1` its own level passes through intact.
-> Making a cross-partition commit atomic costs what it sounds like — a transaction touching one key is unaffected, one spanning all sixteen partitions serializes against every other.
-> ² `select` and `rank` descend on a maintained count and are exact at the newest published commit.
-> A reader holding an older snapshot gets a merged walk instead, because one number per node cannot answer for an unbounded parameter.
-> `clear` refuses while a reader is open rather than dropping versions out from under it.
-> ³ `lower_bound` is two separately locked probes, so it is not atomic even within one partition.
-> ⁴ Per-operation atomicity through per-slot spin locks — no global lock and no reallocation, but not a progress guarantee: a thread descheduled holding a slot blocks the others probing it.
-> It offers no transactions by design, which is why it declares no isolation at all.
-> ⁵ A `std::set`-backed reference implementation, kept as the oracle the other stores are tested against rather than as a production choice.
+> ¹ A stamp-based store keeps its level: one clock, and the watermark moves only once the last partition has published, so a reader sees a whole commit or none.
+> A clock-less store has no stamp to hold, so only Read Committed survives; atomicity costs in proportion to the partitions touched.
+> ² `select` and `rank` are exact at the newest commit; an older snapshot gets a merged walk, since one count per node cannot answer an unbounded parameter.
+> ³ A bound, a range and an ordinal hold every partition's lock for the whole walk, so each is decided at one moment rather than by probes that can disagree.
+> An unbounded enumeration and the cursor behind iteration take one partition at a time, unordered.
+> ⁴ Per-slot spin locks: atomic over one slot and nothing wider, so `size()` is a relaxed read, a stalled thread blocks its slot, and there are no transactions.
+> ⁵ A `std::set`-backed oracle, tested against rather than shipped.
+> ⁶ Permits a [lost update](https://jepsen.io/consistency/phenomena/p4) and a repeated read that moves.
+> ⁷ Refuses both; permits [write skew](https://jepsen.io/consistency/phenomena/a5b), since a read you did not `watch` is not validated.
+> ⁸ Refuses write skew and phantoms too: every key and window read is re-checked at commit.
+> ⁹ Same refusals as ⁸; [strict](https://jepsen.io/consistency/models/strict-serializable) also waits for its own publication, so a transaction opening after a commit cannot precede it — which changes only sharded commits and writes outside a transaction.
 
-None of them promises strict serializability, and none of them pretends to.
-A transaction never sees another's partial update at any of these levels; what varies is whether your own reads hold still while you work.
+The ladder runs from [Read Committed](https://jepsen.io/consistency/models/read-committed) through [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) and [Snapshot Isolation](https://jepsen.io/consistency/models/snapshot-isolation) to the two serializable rungs, and every level from Monotonic Atomic View upward is delivered by [multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control): a key keeps one version per commit that touched it, a reader is answered from the newest version its own snapshot can name, and versions below the oldest live reader are reclaimed.
 
 ## Python Quick Start
 
@@ -60,7 +65,7 @@ A transaction never sees another's partial update at any of these levels; what v
 pip install smashtable
 ```
 
-Type stubs ship in the wheel, so a checker knows the key layouts, the isolation levels and the value modes without any configuration — a misspelled `isolation='serialisable'` is an error before it is an exception.
+The wheel ships type stubs, so an editor completes the container methods and a checker rejects a misspelled isolation level or key layout before the call ever runs.
 
 Two indexes over the same entities have to move together, or a lookup by name finds an identifier that no longer resolves:
 
@@ -140,7 +145,8 @@ group.commit()     # flips visibility
 ```
 
 Separating the fallible phase from the applying phase is what lets independent transactions compose into one all-or-nothing unit.
-`stage` is where a conflict or an allocation failure surfaces; by `commit` there is nothing left to fail on.
+`stage` is where a conflict or an allocation failure normally surfaces.
+`commit` validates again and can still refuse, because a watched key may be committed over while the group sits staged - and with more than one container that leaves the ones already published, so the group stays staged rather than finished, which is the state it can still be unwound from.
 
 ### What It Guarantees, and What It Does Not
 
@@ -148,23 +154,48 @@ Separating the fallible phase from the applying phase is what lets independent t
   A body that raises resets every participant.
   A stage that fails on one participant unwinds them all.
 - __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
-- __A transaction reads its own writes__ — `view[k]` sees what `view[k] = v` put there.
+- __A transaction reads its own writes, until it stages.__
+  `view[k]` sees what `view[k] = v` put there; after `stage()` the write is in the store carrying no stamp, so it is invisible to everyone including its own transaction until `commit()`.
 - __Commit is not a snapshot.__
   It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead.
   A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
 - __Scans are not snapshots either.__ `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
+  That is the container's own `scan`; the same call on a transaction participant records the window it read, so at `serializable` and above a key committed into that window refuses the commit rather than being silently missed.
+
+### Ordered and Unordered
+
+`SortedMap` and `SortedSet` keep their keys in order, which is what iteration, `scan` and slice erase rest on.
+`HashMap` and `HashSet` are the same stores over an open-addressed core, and offer point access only:
+
+```python
+cache = st.HashMap(key=str)
+cache['a'] = 1
+cache['a'], len(cache), 'a' in cache      # (1, 1, True)
+
+cache.scan()                              # AttributeError — no ordering to scan
+list(cache)                               # TypeError — not iterable
+```
+
+The absent methods are absent from the type rather than refused at the call, so reaching for one fails the way a typo fails.
+Everything else is shared — the same key layouts, the same isolation and sharing choices, the same transactions — so one `st.transaction()` may span ordered and unordered stores together.
 
 ### Choosing an Isolation Level
 
 A container names what it promises a reader, and reports back what it actually delivers:
 
 ```python
-cache = st.SortedMap(key=int)                       # monotonic atomic view, the default
+cache = st.SortedMap(key=int)                                    # monotonic atomic view, the default
 ledger = st.SortedMap(key=int, isolation='snapshot')
+books = st.SortedMap(key=int, isolation='serializable')
+audit = st.SortedMap(key=int, isolation='strict_serializable')
 
 cache.isolation    # 'monotonic_atomic_view'
 ledger.isolation   # 'snapshot'
+books.isolation    # 'serializable'
+audit.isolation    # 'strict_serializable'
 ```
+
+Four names, refused by `ValueError` if misspelled — and the shipped type stubs turn a misspelling into a checker error before it ever runs.
 
 Under `snapshot` every read a transaction makes is answered at the instant the transaction opened, so a repeated read returns what it first saw:
 
@@ -177,6 +208,19 @@ with st.transaction(ledger) as (view,):
 
 That is what `monotonic` does not give you, and the reason to pay for the extra versions.
 The cost is memory: a key keeps every version a live reader can still name, and the tail is freed once the last transaction closes.
+
+Snapshot validates what a transaction __wrote__, plus any key it explicitly `watch`ed, and nothing more, so two transactions that each read what the other writes and then write elsewhere both land — [write skew](https://jepsen.io/consistency/phenomena/a5b), which Snapshot Isolation permits by construction because no two writes ever collide.
+`serializable` validates the read set as well, which is also what makes a [phantom](https://jepsen.io/consistency/phenomena/a3) detectable: a window a transaction scanned is remembered as a window, so a key committed into it afterwards is a conflict even though no key either transaction touched overlaps.
+
+```python
+with st.transaction(books) as (view,):
+    empty = view.scan(20, 80)          # reads a window, and records that it did
+    # ... another thread commits key 50 here ...
+    ...                                # PhantomConflictError on leaving the block
+```
+
+`PhantomConflictError` derives from `ConflictError`, so a caller that retries on conflict needs no new branch.
+`strict_serializable` refuses exactly what `serializable` refuses; it adds only that a transaction opening after a commit returned cannot be ordered before it.
 
 `sharing` decides how many writers can proceed at once:
 
@@ -249,7 +293,7 @@ This is the one place the library is deliberately stricter than `dict`, which tr
 include(FetchContent)
 FetchContent_Declare(
     smashtable
-    GIT_REPOSITORY https://github.com/ashvardanian/smashtable
+    GIT_REPOSITORY https://github.com/ashvardanian/SmashTable
     GIT_TAG main
 )
 FetchContent_MakeAvailable(smashtable)
@@ -268,7 +312,8 @@ target_link_libraries(your_target PRIVATE smashtable::smashtable)
 ```
 
 The library throws nowhere, and will not let you make it.
-Mutating APIs return `status_t`; read-only operations cannot fail and deliver results through `noexcept` callbacks.
+Every API returns `status_t`, reads included, and a read delivers its answer through `noexcept` callbacks rather than through the return.
+A read is fallible from `serializable_k` up, where it has to write down what it read before the commit can validate it.
 A key whose copy or comparison can throw fails to compile rather than being quietly accepted.
 All containers take custom allocators and can be pre-allocated.
 
@@ -306,8 +351,8 @@ A refused `stage()` rolls the staged prefix back rather than resetting it, so th
 Basic containers — `basic_avl_tree`, `basic_wb_tree` — carry STL-style bidirectional iterators.
 Transactional containers do not, because keeping an iterator valid across concurrent updates costs more than it returns:
 
-- `find()`, `lower_bound()` and `upper_bound()` return `void` and take two `noexcept` callbacks, for the found and missing cases.
-- `equal_range()` and `sample_range()` return `void` and take one callback, invoked per element.
+- `find()`, `lower_bound()` and `upper_bound()` return `status_t` and take two `noexcept` callbacks, for the found and missing cases.
+- `equal_range()`, `sample_one()` and `sample_reservoir()` return `status_t` and take one callback, invoked per element.
 - `find_copy()`, `lower_bound_copy()` and `upper_bound_copy()` return an `expected<value_t>` for callers that cannot use a callback.
 
 ## Why The C++ Library
@@ -356,14 +401,14 @@ set contains 3 elements:
 
 Where this matters is secondary-index consistency inside a storage engine — an `id → slot` map, a `slot → vector` map and a deleted set that have to move together, and where "the crash left index B disagreeing with index A" is a corruption bug someone has already debugged.
 
-## Collections
+## Stores
 
 Terminology first, since both words are overloaded:
 
 - "Concurrency" does not imply threads.
   Several transactions can be open on one thread.
-- "Consistency" does not imply strict serializability.
-  [Weaker levels exist](https://jepsen.io/consistency/models), and this library targets one of them.
+- "Consistency" does not imply [strict serializability](https://jepsen.io/consistency/models/strict-serializable).
+  [Weaker levels exist](https://jepsen.io/consistency/models), and each store here names the one it targets as a compile-time `isolation_k` rather than leaving you to infer it.
 
 Headers group as:
 
@@ -374,7 +419,7 @@ Headers group as:
     ├─ basic_wb_tree<T, Comparator, Alloc>          # also `rank` and `select`
     └─ basic_hash_table<T, Hash, Equals, Alloc>     # grows, iterates, rehashes
 
-  atomic_*              → Pinned core. Fixed capacity, atomic per operation, callback reads.
+  atomic_*              → Pinned core. Fixed capacity, atomic per slot, callback reads.
     └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
        ↑ ::adopt(std::move(growable).release())     ↓ ::adopt(std::move(pinned).release())
 
@@ -390,9 +435,9 @@ Headers group as:
 ```
 
 Transactions and thread-safety are two independent axes, not one ladder.
-A wrapper serializes whole __transactions__, so its unit of exclusion is a two-phase commit.
-`locked_store` takes one lock across the whole commit and keeps whatever its inner store promises.
-`partitioned_store` takes and releases one partition lock at a time, so a monotonic reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives — but a snapshot reader answers at its own stamp, and every partition draws from one clock, so it keeps Snapshot across all sixteen.
+A wrapper takes its mutex per __call__, not across a transaction: `stage` and `commit` each take it and drop it in between.
+What carries the inner store's level across that gap is the reservation staging made, since no other transaction can claim those keys until this one publishes or unwinds.
+A clock-less store gives its reader no stamp to hold, so a monotonic reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives — but a snapshot reader answers at its own stamp, and every partition draws from one clock, so it keeps Snapshot across all sixteen.
 Every container publishes what it promises as `isolation_k`, so the level is checkable rather than folklore.
 `atomic_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_store`.
 
@@ -403,10 +448,11 @@ Every container publishes what it promises as `isolation_k`, so the level is che
 > `smashtable/reference_store.hpp`
 
 The baseline reference design, and the yardstick the tree containers are held against — it runs the same test suites they do.
-Updates group into transactions that stage and roll back before committing, which is what lets inter-dependent updates span several collections.
+Updates group into transactions that stage and roll back before committing, which is what lets inter-dependent updates span several stores.
 
 Reads are consistent at the [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) level, so a transaction never sees another's partial update.
-That is weaker than strict serializability: there is no guarantee that every read within one transaction sees the same snapshot.
+That is weaker than [Snapshot Isolation](https://jepsen.io/consistency/models/snapshot-isolation): there is no guarantee that every read within one transaction sees the same snapshot.
+It keeps a version per key all the same, dated by a generation rather than by a shared commit stamp, which is why a watch is re-resolved at commit instead of compared against one.
 `snapshot_store` is the sibling that does make that guarantee, and the section below states what it costs.
 
 ### Adelson-Velsky and Landis Trees
@@ -414,7 +460,7 @@ That is weaker than strict serializability: there is no guarantee that every rea
 > `smashtable/basic_avl_tree.hpp`
 
 Rarely called by its full name, the AVL tree is the simplest clean self-balancing binary search tree, from 1962.
-`basic_avl_tree<value, comparator, allocator>` is an ordered collection in the shape of `std::set` or `std::map`.
+`basic_avl_tree<value, comparator, allocator>` is an ordered store in the shape of `std::set` or `std::map`.
 Standard libraries usually pick Red-Black trees; AVL balances more rigidly, trading slightly slower updates for faster lookups.
 
 Its API differs from the STL where exception-free reporting demands it:
@@ -438,21 +484,26 @@ Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amor
 
 > `smashtable/monotonic_store.hpp`
 
-`monotonic_store<Collection>` adds two-phase commit, watches and CAS on top of any key-addressable core.
+`monotonic_store<Core>` adds two-phase commit, watches and CAS on top of any key-addressable core.
 `monotonic_avl_set`, `monotonic_avl_map`, `monotonic_wb_set` and `monotonic_wb_map` are the aliases you'll name directly.
 `monotonic_hash_set` and `monotonic_hash_map` back the same store with the open-addressed table, which supplies no ordering, so bounds, ranges and order statistics are gated out of those instantiations at compile time.
 
 Which version a reader sees is decided by one number, stamped when a transaction commits.
 A version that has not committed carries no stamp, so it is invisible to readers and cannot make anyone else's validation fail — a transaction that stages and then rolls back costs its peers nothing.
-Two writers on one key are separated at commit rather than at stage: the first to publish wins, the second is refused with `consistency_k`.
+Two writers on one key are ordered by their stamps, and the later one wins.
+That is a [lost update](https://jepsen.io/consistency/phenomena/p4), which this level permits: Monotonic Atomic View constrains what a reader observes, not what two writers do to each other, and a level that is available under partition provably cannot prevent it.
+A writer that needs the first commit to win must `watch()` the key, or use a snapshot container, where the write set is validated whether you ask or not.
 
-`find` never records what it read.
-A read set is memory, and a read that allocates is a read that can fail, so the recording variant is a different name with a different return type:
+`find` never records what it read, here.
+A read set is memory, and a read that allocates is a read that can fail, so on this engine the recording variant is a different name:
 
 ```cpp
-transaction.find(key, on_found, on_missing);                 // returns void, records nothing
+_ = transaction.find(key, on_found, on_missing);             // answers, and records nothing
 _ = transaction.find_and_watch(key, on_found, on_missing);   // records, and can report out of memory
 ```
+
+Both return `status_t`, because a read that cannot write down what it read has to say so where it happened rather than poisoning the transaction silently until commit.
+`snapshot_store` at `serializable_k` and above needs no second name: every read records, and every read reports.
 
 An erase leaves a tombstone that readers skip, and `vacuum()` is what returns that space:
 
@@ -465,14 +516,25 @@ expected<std::size_t> const window = store.vacuum(lower, upper); // ordered core
 
 > `smashtable/snapshot_store.hpp`
 
-`snapshot_store<Collection>` is the sibling that fixes a transaction's reads to one instant.
+`snapshot_store<Core>` is the sibling that fixes a transaction's reads to one instant, and it is where [multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control) is at its most literal here: a transaction draws a snapshot when it opens, every read is answered from the newest version at or below that snapshot, and a writer never overwrites what a reader can still name.
 It rebinds the same cores, exports `snapshot_avl_set`, `_avl_map`, `_wb_set`, `_wb_map`, `_hash_set` and `_hash_map`, and publishes `isolation_k == snapshot_k`.
 A repeated read returns what it first saw, a repeated range admits no phantoms, and neither holds in its sibling.
+
+The same template answers at three levels, selected by a second parameter rather than by a second implementation, and each has aliases of its own:
+
+```cpp
+snapshot_store<Core>                        // isolation_k == snapshot_k
+serializable_store<Core>                    // reads validated too
+strict_serializable_store<Core>             // and a commit waits for its own publication
+
+serializable_avl_map<Key, Value>            // and `_avl_set`, `_wb_*`, `_hash_*`
+strict_serializable_avl_map<Key, Value>     // the same six for the top rung
+```
 
 Versions are kept as ordinary entries keyed by `(key, generation)` rather than chained off one entry, on ordered and unordered cores alike.
 The hash core still hashes the bare key, so every version of a key shares one probe run and a lookup walks that run instead of stopping at the first match.
 
-Old versions are freed against a low-water mark that only advances when the last open transaction closes, so it can never pass a snapshot somebody still holds.
+Reclamation is the other half of multi-version concurrency control, and the whole of it here: old versions are freed against a low-water mark that sits at the oldest open snapshot, so it can never pass a snapshot somebody still holds, and it advances as soon as the oldest reader leaves rather than waiting for the last.
 Pruning happens on every commit, and `vacuum()` reaches the keys nobody writes again.
 There is no background thread and no epoch registry.
 `clear()` refuses while a reader is open rather than dropping versions out from under it.
@@ -507,15 +569,15 @@ Sixty-four bits is the widest atomic every target supports, which is what lets a
 Growing repoints the key, value and header regions that every live slot reference has cached, so a table that can grow can never be read concurrently.
 That used to be a sentence here that nothing enforced.
 It is now two types, neither of which includes the other's header.
-`basic_hash_table` grows, iterates and rehashes; `atomic_hash_table` is pinned and atomic per operation.
+`basic_hash_table` grows, iterates and rehashes; `atomic_hash_table` is pinned and atomic over the slot each operation touches.
 What passes between them is the allocation itself — a `hash_storage` — so the hand-off is a move of a value rather than one table reaching into the other:
 
 ```cpp
 _ = growable.reserve(1u << 20);                                          // pin the capacity first
 auto pinned = atomic_hash_map<key_t, value_t>::adopt(std::move(growable).release());
 
-pinned.find(key, [](auto const &slot) noexcept { use(slot.value()); });
-if (!pinned.emplace(key, value)) report_full();                          // a pinned table can fill up
+_ = pinned.find(key, [](auto const &slot) noexcept { use(slot.value()); });
+if (failed(pinned.emplace(key, value))) report_full();                   // a pinned table can fill up
 
 auto compacted = hash_map<key_t, value_t>::adopt(std::move(pinned).release());   // iterators return
 ```

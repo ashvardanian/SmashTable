@@ -109,20 +109,6 @@ class monotonic_store {
     /** @brief What this store calls itself, so generic code spells an engine and a wrapper alike. */
     using store_t = monotonic_store;
 
-    /**
-     *  @brief The one shape a watch records, whatever the read that produced it looked like.
-     *
-     *  A committed tombstone is handed out as found - the public @c find has to see it in order to
-     *  hide it - so a watch on one has to record the same shape a watch on an absent key records, or
-     *  it could never match itself. Validation re-derives the shape here too, so the two cannot drift.
-     *
-     *  @param[in] resolved The version a read resolved to, or null when the key resolves to nothing.
-     */
-    [[nodiscard]] static watch_t watch_shape_of(versioned_t const *resolved) noexcept {
-        if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
-        return watch_t {resolved->generation, resolved->presence};
-    }
-
   private:
     /** @brief One further version of a key, reached by pointer from that key's chain head. */
     struct version_node_t {
@@ -293,7 +279,7 @@ class monotonic_store {
                 watch_t latest = missing_watch();
                 store.find_committed_entry_(
                     watched.identifier, [&](versioned_t const &entry) noexcept { latest = watch_shape_of(&entry); });
-                if (latest != watched.watch) return status_t::consistency_k;
+                if (latest != watched.watch) return status_t::read_conflict_k;
             }
             return success_k;
         }
@@ -439,19 +425,35 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Stages an erase operation for the given identifier.
-         *    Marks the entry as deleted in the transaction. Actual removal happens on commit.
+         *  @brief Stages an erase of @p identifier, which only a commit turns into an absence.
+         *  @return @c key_not_found_k when this transaction reads no such key, so a caller need not look first.
          *
-         *  @param[in] identifier Identifier of the element to erase.
-         *  @return Success or error code (e.g., out of memory).
+         *  The look happens whether or not callbacks were passed, so the answer never depends on how the
+         *  call was spelled.
          */
-        [[nodiscard]] status_t erase(identifier_t const &identifier) noexcept {
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
+                                     callback_missing_type_ &&callback_missing = {}) noexcept {
+            bool present = false;
+            status_t const looked_up = find(
+                identifier,
+                [&](value_t const &element) noexcept {
+                    present = true;
+                    callback_found(element);
+                },
+                no_op_t {});
+            if (failed(looked_up)) return looked_up;
+            if (!present) {
+                callback_missing();
+                return key_not_found_k;
+            }
+
             // The tombstone owns its own identifier, and the list of changed identifiers owns another,
             // so a move-only key needs two safe copies rather than one copy and one implicit one.
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return out_of_memory_heap_k;
+            if (!maybe_identifier) return maybe_identifier.status();
             auto maybe_payload = copy_safely<identifier_t>(identifier);
-            if (!maybe_payload) return out_of_memory_heap_k;
+            if (!maybe_payload) return maybe_payload.status();
 
             versioned_t versioned(value_t {std::move(*maybe_payload)});
             versioned.presence = presence_t::erased_k;
@@ -472,7 +474,7 @@ class monotonic_store {
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
             if (!maybe_identifier) return maybe_identifier.status();
 
-            watch_t shape = watch_shape_of(nullptr);
+            watch_t shape = missing_watch();
             store_ref().find_visible_entry_(
                 identifier, [&](versioned_t const &versioned) noexcept { shape = watch_shape_of(&versioned); },
                 no_op_t {});
@@ -564,15 +566,6 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Finds the first member @b greater or equal to the given @p comparable.
-         *    You may want to @c watch() the received object, it's not done by default.
-         *    Unlike @c monotonic_store::lower_bound(), will include entries added to this transaction.
-         *
-         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
-         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-         */
-        /**
          *  @brief Hands @p callback_found the smallest member visible here, staged writes included.
          *
          *  Walks from the first entry until one is readable, so a store whose front is all tombstones pays
@@ -606,6 +599,15 @@ class monotonic_store {
             return success_k;
         }
 
+        /**
+         *  @brief Finds the first member @b greater or equal to the given @p comparable.
+         *    You may want to @c watch() the received object, it's not done by default.
+         *    Unlike @c monotonic_store::lower_bound(), will include entries added to this transaction.
+         *
+         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
+         */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -658,6 +660,34 @@ class monotonic_store {
             auto const less = changes_.key_comp();
             return walk_from_(
                 std::forward<lower_type_>(lower),
+                [&](auto const &candidate) noexcept { return less(candidate, upper); },
+                std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Hands @p callback every member at or after @p lower, with no upper end. */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
+            requires ordered_collection<versioned_chains_t>
+        {
+            return walk_from_(
+                std::forward<lower_type_>(lower), [](auto const &) noexcept { return true; },
+                std::forward<callback_type_>(callback));
+        }
+
+        /**
+         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
+         *  The walk needs a key to start from and this level names no floor, so the lowest member the
+         *  transaction reads supplies one - which is why a caller never has to spell a layout's least key.
+         */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
+            requires ordered_collection<versioned_chains_t>
+        {
+            expected<value_t> lowest = smallest_copy_();
+            if (!lowest) return lowest.status() == key_not_found_k ? success_k : lowest.status();
+            auto const less = changes_.key_comp();
+            return walk_from_(
+                mapping_key_or_itself<value_t>(*lowest),
                 [&](auto const &candidate) noexcept { return less(candidate, upper); },
                 std::forward<callback_type_>(callback));
         }
@@ -944,9 +974,10 @@ class monotonic_store {
             requires ordered_collection<versioned_chains_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const answered = lower_bound(
+            status_t const answered = lower_bound(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(answered)) return answered;
             return result;
         }
 
@@ -956,9 +987,10 @@ class monotonic_store {
             requires ordered_collection<versioned_chains_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const answered = upper_bound(
+            status_t const answered = upper_bound(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(answered)) return answered;
             return result;
         }
 
@@ -1726,9 +1758,9 @@ class monotonic_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const looked_up =
-            find(std::forward<comparable_type_>(comparable),
-                 [&](value_t const &found) noexcept { result = copy_safely(found); });
+        status_t const looked_up = find(std::forward<comparable_type_>(comparable),
+                                        [&](value_t const &found) noexcept { result = copy_safely(found); });
+        if (failed(looked_up)) return looked_up;
         return result;
     }
 
@@ -1743,9 +1775,10 @@ class monotonic_store {
         requires ordered_collection<versioned_chains_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = lower_bound(
+        status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept { result = copy_safely(v); },
             [&]() noexcept {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -1760,9 +1793,10 @@ class monotonic_store {
         requires ordered_collection<versioned_chains_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = upper_bound(
+        status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable), [&](value_t const &v) noexcept { result = copy_safely(v); },
             [&]() noexcept {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -1999,13 +2033,6 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Finds the first member @b greater or equal to the given @p comparable.
-     *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-     */
-    /**
      *  @brief Hands @p callback_found the smallest member any committed write left visible.
      *
      *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens with:
@@ -2014,6 +2041,13 @@ class monotonic_store {
      *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
      */
+    /**
+     *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
+     *  The one ordering every read here descends on; a caller comparing keys any other way is
+     *  ordering them differently from the store that holds them.
+     */
+    [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
+
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept
@@ -2032,6 +2066,39 @@ class monotonic_store {
         return success_k;
     }
 
+    /**
+     *  @brief Removes the smallest member and hands it over, or reports the store is empty.
+     *  @return @c key_not_found_k when nothing was there, so emptiness needs no second probe.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
+                                        callback_missing_type_ &&callback_missing = {}) noexcept
+        requires ordered_collection<versioned_chains_t> && std::is_copy_constructible_v<identifier_t>
+    {
+        identifier_t doomed;
+        bool found = false;
+        status_t const looked_up = smallest(
+            [&](value_t const &value) noexcept {
+                doomed = identifier_t(value);
+                found = true;
+            },
+            no_op_t {});
+        if (failed(looked_up)) return looked_up;
+        if (!found) {
+            callback_missing();
+            return status_t::key_not_found_k;
+        }
+        return erase(doomed, std::forward<callback_found_type_>(callback_found),
+                     std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /**
+     *  @brief Finds the first member @b greater or equal to the given @p comparable.
+     *
+     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
+     */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,

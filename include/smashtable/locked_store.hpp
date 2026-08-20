@@ -48,7 +48,7 @@ class locked_store {
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
 
-    /** @brief One mutex serializes whole transactions, so the inner store's promise carries over intact. */
+    /** @brief The staging reservation carries the inner store's promise over, not the mutex; see the class note. */
     static constexpr isolation_t isolation_k = inner_store_t::isolation_k;
 
     using comparator_t = typename inner_store_t::comparator_t;
@@ -75,6 +75,18 @@ class locked_store {
             store.erase_range(key, key, callback);
         };
 
+    /** @brief Whether the wrapped store names its smallest member without being given a bound to beat. */
+    static constexpr bool inner_names_its_smallest_k =
+        requires(inner_store_t const &store, no_op_t callback) { store.smallest(callback, callback); };
+
+    /** @brief Whether the wrapped store removes its smallest member as one operation. */
+    static constexpr bool inner_pops_its_smallest_k =
+        requires(inner_store_t &store, no_op_t callback) { store.pop_smallest(callback, callback); };
+
+    /** @brief Whether an open transaction names the smallest member it reads, staged writes included. */
+    static constexpr bool inner_transaction_names_its_smallest_k = requires(
+        inner_transaction_t const &transaction, no_op_t callback) { transaction.smallest(callback, callback); };
+
     /** @brief Whether the wrapped store draws one member of a range at random. */
     static constexpr bool inner_samples_one_k =
         requires(inner_store_t const &store, identifier_t const &key, no_op_t callback) {
@@ -91,6 +103,13 @@ class locked_store {
     static constexpr bool inner_transaction_is_ordered_k =
         requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
             transaction.upper_bound(key, callback, callback);
+        };
+
+    /** @brief Whether an open transaction walks a window with one end left open. */
+    static constexpr bool inner_transaction_walks_open_range_k =
+        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.range_from(key, callback);
+            transaction.range_up_to(key, callback);
         };
 
     /** @brief Whether the wrapped store enumerates its members with no ordering to walk them in. */
@@ -295,7 +314,14 @@ class locked_store {
         [[nodiscard]] status_t upsert(value_t &&element) noexcept {
             return inner_transaction_.upsert(std::move(element));
         }
-        [[nodiscard]] status_t erase(identifier_t const &id) noexcept { return inner_transaction_.erase(id); }
+        /** @brief Stages an erase, reporting @c key_not_found_k when this transaction reads no such key. */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
+                                     callback_missing_type_ &&callback_missing = {}) noexcept {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.erase(id, std::forward<callback_found_type_>(callback_found),
+                                            std::forward<callback_missing_type_>(callback_missing));
+        }
 
         /**
          *  @brief Stages @p element only if its key is free, refusing rather than writing over it.
@@ -367,9 +393,10 @@ class locked_store {
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const looked_up = find(
+            status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(looked_up)) return looked_up;
             return result;
         }
 
@@ -406,6 +433,17 @@ class locked_store {
                                                   std::forward<callback_missing_type_>(callback_missing));
         }
 
+        /** @brief Hands @p callback_found the smallest member this transaction reads, or reports none. */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
+                                        callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_names_its_smallest_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.smallest(std::forward<callback_found_type_>(callback_found),
+                                               std::forward<callback_missing_type_>(callback_missing));
+        }
+
         /** @brief Hands @p callback_found the first member at or after @p comparable, or reports none. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -438,6 +476,26 @@ class locked_store {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                             std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Hands @p callback every member at or after @p lower, with no upper end. */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
+            requires inner_transaction_walks_open_range_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.range_from(std::forward<lower_type_>(lower),
+                                                 std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end. */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
+            requires inner_transaction_walks_open_range_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.range_up_to(std::forward<upper_type_>(upper),
+                                                  std::forward<callback_type_>(callback));
         }
 
         /** @brief Hands @p callback every member this transaction reads, in whatever order the store keeps. */
@@ -801,13 +859,160 @@ class locked_store {
                                         std::forward<callback_missing_type_>(callback_missing));
     }
 
+    /**
+     *  @brief A resumable walk in ascending key order, holding no lock between its steps.
+     *
+     *  The position is a key rather than an iterator, so a write between two steps cannot invalidate
+     *  it: the next step re-probes from the last key handed over. That is what lets the walk survive
+     *  concurrent change, and it is why a step costs a lookup rather than an increment.
+     */
+    class ordered_cursor_t {
+        friend class locked_store;
+
+        locked_store const *store_ {nullptr};
+        /** @brief The bound the next step is taken from - the one given, then the last key handed over. */
+        identifier_t position_;
+        /** @brief The key the walk stops before, meaningful only under @c up_to_the_bound_k. */
+        identifier_t bound_;
+        cursor_seed_t seed_ {cursor_seed_t::the_smallest_k};
+        cursor_limit_t limit_ {cursor_limit_t::the_whole_keyspace_k};
+        bool drained_ {false};
+
+        explicit ordered_cursor_t(locked_store const &store, cursor_seed_t seed, cursor_limit_t limit) noexcept
+            : store_(&store), seed_(seed), limit_(limit) {}
+
+      public:
+        ordered_cursor_t() noexcept = default;
+
+        /** @brief Whether the walk is over, which includes having passed the bound it was given. */
+        [[nodiscard]] bool exhausted() const noexcept { return !store_ || drained_; }
+
+        /**
+         *  @brief Hands @p callback_found the next member, or reports the walk is over.
+         *  @warning @p callback_found runs under the store's lock and must not write to it.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        void next(callback_found_type_ &&callback_found, callback_missing_type_ &&callback_missing = {}) noexcept {
+            if (exhausted()) return void(callback_missing());
+
+            shared_lock _ {store_->mutex_};
+            bool handed = false;
+            auto take = [&](value_t const &element) noexcept {
+                identifier_t const &key = mapping_key_or_itself<value_t>(element);
+                if (limit_ == cursor_limit_t::up_to_the_bound_k && !store_->inner_store_.key_comp()(key, bound_))
+                    return;
+                position_ = identifier_t(key);
+                handed = true;
+                callback_found(element);
+            };
+
+            [[maybe_unused]] status_t const stepped =
+                seed_ == cursor_seed_t::past_the_last_k
+                    ? store_->inner_store_.upper_bound(position_, take, no_op_t {})
+                    : (seed_ == cursor_seed_t::the_given_bound_k
+                           ? store_->inner_store_.lower_bound(position_, take, no_op_t {})
+                           : store_->inner_store_.smallest(take, no_op_t {}));
+
+            if (!handed) {
+                drained_ = true;
+                callback_missing();
+                return;
+            }
+            seed_ = cursor_seed_t::past_the_last_k;
+        }
+    };
+
+    /** @brief A walk of every member in ascending order, resumable and holding no lock between steps. */
+    [[nodiscard]] ordered_cursor_t cursor() const noexcept
+        requires inner_is_ordered_k && inner_names_its_smallest_k
+    {
+        return ordered_cursor_t {*this, cursor_seed_t::the_smallest_k, cursor_limit_t::the_whole_keyspace_k};
+    }
+
+    /** @brief The same walk, begun at the first member ordered at or after @p from. */
+    [[nodiscard]] ordered_cursor_t cursor_from(identifier_t from) const noexcept
+        requires inner_is_ordered_k
+    {
+        ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k, cursor_limit_t::the_whole_keyspace_k};
+        walking.position_ = std::move(from);
+        return walking;
+    }
+
+    /** @brief The same walk, stopping before @p upper. */
+    [[nodiscard]] ordered_cursor_t cursor_up_to(identifier_t upper) const noexcept
+        requires inner_is_ordered_k && inner_names_its_smallest_k
+    {
+        ordered_cursor_t walking {*this, cursor_seed_t::the_smallest_k, cursor_limit_t::up_to_the_bound_k};
+        walking.bound_ = std::move(upper);
+        return walking;
+    }
+
+    /** @brief The same walk over [ @p from, @p upper ). */
+    [[nodiscard]] ordered_cursor_t cursor_range(identifier_t from, identifier_t upper) const noexcept
+        requires inner_is_ordered_k
+    {
+        ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k, cursor_limit_t::up_to_the_bound_k};
+        walking.position_ = std::move(from);
+        walking.bound_ = std::move(upper);
+        return walking;
+    }
+
+    /** @brief Hands @p callback_found the smallest member, or reports the store is empty. */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+        requires inner_names_its_smallest_k
+    {
+        shared_lock _ {mutex_};
+        return inner_store_.smallest(std::forward<callback_found_type_>(callback_found),
+                                     std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /**
+     *  @brief Removes the smallest member and hands it over, or reports the store is empty.
+     *  The choice and the removal happen under one exclusive hold, so no writer can take the member
+     *  between the two.
+     */
+    template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+    [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
+                                        callback_missing_type_ &&callback_missing = {}) noexcept
+        requires inner_pops_its_smallest_k
+    {
+        unique_lock _ {mutex_};
+        return inner_store_.pop_smallest(std::forward<callback_found_type_>(callback_found),
+                                         std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /** @brief Copies out the smallest member and removes it, or reports @c key_not_found_k. */
+    [[nodiscard]] expected<value_t> pop_smallest_copy() noexcept
+        requires inner_pops_its_smallest_k
+    {
+        expected<value_t> result {status_t::key_not_found_k};
+        status_t const popped =
+            pop_smallest([&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(popped)) return popped;
+        return result;
+    }
+
+    /** @brief Copies out the smallest member, or reports @c key_not_found_k. */
+    [[nodiscard]] expected<value_t> smallest_copy() const noexcept
+        requires inner_names_its_smallest_k
+    {
+        expected<value_t> result {status_t::key_not_found_k};
+        status_t const looked_up =
+            smallest([&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(looked_up)) return looked_up;
+        return result;
+    }
+
     /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const looked_up = find(
+        status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(looked_up)) return looked_up;
         return result;
     }
 
@@ -817,9 +1022,10 @@ class locked_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = lower_bound(
+        status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -829,9 +1035,10 @@ class locked_store {
         requires inner_is_ordered_k
     {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = upper_bound(
+        status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -1073,11 +1280,10 @@ class locked_store {
     [[nodiscard]] expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept
         requires inner_shares_clock_k
     {
-        expected<transaction_t> result;
         unique_lock _ {mutex_};
-        if (auto opened = inner_store_.transaction_at(snapshot, generation); opened)
-            result = transaction_t {*this, std::move(*opened)};
-        return result;
+        auto opened = inner_store_.transaction_at(snapshot, generation);
+        if (!opened) return opened.status();
+        return transaction_t {*this, std::move(*opened)};
     }
 
 #pragma endregion Sharded Membership

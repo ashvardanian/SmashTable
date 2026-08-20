@@ -136,20 +136,6 @@ class reference_store {
     /** @brief What this store calls itself, so generic code spells an engine and a wrapper alike. */
     using store_t = reference_store;
 
-    /**
-     *  @brief The one shape a watch records, whatever the read that produced it looked like.
-     *
-     *  A committed tombstone is handed out as found - the public @c find has to see it in order to
-     *  hide it - so a watch on one has to record the same shape a watch on an absent key records, or
-     *  it could never match itself. Validation re-derives the shape here too, so the two cannot drift.
-     *
-     *  @param[in] resolved The entry a read resolved to, or null when the key resolves to nothing.
-     */
-    [[nodiscard]] static watch_t watch_shape_of(versioned_entry_t const *resolved) noexcept {
-        if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
-        return watch_t {resolved->generation, resolved->presence};
-    }
-
   private:
     using entry_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<versioned_entry_t>;
     using entry_set_t = std::set< //
@@ -301,7 +287,7 @@ class reference_store {
                 store.find_committed_entry_(watched.identifier, [&](versioned_entry_t const &entry) noexcept {
                     latest = watch_shape_of(&entry);
                 });
-                if (latest != watched.watch) return status_t::consistency_k;
+                if (latest != watched.watch) return status_t::read_conflict_k;
             }
             return success_k;
         }
@@ -512,9 +498,27 @@ class reference_store {
          *    The deletion is not visible until after @c stage() and @c commit().
          *
          *  @param[in] identifier Identifier of the element to erase.
-         *  @return Success or error code (e.g., out of memory).
+         *  @param[in] callback_found Callback receiving the member being erased. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered when no such member is read. Must be @c noexcept.
+         *  @return Success, or @c key_not_found_k when this transaction reads no such key.
          */
-        [[nodiscard]] status_t erase(identifier_t const &identifier) noexcept {
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
+                                     callback_missing_type_ &&callback_missing = {}) noexcept {
+            bool present = false;
+            status_t const looked_up = find(
+                identifier,
+                [&](value_t const &element) noexcept {
+                    present = true;
+                    callback_found(element);
+                },
+                no_op_t {});
+            if (failed(looked_up)) return looked_up;
+            if (!present) {
+                callback_missing();
+                return key_not_found_k;
+            }
+
             // The tombstone and the change list each keep their own identifier, and a heavy key
             // only copies through `.copy()`.
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
@@ -557,7 +561,7 @@ class reference_store {
                 [&]() noexcept {
                     auto maybe_identifier = copy_safely<identifier_t>(identifier);
                     if (!maybe_identifier) status = maybe_identifier.status();
-                    else remember(std::move(*maybe_identifier), watch_shape_of(nullptr));
+                    else remember(std::move(*maybe_identifier), missing_watch());
                 });
             return status;
         }
@@ -629,9 +633,10 @@ class reference_store {
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
-            [[maybe_unused]] status_t const looked_up = find(
+            status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
                 [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+            if (failed(looked_up)) return looked_up;
             return result;
         }
 
@@ -1442,7 +1447,7 @@ class reference_store {
     [[nodiscard]] static expected<store_t> make() noexcept {
         expected<store_t> opt_store;
         auto status = invoke_safely([&]() { opt_store = store_t {}; });
-        if (failed(status)) return status_t::out_of_memory_heap_k;
+        if (failed(status)) return status;
         return opt_store;
     }
 
@@ -1461,7 +1466,7 @@ class reference_store {
         expected<transaction_t> opt_txn;
         // The constructor is private, so `emplace` cannot reach it; build here, where we are a friend.
         auto status = invoke_safely([&]() { opt_txn = transaction_t {*this}; });
-        if (failed(status)) return status_t::out_of_memory_heap_k;
+        if (failed(status)) return status;
         return opt_txn;
     }
 
@@ -1693,9 +1698,10 @@ class reference_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const looked_up = find(
+        status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(looked_up)) return looked_up;
         return result;
     }
 
@@ -1773,9 +1779,10 @@ class reference_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = lower_bound(
+        status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -1783,9 +1790,10 @@ class reference_store {
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
-        [[maybe_unused]] status_t const bounded = upper_bound(
+        status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
             [&](value_t const &value) noexcept { result = copy_safely(value); }, no_op_t {});
+        if (failed(bounded)) return bounded;
         return result;
     }
 
@@ -2057,9 +2065,9 @@ class reference_store {
     }
 
     /**
-     *  @brief Removes all elements from the container.
+     *  @brief Removes all elements from the container, refusing while any transaction has something staged.
      *
-     *  @return Always succeeds.
+     *  @return Success, or @c operation_not_permitted_k while a staged version would be dropped.
      *  @note The generation and stamp counters keep running. Rewinding either would hand a future
      *    transaction a number an open one already carries, and both are compared by value.
      */

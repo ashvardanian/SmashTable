@@ -323,7 +323,7 @@ struct store_bridge {
 
         if (lower && upper) {
             status_t const walked = self.range(*lower, *upper, step);
-            return failed(walked) ? walked : collecting;
+            return first_failure(walked, collecting);
         }
         if (lower) {
             // An open upper end has no key to halt a merged walk at, so the window is stepped instead -
@@ -353,7 +353,7 @@ struct store_bridge {
         }
 
         status_t const walked = self.for_each(step);
-        return failed(walked) ? walked : collecting;
+        return first_failure(walked, collecting);
     }
 
     /** @brief Stages a tombstone for every member of that same window. */

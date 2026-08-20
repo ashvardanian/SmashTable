@@ -123,7 +123,7 @@ void test_clear_keeps_generations_moving() {
 
     auto after = container.transaction();
     st_verify_(after.has_value());
-    st_verify_(after->generation() > stamp_before);
+    st_verify_gt_(after->generation(), stamp_before);
 }
 
 #pragma endregion Staging Window
@@ -377,7 +377,7 @@ void test_transaction_range_interleaves_staged_and_committed() {
     std::size_t walked = 0;
     st_verify_(transaction->range(
         trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(8), [&](member_t const &member) noexcept {
-            st_verify_(walked < 6);
+            st_verify_lt_(walked, 6);
             st_verify_(trivial_id_to_key<member_t>(expected_ids[walked]) == mapping_key_or_itself<member_t>(member));
             ++walked;
         }));
@@ -387,7 +387,7 @@ void test_transaction_range_interleaves_staged_and_committed() {
     walked = 0;
     st_verify_(transaction->range(trivial_id_to_key<member_t>(1), trivial_id_to_key<member_t>(5),
                                   [&](member_t const &member) noexcept {
-                                      st_verify_(walked < 3);
+                                      st_verify_lt_(walked, 3);
                                       st_verify_(trivial_id_to_key<member_t>(expected_ids[walked + 1]) ==
                                                  mapping_key_or_itself<member_t>(member));
                                       ++walked;
@@ -531,7 +531,7 @@ void test_validate_refuses_before_publishing() {
     st_verify_(outsider->stage());
     st_verify_(outsider->commit());
 
-    st_verify_eq_(writer->validate_for_commit(), status_t::consistency_k);
+    st_verify_eq_(writer->validate_for_commit(), status_t::read_conflict_k);
     st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), false);
 }
 

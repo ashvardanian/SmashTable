@@ -127,8 +127,15 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
     if (run_over_participant(view, state, [&](participant_t &part) noexcept { found = part.find(needle); }) != 0)
         return nullptr;
 
-    if (!found) {
+    // A serializable read records the key it answered, and a record that will not fit is a refusal
+    // rather than an absence. Reporting it as a `KeyError` would have `get()` answer with its default
+    // for a transaction that is already doomed to be turned away at commit.
+    if (found.status() == key_not_found_k) {
         PyErr_SetObject(PyExc_KeyError, key);
+        return nullptr;
+    }
+    if (!found) {
+        [[maybe_unused]] int const raised = raise_for(state, found.status(), key);
         return nullptr;
     }
     return value_to_python(*found);
@@ -341,6 +348,9 @@ static PyObject *View_discard(PyObject *self, PyObject *const *args, Py_ssize_t 
     if (!key_from_python(args[0], part->ops, stored)) return nullptr;
     bool present = false;
     status_t status = success_k;
+    // One store call, which reports absence as `key_not_found_k`. Asking first and erasing after
+    // would answer for a key another writer can remove in between, and under a monotonic view - where
+    // a participant reads live published state - would raise for a key it did not remove.
     // `erase` on a map destroys the stored value, so this is a value operation even though its
     // argument is only a key.
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
@@ -350,8 +360,9 @@ static PyObject *View_discard(PyObject *self, PyObject *const *args, Py_ssize_t 
             if (present) status = part.erase(stored);
         }) != 0)
         return nullptr;
-    if (failed(status) && raise_for(state, status, args[0]) != 0) return nullptr;
-    return PyBool_FromLong(present ? 1 : 0);
+    if (status == key_not_found_k) Py_RETURN_FALSE;
+    if (failed(status) && raise_for(state, status, key) != 0) return nullptr;
+    Py_RETURN_TRUE;
 }
 
 static char const doc_View_watch[] =                                                        //
@@ -916,7 +927,10 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
 
     // Canonical order for staging, argument order for the views handed back.
     auto made_order = basic_vector<Py_ssize_t>::make(static_cast<std::size_t>(count));
-    if (!made_order) return PyErr_NoMemory();
+    if (!made_order) {
+        [[maybe_unused]] int const raised = raise_for(state, made_order.status());
+        return nullptr;
+    }
     basic_vector<Py_ssize_t> order = std::move(*made_order);
     for (Py_ssize_t index = 0; index != count; ++index) [[maybe_unused]]
         auto appended = order.push_back(assume_reserved, Py_ssize_t {index});
@@ -949,7 +963,8 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
         expected<void *> transaction = header->store_ops->transaction_make(header->store);
         if (!transaction) {
             Py_DECREF(group);
-            return PyErr_NoMemory();
+            [[maybe_unused]] int const raised = raise_for(state, transaction.status());
+            return nullptr;
         }
         [[maybe_unused]] status_t const appended = group->parts.push_back(
             assume_reserved, participant_t {header->store_ops, *transaction, header->ops, header->mode});

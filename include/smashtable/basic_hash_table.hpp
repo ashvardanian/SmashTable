@@ -740,9 +740,8 @@ class basic_hash_table {
     /**
      *  @brief Reports whether a key equivalent to @p wanted is present.
      *  @param[in] wanted Key to probe for.
-     *  @param[out] present Set to whether the key is here. Named before the tags, which are a pack.
      *  @param[in] tags Dispatch tags the probe understands.
-     *  @return Always success; a probe over owned slots has nothing to refuse.
+     *  @return Whether the key is present. A probe over owned slots allocates nothing, so it never refuses.
      */
     template <typename comparable_key_type_, typename... tags_types_>
     [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
