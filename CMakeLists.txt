@@ -105,9 +105,10 @@ add_library(smashtable_warnings INTERFACE)
 option(SMASHTABLE_WERROR "Treat compiler warnings as errors" OFF)
 
 if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    # GCC warns about the `#pragma region` markers Clang and GCC both ignore. `-Wshadow` is what these legs
-    # need to reject a shadowed local here rather than three minutes later as MSVC's C4456.
-    target_compile_options(smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wshadow -Wno-unknown-pragmas)
+    # GCC warns about the `#pragma region` markers Clang and GCC both ignore. `-Wshadow` is not here:
+    # the two compilers disagree about what it means, and GCC counts a constructor parameter named after
+    # the member it initializes, which is the idiom rather than a defect.
+    target_compile_options(smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wno-unknown-pragmas)
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE -Werror)
     endif ()
@@ -119,7 +120,8 @@ elseif (MSVC)
     # C4324 fires on the over-alignment the alignment tests ask for on purpose. C4702 judges reachability per
     # instantiation after inlining, so the dead arm of an `if constexpr` and the `return` past a test callback
     # that asserts it can never fire both trip it; GCC and Clang judge the template and say nothing.
-    target_compile_options(smashtable_warnings INTERFACE /wd4324 /wd4702)
+    # C4456-C4459 are the shadowing family, left off here for the same reason `-Wshadow` is left off above.
+    target_compile_options(smashtable_warnings INTERFACE /wd4324 /wd4702 /wd4456 /wd4457 /wd4458 /wd4459)
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE /WX)
     endif ()
