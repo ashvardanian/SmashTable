@@ -368,15 +368,21 @@ static void shared_mutex_admits_every_writer() {
 
 #pragma region Transaction Group Tests
 
-/** @brief The lifecycle step a logged entry names, packed with the participant's label. */
-enum class phase_t : int {
-    open_k = 1,
-    stage_k = 2,
-    validate_k = 3,
-    publish_k = 4,
-    commit_k = 5,
-    rollback_k = 6,
-    reset_k = 7,
+/** @brief The lifecycle step a logged entry names. */
+enum class phase_t : std::uint8_t {
+    open_k,
+    stage_k,
+    validate_k,
+    publish_k,
+    commit_k,
+    rollback_k,
+    reset_k,
+};
+
+/** @brief One lifecycle call a recording store logged, and where in the group that store sits. */
+struct recorded_call_t {
+    phase_t phase {phase_t::open_k};
+    std::size_t position {0};
 };
 
 /** @brief Whether a store's transaction offers the two-step commit a group prefers over one call. */
@@ -400,26 +406,27 @@ struct refusals_t {
 
 /** @brief A store that records the order its steps are visited in, and refuses where it is told to. */
 template <commit_shape_t shape_ = commit_shape_t::one_call_k>
-struct recording_store_t {
+struct recording_store {
     using is_transactional = std::true_type;
     using identifier_t = int;
     static constexpr isolation_t isolation_k = isolation_t::monotonic_atomic_view_k;
 
-    std::vector<int> *log {nullptr};
-    int label {0};
+    std::vector<recorded_call_t> &log;
+    std::size_t position {0};
     refusals_t refusals {};
 
     struct transaction_t {
-        std::vector<int> *log {nullptr};
-        int label {0};
-        refusals_t const *refusals {nullptr};
+        // Pointers, not references: the transaction has to stay move-assignable.
+        std::vector<recorded_call_t> *log;
+        std::size_t position;
+        refusals_t const *refusals;
 
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
         transaction_t(transaction_t const &) = delete;
         transaction_t &operator=(transaction_t const &) = delete;
-        transaction_t(std::vector<int> *log, int label, refusals_t const *refusals) noexcept
-            : log(log), label(label), refusals(refusals) {}
+        transaction_t(std::vector<recorded_call_t> *log, std::size_t position, refusals_t const *refusals) noexcept
+            : log(log), position(position), refusals(refusals) {}
 
         [[nodiscard]] status_t reserve(std::size_t) noexcept { return success_k; }
         [[nodiscard]] status_t watch(identifier_t) noexcept { return success_k; }
@@ -442,56 +449,56 @@ struct recording_store_t {
 
       private:
         status_t record(phase_t phase, status_t status) noexcept {
-            log->push_back(static_cast<int>(phase) * 100 + label);
+            log->push_back(recorded_call_t {phase, position});
             return status;
         }
     };
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
         if (failed(refusals.opening)) return refusals.opening;
-        log->push_back(static_cast<int>(phase_t::open_k) * 100 + label);
-        return expected<transaction_t> {transaction_t {log, label, &refusals}, success_k};
+        log.push_back(recorded_call_t {phase_t::open_k, position});
+        return expected<transaction_t> {transaction_t {&log, position, &refusals}, success_k};
     }
 };
 
-/** @brief The labels @p log holds for @p phase, in the order the group visited them. */
-static std::vector<int> labels_of(std::vector<int> const &log, phase_t phase) {
-    std::vector<int> labels;
-    for (int const entry : log)
-        if (entry / 100 == static_cast<int>(phase)) labels.push_back(entry % 100);
-    return labels;
+/** @brief The stores @p log holds for @p phase by their position in the group, in visit order. */
+static std::vector<std::size_t> stores_visited(std::vector<recorded_call_t> const &log, phase_t phase) {
+    std::vector<std::size_t> visited;
+    for (recorded_call_t const &call : log)
+        if (call.phase == phase) visited.push_back(call.position);
+    return visited;
 }
 
 /** @brief Every phase walks the participants in one address order, rollback included. */
 static void transaction_group_walks_one_order() {
-    std::vector<int> log;
-    recording_store_t<> first {&log, 1}, second {&log, 2}, third {&log, 3};
+    std::vector<recorded_call_t> log;
+    recording_store<> first {log, 0}, second {log, 1}, third {log, 2};
 
     auto group_result = make_transaction_group(first, second, third);
     st_verify_(group_result);
     auto &group = *group_result;
 
     st_verify_eq_(group.stage(), success_k);
-    std::vector<int> const ordered = labels_of(log, phase_t::stage_k);
+    std::vector<std::size_t> const ordered = stores_visited(log, phase_t::stage_k);
     st_verify_eq_(ordered.size(), 3u);
     st_verify_eq_(group.rollback(), success_k);
 
     // Staging a second time takes that same order, and rollback follows it too.
     log.clear();
     st_verify_eq_(group.stage(), success_k);
-    st_verify_(labels_of(log, phase_t::stage_k) == ordered);
+    st_verify_(stores_visited(log, phase_t::stage_k) == ordered);
     st_verify_eq_(group.rollback(), success_k);
-    st_verify_(labels_of(log, phase_t::rollback_k) == ordered);
+    st_verify_(stores_visited(log, phase_t::rollback_k) == ordered);
 
     // Commit and reset take it as well.
     log.clear();
     st_verify_eq_(group.stage(), success_k);
     st_verify_eq_(group.commit(), success_k);
-    st_verify_(labels_of(log, phase_t::commit_k) == ordered);
+    st_verify_(stores_visited(log, phase_t::commit_k) == ordered);
 
     log.clear();
     st_verify_eq_(group.reset(), success_k);
-    st_verify_(labels_of(log, phase_t::reset_k) == ordered);
+    st_verify_(stores_visited(log, phase_t::reset_k) == ordered);
 
     // The phases refuse to run out of turn.
     st_verify_eq_(group.rollback(), operation_not_permitted_k);
@@ -500,9 +507,9 @@ static void transaction_group_walks_one_order() {
 
 /** @brief A refused rollback stops where it was refused and leaves the group staged. */
 static void transaction_group_rollback_stops_at_refusal() {
-    std::vector<int> log;
+    std::vector<recorded_call_t> log;
     // Array members ascend in address, so the group visits these in the order they are named.
-    std::array<recording_store_t<>, 3> stores {{{&log, 1}, {&log, 2}, {&log, 3}}};
+    std::array<recording_store<>, 3> stores {{{log, 0}, {log, 1}, {log, 2}}};
     stores[1].refusals.rollback = operation_would_block_k;
 
     auto group_result = make_transaction_group(stores[0], stores[1], stores[2]);
@@ -514,8 +521,8 @@ static void transaction_group_rollback_stops_at_refusal() {
     st_verify_eq_(group.rollback(), operation_would_block_k);
 
     // The participant past the refusal was never asked, so it is still staged.
-    std::vector<int> const reached {1, 2};
-    st_verify_(labels_of(log, phase_t::rollback_k) == reached);
+    std::vector<std::size_t> const reached {0, 1};
+    st_verify_(stores_visited(log, phase_t::rollback_k) == reached);
 
     // And the group still says so, which is what keeps the next `stage` from staging twice over.
     st_verify_eq_(group.staging(), staging_t::staged_k);
@@ -525,15 +532,15 @@ static void transaction_group_rollback_stops_at_refusal() {
     stores[1].refusals.rollback = success_k;
     log.clear();
     st_verify_eq_(group.rollback(), success_k);
-    std::vector<int> const every {1, 2, 3};
-    st_verify_(labels_of(log, phase_t::rollback_k) == every);
+    std::vector<std::size_t> const every {0, 1, 2};
+    st_verify_(stores_visited(log, phase_t::rollback_k) == every);
     st_verify_eq_(group.staging(), staging_t::pending_k);
 }
 
 /** @brief One store named twice is refused before either participant is opened. */
 static void transaction_group_refuses_a_duplicate_store() {
-    std::vector<int> log;
-    recording_store_t<> only {&log, 1}, other {&log, 2};
+    std::vector<recorded_call_t> log;
+    recording_store<> only {log, 0}, other {log, 1};
 
     auto duplicated = make_transaction_group(only, only);
     st_verify_eq_(duplicated.status(), invalid_argument_k);
@@ -547,14 +554,14 @@ static void transaction_group_refuses_a_duplicate_store() {
     // Two distinct stores are what the refusal is not about.
     auto distinct = make_transaction_group(only, other);
     st_verify_(distinct);
-    std::vector<int> const opened {1, 2};
-    st_verify_(labels_of(log, phase_t::open_k) == opened);
+    std::vector<std::size_t> const opened {0, 1};
+    st_verify_(stores_visited(log, phase_t::open_k) == opened);
 }
 
 /** @brief A store refusing to open reports its own status, and the caller hears the first of them. */
 static void transaction_group_reports_what_refused_to_open() {
-    std::vector<int> log;
-    recording_store_t<> first {&log, 1}, second {&log, 2};
+    std::vector<recorded_call_t> log;
+    recording_store<> first {log, 0}, second {log, 1};
 
     second.refusals.opening = operation_not_permitted_k;
     auto refused = make_transaction_group(first, second);
@@ -568,13 +575,13 @@ static void transaction_group_reports_what_refused_to_open() {
 
 /** @brief A commit that published nothing stays staged, and one that tore drops to pending. */
 static void transaction_group_torn_commit_stops_claiming_staged() {
-    using store_t = recording_store_t<>;
+    using store_t = recording_store<>;
     static_assert(!transaction_group<store_t, store_t, store_t>::asks_before_writing_k,
                   "a one-call commit is what leaves a group able to tear");
 
-    std::vector<int> log;
+    std::vector<recorded_call_t> log;
     // Array members ascend in address, so the group visits these in the order they are named.
-    std::array<store_t, 3> stores {{{&log, 1}, {&log, 2}, {&log, 3}}};
+    std::array<store_t, 3> stores {{{log, 0}, {log, 1}, {log, 2}}};
 
     // The first participant refusing publishes nothing, so the group is staged and still retryable.
     stores[0].refusals.commit = write_conflict_k;
@@ -601,18 +608,18 @@ static void transaction_group_torn_commit_stops_claiming_staged() {
     st_verify_eq_(torn.rollback(), operation_not_permitted_k);
     log.clear();
     st_verify_eq_(torn.reset(), success_k);
-    std::vector<int> const every {1, 2, 3};
-    st_verify_(labels_of(log, phase_t::reset_k) == every);
+    std::vector<std::size_t> const every {0, 1, 2};
+    st_verify_(stores_visited(log, phase_t::reset_k) == every);
 }
 
 /** @brief Where every participant splits its commit, a refusal publishes nothing at all. */
 static void transaction_group_split_commit_publishes_nothing_on_refusal() {
-    using store_t = recording_store_t<commit_shape_t::split_k>;
+    using store_t = recording_store<commit_shape_t::split_k>;
     static_assert(transaction_group<store_t, store_t>::asks_before_writing_k,
                   "two split participants are asked before either writes");
 
-    std::vector<int> log;
-    std::array<store_t, 2> stores {{{&log, 1}, {&log, 2}}};
+    std::vector<recorded_call_t> log;
+    std::array<store_t, 2> stores {{{log, 0}, {log, 1}}};
     stores[1].refusals.validate_for_commit = write_conflict_k;
 
     auto group_result = make_transaction_group(stores[0], stores[1]);
@@ -622,15 +629,15 @@ static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     st_verify_eq_(group.stage(), success_k);
     log.clear();
     st_verify_eq_(group.commit(), write_conflict_k);
-    st_verify_(labels_of(log, phase_t::publish_k).empty());
+    st_verify_(stores_visited(log, phase_t::publish_k).empty());
 
     // Nothing was written, so the group is staged and the caller may still unwind or retry it.
     st_verify_eq_(group.staging(), staging_t::staged_k);
     stores[1].refusals.validate_for_commit = success_k;
     log.clear();
     st_verify_eq_(group.commit(), success_k);
-    std::vector<int> const every {1, 2};
-    st_verify_(labels_of(log, phase_t::publish_k) == every);
+    std::vector<std::size_t> const every {0, 1};
+    st_verify_(stores_visited(log, phase_t::publish_k) == every);
     st_verify_eq_(group.staging(), staging_t::pending_k);
 }
 
@@ -695,23 +702,31 @@ static void commit_stamp_visibility_matrix() {
     st_verify_(visible_at(static_cast<commit_stamp_t>(generation_t {0}), 0));
 }
 
+/**
+ *  @brief The ladder weakest rung first, which is the order @c at_least is asked to agree with.
+ *
+ *  Written out rather than derived, because a walk generated from @c isolation_t could only confirm the
+ *  enum agrees with itself. The count is pinned to the strongest rung so a new one cannot join the enum
+ *  and skip the walk, which is how @c strict_serializable_k once went untested.
+ */
+constexpr std::array<isolation_t, 5> isolation_ladder_k {
+    isolation_t::read_committed_k, isolation_t::monotonic_atomic_view_k, isolation_t::snapshot_k,
+    isolation_t::serializable_k,   isolation_t::strict_serializable_k,
+};
+static_assert(isolation_ladder_k.size() == static_cast<std::size_t>(isolation_t::strict_serializable_k) + 1,
+              "a rung joined or left `isolation_t` without joining the walk over it");
+
 /** @brief Every ordered pair of isolation levels, so the enum's order is load-bearing. */
 static void isolation_levels_compare_by_strength() {
-    constexpr isolation_t levels_k[] = {
-        isolation_t::read_committed_k,
-        isolation_t::monotonic_atomic_view_k,
-        isolation_t::snapshot_k,
-        isolation_t::serializable_k,
-    };
-    constexpr std::size_t levels_count_k = sizeof(levels_k) / sizeof(levels_k[0]);
-
-    for (std::size_t offered = 0; offered != levels_count_k; ++offered)
-        for (std::size_t required = 0; required != levels_count_k; ++required)
-            st_verify_eq_(at_least(levels_k[offered], levels_k[required]), offered >= required);
+    for (std::size_t stronger = 0; stronger != isolation_ladder_k.size(); ++stronger)
+        for (std::size_t weaker = 0; weaker != isolation_ladder_k.size(); ++weaker)
+            st_verify_eq_(at_least(isolation_ladder_k[stronger], isolation_ladder_k[weaker]), stronger >= weaker);
 
     static_assert(at_least(isolation_t::serializable_k, isolation_t::read_committed_k));
     static_assert(!at_least(isolation_t::read_committed_k, isolation_t::snapshot_k));
     static_assert(at_least(isolation_t::snapshot_k, isolation_t::snapshot_k));
+    static_assert(at_least(isolation_t::strict_serializable_k, isolation_t::serializable_k));
+    static_assert(!at_least(isolation_t::serializable_k, isolation_t::strict_serializable_k));
 }
 
 /** @brief An entry standing in for what a store resolves a watched identifier to. */
@@ -720,10 +735,7 @@ struct resolved_entry_t {
     presence_t presence {presence_t::present_k};
 
     bool operator==(watch_t const &watch) const noexcept {
-        return watch.presence == presence && watch.generation == generation;
-    }
-    bool operator!=(watch_t const &watch) const noexcept {
-        return watch.presence != presence || watch.generation != generation;
+        return generation == watch.generation && presence == watch.presence;
     }
 };
 

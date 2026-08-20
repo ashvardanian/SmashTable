@@ -99,7 +99,7 @@ void test_empty_transaction_commit() {
 
     container_t container;
     auto transaction = container.transaction();
-    transaction.has_value();
+    st_verify_(transaction.has_value());
 
     // Don't add anything, just commit
     st_verify_(transaction->stage());
@@ -245,7 +245,7 @@ void test_multi_key_atomicity_10_keys() {
 
     container_t container;
     auto transaction = container.transaction();
-    transaction.has_value();
+    st_verify_(transaction.has_value());
 
     // Insert 10 keys in transaction
     for (std::size_t i = 0; i < 10; ++i) st_verify_(transaction->upsert(trivial_id_to_member<member_t>(i, i * 10)));
@@ -470,14 +470,11 @@ void test_sequential_updates_never_regress() {
     st_verify_(container.find(trivial_id_to_key<member_t>(1),
                               [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); }));
 
-    // Verify monotonicity: each value >= previous
+    // Each read answered the write before it, so these three are the sequence in the order it was written.
     st_verify_eq_(observed_values.size(), 3);
     st_verify_eq_(observed_values[0], 10);
     st_verify_eq_(observed_values[1], 20);
     st_verify_eq_(observed_values[2], 30);
-
-    for (size_t i = 1; i < observed_values.size(); ++i)
-        st_verify_ge_(observed_values[i], observed_values[i - 1], "monotonic violation, the value went backwards");
 }
 
 /**
@@ -510,11 +507,10 @@ void test_transaction_commits_maintain_order() {
     st_verify_(t2->stage());
     st_verify_(t2->commit());
 
-    // Observe T2's value - should be >= T1's value
+    // Observe T2's value, which is the later of the two commits and so the one that stands
     auto val2 = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(val2.has_value());
     st_verify_eq_(val2->mapped, 200);
-    st_verify_ge_(val2->mapped, val1->mapped, "monotonic violation across transactions");
 }
 
 /**
@@ -809,14 +805,9 @@ void test_repeated_range_matches_isolation() {
 
     std::size_t const second_count = count_present();
 
-    if constexpr (at_least(container_t::isolation_k, stable_predicates_from_k)) {
+    if constexpr (at_least(container_t::isolation_k, stable_predicates_from_k))
         st_verify_eq_((second_count), (5), "a snapshot must not admit phantoms");
-        st_verify_eq_(first_count, second_count);
-    }
-    else {
-        st_verify_eq_((second_count), (7), "below snapshot, a repeated predicate sees the newest commits");
-        st_verify_gt_(second_count, first_count);
-    }
+    else st_verify_eq_((second_count), (7), "below snapshot, a repeated predicate sees the newest commits");
 }
 
 /**
