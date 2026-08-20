@@ -859,10 +859,7 @@ struct watch_t {
     presence_t presence {presence_t::present_k};
 
     inline bool operator==(watch_t const &watch) const noexcept {
-        return watch.presence == presence && watch.generation == generation;
-    }
-    inline bool operator!=(watch_t const &watch) const noexcept {
-        return watch.presence != presence || watch.generation != generation;
+        return generation == watch.generation && presence == watch.presence;
     }
 };
 
@@ -1084,10 +1081,7 @@ struct versioning_for {
         versioned_t(value_t &&payload) noexcept : payload(std::move(payload)) {}
 
         bool operator==(watch_t const &watch) const noexcept {
-            return watch.presence == presence && watch.generation == generation;
-        }
-        bool operator!=(watch_t const &watch) const noexcept {
-            return watch.presence != presence || watch.generation != generation;
+            return generation == watch.generation && presence == watch.presence;
         }
     };
 
@@ -1965,10 +1959,10 @@ class transaction_group {
         participants_k > 1 && (splits_its_commit<typename store_types_::transaction_t> && ...);
 
     /**
-     *  @brief Publishes every participant, or none of them, drawing each one's commit stamp.
+     *  @brief Publishes the participants, drawing each one's commit stamp.
      *
-     *  @return Success; whichever check turned a participant away, having published nothing; or
-     *    @c operation_not_permitted_k when the group is not staged.
+     *  @return Success; whichever check turned a participant away; or @c operation_not_permitted_k
+     *    when the group is not staged.
      *
      *  Where @c asks_before_writing_k, every participant is asked before any writes, so a refusal
      *  publishes nothing and the group stays staged, which is the one state @c rollback accepts. A
@@ -1976,10 +1970,10 @@ class transaction_group {
      *  the second pass cannot refuse, not that nothing can change beneath it.
      *
      *  Where it does not hold, each participant is committed in turn. A refusal by the first has
-     *  published nothing and leaves the group staged too, but a refusal after one has published tears
-     *  the commit: what is published cannot be pulled back, so the group drops to pending and refuses
-     *  both @c commit and @c rollback. Only @c reset then clears what the later participants still
-     *  hold staged.
+     *  published nothing and leaves the group staged too. A refusal by any later one drops the group
+     *  to pending, which refuses both @c commit and @c rollback - the position decides that, not
+     *  whether anything was published, since a torn commit cannot be told apart from an untorn one
+     *  without asking every participant what it did. Only @c reset then clears the rest.
      */
     [[nodiscard]] status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -2277,9 +2271,19 @@ template <algebra_t algebra_, typename first_type_, typename second_type_, typen
  *  @brief Whether every member of @p first is also in @p second.
  *    Settled at the first member @p second lacks, though the walk still runs to the end - @c for_each
  *    offers no way to halt it. What stops is the probing, which is the part that costs.
+ *
+ *  A side with more members than the other cannot be contained in it, which is the whole answer
+ *  without a walk. Both counts are read before either side is touched, so the pair is a decision
+ *  about the sizes at one moment rather than a size from one moment weighed against a walk from
+ *  another.
  */
 template <typename first_type_, typename second_type_>
 [[nodiscard]] expected<bool> is_subset(first_type_ const &first, second_type_ const &second) noexcept {
+    // One side compared against itself, where walking it under a shared lock would probe the same
+    // lock again and a writer queueing between the two would wedge the thread.
+    if constexpr (std::is_same_v<first_type_, second_type_>)
+        if (&first == &second) return true;
+    if (first.size() > second.size()) return false;
     bool subset = true;
     status_t probed = success_k;
     status_t const walked = first.for_each([&](auto const &member) noexcept {
@@ -2293,12 +2297,9 @@ template <typename first_type_, typename second_type_>
     return subset;
 }
 
-/**
- *  @brief Whether the two sides share no member.
- *    Settled at the first shared member, on the same terms as @c is_subset.
- */
+/** @brief Walks @p first probing @p second, settling at the first member they share. */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_disjoint(first_type_ const &first, second_type_ const &second) noexcept {
+[[nodiscard]] expected<bool> is_disjoint_walking_(first_type_ const &first, second_type_ const &second) noexcept {
     bool disjoint = true;
     status_t probed = success_k;
     status_t const walked = first.for_each([&](auto const &member) noexcept {
@@ -2310,6 +2311,24 @@ template <typename first_type_, typename second_type_>
     if (failed(walked)) return walked;
     if (failed(probed)) return probed;
     return disjoint;
+}
+
+/**
+ *  @brief Whether the two sides share no member, on the same terms as @c is_subset.
+ *
+ *  Sharing is symmetric, so the walk takes the smaller side and probes the larger.
+ */
+template <typename first_type_, typename second_type_>
+[[nodiscard]] expected<bool> is_disjoint(first_type_ const &first, second_type_ const &second) noexcept {
+    if constexpr (std::is_same_v<first_type_, second_type_>) {
+        // Self against self shares every member it has, and probing it under its own shared lock would
+        // wedge on a writer queueing between the walk and the probe.
+        if (&first == &second) return first.size() == 0;
+        // Decided once rather than by calling back the other way round, which two racing sizes could
+        // keep bouncing, and which would demand the reverse instantiation of an asymmetric pair.
+        if (first.size() > second.size()) return is_disjoint_walking_(second, first);
+    }
+    return is_disjoint_walking_(first, second);
 }
 
 #pragma endregion Set Algebra

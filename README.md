@@ -152,7 +152,9 @@ A read still answers.
 `commit` validates again and can still refuse, because a watched key may be committed over while the group sits staged.
 A group of two or more containers, none of them partitioned, is asked in full before any of them writes, so a refusal there publishes nothing and leaves the group staged and retryable.
 A lone participant commits in one call, having nothing to tear against, and so does a group holding a `sharing='partitioned'` container, where a refusal part-way leaves the participants before it published.
-Either way the group stays staged rather than finished, which is the state `rollback()` still accepts.
+A refusal by the first participant asked has published nothing and leaves the group staged, which is the state `rollback()` accepts.
+A refusal by any later one returns the group to open — the position decides that, not whether anything was published — and `reset()` rather than `rollback()` clears what the rest still hold.
+Inside a `with` block the exit discards that remainder itself, so `reset()` is the remedy on the manual `stage()` and `commit()` path.
 Even where every participant is asked first, one of them may be committed over between the two passes: what the split buys is that the second pass cannot refuse, not that nothing moves beneath it.
 
 ### What It Guarantees, and What It Does Not
@@ -162,7 +164,7 @@ Even where every participant is asked first, one of them may be committed over b
   A stage that fails on one participant unwinds them all.
 - __A commit publishes in full or not at all, wherever every participant can be asked first.__
   That is a group of two or more containers, none of them partitioned.
-  Elsewhere the participants publish in turn and a refusal part-way leaves the ones before it published — staged either way, so `rollback()` still accepts the group.
+  Elsewhere the participants publish in turn, and only a refusal by the first leaves the group staged — any later one returns it to open, where `reset()` and not `rollback()` clears the remainder.
 - __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
 - __A transaction reads its own writes, until it stages.__
   `view[k]` sees what `view[k] = v` put there; after `stage()` the write is in the store carrying no stamp, so it is invisible to everyone including its own transaction until `commit()`.

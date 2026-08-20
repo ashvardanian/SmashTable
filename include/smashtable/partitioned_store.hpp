@@ -183,6 +183,9 @@ class partitioned_store {
             transaction.erase_from(key, callback);
             transaction.erase_up_to(key, callback);
         };
+    /** @brief Whether the wrapped transaction stages a tombstone for every member it reads. */
+    static constexpr bool inner_transaction_clears_k =
+        requires(inner_transaction_t &transaction) { transaction.clear(); };
     /** @brief Whether the wrapped transaction revises a window of its own members. */
     static constexpr bool inner_transaction_revises_range_k =
         requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
@@ -1148,6 +1151,8 @@ class partitioned_store {
 
         [[nodiscard]] status_t reset() noexcept {
             settle_snapshot_();
+            // A reset discards the staged writes along with everything else, so the guard on them goes too.
+            staging_ = staging_t::pending_k;
             if constexpr (inner_shares_clock_k) {
                 // One snapshot for every partition, drawn once, exactly as opening the transaction did.
                 generation_t const snapshot = store_->clock_.take_snapshot(lease_);
@@ -1590,6 +1595,19 @@ class partitioned_store {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_up_to(upper, callback); });
+        }
+
+        /**
+         *  @brief Stages a tombstone for every member this transaction reads, in every partition.
+         *    Every partition is attempted whatever its neighbours answered, and the last refusal is
+         *    reported - the same as the bounded erases beside it, and unlike the store's own @c clear.
+         */
+        [[nodiscard]] status_t clear() noexcept
+            requires inner_transaction_clears_k
+        {
+            settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+            return for_parts_([](inner_transaction_t &part) noexcept { return part.clear(); });
         }
 
         /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, in every partition. */

@@ -162,24 +162,67 @@ def test_reset_discards_pending_changes(container, keygen):
 
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_a_finished_group_refuses_more_work(container, keygen):
-    """After commit the group is done, and its views say so rather than writing anywhere."""
+def test_a_closed_block_refuses_more_work(container, keygen):
+    """A view that escapes its `with` block writes nowhere, whatever the group did inside it."""
     key = keygen(1)[0]
-    group = st.transaction(container)
-    (view,) = group.begin()
-    view[key] = "x"
-    group.stage()
-    group.commit()
+    with st.transaction(container) as (view,):
+        view[key] = "x"
     with pytest.raises(st.StateError):
         view[key] = "again"
 
 
+@pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_a_finished_transaction_cannot_be_reset(key_type, keygen):
-    """A committed transaction is over, and `reset` must not hand its views a second turn.
+def test_a_committed_group_is_open_again(container, keygen):
+    """A commit returns the group to where it started, so the handle takes a second round.
 
-    Regression: reset wrote the open state unconditionally, so a finished group could be reopened
-    and committed again, applying a fresh set of writes through a transaction that had ended.
+    The `with` block closing is a fact about the Python handle; a commit landing is a fact about the
+    engine, which returns every participant to pending and clears its change set. The two are
+    separate, so a handle that never entered a block is still usable once its commit lands.
+
+    A reused round reads at the snapshot its own commit published, not at a fresh one - so a caller
+    who wants the world as it stands calls `reset` first, which is what `test_a_committed_group_
+    resets_and_runs_again` covers. That is the engine's behaviour too, and it is why the two shapes
+    are two tests.
+    """
+    keys = keygen(2)
+    group = st.transaction(container)
+    (view,) = group.begin()
+    view[keys[0]] = "first"
+    group.stage()
+    group.commit()
+
+    view[keys[1]] = "second"
+    group.stage()
+    group.commit()
+    assert container[keys[0]] == "first" and container[keys[1]] == "second", f"{dict(container)}"
+
+
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_closed_handle_cannot_be_reset(key_type, keygen):
+    """A `with` block that has closed hands its handle back to nobody, `reset` included."""
+    container = make(st.SortedMap, key_type)
+    keys = keygen(2)
+
+    group = st.transaction(container)
+    with group as (view,):
+        view[keys[0]] = "first"
+    assert dict(container) == {keys[0]: "first"}
+
+    with pytest.raises(st.StateError):
+        group.reset()
+    with pytest.raises(st.StateError):
+        group.begin()
+    assert dict(container) == {keys[0]: "first"}, f"a closed handle wrote again: {dict(container)}"
+
+
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_committed_group_resets_and_runs_again(key_type, keygen):
+    """`reset` after a commit is accepted here as it is in C++, and the next round lands.
+
+    The engine's own `reset` carries no state guard at all - it is the one call valid from anywhere,
+    and it is the documented way out of a torn commit. A `reset` also takes each participant a fresh
+    snapshot, which is what separates this shape from reusing a committed group directly.
     """
     container = make(st.SortedMap, key_type)
     keys = keygen(2)
@@ -189,13 +232,34 @@ def test_a_finished_transaction_cannot_be_reset(key_type, keygen):
     view[keys[0]] = "first"
     group.stage()
     group.commit()
-    assert dict(container) == {keys[0]: "first"}
 
-    with pytest.raises(st.StateError):
-        group.reset()
-    with pytest.raises(st.StateError):
-        group.begin()
-    assert dict(container) == {keys[0]: "first"}, "a finished transaction wrote again"
+    group.reset()
+    (view,) = group.begin()
+    view[keys[1]] = "second"
+    group.stage()
+    group.commit()
+    assert dict(container) == {keys[0]: "first", keys[1]: "second"}, f"{dict(container)}"
+
+
+@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+def test_reset_after_staging_leaves_the_participant_writable(sharing):
+    """Reset returns a staged transaction to open, so the writes it refuses while staged land again.
+
+    Swept over `sharing` because the two carry the staged flag in different places: the sharded
+    wrapper keeps one of its own beside the per-partition ones, and a reset has to clear both.
+    """
+    container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
+
+    group = st.transaction(container)
+    (view,) = group.begin()
+    view[1] = "discarded"
+    group.stage()
+    group.reset()
+
+    view[2] = "kept"
+    group.stage()
+    group.commit()
+    assert dict(container) == {2: "kept"}, f"{dict(container)}"
 
 
 @pytest.mark.parametrize("key_type", key_types)
@@ -314,12 +378,9 @@ def test_atomic_rejects_a_foreign_object(container):
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_group_may_mix_maps_and_sets(container_class, key_type, keygen):
     """A map and a set commit together, which the single-class binding could not express."""
-    from .base import is_map_class
-
     mapping = make(st.SortedMap, key_type)
     members = make(st.SortedSet, key_type)
     key = keygen(1)[0]
-    assert is_map_class(st.SortedMap)
     with st.transaction(mapping, members) as (map_view, set_view):
         map_view[key] = "value"
         set_view.add(key)
