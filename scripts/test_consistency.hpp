@@ -1505,16 +1505,14 @@ void verify_group_unwind_refused_at(container_type_ &first, container_type_ &sec
     st_verify_ne_(group->template participant<surviving_index_k>().changes_count(), std::size_t {0},
                   "an unwound participant must keep the writes it staged");
 
-    // Retrying is what the surviving writes were kept for. A sharded participant drops its partition
-    // marks when it rolls back, so it has nothing left to stage and is left out here.
-    if constexpr (!requires { container_t::partitions_k; }) {
-        st_verify_(group->template participant<refusing_index_>().reset());
-        st_verify_(group->stage());
-        st_verify_(group->commit());
-        auto republished = surviving.find_copy(trivial_id_to_key<member_t>(3));
-        st_verify_((republished.has_value()) && "a rolled-back write must publish on the retry");
-        st_verify_eq_((republished->mapped), (300), "a rolled-back write must publish the value it carried");
-    }
+    // Retrying is what the surviving writes were kept for, sharded or not - a rollback keeps the
+    // partition marks precisely so the next stage has somewhere to put them.
+    st_verify_(group->template participant<refusing_index_>().reset());
+    st_verify_(group->stage());
+    st_verify_(group->commit());
+    auto republished = surviving.find_copy(trivial_id_to_key<member_t>(3));
+    st_verify_((republished.has_value()) && "a rolled-back write must publish on the retry");
+    st_verify_eq_((republished->mapped), (300), "a rolled-back write must publish the value it carried");
 }
 
 /**

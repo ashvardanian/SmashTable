@@ -964,6 +964,15 @@ class partitioned_store {
         mutable touched_partitions_t touched_ {};
 
         /**
+         *  @brief Whether this transaction's writes are sitting in their partitions, invisible.
+         *
+         *  Carried here rather than read off a partition, because a partition this transaction never
+         *  reached is still @c pending_k - so a write landing in one after @c stage would be taken,
+         *  and the commit would then meet a marked partition that was never staged.
+         */
+        staging_t staging_ {staging_t::pending_k};
+
+        /**
          *  @brief The one claim on the snapshot every partition of this transaction reads at.
          *    A part registers nothing of its own, so the reader census counts this transaction once
          *    rather than once per partition, and the low-water mark answers for all of them together.
@@ -1155,13 +1164,20 @@ class partitioned_store {
                 return status;
             }
         }
+        /**
+         *  @brief Pulls every reached partition's staged writes back, leaving the transaction retryable.
+         *
+         *  The marks say which partitions this transaction reached, not what it currently has staged,
+         *  so they survive - an inner rollback keeps its changes for the retry, and clearing the marks
+         *  would leave the next @c stage and @c commit walking nothing and reporting success.
+         */
         [[nodiscard]] status_t rollback() noexcept {
             settle_snapshot_();
             // `std::mem_fn(&inner_transaction_t::rollback)` is cute... but we don't like heavy includes.
-            auto status = for_touched_parts_([](inner_transaction_t &part) noexcept { return part.rollback(); });
-            // A partition that refused may still hold a reservation, so its bit stays for the next attempt.
-            if (succeeded(status)) touched_.clear();
-            return status;
+            status_t const unwound =
+                for_touched_parts_([](inner_transaction_t &part) noexcept { return part.rollback(); });
+            if (succeeded(unwound)) staging_ = staging_t::pending_k;
+            return unwound;
         }
 
         /**
@@ -1183,7 +1199,10 @@ class partitioned_store {
                 if (failed(status)) break;
                 staged.mark(reached.index);
             }
-            if (succeeded(status)) return status;
+            if (succeeded(status)) {
+                staging_ = staging_t::staged_k;
+                return status;
+            }
 
             for (marked_partition_t landed = staged.first_marked(); landed.presence == marked_presence_t::one_marked_k;
                  landed = staged.next_marked(landed.index)) {
@@ -1202,12 +1221,16 @@ class partitioned_store {
          */
         [[nodiscard]] status_t commit() noexcept {
             settle_snapshot_();
-            if constexpr (inner_shares_clock_k) return commit_under_one_stamp_();
-            else return commit_together_();
+            status_t published = success_k;
+            if constexpr (inner_shares_clock_k) published = commit_under_one_stamp_();
+            else published = commit_together_();
+            if (succeeded(published)) staging_ = staging_t::pending_k;
+            return published;
         }
 
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(id);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -1389,6 +1412,7 @@ class partitioned_store {
 
         [[nodiscard]] status_t upsert(value_t &&element) noexcept {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             return partitions_[partition_index].upsert(std::move(element));
@@ -1402,6 +1426,7 @@ class partitioned_store {
         [[nodiscard]] status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
                                      callback_missing_type_ &&callback_missing = {}) noexcept {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(id);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -1421,6 +1446,7 @@ class partitioned_store {
             requires inner_transaction_refuses_occupied_key_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -1438,6 +1464,7 @@ class partitioned_store {
             requires inner_transaction_reports_occupied_key_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -1451,6 +1478,7 @@ class partitioned_store {
             requires inner_transaction_refuses_absent_key_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -1462,6 +1490,7 @@ class partitioned_store {
             requires inner_transaction_skips_occupied_key_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(element);
             touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -1538,6 +1567,7 @@ class partitioned_store {
             requires inner_transaction_erases_range_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             return for_parts_(
                 [&](inner_transaction_t &part) noexcept { return part.erase_range(lower, upper, callback); });
         }
@@ -1548,6 +1578,7 @@ class partitioned_store {
             requires inner_transaction_erases_range_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_from(lower, callback); });
         }
 
@@ -1557,6 +1588,7 @@ class partitioned_store {
             requires inner_transaction_erases_range_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_up_to(upper, callback); });
         }
 
@@ -1568,6 +1600,7 @@ class partitioned_store {
             requires inner_transaction_revises_range_k
         {
             settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             return for_parts_(
                 [&](inner_transaction_t &part) noexcept { return part.update_range(lower, upper, callback); });
         }

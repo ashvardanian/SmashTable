@@ -294,6 +294,17 @@ static void sharded_concurrency_window_read_is_validated() {
     test_sharded_window_read_is_validated<sharded_serializable_map_t>();
 }
 
+/**
+ *  @brief A watch on an absent key survives a rollback here as it does on an unsharded store.
+ *
+ *  Registered for the sharded stores now that a rollback keeps its partition marks; without them the
+ *  retry had nothing to stage and the watch went with the writes.
+ */
+static void transactional_consistency_absent_watch_survives_rollback() {
+    test_absent_watch_survives_rollback<transactional_trivial_map_t>();
+    test_absent_watch_survives_rollback<transactional_composite_map_t>();
+}
+
 /** @brief Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_trivial_set_t>();
@@ -1651,6 +1662,8 @@ int main() {
         run_test(filter, "sharded_concurrency.commit_spans_partitions", sharded_concurrency_commit_spans_partitions);
     failures +=
         run_test(filter, "sharded_concurrency.window_read_is_validated", sharded_concurrency_window_read_is_validated);
+    failures += run_test(filter, "transactional_consistency.absent_watch_survives_rollback",
+                         transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "basic_ops.single_element_operations", basic_ops_single_element_operations);
     failures += run_test(filter, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
     failures += run_test(filter, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);
