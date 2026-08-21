@@ -793,6 +793,33 @@ enum class isolation_t : std::uint8_t {
     strict_serializable_k = 4,
 };
 
+/** @brief Whether a walk carries on after handing an element over, for a callback that can say. */
+enum class walk_control_t : bool { resume_k, halt_k };
+
+/**
+ *  @brief Whether @p callback_type_ can stop a walk, rather than taking every element it is offered.
+ *
+ *  A callback answering @c walk_control_t is asked whether to carry on; one answering @c void is
+ *  asking for everything. The difference is resolved where the walk runs rather than by a flag.
+ */
+template <typename callback_type_, typename element_type_>
+constexpr bool halts_the_walk = requires(callback_type_ &callback, element_type_ element) {
+    { callback(element) } noexcept -> std::same_as<walk_control_t>;
+};
+
+/**
+ *  @brief Hands @p element to @p callback and answers whether the walk carries on.
+ *    A callback that cannot say resumes it, so a walk asks here instead of branching on the shape.
+ */
+template <typename callback_type_, typename element_type_>
+[[nodiscard]] constexpr walk_control_t hand_over(callback_type_ &&callback, element_type_ &&element) noexcept {
+    if constexpr (halts_the_walk<callback_type_, element_type_>) return callback(element);
+    else {
+        callback(element);
+        return walk_control_t::resume_k;
+    }
+}
+
 /** @brief Whether @p offered is at least as strong a promise as @p required. */
 constexpr bool at_least(isolation_t offered, isolation_t required) noexcept {
     return static_cast<std::uint8_t>(offered) >= static_cast<std::uint8_t>(required);
@@ -893,21 +920,30 @@ template <typename versioned_type_>
 }
 
 /**
+ *  @brief Whether a watched key moved between @p recorded and what it resolves to @p now.
+ *    Not equality: an absence a vacuum stripped of its date is the absence that was already read.
+ */
+[[nodiscard]] inline bool watch_drifted(watch_t recorded, watch_t now) noexcept {
+    if (recorded == now) return false;
+    bool const stood_absent = recorded.presence == presence_t::erased_k;
+    return !(stood_absent && now == missing_watch());
+}
+
+/**
  *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
  *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
  *  @param[in] resolve_latest Invoked as @c resolve_latest(identifier,on_found,on_missing) . Must be noexcept.
- *  @return @c success_k, or @c read_conflict_k for the first watch that fails to match.
+ *  @return @c success_k, or @c read_conflict_k for the first watch that drifted.
  */
 template <typename watches_type_, typename resolver_type_>
 [[nodiscard]] status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
-    watch_t const entry_missing = missing_watch();
     for (auto const &identifier_and_watch : watches) {
-        bool drifted = false;
+        // An identifier nothing resolves to keeps the shape it was given here, which is the absent one.
+        watch_t latest = missing_watch();
         resolve_latest(
-            identifier_and_watch.identifier,
-            [&](auto const &entry) noexcept { drifted = entry != identifier_and_watch.watch; },
-            [&]() noexcept { drifted = entry_missing != identifier_and_watch.watch; });
-        if (drifted) return status_t::read_conflict_k;
+            identifier_and_watch.identifier, [&](auto const &entry) noexcept { latest = watch_shape_of(&entry); },
+            no_op_t {});
+        if (watch_drifted(identifier_and_watch.watch, latest)) return status_t::read_conflict_k;
     }
     return success_k;
 }
@@ -2237,48 +2273,144 @@ template <algebra_t algebra_>
     return membership == membership_t::on_one_side_k;
 }
 
-/**
- *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
- *
- *  @warning Neither side is held between elements, and the two have separate clocks, so a member
- *    written to either during the walk may be seen or missed. Pass transactions rather than stores
- *    where that matters - a common instant is something only the caller can arrange.
- */
-template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
-[[nodiscard]] status_t walk_algebra(first_type_ const &first, second_type_ const &second,
-                                    callback_type_ &&callback) noexcept {
+/** @brief Whether a crossed walk carries on past a member, or the answer no longer needs it. */
+enum class comparison_t : bool { carry_on_k, settled_k };
 
-    status_t probed = success_k;
-    auto sweep = [&](auto const &walked, auto const &probing, auto keeps) noexcept {
-        return walked.for_each([&](auto const &member) noexcept {
-            if (failed(probed)) return;
+/**
+ *  @brief How many members a crossed walk carries out of one side before it puts that side down.
+ *    The only memory such a walk holds, on its own stack; a larger chunk re-seeds the walk fewer
+ *    times and costs that much more of it.
+ */
+inline constexpr std::size_t algebra_chunk_k = 512;
+
+/**
+ *  @brief Whether a side hands out a read transaction whose ordered walk resumes from a key it saw.
+ *    A side that does need not be held while the other is taken, which is what two crossing
+ *    comparisons need in order not to wedge on a writer queued between them.
+ */
+template <typename side_type_>
+concept resumes_from_a_key = requires(side_type_ &side, typename side_type_::transaction_t const &reading,
+                                      typename side_type_::identifier_t const &key, no_op_t callback) {
+    typename side_type_::value_t;
+    side.transaction();
+    reading.smallest(callback, callback);
+    reading.range_from(key, callback);
+    reading.contains(key);
+    requires std::is_nothrow_default_constructible_v<typename side_type_::value_t>;
+};
+
+/**
+ *  @brief Hands @p visitor every member of @p walked with whether @p probing holds it too, stopping
+ *    where the visitor calls the answer settled.
+ *
+ *  A pair that resumes from a key is read through one read transaction each, @p walked a chunk at a
+ *  time, and neither side is held while the other is taken. A pair that does not - an unordered
+ *  store, or a transaction a caller opened - probes @p probing from inside the walk of @p walked, so
+ *  two crossing comparisons can wedge there.
+ *
+ *  @note A chunked side shows one instant for the whole comparison from @c snapshot_k up, and a
+ *    chunk boundary is a point it may move at below that. From @c serializable_k up every probe is
+ *    recorded, so the probing side's read set grows with the walked side.
+ */
+template <typename walked_type_, typename probing_type_, typename visitor_type_>
+[[nodiscard]] status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing,
+                                        visitor_type_ &&visitor) noexcept {
+
+    if constexpr (resumes_from_a_key<walked_type_> && resumes_from_a_key<probing_type_>) {
+        using member_t = typename walked_type_::value_t;
+        auto reading_walked = walked.transaction();
+        if (!reading_walked) return reading_walked.status();
+        auto reading_probing = probing.transaction();
+        if (!reading_probing) return reading_probing.status();
+
+        member_t chunk[algebra_chunk_k] {};
+        member_t resume {};
+        member_t next_resume {};
+        status_t copied = success_k;
+        auto take = [&](member_t &target, member_t const &member) noexcept {
+            auto copy = copy_safely(member);
+            if (!copy) return void(copied = copy.status());
+            target = std::move(*copy);
+        };
+
+        // The walk needs a key to start from and no level names a floor, so the smallest member is one.
+        status_t const seeded =
+            reading_walked->smallest([&](member_t const &member) noexcept { take(resume, member); }, no_op_t {});
+        if (failed(seeded)) return seeded;
+        if (failed(copied)) return copied;
+
+        for (;;) {
+            std::size_t seen = 0;
+            auto collect = [&](member_t const &member) noexcept -> walk_control_t {
+                if (seen > algebra_chunk_k || failed(copied)) return walk_control_t::halt_k;
+                take(seen == algebra_chunk_k ? next_resume : chunk[seen], member);
+                ++seen;
+                return seen > algebra_chunk_k ? walk_control_t::halt_k : walk_control_t::resume_k;
+            };
+            status_t const swept = reading_walked->range_from(mapping_key_or_itself<member_t>(resume), collect);
+            if (failed(swept)) return swept;
+            if (failed(copied)) return copied;
+
+            std::size_t const filled = seen < algebra_chunk_k ? seen : algebra_chunk_k;
+            for (std::size_t index = 0; index != filled; ++index) {
+                expected<bool> const shared = reading_probing->contains(mapping_key_or_itself<member_t>(chunk[index]));
+                if (!shared) return shared.status();
+                membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+                if (visitor(chunk[index], membership) == comparison_t::settled_k) return success_k;
+            }
+            if (seen <= algebra_chunk_k) return success_k;
+            resume = std::move(next_resume);
+        }
+    }
+    else {
+        status_t probed = success_k;
+        status_t const swept = walked.for_each([&](auto const &member) noexcept -> walk_control_t {
             expected<bool> const shared = probing.contains(member);
             if (!shared) {
                 probed = shared.status();
-                return;
+                return walk_control_t::halt_k;
             }
             membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+            return visitor(member, membership) == comparison_t::settled_k ? walk_control_t::halt_k
+                                                                          : walk_control_t::resume_k;
+        });
+        if (failed(swept)) return swept;
+        return probed;
+    }
+}
+
+/**
+ *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
+ *
+ *  @warning The two sides keep separate clocks, so the pair is never one instant however it is read.
+ *    Each side is read through a read transaction opened here, which fixes what that side shows from
+ *    @c snapshot_k up; pass transactions to choose the instants yourself, at the cost of the nested
+ *    walk @c compare_crossed_ falls back to.
+ */
+template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
+[[nodiscard]] status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &&callback) noexcept {
+
+    auto sweep = [&](auto &side, auto &other, auto keeps) noexcept {
+        return compare_crossed_(side, other, [&](auto const &member, membership_t membership) noexcept {
             if (keeps(membership)) callback(member);
+            return comparison_t::carry_on_k;
         });
     };
 
-    status_t walked = sweep(first, second,
-                            [](membership_t membership) noexcept { return algebra_keeps_first<algebra_>(membership); });
-    if (failed(walked)) return walked;
-    if (failed(probed)) return probed;
+    status_t swept = sweep(first, second,
+                           [](membership_t membership) noexcept { return algebra_keeps_first<algebra_>(membership); });
+    if (failed(swept)) return swept;
 
     if constexpr (algebra_walks_both<algebra_>()) {
-        walked =
-            sweep(second, first, [](membership_t membership) noexcept { return algebra_keeps_second(membership); });
-        if (failed(walked)) return walked;
+        swept = sweep(second, first, [](membership_t membership) noexcept { return algebra_keeps_second(membership); });
+        if (failed(swept)) return swept;
     }
-    return probed;
+    return success_k;
 }
 
 /**
  *  @brief Whether every member of @p first is also in @p second.
- *    Settled at the first member @p second lacks, though the walk still runs to the end - @c for_each
- *    offers no way to halt it. What stops is the probing, which is the part that costs.
+ *    Settled at the first member @p second lacks, and the walk of @p first stops there.
  *
  *  A side with more members than the other cannot be contained in it, which is the whole answer
  *  without a walk. Both counts are read before either side is touched, so the pair is a decision
@@ -2286,38 +2418,29 @@ template <algebra_t algebra_, typename first_type_, typename second_type_, typen
  *  another.
  */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_subset(first_type_ const &first, second_type_ const &second) noexcept {
-    // One side compared against itself, where walking it under a shared lock would probe the same
-    // lock again and a writer queueing between the two would wedge the thread.
+[[nodiscard]] expected<bool> is_subset(first_type_ &first, second_type_ &second) noexcept {
+    // One side contains itself, and the unordered walk below would probe the lock it already holds.
     if constexpr (std::is_same_v<first_type_, second_type_>)
         if (&first == &second) return true;
     if (first.size() > second.size()) return false;
     bool subset = true;
-    status_t probed = success_k;
-    status_t const walked = first.for_each([&](auto const &member) noexcept {
-        if (!subset || failed(probed)) return;
-        expected<bool> const shared = second.contains(member);
-        if (!shared) return void(probed = shared.status());
-        subset = *shared;
+    status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
+        subset = membership == membership_t::on_both_sides_k;
+        return subset ? comparison_t::carry_on_k : comparison_t::settled_k;
     });
-    if (failed(walked)) return walked;
-    if (failed(probed)) return probed;
+    if (failed(compared)) return compared;
     return subset;
 }
 
 /** @brief Walks @p first probing @p second, settling at the first member they share. */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_disjoint_walking_(first_type_ const &first, second_type_ const &second) noexcept {
+[[nodiscard]] expected<bool> is_disjoint_walking_(first_type_ &first, second_type_ &second) noexcept {
     bool disjoint = true;
-    status_t probed = success_k;
-    status_t const walked = first.for_each([&](auto const &member) noexcept {
-        if (!disjoint || failed(probed)) return;
-        expected<bool> const shared = second.contains(member);
-        if (!shared) return void(probed = shared.status());
-        disjoint = !*shared;
+    status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
+        disjoint = membership == membership_t::on_one_side_k;
+        return disjoint ? comparison_t::carry_on_k : comparison_t::settled_k;
     });
-    if (failed(walked)) return walked;
-    if (failed(probed)) return probed;
+    if (failed(compared)) return compared;
     return disjoint;
 }
 
@@ -2327,10 +2450,10 @@ template <typename first_type_, typename second_type_>
  *  Sharing is symmetric, so the walk takes the smaller side and probes the larger.
  */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_disjoint(first_type_ const &first, second_type_ const &second) noexcept {
+[[nodiscard]] expected<bool> is_disjoint(first_type_ &first, second_type_ &second) noexcept {
     if constexpr (std::is_same_v<first_type_, second_type_>) {
-        // Self against self shares every member it has, and probing it under its own shared lock would
-        // wedge on a writer queueing between the walk and the probe.
+        // Self against self shares every member it has, and the unordered walk below would probe the
+        // lock it already holds.
         if (&first == &second) return first.size() == 0;
         // Decided once rather than by calling back the other way round, which two racing sizes could
         // keep bouncing, and which would demand the reverse instantiation of an asymmetric pair.

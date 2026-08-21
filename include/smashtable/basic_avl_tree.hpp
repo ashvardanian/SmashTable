@@ -148,11 +148,11 @@ class basic_avl_node {
     }
 
     template <typename callback_type_>
-    static void for_each_left_right(node_t *node, callback_type_ &&callback) noexcept {
-        if (!node) return;
-        for_each_left_right(node->left, callback);
-        callback(node);
-        for_each_left_right(node->right, callback);
+    static walk_control_t for_each_left_right(node_t *node, callback_type_ &&callback) noexcept {
+        if (!node) return walk_control_t::resume_k;
+        if (for_each_left_right(node->left, callback) == walk_control_t::halt_k) return walk_control_t::halt_k;
+        if (hand_over(callback, node) == walk_control_t::halt_k) return walk_control_t::halt_k;
+        return for_each_left_right(node->right, callback);
     }
 
     static node_t *find_min(node_t *node) noexcept {
@@ -322,15 +322,17 @@ class basic_avl_node {
      *  @param[in] high The upper bound of the range, excluded.
      *  @param[in] comparator The comparator instance (may be stateful).
      *  @param[in] callback The function to call for each node in the range.
+     *  @return Whether the range ran out or a halting callback stopped the walk first.
      */
     template <typename lower_type_, typename upper_type_, typename callback_type_>
-    static void range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
-                      callback_type_ &&callback) noexcept {
+    static walk_control_t range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
+                                callback_type_ &&callback) noexcept {
         node_t *current = lower_bound(node, low, comparator);
         while (current && comparator(mapping_key_or_itself(current->fruit), mapping_key_or_itself(high))) {
-            callback(current);
+            if (hand_over(callback, current) == walk_control_t::halt_k) return walk_control_t::halt_k;
             current = find_successor(current);
         }
+        return walk_control_t::resume_k;
     }
 
     /**
@@ -1851,11 +1853,12 @@ class basic_avl_tree {
      *  @param[in] lower Lower bound of the range (inclusive).
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
-                      [&](node_t *node) noexcept { callback(node->fruit); });
+                      [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
         return success_k;
     }
 
@@ -1866,11 +1869,12 @@ class basic_avl_tree {
      *  @param[in] lower Lower bound of the range (inclusive).
      *  @param[in] upper Upper bound of the range (exclusive).
      *  @param[inout] callback Callback invoked for each mutable element in range. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
-                      [&](node_t *node) noexcept { callback(node->fruit); });
+                      [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
         return success_k;
     }
 
@@ -2538,9 +2542,10 @@ class basic_avl_tree {
         size_ = 0;
     }
 
+    /** @brief Visits every element in sorted order; a callback answering @c walk_control_t stops it early. */
     template <typename callback_type_>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
-        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { callback(node->fruit); });
+        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
         return success_k;
     }
 

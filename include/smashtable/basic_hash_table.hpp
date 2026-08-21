@@ -881,7 +881,7 @@ class basic_hash_table {
     end_sentinel_t end() const noexcept { return end_sentinel_t {}; }
     end_sentinel_t cend() const noexcept { return end_sentinel_t {}; }
 
-    /** @brief Invokes the callback for every populated slot, bucket by bucket. */
+    /** @brief Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<slot_ref_t>>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
         slot_ref_t slot;
@@ -889,12 +889,12 @@ class basic_hash_table {
         offset_t const buckets = bucket_count();
         for (offset_t bucket_index = 0; bucket_index != buckets; ++bucket_index) {
             slot.slot_ = bucket_index * hash_bucket_capacity_k;
-            for_each_in_hash_bucket(slot, callback);
+            if (for_each_in_hash_bucket(slot, callback) == walk_control_t::halt_k) break;
         }
         return success_k;
     }
 
-    /** @brief Invokes the callback for every populated slot, bucket by bucket. */
+    /** @brief Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<const_slot_ref_t>>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         const_slot_ref_t slot;
@@ -902,7 +902,7 @@ class basic_hash_table {
         offset_t const buckets = bucket_count();
         for (offset_t bucket_index = 0; bucket_index != buckets; ++bucket_index) {
             slot.slot_ = bucket_index * hash_bucket_capacity_k;
-            for_each_in_hash_bucket(slot, callback);
+            if (for_each_in_hash_bucket(slot, callback) == walk_control_t::halt_k) break;
         }
         return success_k;
     }

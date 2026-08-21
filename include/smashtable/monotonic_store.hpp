@@ -288,13 +288,9 @@ class monotonic_store {
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            for (watched_identifier_t const &watched : watches_) {
-                watch_t latest = missing_watch();
-                store.find_committed_entry_(
-                    watched.identifier, [&](versioned_t const &entry) noexcept { latest = watch_shape_of(&entry); });
-                if (latest != watched.watch) return status_t::read_conflict_k;
-            }
-            return success_k;
+            return validate_watches(watches_, [&](auto const &identifier, auto &&on_found, auto &&on_missing) noexcept {
+                store.find_committed_entry_(identifier, on_found, on_missing);
+            });
         }
 
         /**
@@ -530,8 +526,8 @@ class monotonic_store {
         [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept {
             if (auto iterator = changes_.find(std::forward<comparable_type_>(comparable)); iterator != changes_.end()) {
-                (*iterator).presence == presence_t::present_k ? callback_found((*iterator).payload)
-                                                              : callback_missing();
+                if ((*iterator).presence == presence_t::present_k) callback_found((*iterator).payload);
+                else callback_missing();
                 return success_k;
             }
             return store_ref().find(std::forward<comparable_type_>(comparable),
@@ -661,6 +657,7 @@ class monotonic_store {
          *  @param[in] lower Lower bound of the range (inclusive).
          *  @param[in] upper Upper bound of the range (exclusive).
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -674,7 +671,10 @@ class monotonic_store {
                 std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member at or after @p lower, with no upper end. */
+        /**
+         *  @brief Hands @p callback every member at or after @p lower, with no upper end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
             requires ordered_collection<versioned_chains_t>
@@ -688,6 +688,7 @@ class monotonic_store {
          *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
          *    The walk needs a key to start from and this level names no floor, so the lowest member the
          *    transaction reads supplies one - which is why a caller never has to spell a layout's least key.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -780,11 +781,11 @@ class monotonic_store {
 
                 if (!staged && !committed) break;
                 if (!staged || (committed && less(committed->payload, staged->payload))) {
-                    callback(committed->payload);
+                    if (hand_over(callback, committed->payload) == walk_control_t::halt_k) return success_k;
                     ++committed_cursor;
                 }
                 else {
-                    callback(staged->payload);
+                    if (hand_over(callback, staged->payload) == walk_control_t::halt_k) return success_k;
                     ++staged_cursor;
                 }
             }
@@ -801,21 +802,26 @@ class monotonic_store {
          *  while the walk runs.
          *
          *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
             static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                           "callback must be noexcept invocable with value_t const &");
 
-            for (auto staged = changes_.begin(); staged != changes_.end(); ++staged)
-                if ((*staged).presence == presence_t::present_k) callback((*staged).payload);
+            for (auto staged = changes_.begin(); staged != changes_.end(); ++staged) {
+                if ((*staged).presence != presence_t::present_k) continue;
+                if (hand_over(callback, (*staged).payload) == walk_control_t::halt_k) return success_k;
+            }
 
             // A key this transaction touched is answered from its own version above, so the committed
             // side skips whatever `changes_` already speaks for and never emits a key twice.
             auto const &store = store_ref();
             for (auto committed = store.entries_.begin(); committed != store.entries_.end(); ++committed) {
                 if (stages_(*committed)) continue;
-                if (versioned_t const *readable = store_t::readable_version_(*committed)) callback(readable->payload);
+                versioned_t const *readable = store_t::readable_version_(*committed);
+                if (!readable) continue;
+                if (hand_over(callback, readable->payload) == walk_control_t::halt_k) return success_k;
             }
             return success_k;
         }
@@ -1587,30 +1593,6 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Internal API: Finds the latest visible entry and invokes callback with @c versioned_t const &.
-     *    Used by internal methods that need access to the generation, presence and commit stamp.
-     *    Only considers VISIBLE entries (committed/staged).
-     *
-     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
-     *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-     */
-    template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
-              typename callback_missing_type_ = no_op_t>
-    void find_visible_entry_(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                             callback_missing_type_ &&callback_missing = {}) const noexcept {
-
-        static_assert(is_safe_callback_for<callback_found_type_, versioned_t const &>,
-                      "callback_found must be noexcept invocable with versioned_t const &");
-        static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
-
-        auto found = entries_.find(std::forward<comparable_type_>(comparable));
-        versioned_t const *visible = found != entries_.end() ? visible_version_(*found) : nullptr;
-        if (visible) callback_found(*visible);
-        else callback_missing();
-    }
-
-    /**
      *  @brief The version a watch is validated against: the one carrying the newest commit stamp.
      *
      *  A version nobody has committed carries no stamp, so it cannot answer here - which is what lets
@@ -2205,14 +2187,18 @@ class monotonic_store {
      *  write to the store while the walk runs.
      *
      *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
 
-        for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor)
-            if (versioned_t const *readable = readable_version_(*cursor)) callback(readable->payload);
+        for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
+            versioned_t const *readable = readable_version_(*cursor);
+            if (!readable) continue;
+            if (hand_over(callback, readable->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 
@@ -2220,6 +2206,7 @@ class monotonic_store {
 
 #pragma region Range Operations
 
+    /** @brief Hands @p callback every visible member of [ @p lower, @p upper ), or fewer if it halts. */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
@@ -2228,8 +2215,9 @@ class monotonic_store {
     {
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             entries_.key_comp(), [&](chain_node_t *node) noexcept {
-                                if (versioned_t const *readable = readable_version_(node->fruit))
-                                    callback(readable->payload);
+                                versioned_t const *readable = readable_version_(node->fruit);
+                                if (!readable) return walk_control_t::resume_k;
+                                return hand_over(callback, readable->payload);
                             });
         return success_k;
     }

@@ -364,7 +364,8 @@ Basic containers — `basic_avl_tree`, `basic_wb_tree` — carry STL-style bidir
 Transactional containers do not, because keeping an iterator valid across concurrent updates costs more than it returns:
 
 - `find()`, `lower_bound()` and `upper_bound()` return `status_t` and take two `noexcept` callbacks, for the found and missing cases.
-- `equal_range()`, `sample_one()` and `sample_reservoir()` return `status_t` and take one callback, invoked per element.
+- `equal_range()` and `sample_one()` return `status_t` and take one callback, invoked per element in the answer.
+- `sample_reservoir()` also returns `status_t`, but scatters into a random-access output iterator rather than a callback, taking the bounds, a generator, a running `seen` count and the reservoir capacity.
 - `find_copy()`, `lower_bound_copy()` and `upper_bound_copy()` return an `expected<value_t>` for callers that cannot use a callback.
 
 ## Why The C++ Library

@@ -1344,6 +1344,7 @@ class partitioned_store {
 
         /**
          *  @brief Hands @p callback every member at or after @p lower, with no upper end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          *  @warning Every partition is held shared for the walk, as @c range holds them.
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -1360,8 +1361,13 @@ class partitioned_store {
                     reached = first_failure(reached, partitions_[partition_index].lower_bound(lower, fill, no_op_t {}));
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    reached = first_failure(reached, partitions_[partition_index].find(key, callback, no_op_t {}));
-                    return merge_control_t::resume_k;
+                    walk_control_t control = walk_control_t::resume_k;
+                    reached = first_failure(
+                        reached,
+                        partitions_[partition_index].find(
+                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
+                            no_op_t {}));
+                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1369,6 +1375,7 @@ class partitioned_store {
         /**
          *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
          *    Each partition is seeded from its own smallest, so no caller has to name a layout's floor.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          *  @warning Every partition is held shared for the walk, as @c range holds them.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -1386,8 +1393,13 @@ class partitioned_store {
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
                     if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
-                    reached = first_failure(reached, partitions_[partition_index].find(key, callback, no_op_t {}));
-                    return merge_control_t::resume_k;
+                    walk_control_t control = walk_control_t::resume_k;
+                    reached = first_failure(
+                        reached,
+                        partitions_[partition_index].find(
+                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
+                            no_op_t {}));
+                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1506,6 +1518,7 @@ class partitioned_store {
          *  Merged across the partitions rather than concatenated, so a transactional scan answers in the
          *  order an ordered container promises.
          *
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -1524,8 +1537,13 @@ class partitioned_store {
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
                     if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
-                    reached = first_failure(reached, partitions_[partition_index].find(key, callback, no_op_t {}));
-                    return merge_control_t::resume_k;
+                    walk_control_t control = walk_control_t::resume_k;
+                    reached = first_failure(
+                        reached,
+                        partitions_[partition_index].find(
+                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
+                            no_op_t {}));
+                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1783,7 +1801,11 @@ class partitioned_store {
 
 #pragma endregion Transaction Range Operations
 
-        /** @brief Hands @p callback every member this transaction reads, in no particular order. */
+        /**
+         *  @brief Hands @p callback every member this transaction reads, in no particular order.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to, leaving the
+         *    partitions above the one it stopped in unvisited.
+         */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
             requires inner_transaction_enumerates_k
@@ -1792,8 +1814,13 @@ class partitioned_store {
             if constexpr (inner_records_reads_k) mark_every_part_();
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 shared_lock_t lock {store_->mutexes_[partition_index]};
-                if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))
-                    return visited;
+                walk_control_t control = walk_control_t::resume_k;
+                status_t const visited = partitions_[partition_index].for_each([&](value_t const &element) noexcept {
+                    control = hand_over(callback, element);
+                    return control;
+                });
+                if (failed(visited)) return visited;
+                if (control == walk_control_t::halt_k) return success_k;
             }
             return success_k;
         }
@@ -2255,6 +2282,7 @@ class partitioned_store {
      *  partition and one descent to refill the front it came from, against the single iterator step a
      *  concatenated walk would take - the price of the order being right.
      *
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      *  @warning Every partition is held shared for the length of the walk, so every writer waits, and
      *    @p callback runs under all of them: a callback reaching back into this store deadlocks.
      */
@@ -2272,8 +2300,10 @@ class partitioned_store {
             },
             [&](std::size_t partition_index, identifier_t const &key) noexcept {
                 if (!comparator_(key, upper)) return merge_control_t::halt_k;
-                [[maybe_unused]] status_t const answered = partitions_[partition_index].find(key, callback, no_op_t {});
-                return merge_control_t::resume_k;
+                walk_control_t control = walk_control_t::resume_k;
+                [[maybe_unused]] status_t const answered = partitions_[partition_index].find(
+                    key, [&](value_t const &element) noexcept { control = hand_over(callback, element); }, no_op_t {});
+                return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
             });
         return success_k;
     }
@@ -2355,6 +2385,9 @@ class partitioned_store {
      *  element inserted or erased during the walk @b may @b or @b may @b not be seen, according to
      *  whether its partition had already been visited. The first guarantee is the one a caller
      *  enumerating a container depends on; the second is the one it has to tolerate.
+     *
+     *  @note A callback answering @c walk_control_t stops the walk where it says to, leaving the
+     *    partitions above the one it stopped in unvisited.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
@@ -2372,8 +2405,13 @@ class partitioned_store {
             // No clock to draw from, which is why `isolation_k` answers `read_committed_k` here.
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 shared_lock_t lock {mutexes_[partition_index]};
-                if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))
-                    return visited;
+                walk_control_t control = walk_control_t::resume_k;
+                status_t const visited = partitions_[partition_index].for_each([&](value_t const &element) noexcept {
+                    control = hand_over(callback, element);
+                    return control;
+                });
+                if (failed(visited)) return visited;
+                if (control == walk_control_t::halt_k) return success_k;
             }
             return success_k;
         }

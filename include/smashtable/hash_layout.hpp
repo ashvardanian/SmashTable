@@ -495,9 +495,11 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
  *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified
  *    during iteration to point to each populated slot sequentially.
  *  @param[in] callback Functor invoked for each populated slot, receiving @c hash_slot_ref.
+ *  @return Whether the bucket ran out or a halting callback stopped the walk first.
  */
 template <typename element_type_, typename hasher_type_, typename callback_type_>
-void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, callback_type_ &&callback) noexcept {
+walk_control_t for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot,
+                                       callback_type_ &&callback) noexcept {
 
     using offset_t = typename hash_slot_ref<element_type_, hasher_type_>::offset_t;
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
@@ -509,38 +511,10 @@ void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, c
     while (populations_left) {
         offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
         slot.slot_ = bucket_start + index_in_bucket;
-        callback(slot);
+        if (hand_over(callback, slot) == walk_control_t::halt_k) return walk_control_t::halt_k;
         populations_left &= populations_left - 1;
     }
-}
-
-/**
- *  @brief Searches for an element within a bucket using optimized bit-scanning.
- *    Stops iteration early when the predicate returns @c true.
- *
- *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified
- *    during iteration to point to each populated slot until a match is found.
- *  @param[in] predicate Functor invoked for each populated slot. Must return @c true if the
- *    element matches (terminating the search) or @c false to continue.
- *  @return True if a matching element was found, false otherwise.
- */
-template <typename element_type_, typename hasher_type_, typename predicate_type_>
-bool find_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, predicate_type_ &&predicate) noexcept {
-
-    using offset_t = typename hash_slot_ref<element_type_, hasher_type_>::offset_t;
-    offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
-
-    hash_bucket_head_t const &head = slot.header_ref();
-    assert(!(head.lanes.populations & head.lanes.deletions) &&
-           "A locked slot would be skipped: this walk is only sound on a table nobody is probing");
-    hash_bucket_mask_t populations_left = head.lanes.populations & ~head.lanes.deletions;
-    while (populations_left) {
-        offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
-        slot.slot_ = bucket_start + index_in_bucket;
-        if (predicate(slot)) return true;
-        populations_left &= populations_left - 1;
-    }
-    return false;
+    return walk_control_t::resume_k;
 }
 
 #pragma endregion Bucket Algorithms

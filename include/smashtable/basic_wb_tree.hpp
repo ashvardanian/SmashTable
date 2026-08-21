@@ -10,7 +10,8 @@
  *  Weight-balanced trees maintain balance based on subtree sizes rather than heights. Rebalancing uses parameters
  *  Δ=3 and Γ=2, which are the only proven integer solution (Hirai & Yamamoto, 2011).
  *
- *  Balance invariant: For every node, size(left) < Δ × size(right) AND size(right) < Δ × size(left)
+ *  Balance invariant: for every node, weight(left) ≤ Δ × weight(right) AND weight(right) ≤ Δ × weight(left),
+ *  where weight is size+1.
  *
  *  @section basic_wb_tree_order_statistics Order Statistics
  *
@@ -76,8 +77,8 @@ struct no_augmented_count_t {};
  *
  *  @section basic_wb_tree_rebalancing_parameters Rebalancing Parameters
  *
- *  Δ=3: Rotation threshold. Rebalance if size(left) >= 3×size(right) or vice versa.
- *  Γ=2: Rotation type selector. Single rotation if size(heavy.inner) < 2×size(heavy.outer).
+ *  Δ=3: Rotation threshold. Rebalance if weight(left) > 3×weight(right) or vice versa, with weight = size+1.
+ *  Γ=2: Rotation type selector. Single rotation if weight(heavy.inner) < 2×weight(heavy.outer).
  *
  *  These are the @b only valid integer parameters, proven in Coq by Hirai and Yamamoto in 2011, and are
  *  exposed as @c delta_k and @c gamma_k.
@@ -400,23 +401,15 @@ class basic_wb_node {
      *
      *  @param[in] node Root of subtree to traverse.
      *  @param[in] callback Callback to invoke for each node. Must be @c noexcept.
+     *  @return Whether the tree ran out or a halting callback stopped the walk first.
      */
     template <typename callback_type_>
-    static void for_each_left_right(node_t *node, callback_type_ &&callback) noexcept {
-        if (!node) return;
-        for_each_left_right(node->left, callback);
-        callback(node);
-        for_each_left_right(node->right, callback);
+    static walk_control_t for_each_left_right(node_t *node, callback_type_ &&callback) noexcept {
+        if (!node) return walk_control_t::resume_k;
+        if (for_each_left_right(node->left, callback) == walk_control_t::halt_k) return walk_control_t::halt_k;
+        if (hand_over(callback, node) == walk_control_t::halt_k) return walk_control_t::halt_k;
+        return for_each_left_right(node->right, callback);
     }
-
-    /**
-     *  @brief Result of a range query containing interval boundaries.
-     */
-    struct node_interval_t {
-        node_t *lower_bound = nullptr;
-        node_t *upper_bound = nullptr;
-        node_t *lowest_common_ancestor = nullptr;
-    };
 
     /**
      *  @brief Finds all nodes in the half-open range [low, high) and invokes callback for each.
@@ -427,29 +420,22 @@ class basic_wb_node {
      *  @param[in] high Upper bound of range (exclusive).
      *  @param[in] comparator Comparator for element comparison.
      *  @param[in] callback Callback to invoke for each node in range. Must be @c noexcept.
-     *  @return Interval containing lower bound, upper bound, and lowest common ancestor.
+     *  @return Whether the range ran out or a halting callback stopped the walk first.
      *
      *  @warning Current recursive implementation is suboptimal.
      */
     template <typename lower_type_, typename upper_type_, typename callback_type_>
-    static node_interval_t range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
-                                 callback_type_ &&callback) noexcept {
-        if (!node) return {};
+    static walk_control_t range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
+                                callback_type_ &&callback) noexcept {
+        if (!node) return walk_control_t::resume_k;
 
-        // If this node fits into the interval - analyze its children.
-        // The first call to reach this branch in the call-stack
-        // will be by definition the Lowest Common Ancestor.
+        // A node inside the interval has both of its children to answer for, one on either side of it.
         if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(high)) &&
             !comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(low))) {
-            auto left_sub_interval = range(node->left, low, high, comparator, callback);
-            callback(node);
-            auto right_sub_interval = range(node->right, low, high, comparator, callback);
-
-            auto result = node_interval_t {};
-            result.lower_bound = left_sub_interval.lower_bound ? left_sub_interval.lower_bound : node;
-            result.upper_bound = right_sub_interval.upper_bound ? right_sub_interval.upper_bound : node;
-            result.lowest_common_ancestor = node;
-            return result;
+            if (range(node->left, low, high, comparator, callback) == walk_control_t::halt_k)
+                return walk_control_t::halt_k;
+            if (hand_over(callback, node) == walk_control_t::halt_k) return walk_control_t::halt_k;
+            return range(node->right, low, high, comparator, callback);
         }
 
         if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(low)))
@@ -549,7 +535,7 @@ class basic_wb_node {
 
     /**
      *  @brief Check if node satisfies weight-balance invariant.
-     *  @return True if balanced: size(left) < Δ×size(right) AND size(right) < Δ×size(left)
+     *  @return True if balanced: weight(left) ≤ Δ×weight(right) AND weight(right) ≤ Δ×weight(left)
      */
     static bool is_balanced(node_t *node) noexcept {
         if (!node) return true;
@@ -563,8 +549,8 @@ class basic_wb_node {
      *    Uses Δ=3, Γ=2 parameters (only valid integer solution).
      *
      *  @par Algorithm
-     *  - If left too heavy (size(left) >= 3×size(right)):
-     *    - Single right rotation if size(left.right) < 2×size(left.left)
+     *  - If left too heavy, with weight(left) > 3×weight(right):
+     *    - Single right rotation if weight(left.right) < 2×weight(left.left)
      *    - Double (left-right) rotation otherwise
      *  - Mirror logic for right-heavy case
      *
@@ -1268,10 +1254,11 @@ class basic_wb_tree {
     /**
      *  @brief Iterates over all entries in sorted order.
      *  @param[in] callback Callback to invoke for each fruit. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
-        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { callback(node->fruit); });
+        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
         return success_k;
     }
 
@@ -1543,11 +1530,11 @@ class basic_wb_tree {
     class iterator;
     class const_iterator;
 
-    /** @brief Visits every element in [lower, upper) in sorted order. */
+    /** @brief Visits every element in [lower, upper) in sorted order, or fewer if the callback halts. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
-                      [&](node_t *node) noexcept { callback(node->fruit); });
+                      [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
         return success_k;
     }
 
@@ -1555,7 +1542,7 @@ class basic_wb_tree {
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
-                      [&](node_t *node) noexcept { callback(node->fruit); });
+                      [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
         return success_k;
     }
 

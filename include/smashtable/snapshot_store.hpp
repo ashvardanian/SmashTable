@@ -863,8 +863,9 @@ class snapshot_store {
          */
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
-              accesses_(std::move(other.accesses_)), changed_identifiers_(std::move(other.changed_identifiers_)),
-              generation_(other.generation_), lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
+              accesses_(std::move(other.accesses_)), read_set_(other.read_set_),
+              changed_identifiers_(std::move(other.changed_identifiers_)), generation_(other.generation_),
+              lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
 
         transaction_t &operator=(transaction_t &&other) noexcept {
@@ -873,6 +874,7 @@ class snapshot_store {
             store_ = std::exchange(other.store_, nullptr);
             changes_ = std::move(other.changes_);
             accesses_ = std::move(other.accesses_);
+            read_set_ = other.read_set_;
             changed_identifiers_ = std::move(other.changed_identifiers_);
             generation_ = other.generation_;
             lease_ = std::move(other.lease_);
@@ -1193,6 +1195,9 @@ class snapshot_store {
          *  The two sides are merged rather than concatenated, so the output is sorted even where a
          *  staged key falls between two committed ones, and a staged key masks the committed version
          *  of itself.
+         *
+         *  @note A callback answering @c walk_control_t stops the walk where it says to, though the
+         *    window it recorded is the one it asked for rather than the prefix it took.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1203,7 +1208,8 @@ class snapshot_store {
             auto const ordering = changes_.key_comp();
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                if (version.presence == presence_t::present_k) callback(version.payload);
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                 return probe_control_t::resume_k;
             });
             return recorded;
@@ -1212,6 +1218,7 @@ class snapshot_store {
         /**
          *  @brief Hands @p callback every member at or after @p lower, with no upper end.
          *    Records a window running to the highest key, so a commit into it is a phantom.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
@@ -1219,7 +1226,8 @@ class snapshot_store {
         {
             status_t const recorded = record_window_read_(lower, lower, access_t::to_the_highest_k);
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
-                if (version.presence == presence_t::present_k) callback(version.payload);
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                 return probe_control_t::resume_k;
             });
             return recorded;
@@ -1229,6 +1237,7 @@ class snapshot_store {
          *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
          *    Records a window running from the lowest key, so a caller never has to name a layout's floor
          *    to say "everything below this".
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -1238,7 +1247,8 @@ class snapshot_store {
             auto const ordering = changes_.key_comp();
             merge_all_([&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                if (version.presence == presence_t::present_k) callback(version.payload);
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                 return probe_control_t::resume_k;
             });
             return recorded;
@@ -1263,18 +1273,23 @@ class snapshot_store {
             status_t const recorded = record_whole_keyspace_read_();
             if constexpr (ordered_core_k) {
                 merge_all_([&](versioned_t const &version) noexcept {
-                    if (version.presence == presence_t::present_k) callback(version.payload);
+                    if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                    if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                     return probe_control_t::resume_k;
                 });
             }
             else {
-                for (auto staged = changes_.begin(); staged != changes_.end(); ++staged)
-                    if ((*staged).presence == presence_t::present_k) callback((*staged).payload);
+                for (auto staged = changes_.begin(); staged != changes_.end(); ++staged) {
+                    if ((*staged).presence != presence_t::present_k) continue;
+                    if (hand_over(callback, (*staged).payload) == walk_control_t::halt_k) return recorded;
+                }
 
                 // A key this transaction wrote is answered from its own version above, so the committed
                 // side skips whatever `changes_` already speaks for and never emits a key twice.
                 store_ref().for_each_at_(snapshot_, [&](value_t const &value) noexcept {
-                    if (changes_.find(mapping_key_or_itself<value_t>(value)) == changes_.end()) callback(value);
+                    if (changes_.find(mapping_key_or_itself<value_t>(value)) != changes_.end())
+                        return walk_control_t::resume_k;
+                    return hand_over(callback, value);
                 });
             }
             return recorded;
@@ -2153,14 +2168,15 @@ class snapshot_store {
             walk_visible_keys_(
                 entries_.begin(), [](versioned_t const &) noexcept { return true; }, snapshot,
                 [&](value_t const &value) noexcept {
-                    callback(value);
+                    if (hand_over(callback, value) == walk_control_t::halt_k) return probe_control_t::halt_k;
                     return probe_control_t::resume_k;
                 });
         }
         else {
             for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
                 versioned_t const &version = *cursor;
-                if (readable_version_(identifier_of(version), snapshot) == &version) callback(version.payload);
+                if (readable_version_(identifier_of(version), snapshot) != &version) continue;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return;
             }
         }
     }
@@ -2803,7 +2819,10 @@ class snapshot_store {
         return visible_at_(std::forward<comparable_type_>(comparable), published_stamp_());
     }
 
-    /** @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit. */
+    /**
+     *  @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
@@ -2812,7 +2831,7 @@ class snapshot_store {
     {
         range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
                   [&](value_t const &value) noexcept {
-                      callback(value);
+                      if (hand_over(callback, value) == walk_control_t::halt_k) return probe_control_t::halt_k;
                       return probe_control_t::resume_k;
                   });
         return success_k;
@@ -3098,6 +3117,7 @@ class snapshot_store {
      *  write to the store while the walk runs.
      *
      *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {

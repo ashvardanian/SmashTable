@@ -289,14 +289,9 @@ class reference_store {
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            for (watched_identifier_t const &watched : watches_) {
-                watch_t latest = missing_watch();
-                store.find_committed_entry_(watched.identifier, [&](versioned_entry_t const &entry) noexcept {
-                    latest = watch_shape_of(&entry);
-                });
-                if (latest != watched.watch) return status_t::read_conflict_k;
-            }
-            return success_k;
+            return validate_watches(watches_, [&](auto const &identifier, auto &&on_found, auto &&on_missing) noexcept {
+                store.find_committed_entry_(identifier, on_found, on_missing);
+            });
         }
 
         /** @brief Erases every entry this transaction staged under its own generation. */
@@ -747,6 +742,7 @@ class reference_store {
          *  @param[in] lower Lower bound of the range (inclusive).
          *  @param[in] upper Upper bound of the range (exclusive).
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -755,17 +751,18 @@ class reference_store {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
-            for (auto it = lower_internal; it != upper_internal; ++it)
-                if (it->presence == presence_t::present_k) callback(it->payload);
+            for (auto staged = lower_internal; staged != upper_internal; ++staged) {
+                if (staged->presence != presence_t::present_k) continue;
+                if (hand_over(callback, staged->payload) == walk_control_t::halt_k) return success_k;
+            }
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
             return store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                      [&](value_t const &external_element) noexcept {
-                                         // Check if this entry exists in local changes
-                                         auto local_state = changes_.find(external_element);
-                                         // Not modified locally, include it
-                                         if (local_state == changes_.end()) callback(external_element);
-                                         // If modified locally, we already processed it above
+                                         // A key changed locally was already handed over above
+                                         if (changes_.find(external_element) != changes_.end())
+                                             return walk_control_t::resume_k;
+                                         return hand_over(callback, external_element);
                                      });
         }
 
@@ -842,19 +839,23 @@ class reference_store {
          *  while the walk runs.
          *
          *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
             static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                           "callback must be noexcept invocable with value_t const &");
 
-            for (auto iterator = changes_.begin(); iterator != changes_.end(); ++iterator)
-                if (iterator->presence == presence_t::present_k) callback(iterator->payload);
+            for (auto iterator = changes_.begin(); iterator != changes_.end(); ++iterator) {
+                if (iterator->presence != presence_t::present_k) continue;
+                if (hand_over(callback, iterator->payload) == walk_control_t::halt_k) return success_k;
+            }
 
             // A key this transaction touched is answered from its own version above, so the committed
             // side skips whatever `changes_` already speaks for and never emits a key twice.
             return store_ref().for_each([&](value_t const &external_element) noexcept {
-                if (changes_.find(external_element) == changes_.end()) callback(external_element);
+                if (changes_.find(external_element) != changes_.end()) return walk_control_t::resume_k;
+                return hand_over(callback, external_element);
             });
         }
 
@@ -1822,14 +1823,17 @@ class reference_store {
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Iterate through all entries with this key (should be at most one visible)
-        for (auto it = range.first; it != range.second; ++it)
-            if (visible_now(it->committed) && it->presence == presence_t::present_k) callback(it->payload);
+        for (auto version = range.first; version != range.second; ++version) {
+            if (!visible_now(version->committed) || version->presence != presence_t::present_k) continue;
+            if (hand_over(callback, version->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 
@@ -1915,15 +1919,17 @@ class reference_store {
      *  write to the store while the walk runs.
      *
      *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
 
-        for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator)
-            if (visible_now(iterator->committed) && iterator->presence == presence_t::present_k)
-                callback(iterator->payload);
+        for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator) {
+            if (!visible_now(iterator->committed) || iterator->presence != presence_t::present_k) continue;
+            if (hand_over(callback, iterator->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 
@@ -1938,6 +1944,7 @@ class reference_store {
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -1945,9 +1952,10 @@ class reference_store {
                                  callback_type_ &&callback = {}) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
-        for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (visible_now(lower_iterator->committed) && lower_iterator->presence == presence_t::present_k)
-                callback(lower_iterator->payload);
+        for (; lower_iterator != upper_iterator; ++lower_iterator) {
+            if (!visible_now(lower_iterator->committed) || lower_iterator->presence != presence_t::present_k) continue;
+            if (hand_over(callback, lower_iterator->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 

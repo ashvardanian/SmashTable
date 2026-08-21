@@ -489,7 +489,10 @@ class locked_store {
                                                   std::forward<callback_missing_type_>(callback_missing));
         }
 
-        /** @brief Hands @p callback every member equal to @p comparable, this transaction's writes included. */
+        /**
+         *  @brief Hands @p callback every member equal to @p comparable, this transaction's writes included.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
             requires inner_transaction_matches_equals_k
@@ -499,7 +502,10 @@ class locked_store {
                                                   std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's writes included. */
+        /**
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's writes included.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -510,7 +516,10 @@ class locked_store {
                                             std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member at or after @p lower, with no upper end. */
+        /**
+         *  @brief Hands @p callback every member at or after @p lower, with no upper end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
             requires inner_transaction_walks_open_range_k
@@ -520,7 +529,10 @@ class locked_store {
                                                  std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end. */
+        /**
+         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires inner_transaction_walks_open_range_k
@@ -530,7 +542,10 @@ class locked_store {
                                                   std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member this transaction reads, in whatever order the store keeps. */
+        /**
+         *  @brief Hands @p callback every member this transaction reads, in whatever order the store keeps.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
             requires inner_transaction_enumerates_k
@@ -1094,6 +1109,10 @@ class locked_store {
                                         std::forward<callback_missing_type_>(callback_missing));
     }
 
+    /**
+     *  @brief Hands @p callback every member of [ @p lower, @p upper ), the walk under one shared hold.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -1154,6 +1173,9 @@ class locked_store {
      *  The one walk an unordered core can offer, and the whole of it runs under one shared lock, so a
      *  writer is held off for its length and the enumeration is a consistent snapshot: every element
      *  present when the call began is visited exactly once, and no element inserted during it is seen.
+     *
+     *  @note A callback answering @c walk_control_t stops the walk where it says to, which also ends
+     *    the shared hold early.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
@@ -1251,7 +1273,10 @@ class locked_store {
                                              std::forward<output_iterator_type_>(reservoir));
     }
 
-    /** @brief Hands @p callback every member equal to @p comparable, which for a unique-key store is one or none. */
+    /**
+     *  @brief Hands @p callback every member equal to @p comparable, which for a unique-key store is one or none.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
         requires inner_matches_equals_k
