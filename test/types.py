@@ -251,7 +251,6 @@ def test_unsupported_value_type_raises(container, keygen, value):
     with pytest.raises(TypeError):
         container[keygen(1)[0]] = value
     assert len(container) == 0
-    assert len(container) == 0
 
 
 # endregion Value typing

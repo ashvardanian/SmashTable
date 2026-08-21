@@ -24,6 +24,7 @@ from .base import (
     make,
     populate,
     sharing_modes,
+    stamped_isolation_levels,
 )
 
 # region Reporting
@@ -159,6 +160,66 @@ def test_monotonic_does_not_repeat_its_reads(keygen):
 
 
 # endregion Guarantees
+
+# region Atomic Reads
+
+
+def _committed_states(scanned) -> set:
+    """The distinct values a read's pairs came from, which is one for a read that did not tear."""
+    return {value for _, value in scanned}
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit mid-walk"
+)
+@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_lazy_walk_tears_where_a_scan_cannot(keygen, isolation, sharing):
+    """A walk straddling a whole-store commit reports both states; a scan answers at one of them.
+
+    `update` stages and commits the batch once, so every key changes together and a read reporting
+    two values assembled its answer out of two committed states.
+    """
+    keys = keygen(64)
+    container = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
+    container.update({key: 0 for key in keys})
+
+    walk = iter(container.items())
+    first = next(walk)
+    container.update({key: 1 for key in keys})
+    torn = [first, *walk]
+
+    assert _committed_states(torn) == {0, 1}, "the cursor is the one walk allowed to straddle a commit"
+    assert _committed_states(container.scan()) == {1}, "a scan answers at the newest state"
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two reads"
+)
+@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_scan_reports_one_committed_state_at_every_level(keygen, isolation, sharing):
+    """Neither scan mixes two states, and the level decides which one the participant reports.
+
+    A stamped participant repeats the state its transaction opened at, so its scan is the one that
+    answers `0` after the container has moved on to `1`.
+    """
+    keys = keygen(64)
+    container = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
+    container.update({key: 0 for key in keys})
+
+    group = st.transaction(container)
+    (view,) = group.begin()
+    container.update({key: 1 for key in keys})
+
+    stamped = effective_isolation(isolation, sharing) in stamped_isolation_levels
+    assert _committed_states(view.scan()) == ({0} if stamped else {1}), "a participant scan straddled the commit"
+    assert _committed_states(container.scan()) == {1}, "a container scan answers at the newest state"
+
+
+# endregion Atomic Reads
 
 # region Write Skew
 

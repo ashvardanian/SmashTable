@@ -361,10 +361,11 @@ def test_a_random_lifecycle_never_crashes_and_never_half_applies(isolation, keyg
                     if _permitted(group.commit):
                         model = shadow
                         shadow = dict(model)
-                # Either one leaves the transaction holding nothing, so the shadow starts over too.
+                # A rollback pulls the staged writes back into the transaction rather than dropping
+                # them, so the round keeps what it wrote and a later stage can publish it again.
                 case Phase.rollback:
-                    if _permitted(group.rollback):
-                        shadow = dict(model)
+                    _permitted(group.rollback)
+                # A reset is the one that abandons them, so the shadow starts over from the model.
                 case Phase.reset:
                     if _permitted(group.reset):
                         shadow = dict(model)

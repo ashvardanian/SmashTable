@@ -39,6 +39,8 @@ set_class_names = [
     pytest.param("HashSet", id="hashset"),  # phase 2
 ]
 all_class_names = map_class_names + set_class_names
+# Every container the stub declares, whether or not this build exports it yet.
+container_class_names = ("SortedMap", "SortedSet", "HashMap", "HashSet")
 sorted_map_names = [map_class_names[0]]
 sorted_set_names = [set_class_names[0]]
 sorted_class_names = [map_class_names[0], set_class_names[0]]
@@ -82,6 +84,8 @@ isolation_levels = [
     pytest.param("serializable", id="serializable"),
     pytest.param("strict_serializable", id="strict"),
 ]
+# The levels whose reader answers at a stamp, which is what lets its reads repeat.
+stamped_isolation_levels = ("snapshot", "serializable", "strict_serializable")
 sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
 # endregion Matrices
@@ -110,7 +114,7 @@ def skip_unless_free_threaded() -> None:
 
 def exported_container_names() -> list[str]:
     """Which container classes this build actually ships."""
-    return [name for name in ("SortedMap", "SortedSet", "HashMap", "HashSet") if hasattr(st, name)]
+    return [name for name in container_class_names if hasattr(st, name)]
 
 
 def is_sorted_class(container_class: type) -> bool:
@@ -205,7 +209,7 @@ def effective_isolation(isolation: str, sharing: str) -> str:
     The single place the cap is spelled, so a core that changes what it can carry is one edit here
     rather than a sweep through the suite.
     """
-    if isolation in ("snapshot", "serializable", "strict_serializable"):
+    if isolation in stamped_isolation_levels:
         return isolation
     return "read_committed" if sharing == "partitioned" else "monotonic_atomic_view"
 

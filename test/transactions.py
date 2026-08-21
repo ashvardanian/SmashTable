@@ -12,7 +12,7 @@ import pytest
 
 import smashtable as st
 
-from .base import group_sizes, key_types, make, map_class_names, transaction_styles
+from .base import group_sizes, key_types, make, map_class_names, sharing_modes, transaction_styles
 
 
 class _Abort(Exception):
@@ -76,7 +76,7 @@ def test_a_batch_lands_whole(container, keygen):
 
 
 @pytest.mark.thread_unsafe(
-    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would erase the key this one expects to find"
 )
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
@@ -115,8 +115,13 @@ def test_an_empty_transaction_commits(container):
 
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_stage_then_rollback_applies_nothing(container, keygen):
-    """Rolling a staged transaction back pulls the changes out again."""
+def test_stage_then_rollback_applies_nothing_but_keeps_the_writes(container_class, key_type, keygen):
+    """Rolling a staged transaction back pulls the changes out of the store and back into it.
+
+    Surviving writes are what separate rollback from reset, so the container is private: the key
+    this republishes would otherwise outlive the body and meet the next run of it.
+    """
+    container = make(container_class, key_type)
     key = keygen(1)[0]
     group = st.transaction(container)
     (view,) = group.begin()
@@ -124,6 +129,9 @@ def test_stage_then_rollback_applies_nothing(container, keygen):
     group.stage()
     group.rollback()
     assert key not in container
+    group.stage()
+    group.commit()
+    assert container[key] == "staged", "a rollback dropped the writes rather than pulling them back"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -188,7 +196,7 @@ def test_a_committed_group_is_open_again(container, keygen):
     view[keys[1]] = "second"
     group.stage()
     group.commit()
-    assert container[keys[0]] == "first" and container[keys[1]] == "second", f"{dict(container)}"
+    assert container[keys[0]] == "first" and container[keys[1]] == "second", f"{container!r}"
 
 
 @pytest.mark.parametrize("key_type", key_types)
@@ -233,7 +241,7 @@ def test_a_committed_group_resets_and_runs_again(key_type, keygen):
     assert dict(container) == {keys[0]: "first", keys[1]: "second"}, f"{dict(container)}"
 
 
-@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+@pytest.mark.parametrize("sharing", sharing_modes)
 def test_reset_after_staging_leaves_the_participant_writable(sharing):
     """Reset returns a staged transaction to open, so the writes it refuses while staged land again.
 

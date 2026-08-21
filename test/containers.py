@@ -13,7 +13,6 @@ import pytest
 from .base import (
     Op,
     all_class_names,
-    make,
     apply_op,
     assert_same_state,
     enumerable_class_names,
@@ -23,8 +22,10 @@ from .base import (
     hash_set_names,
     is_map_class,
     key_types,
+    make,
     map_class_names,
     populate,
+    same_scalar,
     set_class_names,
     sizes,
     sorted_map_names,
@@ -124,7 +125,7 @@ def test_overwrite_replaces_without_growing(container, keygen, valuegen):
     container[key] = first
     container[key] = second
     assert len(container) == 1
-    assert container[key] == second
+    assert same_scalar(container[key], second), f"{container[key]!r} vs {second!r}"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -198,7 +199,7 @@ def test_popmin_removes_a_real_pair(populated):
     container, model = populated
     key, value = container.popmin()
     assert key in model
-    assert model[key] == value
+    assert same_scalar(model[key], value), f"{model[key]!r} vs {value!r}"
     del model[key]
     assert_same_state(container, model)
 
@@ -218,7 +219,7 @@ def test_popmin_on_empty_raises(container):
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", value_types)
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])
-@pytest.mark.parametrize("class_name", [pytest.param("SortedMap", id="sortedmap")])
+@pytest.mark.parametrize("class_name", sorted_map_names)
 def test_popmin_takes_the_smallest(populated):
     """A sorted map pops its smallest key, which is where it diverges from dict deliberately."""
     container, model = populated

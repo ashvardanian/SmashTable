@@ -4,6 +4,7 @@ import concurrent.futures
 import os
 import platform
 import random
+import threading
 
 import pytest
 
@@ -119,3 +120,17 @@ def drive_threads():
                 future.result(timeout=timeout)
 
     return drive
+
+
+@pytest.fixture
+def crossing_gate():
+    """A barrier holding the writer until every reader is in its loop, so the two provably overlap.
+
+    Expires below `drive_threads`, so a thread that never arrives breaks the barrier and names
+    itself rather than expiring the driver's wait on an unrelated future.
+    """
+
+    def gate(parties: int, timeout: float = 30.0) -> threading.Barrier:
+        return threading.Barrier(parties, timeout=timeout)
+
+    return gate

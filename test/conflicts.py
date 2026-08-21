@@ -14,7 +14,7 @@ import pytest
 
 import smashtable as st
 
-from .base import key_types, make, map_class_names
+from .base import key_types, make, map_class_names, sharing_modes
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -171,13 +171,13 @@ def test_the_retry_loop_converges(container, keygen):
     assert attempts == 2
 
 
-@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+@pytest.mark.parametrize("sharing", sharing_modes)
 @pytest.mark.parametrize("isolation", ["monotonic_atomic_view", "snapshot"])
 def test_a_refused_stage_applied_nothing(isolation, sharing):
     """`ConflictError` must mean nothing landed, which is what makes a retry safe.
 
     The contract the README leads with, and the one every retry loop rests on. Forced rather than
-    raced, so it holds every level to the promise without depending on an interleaving.
+    raced, so it holds both stampless and stamped levels to the promise without an interleaving.
     """
     keys = list(range(64))
     container = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
@@ -194,7 +194,8 @@ def test_a_refused_stage_applied_nothing(isolation, sharing):
     with pytest.raises(st.ConflictError):
         group.stage()
 
-    assert all(container[key] != 12345 for key in keys), "a refused transaction published its writes"
+    assert container[keys[0]] == 999, "the outside write is the one that stands"
+    assert all(container[key] == -1 for key in keys[1:]), "a refused transaction published its writes"
 
 
 @pytest.mark.parametrize("key_type", key_types)
@@ -235,7 +236,7 @@ def test_a_refused_stage_keeps_the_pending_writes(key_type, keygen):
 
 @pytest.mark.thread_unsafe(reason="it runs its own threads and asserts on their interleaving")
 @pytest.mark.slow
-@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+@pytest.mark.parametrize("sharing", sharing_modes)
 def test_a_refused_commit_applied_nothing(sharing, drive_threads):
     """No refused writer publishes anything, under writers that all rewrite every shared key.
 
@@ -278,7 +279,7 @@ def test_a_refused_commit_applied_nothing(sharing, drive_threads):
     assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
 
 
-@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+@pytest.mark.parametrize("sharing", sharing_modes)
 def test_a_commit_refused_after_staging_applied_nothing(sharing):
     """A write landing between `stage` and `commit` refuses the commit and leaves it unpublished.
 

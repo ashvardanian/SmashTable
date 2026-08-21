@@ -12,6 +12,8 @@ import pytest
 
 import smashtable as st
 
+from .base import container_class_names
+
 # region Reading the stub
 
 STUB_PATH = pathlib.Path(__file__).resolve().parent.parent / "python" / "smashtable.pyi"
@@ -81,7 +83,6 @@ def runtime_members(subject: type, class_name: str) -> set[str]:
 # The lazy views are returned by `keys`, `values` and `items` rather than exported, so the stub
 # names them privately and they are reached through an instance instead of through the module.
 VIEW_NAMES = ["_KeysView", "_ValuesView", "_ItemsView"]
-CONTAINER_NAMES = ["SortedMap", "SortedSet", "HashMap", "HashSet"]
 TRANSACTION_NAMES = ["Transaction", "Participant"]
 
 
@@ -109,7 +110,7 @@ def test_the_stub_declares_nothing_the_module_lacks(stub):
     assert not invented, f"declared in the stub but missing at runtime: {sorted(invented)}"
 
 
-@pytest.mark.parametrize("class_name", CONTAINER_NAMES + TRANSACTION_NAMES + VIEW_NAMES)
+@pytest.mark.parametrize("class_name", [*container_class_names, *TRANSACTION_NAMES, *VIEW_NAMES])
 def test_every_class_states_its_whole_surface(stub, class_name):
     """Each method and property a class carries has to appear in the stub, and nothing else."""
     subject = view_types()[class_name] if class_name in VIEW_NAMES else getattr(st, class_name)

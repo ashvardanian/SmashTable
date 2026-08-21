@@ -178,7 +178,7 @@ def test_a_slice_is_held_to_the_layout(container, bounds, failure):
 @pytest.mark.thread_unsafe(
     reason="the window is the test - a parallel copy sharing the container would erase what this one asserts is still there"
 )
-@pytest.mark.parametrize("class_name", [pytest.param("SortedSet", id="sortedset")])
+@pytest.mark.parametrize("class_name", sorted_set_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_set_erases_a_slice_too(container, keygen):
     """A set names a window the same way, its only use for a subscript."""
