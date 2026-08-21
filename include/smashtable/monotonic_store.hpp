@@ -403,7 +403,7 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Stages an upsert operation for the given element (insert or update). Always succeeds.
+         *  @brief Stages an upsert operation for the given element (insert or update). Always succeeds (unless OOM).
          *    Overwrites existing element if key exists. Changes visible after @c stage() and @c commit().
          *
          *  @param[in] value Element to upsert (moved into the transaction).
@@ -484,7 +484,8 @@ class monotonic_store {
             if (!maybe_identifier) return maybe_identifier.status();
 
             watch_t shape = missing_watch();
-            store_ref().find_visible_entry_(
+            // The finder validation uses, so both ends of the watch resolve a tombstone the same way.
+            store_ref().find_committed_entry_(
                 identifier, [&](versioned_t const &versioned) noexcept { shape = watch_shape_of(&versioned); },
                 no_op_t {});
             return watches_.push_back({std::move(*maybe_identifier), shape});
@@ -520,8 +521,8 @@ class monotonic_store {
          *    You may want to @c watch() the received object, it's not done by default.
          *    Unlike @c monotonic_store::find(), will include the entries added to this transaction.
          *
-         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -562,7 +563,7 @@ class monotonic_store {
          *  @brief Checks if a member @b equal to the given @p comparable exists, including transaction changes.
          *    Convenience wrapper around @c find() for existence checks.
          *
-         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
          *  @return True if the element exists, false otherwise.
          */
         template <typename comparable_type_ = identifier_t>
@@ -584,7 +585,7 @@ class monotonic_store {
          *  open with: it asks for a first key rather than an ordinal, so a core keeping no subtree counts
          *  can answer it.
          *
-         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
@@ -613,8 +614,8 @@ class monotonic_store {
          *    You may want to @c watch() the received object, it's not done by default.
          *    Unlike @c monotonic_store::lower_bound(), will include entries added to this transaction.
          *
-         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+         *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -645,7 +646,7 @@ class monotonic_store {
          *    For sets with unique keys, returns at most one element (0 or 1).
          *    Includes transaction changes.
          *
-         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
          *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -905,7 +906,7 @@ class monotonic_store {
          *    Walks both sides in order, since a subtree weight counts versions rather than visible values.
          *    Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
          *
-         *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+         *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
          *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if element not found. Must be @c noexcept.
          */
@@ -1590,7 +1591,7 @@ class monotonic_store {
      *    Used by internal methods that need access to the generation, presence and commit stamp.
      *    Only considers VISIBLE entries (committed/staged).
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
@@ -1617,7 +1618,7 @@ class monotonic_store {
      *  write that may yet be rolled back. A committed tombstone is handed over as it stands, and
      *  @c watch_shape_of is what turns it into the shape a watch is compared against.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
@@ -1758,7 +1759,7 @@ class monotonic_store {
      *  @brief Returns the number of elements with key equal to the specified argument.
      *    For unique-key containers like this, returns either 0 or 1.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @return Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_ = identifier_t>
@@ -1771,7 +1772,7 @@ class monotonic_store {
     /**
      *  @brief Checks if a member @b equal to the given @p comparable exists in the tree.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @return True if element exists, false otherwise.
      */
     template <typename comparable_type_ = identifier_t>
@@ -1788,7 +1789,7 @@ class monotonic_store {
      *    Convenience method to avoid callback-based access in tests and simple use cases.
      *    Heterogeneous lookup supported if comparator defines @c is_transparent.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_ = identifier_t>
@@ -1842,10 +1843,8 @@ class monotonic_store {
 
     /**
      *  @brief Factory method to create a new transactional binary tree without throwing exceptions.
-     *    Returns an empty optional on allocation failure.
-     *
      *  @param[in] allocator Optional allocator instance.
-     *  @return Container instance or empty optional on failure.
+     *  @return Container instance, wrapped in an @c expected that is always engaged - construction cannot fail.
      */
     [[nodiscard]] static expected<store_t> make(allocator_t const &allocator = {}) noexcept {
         return store_t {allocator};
@@ -1855,7 +1854,7 @@ class monotonic_store {
      *  @brief Builds a container around a specific comparator, for comparators that carry state.
      *  @param[in] comparator The instance every comparison will consult.
      *  @param[in] allocator Optional allocator instance.
-     *  @return Container instance or empty optional on failure.
+     *  @return Container instance, wrapped in an @c expected that is always engaged - construction cannot fail.
      */
     [[nodiscard]] static expected<store_t> make(comparator_t const &comparator, allocator_t const &allocator) noexcept {
         return store_t {comparator, allocator};
@@ -1868,9 +1867,8 @@ class monotonic_store {
     /**
      *  @brief Creates a new transaction with a fresh generation number.
      *    Transaction can be reset and reused after commit/rollback to avoid reallocations.
-     *    Returns empty optional on allocation failure.
      *
-     *  @return Transaction instance or empty optional on failure.
+     *  @return Transaction instance, wrapped in an @c expected that is always engaged - construction cannot fail.
      */
     [[nodiscard]] expected<transaction_t> transaction() noexcept { return transaction_t {*this}; }
 
@@ -2048,8 +2046,8 @@ class monotonic_store {
     /**
      *  @brief Finds a member @b equal to the given @p comparable.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -2082,7 +2080,7 @@ class monotonic_store {
      *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens with:
      *  it asks for a first key rather than an ordinal, so a core keeping no subtree counts can answer.
      *
-     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
@@ -2132,8 +2130,8 @@ class monotonic_store {
     /**
      *  @brief Finds the first member @b greater or equal to the given @p comparable.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c element_t @c const @c &. Must be @c noexcept.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
+     *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
@@ -2163,7 +2161,7 @@ class monotonic_store {
      *  @brief Finds all elements equal to a single key. Invokes callback for each matching element.
      *    For trees with unique keys, this returns at most one element (0 or 1).
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -2452,7 +2450,7 @@ class monotonic_store {
      *    Walks every entry in order, since a subtree weight counts versions rather than visible values.
      *    Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive the rank (size_t). Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if element not found. Must be @c noexcept.
      */
@@ -2490,7 +2488,7 @@ class monotonic_store {
     /**
      *  @brief Erases a single entry matching the given @p comparable.
      *
-     *  @param[in] comparable Object comparable to @c element_t and convertible to @c identifier_t.
+     *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive the erased entry. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      *  @return @c key_not_found_k if no visible entry matched, otherwise success.

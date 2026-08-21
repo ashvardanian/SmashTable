@@ -463,6 +463,13 @@ static void transactional_consistency_watch_on_erased_key_can_commit() {
     test_watch_on_erased_key_can_commit<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_watch_catches_an_insert_and_erase_under_it() {
+    test_watch_catches_an_insert_and_erase_under_it<transactional_trivial_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_tracking_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_composite_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_absent_watch_survives_rollback() {
     test_absent_watch_survives_rollback<transactional_trivial_map_t>();
     test_absent_watch_survives_rollback<transactional_tracking_map_t>();
@@ -1227,6 +1234,8 @@ int main() {
                          transactional_consistency_moved_transaction_unwinds_once);
     failures += run_test(filter, "transactional_consistency.watch_on_erased_key_can_commit",
                          transactional_consistency_watch_on_erased_key_can_commit);
+    failures += run_test(filter, "transactional_consistency.watch_catches_an_insert_and_erase_under_it",
+                         transactional_consistency_watch_catches_an_insert_and_erase_under_it);
     failures += run_test(filter, "transactional_consistency.absent_watch_survives_rollback",
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",

@@ -558,7 +558,9 @@ class reference_store {
             auto remember = [&](identifier_t &&owned, watch_t watch) noexcept {
                 status = invoke_safely([&]() { watches_.push_back({std::move(owned), watch}); });
             };
-            store_ref().find_visible_entry_(
+            // The finder validation uses, not the one `find` uses: a committed tombstone dates the
+            // absence it stands for, and a watch that could not see it would date nothing.
+            store_ref().find_committed_entry_(
                 identifier,
                 [&](versioned_entry_t const &entry) noexcept {
                     auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));

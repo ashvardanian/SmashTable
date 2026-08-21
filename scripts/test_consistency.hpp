@@ -32,12 +32,20 @@ using parity_snapshot_map_t = snapshot_avl_map<std::uint64_t, std::uint64_t>;
 using parity_monotonic_map_t = monotonic_avl_map<std::uint64_t, std::uint64_t>;
 using parity_serializable_map_t = serializable_avl_map<std::uint64_t, std::uint64_t>;
 
+/** Weight-balanced rather than AVL, so the ordinal pairs are asked of a core that keeps subtree counts. */
+using parity_snapshot_ranked_map_t = snapshot_wb_map<std::uint64_t, std::uint64_t>;
+using parity_monotonic_ranked_map_t = monotonic_wb_map<std::uint64_t, std::uint64_t>;
+
 static_assert(transaction_mirrors_the_store<parity_snapshot_map_t>,
               "a snapshot store's transaction must mirror the store it opens on");
 static_assert(transaction_mirrors_the_store<parity_monotonic_map_t>,
               "a monotonic store's transaction must mirror the store it opens on");
 static_assert(transaction_mirrors_the_store<parity_serializable_map_t>,
               "a serializable store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_snapshot_ranked_map_t>,
+              "a ranked store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_monotonic_ranked_map_t>,
+              "a ranked store's transaction must mirror the store it opens on");
 
 static_assert(wrappers_honour_the_level<parity_serializable_map_t>,
               "a wrapper reporting a level must forward the surface that level is defined by");
@@ -1384,6 +1392,46 @@ void test_watch_on_erased_key_can_commit() {
     auto status = observer->stage();
     st_verify_((succeeded(status)) && "watching an erased key must not conflict when nothing moved");
     st_verify_(observer->commit());
+}
+
+/**
+ *  @brief A watch on an absent key must refuse once that key is inserted and erased under it.
+ *
+ *  Both ends resolve to absence, so a watch comparing only presence matches itself across two commits
+ *  it never saw. What separates them is the generation the committed tombstone carries, which is why
+ *  absence is dated rather than spelled as one constant.
+ *
+ *  @warning An erase taken outside a transaction drops the entry rather than tombstoning it, so this
+ *    schedule is invisible below @c snapshot_k when the outsider writes through the store directly.
+ */
+template <typename container_type_>
+void test_watch_catches_an_insert_and_erase_under_it() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
+
+    auto observer = container.transaction();
+    st_verify_(observer->watch(trivial_id_to_key<member_t>(7)));
+
+    {
+        auto outsider = container.transaction();
+        st_verify_(outsider->upsert(trivial_id_to_member<member_t>(7, 700)));
+        st_verify_(outsider->stage());
+        st_verify_(outsider->commit());
+    }
+    {
+        auto outsider = container.transaction();
+        st_verify_(outsider->erase(trivial_id_to_key<member_t>(7)));
+        st_verify_(outsider->stage());
+        st_verify_(outsider->commit());
+    }
+
+    st_verify_(observer->upsert(trivial_id_to_member<member_t>(1, 200)));
+    st_verify_eq_(observer->stage(), status_t::read_conflict_k,
+                  "two commits landed under a watched absence, which it must not read as unchanged");
 }
 
 /**

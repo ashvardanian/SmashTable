@@ -864,23 +864,31 @@ struct watch_t {
 };
 
 /**
- *  @brief What a watch on a key that is not there records, and what validation must match it with.
+ *  @brief What a watch on a key with no entry at all records.
  *
- *  Absence is spelled as a tombstone at @c absent_generation_k rather than as a separate state: a
- *  committed tombstone is reported as found - the public @c find has to see it in order to hide it -
- *  while validation resolves that same key to missing, so the two paths only agree if a watch on an
- *  absent key and a watch on an erased one record the very same shape.
+ *  A key erased through a transaction carries a committed tombstone and dates its absence by that
+ *  tombstone's generation, which is what tells an absence nothing disturbed apart from one an insert
+ *  and an erase closed over again. This constant is what remains when there is no tombstone to date.
+ *
+ *  @warning Absence is dated only while a tombstone survives. An erase taken outside a transaction
+ *    drops the entry outright, and @c vacuum, @c clear and the ranged erases reclaim one a watch may
+ *    still hold - so a watch can miss drift once its tombstone is gone, and can report drift that is
+ *    only the reclamation. Neither @c monotonic_store nor @c reference_store pins reclamation behind
+ *    an open reader the way @c snapshot_store does.
  */
 constexpr watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
 
 /**
- *  @brief The watch a read resolving to @p resolved should record, or the missing shape when it resolves
- *    to nothing. A key erased and a key never present record the same shape, which is what lets a watch
- *    on an absent key compare equal to one on an erased key.
+ *  @brief The watch a read resolving to @p resolved should record, or @c missing_watch when it resolves
+ *    to nothing at all. A committed tombstone keeps its own generation rather than collapsing onto the
+ *    constant, so two absences separated by a commit do not compare equal.
+ *
+ *  Both ends of a watch must resolve through the same finder, or a tombstone one end cannot see reads
+ *  as drift on the other. Both engines therefore watch through the finder validation uses.
  */
 template <typename versioned_type_>
 [[nodiscard]] constexpr watch_t watch_shape_of(versioned_type_ const *resolved) noexcept {
-    if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
+    if (!resolved) return missing_watch();
     return watch_t {resolved->generation, resolved->presence};
 }
 
