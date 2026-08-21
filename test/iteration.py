@@ -14,7 +14,6 @@ import gc
 import pytest
 
 from .base import (
-    all_class_names,
     enumerable_class_names,
     is_map_class,
     key_types,
@@ -53,8 +52,7 @@ def test_each_key_is_visited_exactly_once(container, keygen):
 def test_insertion_ahead_of_the_cursor_is_observed(container_class):
     """A key inserted beyond the cursor appears, because the position is re-derived each step."""
     container = container_class(key="int")
-    for key in (0, 10):
-        populate(container, [key], [key])
+    populate(container, [0, 10], [0, 10])
     walked = []
     for key in container:
         walked.append(key)
@@ -67,8 +65,7 @@ def test_insertion_ahead_of_the_cursor_is_observed(container_class):
 def test_insertion_behind_the_cursor_is_not_observed(container_class):
     """A key inserted below the cursor is missed, which is the cost of not snapshotting."""
     container = container_class(key="int")
-    for key in (5, 10):
-        populate(container, [key], [key])
+    populate(container, [5, 10], [5, 10])
     walked = []
     for key in container:
         walked.append(key)
@@ -83,14 +80,11 @@ def test_deleting_the_current_key_does_not_strand_the_walk(container_class):
     container = container_class(key="int")
     keys = [1, 2, 3, 4]
     populate(container, keys, keys)
+    erase = container.__delitem__ if is_map_class(container_class) else container.discard
     walked = []
-    is_map = is_map_class(container_class)
     for key in container:
         walked.append(key)
-        if is_map:
-            del container[key]
-        else:
-            container.discard(key)
+        erase(key)
     assert walked == keys
     assert len(container) == 0
 
@@ -101,46 +95,52 @@ def test_deletion_ahead_of_the_cursor_is_skipped(container_class):
     container = container_class(key="int")
     keys = [1, 2, 3]
     populate(container, keys, keys)
-    is_map = is_map_class(container_class)
+    erase = container.__delitem__ if is_map_class(container_class) else container.discard
     walked = []
     for key in container:
         walked.append(key)
         if key == 1:
-            if is_map:
-                del container[2]
-            else:
-                container.discard(2)
+            erase(2)
     assert walked == [1, 3]
+
+
+# One sequence drives the two tests that contrast a container with a dict: walk a store holding
+# `seeded_keys` and insert `key_above_the_seed`, which every seeded key sorts below, so an ordered
+# walk can still reach it.
+seeded_keys = list(range(10))
+key_above_the_seed = 100
+
+# A walk that has not ended by here is not going to, and the assertion after the loop never runs.
+runaway_ceiling = 100
 
 
 @pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_mutation_during_iteration_does_not_raise(container_class):
     """Unlike dict, changing the container mid-walk is legal here."""
     container = container_class(key="int")
-    keys = list(range(10))
-    populate(container, keys, keys)
-    seen = 0
+    populate(container, seeded_keys, seeded_keys)
+    walked = 0
     for index, _ in enumerate(container):
-        seen += 1
+        walked += 1
         if index == 2:
-            populate(container, [100 + index], [0])
-        if seen > 100:
-            pytest.fail("iteration failed to terminate")
-    assert seen >= 10
+            populate(container, [key_above_the_seed], [0])
+        if walked > runaway_ceiling:
+            pytest.fail(f"iteration failed to terminate, {walked} steps in")
+    assert walked == len(seeded_keys) + 1, f"walked {walked}, wanted {len(seeded_keys) + 1}"
 
 
 def test_a_dict_would_have_raised_on_the_same_sequence():
     """The contrast is deliberate: a dict raises where these containers keep going."""
-    model = dict.fromkeys(range(10), 0)
+    model = dict.fromkeys(seeded_keys, 0)
     with pytest.raises(RuntimeError):
         for index, _ in enumerate(model):
             if index == 2:
-                model[100 + index] = 0
+                model[key_above_the_seed] = 0
 
 
 @pytest.mark.parametrize("class_name", enumerable_class_names)
 def test_clear_during_iteration_terminates(container_class):
-    """Emptying the container mid-walk ends the walk rather than looping."""
+    """Emptying the container mid-walk ends the walk on the next step rather than looping."""
     container = container_class(key="int")
     keys = list(range(20))
     populate(container, keys, keys)
@@ -148,9 +148,9 @@ def test_clear_during_iteration_terminates(container_class):
     for _ in container:
         walked += 1
         container.clear()
-        if walked > 50:
-            pytest.fail("iteration failed to terminate after clear()")
-    assert walked >= 1
+        if walked > runaway_ceiling:
+            pytest.fail(f"iteration failed to terminate after clear(), {walked} steps in")
+    assert walked == 1, f"walked {walked} steps over a container emptied after the first"
 
 
 # endregion Mutation during iteration

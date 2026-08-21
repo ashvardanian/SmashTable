@@ -6,14 +6,16 @@ Baselines:
     participant, since all-or-nothing is a statement about the set of them rather than about one.
 
 Matches C++ suite:
-    scripts/test_fuzz.hpp, which drives the same shapes against `reference_store` as its oracle.
+    scripts/test_fuzz.hpp. Its single-engine half answers against `reference_store` as this one
+    answers against dict and set; its group half has no oracle and asserts all-or-nothing across
+    the participants instead, which is the shape no single-container model can express.
 
 Run:
     python -m pytest test/fuzz.py -v
     SMASHTABLE_TESTS_SEED=42 python -m pytest test/fuzz.py -v
 """
 
-import operator
+import enum
 
 import pytest
 
@@ -105,10 +107,10 @@ def test_random_transactions_match_the_model(container_class, key_type, keygen, 
     for _ in range(12):
         aborting = rng.random() < 0.35
         shadow = dict(model)
-        batch = [(rng.choice(keys), rng.choice(values)) for _ in range(rng.randint(1, 6))]
         try:
             with st.transaction(container) as (view,):
-                for key, value in batch:
+                for _ in range(rng.randint(1, 6)):
+                    key, value = rng.choice(keys), rng.choice(values)
                     view[key] = value
                     shadow[key] = value
                 if aborting:
@@ -126,16 +128,14 @@ def test_random_transactions_match_the_model(container_class, key_type, keygen, 
 def test_random_scan_windows_match_the_sorted_model(container, keygen, rng):
     """Every random window agrees with the same slice of a sorted model."""
     keys = keygen(40)
-    model = {}
     for key in keys:
         container[key] = key
-        model[key] = key
 
     for _ in range(25):
         low = rng.choice(keys)
         high = rng.choice(keys)
         got = [key for key, _ in container.scan(low, high)]
-        want = sorted(key for key in model if low <= key < high)
+        want = sorted(key for key in keys if low <= key < high)
         assert got == want, f"scan({low}, {high}) gave {got}, model gave {want}"
 
 
@@ -152,11 +152,9 @@ def test_random_interleaved_iteration_terminates(container, keygen, rng):
         container[key] = key
 
     seen = []
-    steps = 0
     for key in container:
         seen.append(key)
-        steps += 1
-        if steps > 1000:
+        if len(seen) > 1000:
             pytest.fail("iteration failed to terminate under mutation")
         roll = rng.random()
         if roll < 0.3:
@@ -305,6 +303,21 @@ def test_a_refused_group_commit_publishes_no_participant(isolation, keygen, rng)
         group.rollback()  # the group stayed staged, so it can still be unwound
 
 
+class Phase(enum.Enum):
+    """One step a random lifecycle may take, whether or not it is legal where it lands."""
+
+    write = enum.auto()
+    read = enum.auto()
+    watch = enum.auto()
+    stage = enum.auto()
+    commit = enum.auto()
+    rollback = enum.auto()
+    reset = enum.auto()
+
+
+lifecycle_phases = tuple(Phase)
+
+
 @pytest.mark.iterations(1)
 @pytest.mark.thread_unsafe(
     reason="not idempotent - it asserts an absolute state of its container, so re-running the body against one fixture, whether by --iterations or by --parallel-threads, falsifies it"
@@ -328,33 +341,36 @@ def test_a_random_lifecycle_never_crashes_and_never_half_applies(isolation, keyg
         group = st.transaction(container)
         (view,) = group.begin()
         shadow = dict(model)
-        published = False
 
         for _ in range(rng.randint(1, 6)):
-            match rng.choice(("write", "read", "watch", "stage", "commit", "rollback", "reset")):
-                case "write":
+            phase = rng.choice(lifecycle_phases)
+            match phase:
+                case Phase.write:
                     key, value = rng.choice(keys), rng.randrange(100)
-                    if _permitted(lambda: operator.setitem(view, key, value)):
+                    if _permitted(lambda: view.__setitem__(key, value)):
                         shadow[key] = value
-                case "read":
+                case Phase.read:
                     _permitted(lambda: view[rng.choice(keys)])
-                case "watch":
+                case Phase.watch:
                     _permitted(lambda: view.watch(rng.choice(keys)))
-                case "stage":
+                case Phase.stage:
                     _permitted(group.stage)
-                case "commit":
+                # A commit publishes and returns the group to open, so the model moves and the
+                # shadow starts over from it - a later write is a fresh round, not part of this one.
+                case Phase.commit:
                     if _permitted(group.commit):
-                        published = True
+                        model = shadow
+                        shadow = dict(model)
                 # Either one leaves the transaction holding nothing, so the shadow starts over too.
-                case "rollback":
+                case Phase.rollback:
                     if _permitted(group.rollback):
                         shadow = dict(model)
-                case "reset":
+                case Phase.reset:
                     if _permitted(group.reset):
                         shadow = dict(model)
+                case _:
+                    raise AssertionError(f"the lifecycle drew {phase}, which nothing here runs")
 
-        if published:
-            model = shadow
         # Whatever the sequence did, the store holds one of the two whole states and never a mix.
         assert dict(container) == model, "a refused or abandoned lifecycle left the store half-applied"
 

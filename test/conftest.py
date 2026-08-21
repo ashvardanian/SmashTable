@@ -1,5 +1,6 @@
 """Fixtures and the session banner. No test functions and no oracle live here."""
 
+import concurrent.futures
 import os
 import platform
 import random
@@ -108,6 +109,13 @@ def populated(container, keygen, valuegen, size: int):
 
 
 @pytest.fixture
-def failures() -> list[str]:
-    """A sink for assertions raised inside worker threads, which do not reach pytest."""
-    return []
+def drive_threads():
+    """Runs `worker(index)` on `count` threads, re-raising whatever fired inside one of them."""
+
+    def drive(worker, count: int, timeout: float = 60.0) -> None:
+        # Every worker is submitted before any is awaited, or the threads would run one at a time.
+        with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
+            for future in [pool.submit(worker, index) for index in range(count)]:
+                future.result(timeout=timeout)
+
+    return drive

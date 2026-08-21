@@ -5,8 +5,8 @@ Baselines:
     rather than by repr, since only the sorted pair has a defined order.
 
 Matches C++ suite:
-    scripts/test_basic.hpp and scripts/test_consistency.hpp, which check the same invariants
-    one layer down.
+    the fixture half of scripts/test_basic.hpp, which builds the same matrices for the layer
+    below. This module declares no test of its own; the suites that import it hold those.
 
 Run:
     python -m pytest test/ -v
@@ -15,6 +15,7 @@ Run:
 """
 
 import dataclasses
+import enum
 import math
 import random
 import sys
@@ -244,12 +245,30 @@ def _category(error: BaseException) -> type:
     raise AssertionError(f"unclassifiable error {error!r}")
 
 
-def outcome(call):
-    """`('ok', value)` or `('raised', KeyError)` - never a traceback escaping into the diff."""
+class Verdict(enum.Enum):
+    """Whether a call answered with a value or raised."""
+
+    returned = enum.auto()
+    raised = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True)
+class Outcome:
+    """What one call did: the value it returned, or the stdlib family of the error it raised."""
+
+    verdict: Verdict
+    value: object
+
+    def __str__(self) -> str:
+        return f"{self.verdict.name} {self.value!r}"
+
+
+def outcome(call) -> Outcome:
+    """What `call` did, with an error reduced to its family - never a traceback in the diff."""
     try:
-        return ("ok", call())
+        return Outcome(Verdict.returned, call())
     except Exception as error:  # noqa: BLE001 - classification is the point
-        return ("raised", _category(error))
+        return Outcome(Verdict.raised, _category(error))
 
 
 def same_scalar(left, right) -> bool:
@@ -271,10 +290,21 @@ def same_scalar(left, right) -> bool:
 def same_result(left, right) -> bool:
     """Compares two returned values, descending into tuples so `popmin` pairs compare exactly."""
     if isinstance(left, tuple) and isinstance(right, tuple):
-        return len(left) == len(right) and all(same_result(a, b) for a, b in zip(left, right))
+        return len(left) == len(right) and all(same_result(one, other) for one, other in zip(left, right))
     if left is None or right is None:
         return left is right
     return same_scalar(left, right)
+
+
+class Compare(enum.Enum):
+    """How an op's returned value is held against the model's.
+
+    `any_member` is what `popmin` needs: only an ordered class promises which element it takes, so
+    the model is advanced to match the container's choice rather than run independently.
+    """
+
+    exact = enum.auto()
+    any_member = enum.auto()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -283,7 +313,7 @@ class Op:
 
     name: str
     args: tuple = ()
-    compare: str = "exact"  # "exact" | "member" | "ignore"
+    compare: Compare = Compare.exact
 
     def __str__(self) -> str:
         return f"{self.name}{self.args!r}"
@@ -330,21 +360,18 @@ def is_enumerable(container) -> bool:
 def assert_same_state(container, model) -> None:
     """Everything the container can be asked, asked of the model too.
 
-    Iteration is walked on every call rather than in a handful of dedicated tests, so the lazy
-    cursor is exercised thousands of times across a run.
-
-    A container that cannot enumerate itself is compared by length and by probing every key the
-    model holds. That is an equivalence rather than a weaker check: matching lengths mean the
-    container holds no key the model does not, so proving every model key present with the right
-    value proves the two agree.
+    A container that cannot be walked is pinned by its length and by probing every model key,
+    which is an equivalence rather than a weaker check: equal lengths leave the container no room
+    to hold a key the model does not.
     """
     assert len(container) == len(model), f"len {len(container)} vs {len(model)}"
+    for key in model:
+        assert key in container, f"model key {key!r} is absent from the container"
 
     if not is_enumerable(container):
-        for key in model:
-            assert key in container, f"model key {key!r} is absent from the container"
-            if isinstance(model, dict):
-                assert same_scalar(container[key], model[key]), f"{key!r}: {container[key]!r} vs {model[key]!r}"
+        if isinstance(model, dict):
+            for key, value in model.items():
+                assert same_scalar(container[key], value), f"{key!r}: {container[key]!r} vs {value!r}"
         return
 
     walked = list(container)
@@ -364,30 +391,26 @@ def assert_same_state(container, model) -> None:
     if is_sorted_class(type(container)):
         assert walked == sorted(model), "a sorted container iterated out of order"
 
-    for key in model:
-        assert key in container, f"model key {key!r} missing from the container"
-
 
 def apply_op(container, model, op: Op) -> None:
     """Runs `op` on both sides and asserts they agreed, on the value and on the state."""
     dispatch = run_map if isinstance(model, dict) else run_set
     got = outcome(lambda: dispatch(container, op))
 
-    if op.compare == "member":
-        # `popmin` removes *some* element; only the sorted classes promise which one, so the
-        # model is advanced to match the container's choice rather than run independently.
-        assert got[0] == "ok" or len(model) == 0, f"{op}: {got}"
-        if got[0] == "ok":
-            taken = got[1][0] if isinstance(got[1], tuple) else got[1]
+    if op.compare is Compare.any_member:
+        if got.verdict is Verdict.raised:
+            assert len(model) == 0, f"{op}: raised on a non-empty container"
+        else:
+            taken = got.value[0] if isinstance(got.value, tuple) else got.value
             assert taken in model, f"{op}: invented element {taken!r}"
             model.pop(taken) if isinstance(model, dict) else model.discard(taken)
-        else:
-            assert len(model) == 0, f"{op}: raised on a non-empty container"
     else:
         want = outcome(lambda: dispatch(model, op))
-        assert got[0] == want[0], f"{op}: container {got} vs model {want}"
-        if got[0] == "ok" and op.compare == "exact":
-            assert same_result(got[1], want[1]), f"{op}: returned {got[1]!r}, model returned {want[1]!r}"
+        assert got.verdict is want.verdict, f"{op}: container {got} vs model {want}"
+        if got.verdict is Verdict.returned:
+            assert same_result(got.value, want.value), f"{op}: returned {got.value!r}, model returned {want.value!r}"
+        else:
+            assert got.value is want.value, f"{op}: raised {got.value.__name__}, model raised {want.value.__name__}"
 
     assert_same_state(container, model)
 
@@ -396,54 +419,46 @@ def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: 
     """A weighted walk over the mapping surface, biased toward mutation and toward key reuse.
 
     `ordering` is what `ordering_of` reports: only an ordered store carries `popmin`, so an
-    unordered one spends that roll on a read instead of dropping the op and shortening the walk.
+    unordered one spends that share on a read instead of dropping the op and shortening the walk.
     """
-    ops: list[Op] = []
-    for _ in range(count):
-        key = rng.choice(keys)
-        roll = rng.random()
-        if roll < 0.30:
-            ops.append(Op("setitem", (key, rng.choice(values))))
-        elif roll < 0.42:
-            ops.append(Op("delitem", (key,)))
-        elif roll < 0.52:
-            ops.append(Op("pop", (key, rng.choice(values))))
-        elif roll < 0.60:
-            ops.append(Op("setdefault", (key, rng.choice(values))))
-        elif roll < 0.66:
-            ops.append(Op("popmin", (), compare="member") if ordering == "ordered" else Op("contains", (key,)))
-        elif roll < 0.70:
-            ops.append(Op("update", ({other: rng.choice(values) for other in rng.sample(list(keys), 3)},)))
-        elif roll < 0.72:
-            ops.append(Op("clear", ()))
-        elif roll < 0.86:
-            ops.append(Op("getitem", (key,)))
-        else:
-            ops.append(Op("get", (key, rng.choice(values))))
-    return ops
+    popmin_or_contains = (
+        (lambda key: Op("popmin", (), compare=Compare.any_member))
+        if ordering == "ordered"
+        else (lambda key: Op("contains", (key,)))
+    )
+    weighted = (
+        (30, lambda key: Op("setitem", (key, rng.choice(values)))),
+        (12, lambda key: Op("delitem", (key,))),
+        (10, lambda key: Op("pop", (key, rng.choice(values)))),
+        (8, lambda key: Op("setdefault", (key, rng.choice(values)))),
+        (6, popmin_or_contains),
+        (4, lambda key: Op("update", ({other: rng.choice(values) for other in rng.sample(keys, 3)},))),
+        (2, lambda key: Op("clear", ())),
+        (14, lambda key: Op("getitem", (key,))),
+        (14, lambda key: Op("get", (key, rng.choice(values)))),
+    )
+    weights, factories = zip(*weighted)
+    return [rng.choices(factories, weights)[0](rng.choice(keys)) for _ in range(count)]
 
 
 def random_set_ops(rng: random.Random, members: Sequence, count: int, *, ordering: str) -> list[Op]:
     """The same walk over the set surface, with the same `ordering` rule for `popmin`."""
-    ops: list[Op] = []
-    for _ in range(count):
-        member = rng.choice(members)
-        roll = rng.random()
-        if roll < 0.40:
-            ops.append(Op("add", (member,)))
-        elif roll < 0.55:
-            ops.append(Op("discard", (member,)))
-        elif roll < 0.62:
-            ops.append(Op("remove", (member,)))
-        elif roll < 0.68:
-            ops.append(Op("popmin", (), compare="member") if ordering == "ordered" else Op("contains", (member,)))
-        elif roll < 0.72:
-            ops.append(Op("update", (rng.sample(list(members), 3),)))
-        elif roll < 0.74:
-            ops.append(Op("clear", ()))
-        else:
-            ops.append(Op("contains", (member,)))
-    return ops
+    popmin_or_contains = (
+        (lambda member: Op("popmin", (), compare=Compare.any_member))
+        if ordering == "ordered"
+        else (lambda member: Op("contains", (member,)))
+    )
+    weighted = (
+        (40, lambda member: Op("add", (member,))),
+        (15, lambda member: Op("discard", (member,))),
+        (7, lambda member: Op("remove", (member,))),
+        (6, popmin_or_contains),
+        (4, lambda member: Op("update", (rng.sample(members, 3),))),
+        (2, lambda member: Op("clear", ())),
+        (26, lambda member: Op("contains", (member,))),
+    )
+    weights, factories = zip(*weighted)
+    return [rng.choices(factories, weights)[0](rng.choice(members)) for _ in range(count)]
 
 
 def replay(container, model, ops: Iterable[Op]) -> None:

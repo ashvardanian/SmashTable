@@ -12,7 +12,7 @@ import pytest
 
 import smashtable as st
 
-from .base import group_sizes, key_types, make, map_class_names, sorted_class_names, transaction_styles
+from .base import group_sizes, key_types, make, map_class_names, transaction_styles
 
 
 class _Abort(Exception):
@@ -57,11 +57,10 @@ def test_a_view_reads_its_own_writes(container, keygen):
 def test_a_raise_discards_everything(container, keygen):
     """A block that raises applies nothing, and the exception propagates unchanged."""
     keys = keygen(20)
-    with pytest.raises(_Abort):
-        with st.transaction(container) as (view,):
-            for key in keys:
-                view[key] = "doomed"
-            raise _Abort
+    with pytest.raises(_Abort), st.transaction(container) as (view,):
+        for key in keys:
+            view[key] = "doomed"
+        raise _Abort
     assert len(container) == 0
 
 
@@ -176,14 +175,8 @@ def test_a_closed_block_refuses_more_work(container, keygen):
 def test_a_committed_group_is_open_again(container, keygen):
     """A commit returns the group to where it started, so the handle takes a second round.
 
-    The `with` block closing is a fact about the Python handle; a commit landing is a fact about the
-    engine, which returns every participant to pending and clears its change set. The two are
-    separate, so a handle that never entered a block is still usable once its commit lands.
-
-    A reused round reads at the snapshot its own commit published, not at a fresh one - so a caller
-    who wants the world as it stands calls `reset` first, which is what `test_a_committed_group_
-    resets_and_runs_again` covers. That is the engine's behaviour too, and it is why the two shapes
-    are two tests.
+    The reused round reads at the snapshot its own commit published rather than a fresh one, so a
+    caller who wants the world as it stands calls `reset` first.
     """
     keys = keygen(2)
     group = st.transaction(container)
@@ -220,9 +213,8 @@ def test_a_closed_handle_cannot_be_reset(key_type, keygen):
 def test_a_committed_group_resets_and_runs_again(key_type, keygen):
     """`reset` after a commit is accepted here as it is in C++, and the next round lands.
 
-    The engine's own `reset` carries no state guard at all - it is the one call valid from anywhere,
-    and it is the documented way out of a torn commit. A `reset` also takes each participant a fresh
-    snapshot, which is what separates this shape from reusing a committed group directly.
+    A `reset` takes each participant a fresh snapshot, which is what separates this shape from
+    reusing a committed group directly.
     """
     container = make(st.SortedMap, key_type)
     keys = keygen(2)
@@ -316,11 +308,10 @@ def test_a_raise_leaves_neither_container_touched(container_class, key_type, key
     first = make(container_class, key_type)
     second = make(container_class, key_type)
     key = keygen(1)[0]
-    with pytest.raises(_Abort):
-        with st.transaction(first, second) as (left, right):
-            left[key] = "a"
-            right[key] = "b"
-            raise _Abort
+    with pytest.raises(_Abort), st.transaction(first, second) as (left, right):
+        left[key] = "a"
+        right[key] = "b"
+        raise _Abort
     assert len(first) == 0 and len(second) == 0
 
 
@@ -374,9 +365,8 @@ def test_atomic_rejects_a_foreign_object(container):
         st.transaction(container, {})
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_a_group_may_mix_maps_and_sets(container_class, key_type, keygen):
+def test_a_group_may_mix_maps_and_sets(key_type, keygen):
     """A map and a set commit together, which the single-class binding could not express."""
     mapping = make(st.SortedMap, key_type)
     members = make(st.SortedSet, key_type)
@@ -393,9 +383,8 @@ def test_a_set_participant_refuses_a_value(key_type, keygen):
     """Assigning a value to a set participant is a TypeError pointing at add()."""
     members = make(st.SortedSet, key_type)
     key = keygen(1)[0]
-    with pytest.raises(TypeError):
-        with st.transaction(members) as (view,):
-            view[key] = "value"
+    with pytest.raises(TypeError), st.transaction(members) as (view,):
+        view[key] = "value"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -403,14 +392,12 @@ def test_a_set_participant_refuses_a_value(key_type, keygen):
 def test_a_map_participant_refuses_add(container, keygen):
     """Calling add on a map participant is a TypeError pointing at assignment."""
     key = keygen(1)[0]
-    with pytest.raises(TypeError):
-        with st.transaction(container) as (view,):
-            view.add(key)
+    with pytest.raises(TypeError), st.transaction(container) as (view,):
+        view.add(key)
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_containers_may_use_different_key_types(container_class, key_type, keygen):
+def test_containers_may_use_different_key_types(container_class):
     """A group does not require its participants to agree on a key layout."""
     by_number = make(container_class, "int")
     by_name = make(container_class, "str")

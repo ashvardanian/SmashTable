@@ -8,7 +8,6 @@ Run:
     python -m pytest test/conflicts.py -v
 """
 
-import concurrent.futures
 import threading
 
 import pytest
@@ -153,25 +152,21 @@ def test_the_retry_loop_converges(container, keygen):
     """The documented retry pattern terminates and lands the intended value."""
     key = keygen(1)[0]
     container[key] = 100
-    interference = [True]
     attempts = 0
-    while True:
+    while attempts < 10:
         attempts += 1
         try:
             group = st.transaction(container)
             (view,) = group.begin()
             view.watch(key)
             view[key] = container[key] - 10
-            if interference[0]:
-                container[key] = 500
-                interference[0] = False
+            if attempts == 1:
+                container[key] = 500  # An outsider trips the watch on the first attempt only
             group.stage()
             group.commit()
             break
         except st.ConflictError:
             continue
-        if attempts > 10:
-            pytest.fail("retry loop failed to converge")
     assert container[key] == 490
     assert attempts == 2
 
@@ -199,7 +194,7 @@ def test_a_refused_stage_applied_nothing(isolation, sharing):
     with pytest.raises(st.ConflictError):
         group.stage()
 
-    assert 12345 not in {container[key] for key in keys}, "a refused transaction published its writes"
+    assert all(container[key] != 12345 for key in keys), "a refused transaction published its writes"
 
 
 @pytest.mark.parametrize("key_type", key_types)
@@ -238,56 +233,78 @@ def test_a_refused_stage_keeps_the_pending_writes(key_type, keygen):
     assert keys[1] not in staged_first, "a refused stage must publish nothing"
 
 
-@pytest.mark.slow
 @pytest.mark.thread_unsafe(reason="it runs its own threads and asserts on their interleaving")
+@pytest.mark.slow
 @pytest.mark.parametrize("sharing", ["locked", "partitioned"])
-def test_a_refused_commit_applied_nothing(sharing):
-    """The same contract for a refusal that arrives at `commit` rather than at `stage`.
+def test_a_refused_commit_applied_nothing(sharing, drive_threads):
+    """No refused writer publishes anything, under writers that all rewrite every shared key.
 
-    Snapshot only: it is the level that validates writes as well as watches, so it is the only one
-    where a transaction can pass `stage` and still be refused.
-
-    Whether a refusal happens at all depends on how the threads interleave, so the scenario is
-    retried until one does. A run where nothing was refused has not exercised the path and is
-    reported as a skip - neither a pass, which would claim evidence it does not have, nor a
-    failure, which would blame the machine for being quiet.
+    Snapshot only: it is the weakest level that validates the write set and not just the watches,
+    so an unwatched rewrite is refused here and accepted below. How many refusals a run draws is the
+    scheduler's to decide - pinned to one core the writers serialize and a legitimate run refuses
+    nobody - so the count is not asserted here. That a refusal happens at all, and publishes
+    nothing when it does, is pinned by `test_a_commit_refused_after_staging_applied_nothing`
+    against a fixed schedule.
 
     Regression: a sharded snapshot commit once published its partitions and then reported a
     conflict, so the retry applied the transaction a second time.
     """
     keys = list(range(64))
-    for _ in range(8):
-        container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
-        for key in keys:
-            container[key] = -1
+    writers, rounds = 3, 30
+    container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
+    for key in keys:
+        container[key] = -1
 
-        ghosts: list[int] = []
-        refusals = [0]
-        guard = threading.Lock()
+    ghosts: list[int] = []
+    guard = threading.Lock()
 
-        def writer(index: int) -> None:
-            attempt = 0
-            for _ in range(30):
-                while True:
-                    attempt += 1
-                    marker = index * 1_000_000 + attempt
-                    try:
-                        with st.transaction(container) as (view,):
-                            for key in keys:
-                                view[key] = marker
-                        break
-                    except st.ConflictError:
-                        with guard:
-                            refusals[0] += 1
-                            if any(container[key] == marker for key in keys):
-                                ghosts.append(marker)
+    def writer(index: int) -> None:
+        attempt, landed = 0, 0
+        while landed < rounds:
+            attempt += 1
+            marker = index * 1_000_000 + attempt
+            try:
+                with st.transaction(container) as (view,):
+                    for key in keys:
+                        view[key] = marker
+                landed += 1
+            except st.ConflictError:
+                with guard:
+                    if any(container[key] == marker for key in keys):
+                        ghosts.append(marker)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as pool:
-            for future in [pool.submit(writer, index) for index in range(3)]:
-                future.result(timeout=120)
+    drive_threads(writer, writers, timeout=120)
 
-        assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
-        if refusals[0]:
-            return
+    assert not ghosts, f"{len(ghosts)} refused transactions published their writes: {ghosts[:5]}"
 
-    pytest.skip("no commit was refused across 8 attempts, so this run did not reach the path")
+
+@pytest.mark.parametrize("sharing", ["locked", "partitioned"])
+def test_a_commit_refused_after_staging_applied_nothing(sharing):
+    """A write landing between `stage` and `commit` refuses the commit and leaves it unpublished.
+
+    The window the two-phase commit opens is what makes this a schedule rather than a race: the
+    stage succeeds because nothing has moved yet, and the outside write lands before the commit
+    reads the store again. Both halves of the threaded sibling's contract - that a refusal comes,
+    and that it publishes nothing - hold here without a thread.
+
+    The outsider takes the *last* key on purpose. Keys map to partitions in order, so a regression
+    that published each partition before validating the next would refuse on partition 0 having
+    published nothing, and a conflict on the first key could not tell the two apart.
+    """
+    keys = list(range(8))
+    container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
+    for key in keys:
+        container[key] = -1
+
+    group = st.transaction(container)
+    (view,) = group.begin()
+    for key in keys:
+        view[key] = 50
+    group.stage()
+
+    container[keys[-1]] = 999
+    with pytest.raises(st.WriteConflictError):
+        group.commit()
+
+    assert container[keys[-1]] == 999, "the outside write is the one that stands"
+    assert all(container[key] == -1 for key in keys[:-1]), "a refused commit published part of itself"

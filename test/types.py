@@ -22,6 +22,7 @@ from .base import (
     key_types,
     make,
     map_class_names,
+    same_scalar,
     value_modes,
     value_types,
     wrong_type_key,
@@ -31,56 +32,35 @@ from .base import (
 
 
 @pytest.mark.parametrize(
-    ("bad_key", "failure"),
+    "bad_key",
     [
-        pytest.param(1.0, TypeError, id="float-integral"),
-        pytest.param(1.5, TypeError, id="float-fractional"),
-        pytest.param(True, TypeError, id="bool-true"),
-        pytest.param(False, TypeError, id="bool-false"),
-        pytest.param(None, TypeError, id="none"),
-        pytest.param((1, 2), TypeError, id="tuple"),
-        pytest.param([1], TypeError, id="list"),
-        pytest.param(complex(1), TypeError, id="complex"),
+        pytest.param(1.0, id="float-integral"),
+        pytest.param(1.5, id="float-fractional"),
+        pytest.param(True, id="bool-true"),
+        pytest.param(False, id="bool-false"),
+        pytest.param(None, id="none"),
+        pytest.param((1, 2), id="tuple"),
+        pytest.param([1], id="list"),
+        pytest.param(complex(1), id="complex"),
     ],
 )
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_key_type_is_enforced(container, bad_key, failure):
-    """Only int, unsigned, str and bytes are keys, whatever the value happens to be."""
-    with pytest.raises(failure):
+def test_key_type_is_enforced(container, bad_key):
+    """Only int, unsigned, str and bytes are keys, and a refused one is not stored.
+
+    `isinstance(True, int)` is the trap: a bool must not slip through as 1, and 1.0 names no key
+    a container could be reached through.
+    """
+    with pytest.raises(TypeError):
         container[bad_key] = 1
-
-
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_bool_is_not_an_integer_key(container):
-    """`isinstance(True, int)` is the trap: a bool must not slip through as 1."""
-    with pytest.raises(TypeError):
-        container[True] = "yes"
     assert len(container) == 0
-
-
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_float_is_not_a_key_even_when_integral(container):
-    """1.0 names no key, so a container cannot be reached through one."""
-    with pytest.raises(TypeError):
-        container[1.0] = "one"
-    assert len(container) == 0
-
-
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_a_foreign_key_type_is_rejected(container, key_type):
-    """A key of another layout is refused rather than coerced."""
-    with pytest.raises(TypeError):
-        container[wrong_type_key(key_type)] = 1
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 def test_a_rejected_key_leaves_the_container_untouched(container, keygen, key_type):
-    """A refused write does not grow the container."""
+    """A key of another layout is refused rather than coerced, and does not grow the container."""
     container[keygen(1)[0]] = 1
     with pytest.raises(TypeError):
         container[wrong_type_key(key_type)] = 2
@@ -97,15 +77,16 @@ def test_contains_answers_false_for_a_foreign_key(container, key_type):
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_str_and_bytes_containers_are_separate_universes(container_class, key_type):
-    """One container can no longer hold both 'k' and b'k', so they live in two."""
+def test_str_and_bytes_containers_are_separate_universes(container_class):
+    """A container holds keys of one layout, so 'k' and b'k' live in two of them."""
     text_map = make(container_class, "str")
     bytes_map = make(container_class, "bytes")
     text_map["k"] = "text"
     bytes_map[b"k"] = b"bytes"
-    assert "k" in text_map and b"k" not in bytes_map or True
-    assert b"k" in bytes_map
+    assert "k" in text_map, "the text container lost its own key"
+    assert b"k" in bytes_map, "the bytes container lost its own key"
+    assert b"k" not in text_map, "a bytes key reached the text container"
+    assert "k" not in bytes_map, "a text key reached the bytes container"
     with pytest.raises(TypeError):
         text_map[b"k"] = "no"
     with pytest.raises(TypeError):
@@ -241,6 +222,7 @@ def test_bool_value_stays_bool(container):
     [
         pytest.param(float("inf"), id="inf"),
         pytest.param(float("-inf"), id="-inf"),
+        pytest.param(float("nan"), id="nan"),
         pytest.param(-0.0, id="negative-zero"),
         pytest.param(sys.float_info.max, id="float-max"),
         pytest.param(sys.float_info.min, id="float-min"),
@@ -249,33 +231,26 @@ def test_bool_value_stays_bool(container):
     ],
 )
 def test_numeric_value_edges_round_trip(container, value):
-    """Infinities, a signed zero and the widest integers survive as values."""
+    """Infinities, a NaN, a signed zero and the widest integers survive as values.
+
+    Compared through the oracle: `==` alone calls a correct NaN round trip a failure, and a zero
+    that lost its sign a success.
+    """
     container[1] = value
-    got = container[1]
-    assert type(got) is type(value)
-    assert got == value
+    assert same_scalar(container[1], value)
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_nan_value_round_trips(container):
-    """A NaN comes back a NaN, which equality alone cannot express."""
-    import math
-
-    container[1] = float("nan")
-    assert math.isnan(container[1])
-
-
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize(
     "value",
     [pytest.param(object(), id="object"), pytest.param([], id="list"), pytest.param({}, id="dict")],
 )
-def test_unsupported_value_type_raises(container, value):
-    """A value outside the six scalar kinds is refused."""
+def test_unsupported_value_type_raises(container, keygen, value):
+    """A value outside the six scalar kinds is refused, and a refused write does not store the key."""
     with pytest.raises(TypeError):
-        container[1] = value
+        container[keygen(1)[0]] = value
+    assert len(container) == 0
     assert len(container) == 0
 
 
@@ -284,22 +259,23 @@ def test_unsupported_value_type_raises(container, value):
 # region Exception hierarchy
 
 
-def test_conflict_error_is_a_runtime_error():
-    """ConflictError is catchable as RuntimeError, so a retry loop need not import it."""
-    assert issubclass(st.ConflictError, RuntimeError)
-    assert issubclass(st.ConflictError, st.SmashTableError)
+@pytest.mark.parametrize(
+    ("error", "stdlib_base"),
+    [
+        pytest.param(st.ConflictError, RuntimeError, id="conflict"),
+        pytest.param(st.DuplicateKeyError, KeyError, id="duplicate-key"),
+        pytest.param(st.StateError, RuntimeError, id="state"),
+    ],
+)
+def test_every_error_is_catchable_as_a_stdlib_one(error, stdlib_base):
+    """Each error sits under the package root and under a stdlib base a retry loop already catches."""
+    assert issubclass(error, stdlib_base)
+    assert issubclass(error, st.SmashTableError)
 
 
-def test_duplicate_key_error_is_a_key_error():
-    """DuplicateKeyError is catchable as KeyError."""
-    assert issubclass(st.DuplicateKeyError, KeyError)
-    assert issubclass(st.DuplicateKeyError, st.SmashTableError)
+# endregion Exception hierarchy
 
-
-def test_state_error_is_an_error():
-    """StateError sits under the package root like the rest."""
-    assert issubclass(st.StateError, st.SmashTableError)
-    assert issubclass(st.StateError, RuntimeError)
+# region Module surface
 
 
 @pytest.mark.parametrize("class_name", all_class_names)
@@ -313,18 +289,9 @@ def test_the_module_reports_a_version():
     assert st.__version__.count(".") == 2
 
 
+# endregion Module surface
+
 # region Object values
-
-
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_a_scalar_container_refuses_an_object(container, keygen):
-    """The default mode admits only scalars, which is what lets it release the GIL."""
-    key = keygen(1)[0]
-    for rejected in ({"nested": 1}, [1, 2], object()):
-        with pytest.raises(TypeError):
-            container[key] = rejected
-    assert len(container) == 0
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -405,15 +372,8 @@ def test_clear_releases_every_stored_object(container_class, key_type, keygen):
 def test_a_cycle_through_a_container_is_collectable(container_class, key_type, keygen):
     """An object holding the container that holds it must not leak.
 
-    Asserts the collection rather than merely surviving it. The container reports what it holds
-    through `tp_traverse`, so the collector can see the cycle, and drops it through `tp_clear`, so
-    it can break it; without either the pair is reachable forever and this reads as a slow leak.
-
-    A weak reference to a witness inside each cycle, rather than a census of `gc.get_objects()`:
-    that count is process-global, so anything the interpreter allocates between the two readings
-    lands in the difference. It drifts even negative on a second pass, which no leak can do, and it
-    names no culprit when it trips. The witness stands in for the container, which is not weakly
-    referenceable, and dies exactly when the cycle holding it is collected.
+    The witness stands in for the container, which is not weakly referenceable, and dies exactly
+    when the cycle holding it is collected.
     """
 
     class Witness:

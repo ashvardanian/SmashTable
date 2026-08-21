@@ -19,6 +19,9 @@ from .base import (
     enumerable_class_names,
     enumerable_map_names,
     enumerable_set_names,
+    hash_map_names,
+    hash_set_names,
+    is_map_class,
     key_types,
     map_class_names,
     populate,
@@ -27,6 +30,30 @@ from .base import (
     sorted_map_names,
     value_types,
 )
+
+# Every algebra and comparison method has a second implementation, taken when the right-hand side
+# is a container of this one's exact type: the keys stay stored scalars and never become Python
+# objects. Sweeping both sides through one test is what holds the two paths to one set of answers.
+counterpart_kinds = [pytest.param("stdlib", id="vs-stdlib"), pytest.param("twin", id="vs-twin")]
+
+
+@pytest.fixture
+def counterpart(container_class, key_type, value_mode, isolation, sharing, counterpart_kind):
+    """Builds the right-hand side of a comparison, holding the given keys and values.
+
+    Either the stdlib baseline or a container of this fixture's exact configuration, which is the
+    argument type a `set` or `dict` can never stand in for.
+    """
+
+    def build(keys, values):
+        if counterpart_kind == "stdlib":
+            return dict(zip(keys, values)) if is_map_class(container_class) else set(keys)
+        other = make(container_class, key_type, value_mode, isolation, sharing)
+        populate(other, keys, values)
+        return other
+
+    return build
+
 
 # region Construction
 
@@ -102,18 +129,10 @@ def test_overwrite_replaces_without_growing(container, keygen, valuegen):
 
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize(
-    "op",
-    [
-        pytest.param(Op("getitem", ()), id="getitem"),
-        pytest.param(Op("delitem", ()), id="delitem"),
-        pytest.param(Op("pop", ()), id="pop"),
-    ],
-)
-def test_missing_key_raises_like_dict(container, keygen, op):
+@pytest.mark.parametrize("name", ["getitem", "delitem", "pop"])
+def test_missing_key_raises_like_dict(container, keygen, name):
     """A lookup, delete or pop of an absent key raises exactly as a dict would."""
-    key = keygen(1)[0]
-    apply_op(container, {}, Op(op.name, (key,)))
+    apply_op(container, {}, Op(name, (keygen(1)[0],)))
 
 
 @pytest.mark.iterations(1)
@@ -164,9 +183,7 @@ def test_update_from_mapping_and_pairs(container, keygen, valuegen):
     values = valuegen(4)
     model = {}
     apply_op(container, model, Op("update", (dict(zip(keys[:2], values[:2])),)))
-    container.update(list(zip(keys[2:], values[2:])))
-    model.update(dict(zip(keys[2:], values[2:])))
-    assert_same_state(container, model)
+    apply_op(container, model, Op("update", (list(zip(keys[2:], values[2:])),)))
 
 
 @pytest.mark.thread_unsafe(
@@ -256,42 +273,44 @@ def test_a_set_refuses_item_assignment(container, keygen):
 
 @pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("counterpart_kind", counterpart_kinds)
 @pytest.mark.parametrize(
     "operation",
     ["union", "intersection", "difference", "symmetric_difference"],
 )
-def test_set_algebra_matches_set(container, keygen, operation):
+def test_set_algebra_matches_set(container, keygen, counterpart, operation):
     """Every algebra method agrees with the stdlib set on the same inputs."""
     keys = keygen(6)
     mine, theirs = keys[:4], keys[2:]
     model = populate(container, mine, mine)
-    other = set(theirs)
-    got = getattr(container, operation)(other)
-    want = getattr(model, operation)(other)
+    got = getattr(container, operation)(counterpart(theirs, theirs))
+    want = getattr(model, operation)(set(theirs))
     assert sorted(map(repr, got)) == sorted(map(repr, want))
 
 
 @pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_isdisjoint_matches_set(container, keygen):
+@pytest.mark.parametrize("counterpart_kind", counterpart_kinds)
+def test_isdisjoint_matches_set(container, keygen, counterpart):
     """isdisjoint agrees with the stdlib set, both when it holds and when it does not."""
     keys = keygen(4)
     model = populate(container, keys[:2], keys[:2])
-    assert container.isdisjoint(set(keys[2:])) == model.isdisjoint(set(keys[2:]))
-    assert container.isdisjoint(set(keys[:1])) == model.isdisjoint(set(keys[:1]))
+    assert container.isdisjoint(counterpart(keys[2:], keys[2:])) == model.isdisjoint(set(keys[2:]))
+    assert container.isdisjoint(counterpart(keys[:1], keys[:1])) == model.isdisjoint(set(keys[:1]))
 
 
 @pytest.mark.parametrize("class_name", enumerable_set_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_subset_and_superset_match_set(container, keygen):
+@pytest.mark.parametrize("counterpart_kind", counterpart_kinds)
+def test_subset_and_superset_match_set(container, keygen, counterpart):
     """The four ordering comparisons agree with the stdlib set."""
     keys = keygen(4)
     model = populate(container, keys[:2], keys[:2])
-    bigger = set(keys)
-    assert (container <= bigger) == (model <= bigger)
-    assert (container < bigger) == (model < bigger)
-    assert (container >= bigger) == (model >= bigger)
-    assert (container > bigger) == (model > bigger)
+    bigger = counterpart(keys, keys)
+    assert (container <= bigger) == (model <= set(keys))
+    assert (container < bigger) == (model < set(keys))
+    assert (container >= bigger) == (model >= set(keys))
+    assert (container > bigger) == (model > set(keys))
 
 
 # endregion Set protocol
@@ -308,18 +327,60 @@ def test_repr_names_the_class_and_the_layout(populated):
     container, _ = populated
     rendered = repr(container)
     assert rendered.startswith(type(container).__name__)
-    assert container.key_type in rendered
+    assert f"key={container.key_type!r}" in rendered, f"repr reads {rendered}"
 
 
-@pytest.mark.parametrize("class_name", all_class_names)
+# How many elements `repr` spells out before it elides, matching `repr_limit_k` in
+# python/container.cpp. The three tests below sit at that boundary, above it, and far above it.
+repr_limit = 64
+
+
+def rendered_elements(container) -> list[str]:
+    """The comma-separated chunks `repr` put between its braces, the elision tail included."""
+    rendered = repr(container)
+    return rendered[rendered.index("{") + 1 : rendered.rindex("}")].split(", ")
+
+
+@pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
-@pytest.mark.parametrize("size", [pytest.param(64, id="n64")])
-def test_repr_of_a_large_container_is_bounded(populated):
-    """A large container still reprs, eliding rather than rendering everything."""
+@pytest.mark.parametrize("size", [pytest.param(repr_limit, id="at-the-limit")])
+def test_repr_at_the_limit_spells_everything_out(populated, size):
+    """The limit itself renders whole, which is the boundary the elision sits beside."""
     container, model = populated
-    assert len(repr(container)) < 100_000
-    assert len(model) == 64
+    assert len(container) == size, f"len {len(container)} vs {size}"
+    assert len(model) == size, f"model {len(model)} vs {size}"
+    spelled = rendered_elements(container)
+    assert len(spelled) == size, f"repr spelled {len(spelled)} elements, wanted {size}"
+    assert "more" not in repr(container), "a container at the limit elided"
+
+
+@pytest.mark.parametrize("class_name", enumerable_class_names)
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
+@pytest.mark.parametrize(
+    "size",
+    [pytest.param(repr_limit + 1, id="one-over"), pytest.param(repr_limit * 4, id="far-over")],
+)
+def test_repr_past_the_limit_elides_and_counts_the_rest(populated, size):
+    """Past the limit, repr spells out exactly `repr_limit` elements and names how many it dropped."""
+    container, model = populated
+    assert len(container) == size, f"len {len(container)} vs {size}"
+    assert len(model) == size, f"model {len(model)} vs {size}"
+    spelled = rendered_elements(container)
+    assert spelled[-1] == f"... +{size - repr_limit} more", f"tail reads {spelled[-1]!r}"
+    assert len(spelled) == repr_limit + 1, f"repr spelled {len(spelled) - 1} elements, wanted {repr_limit}"
+
+
+@pytest.mark.parametrize("class_name", hash_map_names + hash_set_names)
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
+@pytest.mark.parametrize("size", [pytest.param(repr_limit * 4, id="far-over")])
+def test_an_unordered_container_reprs_its_shape(populated, size):
+    """A container that cannot walk itself reports how much it holds rather than what."""
+    container, _ = populated
+    wanted = f"{type(container).__name__}(key={container.key_type!r}, {size} entries)"
+    assert repr(container) == wanted, f"{repr(container)} vs {wanted}"
 
 
 @pytest.mark.parametrize("class_name", enumerable_class_names)
@@ -327,7 +388,7 @@ def test_repr_of_a_large_container_is_bounded(populated):
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 @pytest.mark.parametrize("size", [pytest.param(7, id="n7")])
 def test_equality_against_the_stdlib_model(populated):
-    """A container equals the stdlib model holding the same elements, and differs once it does not."""
+    """A container equals the stdlib model holding the same elements, and `!=` is its negation."""
     container, model = populated
     assert container == model
     assert not (container != model)
@@ -344,13 +405,47 @@ def test_comparison_with_a_foreign_type_is_false(populated):
     assert not (container == object())
 
 
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("counterpart_kind", counterpart_kinds)
+def test_equality_answers_on_members(container, keygen, counterpart):
+    """A set equals whatever holds its members, and one member short settles it."""
+    keys = keygen(3)
+    populate(container, keys, keys)
+    other = counterpart(keys, keys)
+    assert container == other
+
+    other.discard(keys[0])
+    assert container != other
+
+
 @pytest.mark.parametrize("class_name", enumerable_map_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_equality_follows_python_numeric_rules_for_values(container, keygen):
-    """`{k: 1} == {k: 1.0}` holds for a container exactly as it does for a dict."""
+@pytest.mark.parametrize("counterpart_kind", counterpart_kinds)
+def test_equality_compares_values(container, keygen, counterpart):
+    """A map equals whatever holds its pairs, and one differing value settles it."""
+    keys = keygen(3)
+    values = [1, 2, 3]
+    populate(container, keys, values)
+    other = counterpart(keys, values)
+    assert container == other
+
+    other[keys[0]] = 99
+    assert container != other
+
+
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", key_types)
+@pytest.mark.parametrize("counterpart_kind", counterpart_kinds)
+def test_equality_follows_python_numeric_rules_for_values(container, keygen, counterpart):
+    """`{k: 1} == {k: 1.0}` holds against a dict and against a container alike.
+
+    Values are compared by Python's rules rather than by how they are stored, so an integer and the
+    float equal to it agree; a comparison written against the stored representation would not.
+    """
     key = keygen(1)[0]
     container[key] = 1
-    assert container == {key: 1.0}
+    assert container == counterpart([key], [1.0])
 
 
 @pytest.mark.parametrize("class_name", enumerable_class_names)
@@ -371,11 +466,12 @@ def test_containers_are_unhashable(container):
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
 @pytest.mark.parametrize("size", [pytest.param(0, id="n0"), pytest.param(5, id="n5")])
 def test_views_agree_with_each_other(populated):
-    """keys, values and items describe one container consistently."""
+    """keys, values and items describe one container, and describe the model it was built from."""
     container, model = populated
-    assert list(container.keys()) == list(container)
-    assert list(container.items()) == list(zip(container.keys(), container.values()))
-    assert len(container.keys()) == len(model)
+    assert_same_state(container, model)
+    assert len(container.keys()) == len(model), f"keys len {len(container.keys())} vs {len(model)}"
+    assert len(container.values()) == len(model), f"values len {len(container.values())} vs {len(model)}"
+    assert len(container.items()) == len(model), f"items len {len(container.items())} vs {len(model)}"
 
 
 @pytest.mark.parametrize("class_name", enumerable_map_names)
@@ -496,10 +592,10 @@ def test_map_update_applies_as_one_unit(container, keygen):
     container[keys[0]] = "kept"
     with pytest.raises(TypeError):
         container.update([(keys[1], "a"), (keys[2], "b"), (object(), "never")])
-    assert dict(container) == {keys[0]: "kept"} if hasattr(container, "keys") else len(container) == 1
+    assert_same_state(container, {keys[0]: "kept"})
 
     container.update([(keys[1], "a"), (keys[2], "b")])
-    assert len(container) == 3
+    assert_same_state(container, {keys[0]: "kept", keys[1]: "a", keys[2]: "b"})
 
 
 @pytest.mark.iterations(1)
@@ -514,124 +610,10 @@ def test_set_update_applies_as_one_unit(container, keygen):
     container.add(keys[0])
     with pytest.raises(TypeError):
         container.update([keys[1], keys[2], object()])
-    assert len(container) == 1, "a refused batch added members"
+    assert_same_state(container, {keys[0]})
 
     container.update([keys[1], keys[2]])
-    assert len(container) == 3
+    assert_same_state(container, set(keys))
 
 
 # endregion Batched writes
-
-
-# region Two containers of one layout
-
-# Every algebra and comparison method has a second implementation, taken when the other side is a
-# container of this one's exact type: the keys stay stored scalars and never become Python objects.
-# The stdlib-baseline tests above never reach it, because a `set` or `dict` argument fails the type
-# check that selects it. These sweep the same properties through that path.
-
-
-@pytest.mark.parametrize("class_name", enumerable_set_names)
-@pytest.mark.parametrize("key_type", key_types)
-@pytest.mark.parametrize("operation", ["union", "intersection", "difference", "symmetric_difference"])
-def test_set_algebra_over_a_twin_matches_set(
-    container, container_class, key_type, value_mode, isolation, sharing, keygen, operation
-):
-    """Every algebra method agrees with the stdlib set when the argument is a container, not a set."""
-    keys = keygen(6)
-    mine, theirs = keys[:4], keys[2:]
-    model = populate(container, mine, mine)
-    twin = make(container_class, key_type, value_mode, isolation, sharing)
-    populate(twin, theirs, theirs)
-
-    got = getattr(container, operation)(twin)
-    want = getattr(model, operation)(set(theirs))
-    assert sorted(map(repr, got)) == sorted(map(repr, want))
-
-
-@pytest.mark.parametrize("class_name", enumerable_set_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_isdisjoint_over_a_twin_matches_set(
-    container, container_class, key_type, value_mode, isolation, sharing, keygen
-):
-    """isdisjoint agrees with the stdlib set against a container argument, holding and not."""
-    keys = keygen(4)
-    model = populate(container, keys[:2], keys[:2])
-
-    apart = make(container_class, key_type, value_mode, isolation, sharing)
-    populate(apart, keys[2:], keys[2:])
-    assert container.isdisjoint(apart) == model.isdisjoint(set(keys[2:]))
-
-    overlapping = make(container_class, key_type, value_mode, isolation, sharing)
-    populate(overlapping, keys[:1], keys[:1])
-    assert container.isdisjoint(overlapping) == model.isdisjoint(set(keys[:1]))
-
-
-@pytest.mark.parametrize("class_name", enumerable_set_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_subset_and_superset_over_a_twin_match_set(
-    container, container_class, key_type, value_mode, isolation, sharing, keygen
-):
-    """The four ordering comparisons agree with the stdlib set against a container argument."""
-    keys = keygen(4)
-    model = populate(container, keys[:2], keys[:2])
-    bigger = make(container_class, key_type, value_mode, isolation, sharing)
-    populate(bigger, keys, keys)
-
-    assert (container <= bigger) == (model <= set(keys))
-    assert (container < bigger) == (model < set(keys))
-    assert (container >= bigger) == (model >= set(keys))
-    assert (container > bigger) == (model > set(keys))
-
-
-@pytest.mark.parametrize("class_name", enumerable_set_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_a_twin_holding_the_same_members_is_equal(
-    container, container_class, key_type, value_mode, isolation, sharing, keygen
-):
-    """Equality against a container argument answers on members, not on identity."""
-    keys = keygen(3)
-    populate(container, keys, keys)
-    twin = make(container_class, key_type, value_mode, isolation, sharing)
-    populate(twin, keys, keys)
-    assert container == twin
-
-    twin.discard(keys[0])
-    assert container != twin
-
-
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_a_twin_holding_the_same_pairs_is_equal(
-    container, container_class, key_type, value_mode, isolation, sharing, keygen
-):
-    """Equality against a map argument compares values, and a differing value settles it."""
-    keys = keygen(3)
-    populate(container, keys, [1, 2, 3])
-    twin = make(container_class, key_type, value_mode, isolation, sharing)
-    populate(twin, keys, [1, 2, 3])
-    assert container == twin
-
-    twin[keys[0]] = 99
-    assert container != twin
-
-
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", key_types)
-def test_a_twin_compares_values_by_python_numeric_rules(
-    container, container_class, key_type, value_mode, isolation, sharing, keygen
-):
-    """`{k: 1} == {k: 1.0}` holds between two containers, as it does against a dict.
-
-    Values are compared by Python's rules rather than by how they are stored, so an integer and the
-    float equal to it agree. A comparison written against the stored representation would answer
-    False here, because the two are held as different alternatives.
-    """
-    key = keygen(1)[0]
-    container[key] = 1
-    twin = make(container_class, key_type, value_mode, isolation, sharing)
-    twin[key] = 1.0
-    assert container == twin
-
-
-# endregion Two containers of one layout
