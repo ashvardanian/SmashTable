@@ -292,6 +292,31 @@ struct store_bridge {
 #pragma region Ordered Surface
 
     /**
+     *  @brief Walks the window @p lower and @p upper name, whichever ends they leave open.
+     *
+     *  Four named calls rather than one taking a bound that stands for "no bound", because that is how
+     *  the engine spells it and there is no greatest key the text layouts could close an open end with.
+     */
+    template <typename readable_type_, typename callback_type_>
+    static status_t walk_window(readable_type_ &self, key_variant_t const *lower, key_variant_t const *upper,
+                                callback_type_ &&step) noexcept {
+        if (lower && upper) return self.range(*lower, *upper, step);
+        if (lower) return self.range_from(*lower, step);
+        if (upper) return self.range_up_to(*upper, step);
+        return self.for_each(step);
+    }
+
+    /** @brief Erases the window @p lower and @p upper name, on the same four terms @c walk_window reads it. */
+    template <typename writable_type_>
+    static status_t erase_window(writable_type_ &self, key_variant_t const *lower,
+                                 key_variant_t const *upper) noexcept {
+        if (lower && upper) return self.erase_range(*lower, *upper, no_op_t {});
+        if (lower) return self.erase_from(*lower, no_op_t {});
+        if (upper) return self.erase_up_to(*upper, no_op_t {});
+        return self.clear();
+    }
+
+    /**
      *  @brief Collects the half-open window, which is the read a phantom is detected against.
      *
      *  Which walk answers depends on which ends are named, because each records a different read and
@@ -313,20 +338,7 @@ struct store_bridge {
             return failed(collecting) || collected.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
         };
 
-        if (lower && upper) {
-            status_t const walked = self.range(*lower, *upper, step);
-            return first_failure(walked, collecting);
-        }
-        if (lower) {
-            status_t const walked = self.range_from(*lower, step);
-            return first_failure(walked, collecting);
-        }
-        if (upper) {
-            status_t const walked = self.range_up_to(*upper, step);
-            return first_failure(walked, collecting);
-        }
-
-        status_t const walked = self.for_each(step);
+        status_t const walked = walk_window(self, lower, upper, step);
         return first_failure(walked, collecting);
     }
 
@@ -359,11 +371,7 @@ struct store_bridge {
         requires ordered_k
     {
         shared_lock deferral {releases};
-        auto &self = store_of(store);
-        if (lower && upper) return self.erase_range(*lower, *upper);
-        if (lower) return self.erase_from(*lower);
-        if (upper) return self.erase_up_to(*upper);
-        return self.clear();
+        return erase_window(store_of(store), lower, upper);
     }
 
 #pragma endregion Ordered Surface
@@ -503,11 +511,7 @@ struct store_bridge {
         requires ordered_k
     {
         shared_lock deferral {releases};
-        auto &self = transaction_of(transaction);
-        if (lower && upper) return self.erase_range(*lower, *upper, no_op_t {});
-        if (lower) return self.erase_from(*lower, no_op_t {});
-        if (upper) return self.erase_up_to(*upper, no_op_t {});
-        return self.clear();
+        return erase_window(transaction_of(transaction), lower, upper);
     }
 
     /**

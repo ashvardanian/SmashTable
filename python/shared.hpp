@@ -476,7 +476,9 @@ struct store_ops_t {
     /** @brief Destroys a store @c make handed back. Never called with null. */
     void (*destroy)(releases_t &releases, void *store) noexcept;
 
+    /** @brief How many members the store holds, which it answers without a status because it cannot fail. */
     std::size_t (*size)(void *store) noexcept;
+    /** @brief Drops every member, reporting whatever the store refused with. */
     status_t (*clear)(releases_t &releases, void *store) noexcept;
     /**
      *  @brief Whether @p key is held, or why that could not be answered.
@@ -593,13 +595,19 @@ struct store_ops_t {
 
     /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
     expected<void *> (*transaction_make)(void *store) noexcept;
+    /** @brief Unwinds and frees a transaction, whatever state it was left in. */
     void (*transaction_destroy)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Whether this transaction reads @p key, its own staged writes included. */
     expected<bool> (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
+    /** @brief The value this transaction reads for @p key, or @c key_not_found_k. */
     expected<value_variant_t> (*transaction_find)(releases_t &releases, void *transaction,
                                                   key_variant_t const &key) noexcept;
+    /** @brief Stages an insert or overwrite. @p value is read, and null for a set, which stores the key alone. */
     status_t (*transaction_upsert)(releases_t &releases, void *transaction, key_variant_t &&key,
                                    value_variant_t *value) noexcept;
+    /** @brief Stages a tombstone for @p key, reporting @c key_not_found_k where it reads nothing there. */
     status_t (*transaction_erase)(releases_t &releases, void *transaction, key_variant_t const &key) noexcept;
+    /** @brief Records what @p key reads as now, so a commit refuses if anything published over it. */
     status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
 
     /**
@@ -620,11 +628,21 @@ struct store_ops_t {
     status_t (*transaction_erase_range)(releases_t &releases, void *transaction, key_variant_t const *lower,
                                         key_variant_t const *upper) noexcept;
 
+    /** @brief Reserves room for every staged change, so the commit that follows allocates nothing. */
     status_t (*transaction_stage)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Publishes every staged change under one stamp, or reports whichever check turned it away. */
     status_t (*transaction_commit)(releases_t &releases, void *transaction) noexcept;
+    /**
+     *  @brief The asking half of a split commit: answers whether publishing would be refused, writing nothing.
+     *    Null on a store whose commit cannot be split, which a group asks about before it uses either half.
+     */
     status_t (*transaction_validate)(releases_t &releases, void *transaction) noexcept;
+    /** @brief The writing half, which returns nothing because a validated publish has nothing left to refuse. */
     void (*transaction_publish)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Pulls staged changes back into the transaction, which keeps them for a retry rather than dropping them.
+     */
     status_t (*transaction_rollback)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Abandons everything staged and pending, which is what separates it from a rollback. */
     status_t (*transaction_reset)(releases_t &releases, void *transaction) noexcept;
 };
 
