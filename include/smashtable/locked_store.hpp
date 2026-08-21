@@ -267,6 +267,13 @@ class locked_store {
             transaction.lower_bound(key, callback, callback);
         };
 
+    /** @brief Whether an open transaction answers by ordinal, which only an order-statistics core does. */
+    static constexpr bool inner_transaction_is_ranked_k = requires(
+        inner_transaction_t const &transaction, identifier_t const &key, std::size_t ordinal, no_op_t callback) {
+        transaction.select(ordinal, callback, callback);
+        transaction.rank(key, callback, callback);
+    };
+
     /**
      *  @brief Whether an open transaction can be driven as one part of a sharded commit, which asks
      *    every part whether it may proceed before any of them publishes.
@@ -437,6 +444,36 @@ class locked_store {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.smallest(std::forward<callback_found_type_>(callback_found),
                                                std::forward<callback_missing_type_>(callback_missing));
+        }
+
+        /**
+         *  @brief Hands @p callback_found the member this transaction reads at zero-based @p ordinal.
+         *  @param[in] callback_missing Fires when fewer members are there. Must be @c noexcept.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                      callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ranked_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.select(ordinal, std::forward<callback_found_type_>(callback_found),
+                                             std::forward<callback_missing_type_>(callback_missing));
+        }
+
+        /**
+         *  @brief Hands @p callback_found how many members this transaction orders before @p comparable.
+         *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be @c noexcept.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ranked_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.rank(std::forward<comparable_type_>(comparable),
+                                           std::forward<callback_found_type_>(callback_found),
+                                           std::forward<callback_missing_type_>(callback_missing));
         }
 
         /** @brief Hands @p callback_found the first member at or after @p comparable, or reports none. */

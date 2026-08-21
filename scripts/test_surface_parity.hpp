@@ -246,6 +246,25 @@ struct transaction_reserve_surface_t {
     static constexpr bool offered =
         requires(typename store_type_::transaction_t &transaction, std::size_t size) { transaction.reserve(size); };
 };
+struct transaction_select_surface_t {
+    template <typename store_type_>
+    static constexpr bool offered =
+        requires(typename store_type_::transaction_t const &transaction, std::size_t ordinal, no_op_t callback) {
+            transaction.select(ordinal, callback, callback);
+        };
+};
+struct transaction_rank_surface_t {
+    template <typename store_type_>
+    static constexpr bool offered =
+        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+                 no_op_t callback) { transaction.rank(key, callback, callback); };
+};
+struct transaction_smallest_surface_t {
+    template <typename store_type_>
+    static constexpr bool offered = requires(typename store_type_::transaction_t const &transaction, no_op_t callback) {
+        transaction.smallest(callback, callback);
+    };
+};
 
 #pragma endregion Transaction Surfaces
 
@@ -353,7 +372,8 @@ constexpr bool transaction_surface_survives =
                            transaction_changes_surface_t, transaction_for_each_surface_t, transaction_range_surface_t,
                            transaction_equal_range_surface_t, transaction_lower_bound_surface_t,
                            transaction_upper_bound_surface_t, transaction_find_copy_surface_t,
-                           transaction_generation_surface_t, transaction_reserve_surface_t>;
+                           transaction_generation_surface_t, transaction_reserve_surface_t,
+                           transaction_select_surface_t, transaction_rank_surface_t, transaction_smallest_surface_t>;
 
 /**
  *  @brief Every surface, against every wrapper nesting, over one store.
@@ -559,6 +579,14 @@ struct rank_pair_t {
         requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
                  no_op_t callback) { transaction.rank(key, callback, callback); };
 };
+struct smallest_pair_t {
+    template <typename store_type_>
+    static constexpr bool at_store =
+        requires(store_type_ const &store, no_op_t callback) { store.smallest(callback, callback); };
+    template <typename store_type_>
+    static constexpr bool at_transaction = requires(typename store_type_::transaction_t const &transaction,
+                                                    no_op_t callback) { transaction.smallest(callback, callback); };
+};
 
 #pragma endregion Level Pairs
 
@@ -618,7 +646,7 @@ constexpr bool transaction_mirrors_the_store =
     every_pair_reaches_a_transaction<store_type_, count_pair_t, vacuum_pair_t, clear_pair_t, erase_range_pair_t,
                                      erase_from_pair_t, erase_up_to_pair_t, update_range_pair_t, sample_one_pair_t,
                                      sample_reservoir_pair_t, lower_bound_copy_pair_t, upper_bound_copy_pair_t,
-                                     find_copy_pair_t, select_pair_t, rank_pair_t>;
+                                     find_copy_pair_t, select_pair_t, rank_pair_t, smallest_pair_t>;
 
 /**
  *  @brief A wrapper reporting serializable must forward the reads that carry the protection.

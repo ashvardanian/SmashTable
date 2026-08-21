@@ -1683,24 +1683,18 @@ constexpr bool refuses_an_absent_key =
         store.update(cursor, cursor);
     };
 
-/** @brief Whether a store and its transactions both answer for a first key, without being asked an ordinal. */
+/**
+ *  @brief Whether a store and its transactions both answer for a first key, without being asked an ordinal.
+ *    Spelled from the level pairs the parity fold already drives, so the two levels have one definition.
+ */
 template <typename store_type_>
 constexpr bool answers_a_smallest =
-    requires(store_type_ const &store, typename store_type_::transaction_t const &transaction, no_op_t callback) {
-        store.smallest(callback, callback);
-        transaction.smallest(callback, callback);
-    };
+    smallest_pair_t::at_store<store_type_> && smallest_pair_t::at_transaction<store_type_>;
 
-/** @brief Whether a store and its transactions both answer ordinals. */
+/** @brief Whether a store and its transactions both answer ordinals, from those same pairs. */
 template <typename store_type_>
-constexpr bool answers_ordinals =
-    requires(store_type_ const &store, typename store_type_::transaction_t const &transaction,
-             typename store_type_::identifier_t const &key, std::size_t ordinal, no_op_t callback) {
-        store.select(ordinal, callback, callback);
-        store.rank(key, callback, callback);
-        transaction.select(ordinal, callback, callback);
-        transaction.rank(key, callback, callback);
-    };
+constexpr bool answers_ordinals = select_pair_t::at_store<store_type_> && select_pair_t::at_transaction<store_type_> &&
+                                  rank_pair_t::at_store<store_type_> && rank_pair_t::at_transaction<store_type_>;
 
 static_assert(answers_a_smallest<snapshot_avl_map_t>, "an ordered store opens a merged walk with a first key");
 static_assert(answers_a_smallest<snapshot_wb_map_t>, "an ordered store opens a merged walk with a first key");

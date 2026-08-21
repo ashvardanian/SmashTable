@@ -681,6 +681,13 @@ class partitioned_store {
             transaction.smallest(callback, callback);
         };
 
+    /** @brief Whether a partition's transaction answers ordinals, which is what seeds a walk with no bound. */
+    static constexpr bool inner_transaction_is_ranked_k =
+        requires(typename inner_store_t::transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
+            transaction.select(std::size_t {0}, callback, callback);
+            transaction.rank(key, callback, callback);
+        };
+
     /** @brief Whether a partition removes its own smallest member as one operation. */
     static constexpr bool inner_pops_its_smallest_k =
         requires(inner_store_t &store, no_op_t callback) { store.pop_smallest(callback, callback); };
@@ -1383,6 +1390,114 @@ class partitioned_store {
                     return merge_control_t::resume_k;
                 });
             return first_failure(reached, walked);
+        }
+
+        /**
+         *  @brief Seeds every front with the smallest key its partition's transaction reads.
+         *
+         *  The transaction-level twin of @c seed_from_the_start_ , reaching the same key through the
+         *  zeroth ordinal where a partition counts its members but does not name its smallest.
+         */
+        auto seed_transactions_from_the_start_() const noexcept
+            requires inner_transaction_names_its_smallest_k || inner_transaction_is_ranked_k
+        {
+            return [this](std::size_t partition_index, auto &&fill) noexcept {
+                if constexpr (inner_transaction_names_its_smallest_k) {
+                    [[maybe_unused]] status_t const seeded = partitions_[partition_index].smallest(fill, no_op_t {});
+                }
+                else {
+                    [[maybe_unused]] status_t const seeded = partitions_[partition_index].select(0, fill, no_op_t {});
+                }
+            };
+        }
+
+        /**
+         *  @brief The smallest member this transaction reads, which may live in any partition.
+         *
+         *  Every partition is held shared for the one answer, so the minimum and the read of it happen
+         *  at the same moment rather than in two probes a writer can slip between.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
+                                        callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ordered_k &&
+                     (inner_transaction_names_its_smallest_k || inner_transaction_is_ranked_k)
+        {
+            settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            bool delivered = false;
+            status_t reached = success_k;
+            status_t const walked = store_t::walk_merged_(
+                store_->comparator_, partitions_, seed_transactions_from_the_start_(),
+                [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                    reached =
+                        first_failure(reached, partitions_[partition_index].find(key, callback_found, no_op_t {}));
+                    delivered = true;
+                    return merge_control_t::halt_k;
+                });
+            if (!delivered) callback_missing();
+            return first_failure(reached, walked);
+        }
+
+        /**
+         *  @brief The element at zero-based @p ordinal of the order this transaction reads.
+         *
+         *  A partition counts only its own ordinals, so the global one is reached by merging rather than
+         *  by descending a subtree count - linear in @p ordinal, not logarithmic in the size.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                      callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ranked_k && inner_transaction_is_ordered_k
+        {
+            settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            std::size_t position = 0;
+            bool delivered = false;
+            status_t reached = success_k;
+            status_t const walked = store_t::walk_merged_(
+                store_->comparator_, partitions_, seed_transactions_from_the_start_(),
+                [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                    if (position++ != ordinal) return merge_control_t::resume_k;
+                    reached =
+                        first_failure(reached, partitions_[partition_index].find(key, callback_found, no_op_t {}));
+                    delivered = true;
+                    return merge_control_t::halt_k;
+                });
+            if (!delivered) callback_missing();
+            return first_failure(reached, walked);
+        }
+
+        /**
+         *  @brief How many members this transaction orders before @p comparable.
+         *
+         *  Counted through the merged order for the same reason @c select is, and under the same held
+         *  locks, so the count and the order it counts are one moment.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ranked_k && inner_transaction_is_ordered_k
+        {
+            settle_snapshot_();
+            if constexpr (inner_records_reads_k) mark_every_part_();
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            std::size_t counted = 0;
+            bool found = false;
+            status_t const walked =
+                store_t::walk_merged_(store_->comparator_, partitions_, seed_transactions_from_the_start_(),
+                                      [&](std::size_t, identifier_t const &key) noexcept {
+                                          if (store_->comparator_(key, comparable))
+                                              return ++counted, merge_control_t::resume_k;
+                                          found = !store_->comparator_(comparable, key);
+                                          return merge_control_t::halt_k;
+                                      });
+            if (found) callback_found(counted);
+            else callback_missing();
+            return walked;
         }
 
         /**
@@ -2245,12 +2360,23 @@ class partitioned_store {
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
         requires inner_enumerates_k
     {
-        for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-            shared_lock_t lock {mutexes_[partition_index]};
-            if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))
-                return visited;
+        // One snapshot, then one partition lock at a time against it: a commit spanning the partitions
+        // is wholly below the snapshot or wholly above it, so the walk cannot meet half of one. Holding
+        // every lock instead would stall every writer for as long as the caller takes to consume.
+        if constexpr (inner_shares_clock_k) {
+            auto reader = const_cast<partitioned_store &>(*this).transaction();
+            if (!reader) return reader.status();
+            return reader->for_each(std::forward<callback_type_>(callback));
         }
-        return success_k;
+        else {
+            // No clock to draw from, which is why `isolation_k` answers `read_committed_k` here.
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                shared_lock_t lock {mutexes_[partition_index]};
+                if (status_t const visited = partitions_[partition_index].for_each(callback); failed(visited))
+                    return visited;
+            }
+            return success_k;
+        }
     }
 
     /**
