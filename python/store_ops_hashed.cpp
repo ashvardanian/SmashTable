@@ -33,7 +33,7 @@ using hashed_strict_serializable = strict_serializable_store<hashed_core<value_t
 template <typename store_type_>
 using shared_by_lock = locked_store<store_type_>;
 template <typename store_type_>
-using shared_by_partition = partitioned_store<store_type_, key_hash_t>;
+using shared_by_partition = partitioned_store<store_type_, key_variant_hash_t>;
 
 constexpr store_ops_t hash_map_monotonic_locked = store_bridge<shared_by_lock<hashed_monotonic<entry_t>>>::table();
 constexpr store_ops_t hash_map_monotonic_partitioned =

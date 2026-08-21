@@ -82,7 +82,7 @@ static int run_over_participant(view_object_t *view, module_state_t *state, oper
     participant_t &part = group->parts[view->index];
     bool finished = false;
     run_over_values(part.mode, group->lock, [&]() noexcept {
-        finished = group->state == group_state_t::finished_k;
+        finished = group->lifetime == group_lifetime_t::finished_k;
         if (!finished) operation(part);
     });
     if (!finished) return 0;
@@ -571,30 +571,42 @@ static int Transaction_clear(PyObject *self) noexcept {
 }
 
 /**
- *  @brief Discards every participant's staged and pending changes, leaving the stores untouched.
- *  @param[in] ending Where the transaction stands afterwards - open again, or finished for good.
+ *  @brief Discards every participant's staged and pending changes and closes the handle for good.
+ *    Every participant is back to pending afterwards, which is what @c open_k says.
  */
-static void transaction_reset_all(transaction_object_t *group, group_state_t ending) noexcept {
+static void transaction_finish(transaction_object_t *group) noexcept {
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
         for (auto &participant : group->parts) [[maybe_unused]]
             auto status = participant.reset();
-        group->state = ending;
+        group->state = staging_t::pending_k;
+        group->lifetime = group_lifetime_t::finished_k;
     });
 }
 
+/** @brief What a staging pass found when it took the lock, which decides what its caller may say. */
+enum class stage_entry_t : std::uint8_t {
+    /** @brief The group was open, so the pass ran and its outcome is the status it wrote. */
+    staged_here_k,
+    /** @brief Somebody had already staged it, so this pass did nothing. */
+    already_staged_k,
+    /** @brief The handle is closed, so nothing may be staged through it again. */
+    already_finished_k,
+};
+
 /**
- *  @brief Stages every participant, and only from an open group.
- *  @param[out] status The outcome of the pass, left untouched when the transaction was not open.
- *  @return Where the transaction stood on entry; only @c open_k means the pass ran.
+ *  @brief Stages every participant, and only from an open group whose handle is still usable.
+ *  @param[out] status The outcome of the pass, left untouched where the pass did not run.
+ *  @return What the pass found on entry; only @c staged_here_k means it ran.
  *
  *  The test and the transition are one span, so of two threads racing here exactly one finds the
  *  group open and the other is told it is already staged rather than staging it twice.
  */
-static group_state_t transaction_stage_if_open(transaction_object_t *group, status_t &status) noexcept {
-    group_state_t entering = group_state_t::finished_k;
+static stage_entry_t transaction_stage_if_open(transaction_object_t *group, status_t &status) noexcept {
+    stage_entry_t entering = stage_entry_t::already_finished_k;
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
-        entering = group->state;
-        if (entering != group_state_t::open_k) return;
+        if (group->lifetime == group_lifetime_t::finished_k) return;
+        if (group->state != staging_t::pending_k) return void(entering = stage_entry_t::already_staged_k);
+        entering = stage_entry_t::staged_here_k;
         // Participants are already in canonical order, so two groups sharing containers acquire their
         // partition locks in the same sequence and cannot deadlock.
         std::size_t staged = 0;
@@ -613,7 +625,7 @@ static group_state_t transaction_stage_if_open(transaction_object_t *group, stat
                 --staged;
                 [[maybe_unused]] status_t const unwound = group->parts[staged].rollback();
             }
-        group->state = succeeded(status) ? group_state_t::staged_k : group_state_t::open_k;
+        group->state = succeeded(status) ? staging_t::staged_k : staging_t::pending_k;
     });
     return entering;
 }
@@ -642,7 +654,7 @@ static PyObject *Transaction_begin(PyObject *self, PyObject *) noexcept {
     // Read without the lock, deliberately: taking it would drop the GIL between opening the transaction and
     // the first watch, and this test guards nothing - every operation the views offer re-tests the
     // state under the lock before it touches a participant.
-    if (group->state == group_state_t::finished_k) {
+    if (group->lifetime == group_lifetime_t::finished_k) {
         PyErr_SetString(state->state_error, "this transaction has already finished");
         return nullptr;
     }
@@ -671,11 +683,14 @@ static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
     if (!state) return nullptr;
 
     status_t status = success_k;
-    if (transaction_stage_if_open(group, status) != group_state_t::open_k) {
+    if (transaction_stage_if_open(group, status) != stage_entry_t::staged_here_k) {
         PyErr_SetString(state->state_error, "stage() requires an open transaction");
         return nullptr;
     }
-    if (failed(status)) return raise_for(state, status) == 0 ? Py_NewRef(Py_None) : nullptr;
+    if (failed(status)) {
+        [[maybe_unused]] int const raised = raise_for(state, status);
+        return nullptr;
+    }
     Py_RETURN_NONE;
 }
 
@@ -689,8 +704,10 @@ static char const doc_commit[] =                                                
     "needs the pair to agree should take its own transaction. Readers are never\n"        //
     "blocked while this runs.\n"                                                          //
     "\n"                                                                                  //
-    "A refusal part-way leaves the containers already published and the rest staged,\n"   //
-    "so the group stays staged rather than finished and can still be unwound.\n"          //
+    "A refusal before anything is published leaves the group staged, so it can still\n"   //
+    "be rolled back. A refusal after one container has published cannot be pulled\n"      //
+    "back, so the group stops calling itself staged and only reset() clears what the\n"   //
+    "rest still hold.\n"                                                                  //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
     "  StateError: If the transaction was not staged first.\n"                            //
@@ -704,14 +721,13 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     status_t status = success_k;
     bool unstaged = false;
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
-        unstaged = group->state != group_state_t::staged_k;
+        unstaged = group->state != staging_t::staged_k;
         if (unstaged) return;
         // Every participant is asked whether it may publish before any of them does, so a refusal
         // leaves the group staged with nothing written and the caller may retry or roll back. A lone
         // participant is committed in one call instead: it has nothing to tear against, and its own
         // store holds one lock across a whole commit where the split would drop it between the two
-        // phases. A participant that cannot be asked at all drops the group to the same path. Either
-        // way the group stays staged, since that is the one state `rollback` and `reset` accept.
+        // phases. A participant that cannot be asked at all drops the group to the same path.
         bool const asks_first = group->parts.size() > 1 &&
                                 std::all_of(group->parts.begin(), group->parts.end(),
                                             [](participant_t const &part) noexcept { return part.splits_commit(); });
@@ -723,11 +739,16 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
             for (auto &participant : group->parts) participant.publish_under();
         }
         else
-            for (auto &participant : group->parts) {
-                status = participant.commit();
-                if (failed(status)) return;
+            for (std::size_t position = 0; position != group->parts.size(); ++position) {
+                status = group->parts[position].commit();
+                if (failed(status)) {
+                    // What the earlier participants published cannot be pulled back, so the group
+                    // stops calling itself staged and leaves `reset` to discard what the rest hold.
+                    if (position != 0) group->state = staging_t::pending_k;
+                    return;
+                }
             }
-        group->state = group_state_t::finished_k;
+        group->state = staging_t::pending_k;
     });
 
     if (unstaged) {
@@ -747,7 +768,9 @@ static char const doc_rollback[] =                                              
     "visible, no reader can have observed what this undoes.\n"                      //
     "\n"                                                                            //
     "Raises:\n"                                                                     //
-    "  StateError: If the transaction was not staged.\n";                           //
+    "  StateError: If the transaction was not staged.\n"                            //
+    "  SmashTableError: If a staged version was gone before the rollback reached\n" //
+    "    it, which is a broken invariant rather than a race a retry could win.\n";  //
 
 static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
@@ -757,16 +780,14 @@ static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
     status_t status = success_k;
     bool unstaged = false;
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
-        unstaged = group->state != group_state_t::staged_k;
+        unstaged = group->state != staging_t::staged_k;
         if (unstaged) return;
         for (auto &participant : group->parts) {
             status = participant.rollback();
             if (failed(status)) break;
         }
-        // Only a rollback that reached every participant reopens the group. Reopening after a refusal
-        // would advertise a group whose later participants are still staged, and the next `stage()`
-        // would stage a second time over the first.
-        if (succeeded(status)) group->state = group_state_t::open_k;
+        // Reopening after a refusal would advertise a group whose later participants are still staged.
+        if (succeeded(status)) group->state = staging_t::pending_k;
     });
 
     if (unstaged) {
@@ -777,29 +798,28 @@ static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_reset[] =                                                             //
-    "reset()\n"                                                                             //
-    "\n"                                                                                    //
-    "Discard everything pending and start the transaction over.\n"                          //
-    "\n"                                                                                    //
-    "Unlike rollback, valid at any point before the transaction finishes, staged or not.\n" //
-    "This is what a retry loop calls after catching ConflictError.\n";                      //
+static char const doc_reset[] =                                                           //
+    "reset()\n"                                                                           //
+    "\n"                                                                                  //
+    "Discard everything pending and start the transaction over.\n"                        //
+    "\n"                                                                                  //
+    "Unlike rollback, valid at any point before the handle closes - open, staged or\n"    //
+    "already committed. This is what a retry loop calls after catching ConflictError.\n"; //
 
 static PyObject *Transaction_reset(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    // A finished group has published or discarded everything it held, and its participants are
-    // back to pending. Resetting it would hand every view a second turn at a transaction that is
-    // already over, and the writes would land in the store as if they were a fresh one.
+    // A closed handle would hand every view a second turn at a block that is already over, and the
+    // writes would land in the store as if they came from a fresh transaction.
     bool finished = false;
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
-        finished = group->state == group_state_t::finished_k;
+        finished = group->lifetime == group_lifetime_t::finished_k;
         if (finished) return;
         for (auto &participant : group->parts) [[maybe_unused]]
             auto status = participant.reset();
-        group->state = group_state_t::open_k;
+        group->state = staging_t::pending_k;
     });
 
     if (finished) {
@@ -819,22 +839,28 @@ static PyObject *Transaction_exit(PyObject *self, PyObject *const *args, Py_ssiz
 
     if (body_raised) {
         // The caller's exception is the story; discard the changes and let it propagate.
-        transaction_reset_all(group, group_state_t::finished_k);
+        transaction_finish(group);
         Py_RETURN_FALSE;
     }
 
     // A block that staged by hand is already past this phase, so only an open group is staged here.
     status_t status = success_k;
-    group_state_t const entering = transaction_stage_if_open(group, status);
-    if (entering == group_state_t::finished_k) {
+    if (transaction_stage_if_open(group, status) == stage_entry_t::already_finished_k) {
         PyErr_SetString(state->state_error, "this transaction has already finished");
         return nullptr;
     }
     if (failed(status)) {
-        transaction_reset_all(group, group_state_t::finished_k);
+        transaction_finish(group);
         [[maybe_unused]] int const raised = raise_for(state, status);
         return nullptr;
     }
+    // Closed before the commit rather than after it. A staged group already refuses writes, so this
+    // span and the commit's leave no gap between them - where closing afterwards left the group open
+    // from the moment the commit returned until the handle caught up, and a write landing there was
+    // taken by a transaction nobody would commit again. It also leaves a torn commit with no view an
+    // escapee can still reach.
+    run_over_values(group_mode(group), group->lock, [&]() noexcept { group->lifetime = group_lifetime_t::finished_k; });
+
     PyObject *committed = Transaction_commit(self, nullptr);
     if (!committed) return nullptr;
     Py_DECREF(committed);
@@ -932,7 +958,8 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
     new (&group->lock) spin_shared_mutex_t {};
     group->containers = Py_NewRef(containers);
     group->views = nullptr;
-    group->state = group_state_t::open_k;
+    group->state = staging_t::pending_k;
+    group->lifetime = group_lifetime_t::usable_k;
 
     // The only allocation `parts` ever attempts, so every append below lands in reserved storage.
     if (status_t const reserved = group->parts.reserve(static_cast<std::size_t>(count)); failed(reserved)) {

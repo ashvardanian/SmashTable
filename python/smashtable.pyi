@@ -48,10 +48,17 @@ _Key = int | str | bytes
 # region Errors
 
 class SmashTableError(Exception):
-    """Base of every refusal this module raises, so one `except` catches the family."""
+    """Base of every refusal this module raises, so one `except` catches the family.
+
+    Also raised on its own for a failure no caller can act on, such as a staged version
+    missing when a transaction unwound. Retrying one of those cannot help.
+    """
 
 class ConflictError(SmashTableError, RuntimeError):
-    """A transaction was refused because another one moved something it depended on."""
+    """Base of the three ways an optimistic validation turns a transaction away.
+
+    Never raised on its own - catch it to retry whichever of the three arrived.
+    """
 
 class WriteConflictError(ConflictError):
     """An earlier commit already wrote a key this transaction staged."""

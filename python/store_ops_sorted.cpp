@@ -31,7 +31,7 @@ using sorted_strict_serializable = strict_serializable_store<sorted_core<value_t
 template <typename store_type_>
 using shared_by_lock = locked_store<store_type_>;
 template <typename store_type_>
-using shared_by_partition = partitioned_store<store_type_, key_hash_t>;
+using shared_by_partition = partitioned_store<store_type_, key_variant_hash_t>;
 
 /**
  *  @brief Every table this build carries for the ordered cores.
