@@ -15,7 +15,9 @@
  */
 
 #include <cassert>
+
 #include <functional>
+#include <limits>
 #include <string_view>
 
 #include "shared.hpp"
@@ -339,6 +341,31 @@ PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value)
     return pair;
 }
 
+/** @brief Builds one element in whichever shape @p yields names. */
+static PyObject *element_to_python(key_variant_t const &key, value_variant_t const &value,
+                                   cursor_yields_t yields) noexcept {
+    switch (yields) {
+    case cursor_yields_t::keys_k: return key_to_python(key);
+    case cursor_yields_t::values_k: return value_to_python(value);
+    case cursor_yields_t::items_k: return pair_to_python(key, value);
+    }
+    return nullptr;
+}
+
+PyObject *entries_to_python(basic_vector<entry_t> const &collected, cursor_yields_t yields) noexcept {
+    PyObject *listed = PyList_New(static_cast<Py_ssize_t>(collected.size()));
+    if (!listed) return nullptr;
+    for (std::size_t index = 0; index != collected.size(); ++index) {
+        PyObject *element = element_to_python(collected[index].key, collected[index].mapped, yields);
+        if (!element) {
+            Py_DECREF(listed);
+            return nullptr;
+        }
+        PyList_SET_ITEM(listed, static_cast<Py_ssize_t>(index), element);
+    }
+    return listed;
+}
+
 #pragma endregion Converting Back Out
 
 #pragma region Errors
@@ -456,12 +483,7 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     // No exception set, which CPython reads as `StopIteration`
     if (*advanced == cursor_step_t::exhausted_k) return nullptr;
 
-    switch (walk->yields) {
-    case cursor_yields_t::keys_k: return key_to_python(found_key);
-    case cursor_yields_t::values_k: return value_to_python(found_value);
-    case cursor_yields_t::items_k: return pair_to_python(found_key, found_value);
-    }
-    return nullptr;
+    return element_to_python(found_key, found_value, walk->yields);
 }
 
 static PyType_Slot cursor_slots[] = {
@@ -617,14 +639,14 @@ PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yi
 #pragma region Windowed Arguments
 
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
-                        PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept {
+                        PyObject *&start, PyObject *&stop, std::size_t &limit) noexcept {
     if (count > 2) {
         PyErr_Format(PyExc_TypeError, "%s() takes at most two positional arguments", called);
         return false;
     }
     start = count > 0 ? args[0] : nullptr;
     stop = count > 1 ? args[1] : nullptr;
-    limit = -1;
+    limit = std::numeric_limits<std::size_t>::max();
     if (!keywords) return true;
 
     Py_ssize_t const named = PyTuple_GET_SIZE(keywords);
@@ -647,14 +669,15 @@ bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t co
         }
         else if (PyUnicode_CompareWithASCIIString(name, "limit") == 0) {
             if (value == Py_None) continue;
-            limit = PyNumber_AsSsize_t(value, PyExc_OverflowError);
-            if (limit == -1 && PyErr_Occurred()) return false;
-            // Negative is the walk's own spelling for uncounted, so a caller passing one would
-            // silently receive the whole window rather than nothing.
-            if (limit < 0) {
+            Py_ssize_t const wanted = PyNumber_AsSsize_t(value, PyExc_OverflowError);
+            if (wanted == -1 && PyErr_Occurred()) return false;
+            // Refused rather than folded into the uncounted spelling, which would hand back the whole
+            // window to a caller who asked for none of it.
+            if (wanted < 0) {
                 PyErr_SetString(PyExc_ValueError, "limit cannot be negative");
                 return false;
             }
+            limit = static_cast<std::size_t>(wanted);
         }
         else {
             PyErr_Format(PyExc_TypeError, "%s() got an unexpected keyword argument '%U'", called, name);

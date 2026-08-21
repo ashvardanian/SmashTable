@@ -564,6 +564,20 @@ struct store_ops_t {
     expected<value_variant_t> (*insert_if_missing)(releases_t &releases, void *store, key_variant_t const &key,
                                                    value_variant_t &&value) noexcept;
 
+    /**
+     *  @brief Collects the half-open window into @p collected, in key order. Null on an unordered core.
+     *
+     *  One transaction for the whole window rather than a cursor re-locked per element, so the list
+     *  holds the single committed state that transaction read - at @c monotonic_atomic_view_k and
+     *  above, since @c read_committed_k promises no such thing.
+     *
+     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements are
+     *  copied rather than referenced, because a Python object is built from them after the lock drops.
+     *  A set leaves every @c mapped default-constructed.
+     */
+    status_t (*store_scan)(releases_t &releases, void *store, key_variant_t const *lower, key_variant_t const *upper,
+                           std::size_t limit, basic_vector<entry_t> &collected) noexcept;
+
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(releases_t &releases, void *store, key_variant_t const *lower,
                             key_variant_t const *upper) noexcept;
@@ -795,10 +809,11 @@ extern PyType_Spec hash_set_spec;
 /**
  *  @brief Visits every element once, in key order, stepping exactly as the Python cursor does.
  *
- *  For the whole-container operations - @c __repr__, @c __eq__, the set algebra - which need every
- *  element but have no reason to build a Python object per step. Same exclusive-successor stepping as
- *  the cursor, so the two cannot disagree about what "every element" means, and the same tolerance of
- *  concurrent change: a key erased under the walk is harmless, one inserted behind it is missed.
+ *  For @c __eq__, which needs every element but has no reason to build a Python object per step. Same
+ *  exclusive-successor stepping as the Python cursor, so the two cannot disagree about what "every
+ *  element" means, and the same tolerance of concurrent change: a key erased under the walk is
+ *  harmless, one inserted behind it is missed. @c scan reads through one transaction and tolerates
+ *  neither.
  *
  *  Only ever called on an ordered container, whose table carries the two bounds. A set hands the
  *  callback a value nothing wrote, since it has none.
@@ -824,12 +839,7 @@ template <typename callback_type_>
             break;
         }
         if (*stepped == cursor_step_t::exhausted_k) break;
-        // A callback answering `bool` stops the walk when it says so; one answering `void` is asking
-        // for every element, and the difference is resolved here rather than by a flag.
-        if constexpr (std::is_same_v<decltype(callback(found_key, found_value)), bool>) {
-            if (!callback(found_key, found_value)) break;
-        }
-        else { callback(found_key, found_value); }
+        callback(found_key, found_value);
     }
     table->cursor_destroy(container->releases, *opened);
     return stepping;
@@ -1078,11 +1088,11 @@ bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &resu
  *  @param[in] called The method's name, which every message here quotes.
  *  @param[out] start Borrowed bound object, or null; @c Py_None counts as null.
  *  @param[out] stop The same for the upper end.
- *  @param[out] limit How many elements at most, or -1 for uncounted.
+ *  @param[out] limit How many elements at most, or the maximum for uncounted.
  *  @return True on success; false with a @c TypeError or @c ValueError set.
  */
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
-                        PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept;
+                        PyObject *&start, PyObject *&stop, std::size_t &limit) noexcept;
 
 /**
  *  @brief Builds a new Python object from a stored key.
@@ -1101,6 +1111,13 @@ PyObject *value_to_python(value_variant_t const &value) noexcept;
  *  @return A new reference, or @c nullptr with an exception set.
  */
 PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value) noexcept;
+
+/**
+ *  @brief Builds the list a scan hands back, one element per collected entry.
+ *  @param[in] yields Which half of each entry becomes an element; a set only ever names its keys.
+ *  @return A new reference, or @c nullptr with an exception set.
+ */
+PyObject *entries_to_python(basic_vector<entry_t> const &collected, cursor_yields_t yields) noexcept;
 
 #pragma endregion Conversion
 

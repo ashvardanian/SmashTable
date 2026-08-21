@@ -22,7 +22,6 @@
  *  other. The views handed back to Python stay in the caller's argument order regardless.
  */
 #include <algorithm> // `std::sort`
-#include <limits>    // `std::numeric_limits`
 
 #include "shared.hpp"
 
@@ -472,7 +471,7 @@ static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t cou
 
     PyObject *start_object = nullptr;
     PyObject *stop_object = nullptr;
-    Py_ssize_t limit = -1;
+    std::size_t limit = 0;
     if (!window_from_python("scan", args, count, keywords, start_object, stop_object, limit)) return nullptr;
 
     key_variant_t lower;
@@ -483,26 +482,13 @@ static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t cou
     if (has_stop && !key_from_python(stop_object, part->ops, upper)) return nullptr;
     basic_vector<entry_t> collected;
     status_t status = success_k;
-    std::size_t const wanted = limit < 0 ? std::numeric_limits<std::size_t>::max() : static_cast<std::size_t>(limit);
     if (run_over_participant(view, state, [&](participant_t &part) noexcept {
-            status = part.scan(has_start ? &lower : nullptr, has_stop ? &upper : nullptr, wanted, collected);
+            status = part.scan(has_start ? &lower : nullptr, has_stop ? &upper : nullptr, limit, collected);
         }) != 0)
         return nullptr;
     if (raise_for(state, status) != 0) return nullptr;
 
-    bool const associative = part->is_associative();
-    PyObject *listed = PyList_New(static_cast<Py_ssize_t>(collected.size()));
-    if (!listed) return nullptr;
-    for (std::size_t index = 0; index != collected.size(); ++index) {
-        PyObject *element = associative ? pair_to_python(collected[index].key, collected[index].mapped)
-                                        : key_to_python(collected[index].key);
-        if (!element) {
-            Py_DECREF(listed);
-            return nullptr;
-        }
-        PyList_SET_ITEM(listed, static_cast<Py_ssize_t>(index), element);
-    }
-    return listed;
+    return entries_to_python(collected, part->is_associative() ? cursor_yields_t::items_k : cursor_yields_t::keys_k);
 }
 
 static PyMethodDef View_methods[] = {

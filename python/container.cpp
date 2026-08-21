@@ -5,8 +5,8 @@
  *  @date August 18, 2026
  *
  *  One file for every class, because behind @c store_ops_t they differ only in which methods their
- *  type installs. A map and a set once had a file each, near-identical but for the element shape; the
- *  core, the isolation level and the sharing strategy would each have multiplied that again.
+ *  type installs. A file per class would be near-identical but for the element shape, and the core,
+ *  the isolation level and the sharing strategy would each multiply that again.
  *
  *  Parity with @c dict and @c set is the goal everywhere it costs nothing. The places it is
  *  deliberately broken are three: the key type is fixed at construction and every other type is
@@ -1006,14 +1006,15 @@ static char const doc_scan[] =                                                  
     "\n"                                                                                  //
     "List of (key, value) pairs in key order, over the half-open window [start, stop).\n" //
     "\n"                                                                                  //
-    "Bounds need not be present keys. Materialized rather than lazy: iterate the\n"       //
-    "container itself when the whole range does not need to exist at once.\n"             //
+    "Bounds need not be present keys. Read in one span rather than lazily, so the list\n" //
+    "holds a single committed state unless isolation is 'read_committed'; iterate the\n"  //
+    "container itself to walk it lazily.\n"                                               //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
     "  TypeError: If a bound is not of this store's key type.\n"                          //
     "  ValueError: If limit is negative.\n";                                              //
 
-/** @brief Drives the shared cursor into a list, so there is one traversal in the binding. */
+/** @brief Collects the window through one store call rather than a cursor stepped per element. */
 static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
                                 cursor_yields_t yields) noexcept {
     auto const *container = object_as<container_object_t>(self);
@@ -1022,7 +1023,7 @@ static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_
 
     PyObject *start_object = nullptr;
     PyObject *stop_object = nullptr;
-    Py_ssize_t limit = -1;
+    std::size_t limit = 0;
     if (!window_from_python("scan", args, count, keywords, start_object, stop_object, limit)) return nullptr;
 
     key_variant_t start_key;
@@ -1032,29 +1033,33 @@ static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_
     if (has_start && !key_from_python(start_object, container->ops, start_key)) return nullptr;
     if (has_stop && !key_from_python(stop_object, container->ops, stop_key)) return nullptr;
 
-    PyObject *cursor =
-        cursor_new(state, self, yields, has_start ? &start_key : nullptr, has_stop ? &stop_key : nullptr, limit);
-    if (!cursor) return nullptr;
-    PyObject *collected = PySequence_List(cursor);
-    Py_DECREF(cursor);
-    return collected;
+    basic_vector<entry_t> collected;
+    status_t status = success_k;
+    run_over_values(container->mode, [&]() noexcept {
+        status =
+            container->store_ops->store_scan(container->releases, container->store, has_start ? &start_key : nullptr,
+                                             has_stop ? &stop_key : nullptr, limit, collected);
+    });
+    if (raise_for(state, status) != 0) return nullptr;
+    return entries_to_python(collected, yields);
 }
 
 static PyObject *Map_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
     return container_scan(self, args, count, keywords, cursor_yields_t::items_k);
 }
 
-static char const doc_set_scan[] =                                                 //
-    "scan(start=None, stop=None, *, limit=None)\n"                                 //
-    "\n"                                                                           //
-    "List of members in order, over the half-open window [start, stop).\n"         //
-    "\n"                                                                           //
-    "Bounds need not be present members. Materialized rather than lazy: iterate\n" //
-    "the set itself when the whole range does not need to exist at once.\n"        //
-    "\n"                                                                           //
-    "Raises:\n"                                                                    //
-    "  TypeError: If a bound is not of this set's key type.\n"                     //
-    "  ValueError: If limit is negative.\n";                                       //
+static char const doc_set_scan[] =                                                        //
+    "scan(start=None, stop=None, *, limit=None)\n"                                        //
+    "\n"                                                                                  //
+    "List of members in order, over the half-open window [start, stop).\n"                //
+    "\n"                                                                                  //
+    "Bounds need not be present members. Read in one span rather than lazily, so the\n"   //
+    "list holds a single committed state unless isolation is 'read_committed'; iterate\n" //
+    "the set to walk it lazily.\n"                                                        //
+    "\n"                                                                                  //
+    "Raises:\n"                                                                           //
+    "  TypeError: If a bound is not of this set's key type.\n"                            //
+    "  ValueError: If limit is negative.\n";                                              //
 
 static PyObject *Set_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
     return container_scan(self, args, count, keywords, cursor_yields_t::keys_k);

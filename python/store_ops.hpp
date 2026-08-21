@@ -292,6 +292,61 @@ struct store_bridge {
 #pragma region Ordered Surface
 
     /**
+     *  @brief Collects the half-open window, which is the read a phantom is detected against.
+     *
+     *  Which walk answers depends on which ends are named, because each records a different read and
+     *  the level is validated against exactly what was recorded: a closed window records that window,
+     *  an open end records one running to that end of the keyspace, and a window with no ends at all is
+     *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
+     *  against is the one the caller asked for rather than one this layer chose.
+     */
+    static status_t collect_window(transaction_t &self, key_variant_t const *lower, key_variant_t const *upper,
+                                   std::size_t limit, basic_vector<entry_t> &collected) noexcept
+        requires ordered_k
+    {
+        status_t collecting = success_k;
+        // Halts the walk rather than merely declining to collect, so a small limit over a large window
+        // costs the prefix and not the window. A limit of zero halts before the first element is copied.
+        auto step = [&](value_t const &element) noexcept -> walk_control_t {
+            if (collected.size() == limit) return walk_control_t::halt_k;
+            collecting = collect(element, collected);
+            return failed(collecting) || collected.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
+        };
+
+        if (lower && upper) {
+            status_t const walked = self.range(*lower, *upper, step);
+            return first_failure(walked, collecting);
+        }
+        if (lower) {
+            status_t const walked = self.range_from(*lower, step);
+            return first_failure(walked, collecting);
+        }
+        if (upper) {
+            status_t const walked = self.range_up_to(*upper, step);
+            return first_failure(walked, collecting);
+        }
+
+        status_t const walked = self.for_each(step);
+        return first_failure(walked, collecting);
+    }
+
+    /**
+     *  @brief Collects the half-open window in one span, through a transaction opened for the walk.
+     *
+     *  The store wrappers carry no half-open walk, and one transaction answers all four window shapes
+     *  alike; this one is read-only and unwinds rather than commits.
+     */
+    static status_t store_scan(releases_t &releases, void *store, key_variant_t const *lower,
+                               key_variant_t const *upper, std::size_t limit, basic_vector<entry_t> &collected) noexcept
+        requires ordered_k
+    {
+        shared_lock deferral {releases};
+        auto opened = store_of(store).transaction();
+        if (!opened) return opened.status();
+        return collect_window(*opened, lower, upper, limit, collected);
+    }
+
+    /**
      *  @brief Erases the half-open window, with either end open.
      *
      *  Four named entry points rather than one call with a bound standing for "no bound": a slice
@@ -428,43 +483,14 @@ struct store_bridge {
         return into.push_back(std::move(taken));
     }
 
-    /**
-     *  @brief Collects the half-open window, which is the read a phantom is detected against.
-     *
-     *  Which walk answers depends on which ends are named, because each records a different read and
-     *  the level is validated against exactly what was recorded: a closed window records that window,
-     *  an open end records one running to that end of the keyspace, and a window with no ends at all is
-     *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
-     *  against is the one the caller asked for rather than one this layer chose.
-     */
+    /** @brief Collects the half-open window from a transaction the caller owns. */
     static status_t transaction_scan(releases_t &releases, void *transaction, key_variant_t const *lower,
                                      key_variant_t const *upper, std::size_t limit,
                                      basic_vector<entry_t> &collected) noexcept
         requires ordered_k
     {
         shared_lock deferral {releases};
-        auto &self = transaction_of(transaction);
-        status_t collecting = success_k;
-        auto step = [&](value_t const &element) noexcept {
-            if (failed(collecting) || collected.size() == limit) return;
-            collecting = collect(element, collected);
-        };
-
-        if (lower && upper) {
-            status_t const walked = self.range(*lower, *upper, step);
-            return first_failure(walked, collecting);
-        }
-        if (lower) {
-            status_t const walked = self.range_from(*lower, step);
-            return first_failure(walked, collecting);
-        }
-        if (upper) {
-            status_t const walked = self.range_up_to(*upper, step);
-            return first_failure(walked, collecting);
-        }
-
-        status_t const walked = self.for_each(step);
-        return first_failure(walked, collecting);
+        return collect_window(transaction_of(transaction), lower, upper, limit, collected);
     }
 
     /**
@@ -548,6 +574,7 @@ struct store_bridge {
         }
 
         if constexpr (ordered_k) {
+            built.store_scan = &store_scan;
             built.erase_range = &erase_range;
             built.pop_smallest = &pop_smallest;
             built.cursor_make = &cursor_make;
