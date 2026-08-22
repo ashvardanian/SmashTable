@@ -200,7 +200,7 @@ static int module_exec(PyObject *module) noexcept {
     if (PyModule_AddObjectRef(module, "Transaction", reinterpret_cast<PyObject *>(state->transaction_type)) < 0)
         return -1;
     if (PyModule_AddObjectRef(module, "Participant", reinterpret_cast<PyObject *>(state->view_type)) < 0) return -1;
-    if (PyModule_AddStringConstant(module, "__version__", "0.3.0") < 0) return -1;
+    if (PyModule_AddStringConstant(module, "__version__", "0.3.1") < 0) return -1;
     return 0;
 }
 
