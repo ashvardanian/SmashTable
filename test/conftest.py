@@ -1,8 +1,10 @@
 """Fixtures and the session banner. No test functions and no oracle live here."""
 
+import concurrent.futures
 import os
 import platform
 import random
+import threading
 
 import pytest
 
@@ -24,8 +26,14 @@ def pytest_report_header() -> list[str]:
 
 
 @pytest.fixture
-def seed(__pytest_repeat_step_number: int = 0) -> int:
-    """A per-test seed that moves with the repeat step, so repetitions differ but reproduce."""
+def seed(__pytest_repeat_step_number) -> int:
+    """A per-test seed that moves with the repeat step, so repetitions differ but reproduce.
+
+    The parameter carries no default on purpose: pytest builds a fixture's closure from the
+    parameters that have none, so a defaulted one is never injected and every repeat replays the
+    first step's draws. `pytest-repeat` hands `None` to a test that is not repeated, which is what
+    the `or 0` is for.
+    """
     return _RUN_SEED + (__pytest_repeat_step_number or 0)
 
 
@@ -102,6 +110,35 @@ def populated(container, keygen, valuegen, size: int):
 
 
 @pytest.fixture
-def failures() -> list[str]:
-    """A sink for assertions raised inside worker threads, which do not reach pytest."""
-    return []
+def drive_threads():
+    """Runs `worker(index)` on `count` threads, re-raising whatever fired inside one of them."""
+
+    def drive(worker, count: int, timeout: float = 60.0) -> None:
+        # Every worker is submitted before any is awaited, or the threads would run one at a time.
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=count)
+        try:
+            futures = [pool.submit(worker, index) for index in range(count)]
+            raised = (future.exception(timeout=timeout) for future in futures)
+            failures = [error for error in raised if error is not None]
+        finally:
+            # Never wait here: a worker that hung is what the timeout above is reporting.
+            pool.shutdown(wait=False)
+        # A broken barrier is how one worker's failure reaches the others, so it never outranks theirs.
+        if failures:
+            raise min(failures, key=lambda error: isinstance(error, threading.BrokenBarrierError))
+
+    return drive
+
+
+@pytest.fixture
+def crossing_gate():
+    """A barrier holding the writer until every reader is in its loop, so the two provably overlap.
+
+    Expires below `drive_threads`, so a thread that never arrives breaks the barrier and names
+    itself rather than expiring the driver's wait on an unrelated future.
+    """
+
+    def gate(parties: int, timeout: float = 30.0) -> threading.Barrier:
+        return threading.Barrier(parties, timeout=timeout)
+
+    return gate

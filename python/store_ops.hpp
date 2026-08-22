@@ -28,6 +28,20 @@ namespace ashvardanian::smashtable::py {
 #pragma region Bridge
 
 /**
+ *  @brief Deep-copies @p source into @p target, answering why it could not rather than half writing it.
+ *
+ *  The assigning counterpart to @c copy_safely, for the callbacks a store hands elements to: those are
+ *  @c noexcept and return @c void, so a failed copy has nowhere to go but a status the caller reads after.
+ */
+template <typename target_type_, typename source_type_>
+static status_t copy_into(target_type_ &target, source_type_ const &source) noexcept {
+    auto copied = source.copy();
+    if (!copied) return copied.status();
+    target = std::move(*copied);
+    return success_k;
+}
+
+/**
  *  @brief One store type's whole @c store_ops_t table, generated member by member.
  *
  *  @tparam store_type_ A fully wrapped store - a core, inside an isolation level, inside a sharing
@@ -101,16 +115,16 @@ struct store_bridge {
      *  The one place that strategy shows through: a partitioned store routes keys by hash and needs
      *  one, a locked store forwards what its core takes, and neither default-constructs because
      *  @c key_less_t has no default constructor. An ordered core takes the comparator chosen for this
-     *  layout, an unordered one the equality, and builds its own hasher - which is why that hasher is
-     *  stateless rather than the function-pointer form.
+     *  layout and an unordered one the equality, while the hash is the same stateless visit either
+     *  way, since an unordered core builds its own and takes no seed.
      */
     static auto built_core(key_ops_t const *ops) noexcept {
         if constexpr (ordered_k) {
-            if constexpr (partitioned_k) return store_t::make(key_less_t {ops->less}, key_hash_t {ops->hash});
+            if constexpr (partitioned_k) return store_t::make(key_less_t {ops->less}, key_variant_hash_t {});
             else return store_t::make(key_less_t {ops->less}, std::allocator<value_t> {});
         }
         else {
-            if constexpr (partitioned_k) return store_t::make(key_variant_equal_t {}, key_hash_t {ops->hash});
+            if constexpr (partitioned_k) return store_t::make(key_variant_equal_t {}, key_variant_hash_t {});
             else return store_t::make(key_variant_equal_t {}, std::allocator<value_t> {});
         }
     }
@@ -169,21 +183,21 @@ struct store_bridge {
         return store_of(store).upsert(element_of(std::move(key), value));
     }
 
-    static status_t upsert_entries(releases_t &releases, void *store, entry_t *entries, std::size_t count) noexcept {
+    static status_t upsert_entries(releases_t &releases, void *store, entry_t *entries, std::size_t count) noexcept
+        requires associative_k
+    {
         shared_lock deferral {releases};
         // Moved rather than copied, which is the shape the store's batch form takes: it forwards
         // each element into one transaction it opens, stages, and commits.
-        if constexpr (associative_k)
-            return store_of(store).upsert(std::make_move_iterator(entries), std::make_move_iterator(entries + count));
-        else return operation_not_permitted_k;
+        return store_of(store).upsert(std::make_move_iterator(entries), std::make_move_iterator(entries + count));
     }
 
     static status_t upsert_members(releases_t &releases, void *store, key_variant_t *members,
-                                   std::size_t count) noexcept {
+                                   std::size_t count) noexcept
+        requires(!associative_k)
+    {
         shared_lock deferral {releases};
-        if constexpr (!associative_k)
-            return store_of(store).upsert(std::make_move_iterator(members), std::make_move_iterator(members + count));
-        else return operation_not_permitted_k;
+        return store_of(store).upsert(std::make_move_iterator(members), std::make_move_iterator(members + count));
     }
 
     static expected<value_variant_t> erase(releases_t &releases, void *store, key_variant_t const &key) noexcept {
@@ -203,23 +217,11 @@ struct store_bridge {
         requires ordered_k
     {
         shared_lock deferral {releases};
-        expected<entry_t> removed {entry_t {}, success_k};
-        status_t const status = store_of(store).pop_smallest(
-            [&](value_t const &element) noexcept {
-                auto key = mapping_key_or_itself<value_t>(element).copy();
-                if (!key) return void(removed = expected<entry_t> {key.status()});
-                entry_t taken;
-                taken.key = std::move(*key);
-                if constexpr (associative_k) {
-                    auto held = element.mapped.copy();
-                    if (!held) return void(removed = expected<entry_t> {held.status()});
-                    taken.mapped = std::move(*held);
-                }
-                removed = std::move(taken);
-            },
-            no_op_t {});
-        if (failed(status)) return expected<entry_t> {status};
-        return removed;
+        expected<value_t> taken = store_of(store).pop_smallest_copy();
+        if (!taken) return expected<entry_t> {taken.status()};
+        // A map's element already is the pair this hands back; a set has only the key half to fill.
+        if constexpr (associative_k) return expected<entry_t> {std::move(*taken), success_k};
+        else return expected<entry_t> {entry_t {std::move(*taken)}, success_k};
     }
 
     /** @brief Runs one algebra, dispatching the compile-time parameter from the runtime request. */
@@ -267,28 +269,94 @@ struct store_bridge {
     }
 
     static expected<value_variant_t> insert_if_missing(releases_t &releases, void *store, key_variant_t const &key,
-                                                       value_variant_t &&value) noexcept {
+                                                       value_variant_t &&value) noexcept
+        requires associative_k
+    {
         shared_lock deferral {releases};
-        if constexpr (!associative_k) return expected<value_variant_t> {operation_not_permitted_k};
-        else {
-            auto copied = key.copy();
-            if (!copied) return expected<value_variant_t> {copied.status()};
-            expected<value_variant_t> winner {value_variant_t {}, success_k};
-            // One store call rather than an insert followed by a read: between two calls another
-            // thread can erase the key, leaving the read with nothing and the caller with a value
-            // nobody stored. Whichever branch the store takes reports the winner from inside it.
-            status_t const status = store_of(store).insert_if_missing(
-                value_t {std::move(*copied), std::move(value)},
-                [&](value_t const &inserted) noexcept { winner = inserted.mapped.copy(); },
-                [&](value_t const &existing) noexcept { winner = existing.mapped.copy(); });
-            if (failed(status)) return expected<value_variant_t> {status};
-            return winner;
-        }
+        auto copied = key.copy();
+        if (!copied) return expected<value_variant_t> {copied.status()};
+        expected<value_variant_t> winner {value_variant_t {}, success_k};
+        // One store call rather than an insert followed by a read: between two calls another thread
+        // can erase the key, leaving the read with nothing and the caller with a value nobody stored.
+        // Whichever branch the store takes reports the winner from inside it.
+        status_t const status = store_of(store).insert_if_missing(
+            value_t {std::move(*copied), std::move(value)},
+            [&](value_t const &inserted) noexcept { winner = inserted.mapped.copy(); },
+            [&](value_t const &existing) noexcept { winner = existing.mapped.copy(); });
+        if (failed(status)) return expected<value_variant_t> {status};
+        return winner;
     }
 
 #pragma endregion Point Access
 
 #pragma region Ordered Surface
+
+    /**
+     *  @brief Walks the window @p lower and @p upper name, whichever ends they leave open.
+     *
+     *  Four named calls rather than one taking a bound that stands for "no bound", because that is how
+     *  the engine spells it and there is no greatest key the text layouts could close an open end with.
+     */
+    template <typename readable_type_, typename callback_type_>
+    static status_t walk_window(readable_type_ &self, key_variant_t const *lower, key_variant_t const *upper,
+                                callback_type_ &&step) noexcept {
+        if (lower && upper) return self.range(*lower, *upper, step);
+        if (lower) return self.range_from(*lower, step);
+        if (upper) return self.range_up_to(*upper, step);
+        return self.for_each(step);
+    }
+
+    /** @brief Erases the window @p lower and @p upper name, on the same four terms @c walk_window reads it. */
+    template <typename writable_type_>
+    static status_t erase_window(writable_type_ &self, key_variant_t const *lower,
+                                 key_variant_t const *upper) noexcept {
+        if (lower && upper) return self.erase_range(*lower, *upper, no_op_t {});
+        if (lower) return self.erase_from(*lower, no_op_t {});
+        if (upper) return self.erase_up_to(*upper, no_op_t {});
+        return self.clear();
+    }
+
+    /**
+     *  @brief Collects the half-open window, which is the read a phantom is detected against.
+     *
+     *  Which walk answers depends on which ends are named, because each records a different read and
+     *  the level is validated against exactly what was recorded: a closed window records that window,
+     *  an open end records one running to that end of the keyspace, and a window with no ends at all is
+     *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
+     *  against is the one the caller asked for rather than one this layer chose.
+     */
+    static status_t collect_window(transaction_t &self, key_variant_t const *lower, key_variant_t const *upper,
+                                   std::size_t limit, basic_vector<entry_t> &collected) noexcept
+        requires ordered_k
+    {
+        status_t collecting = success_k;
+        // Halts the walk rather than merely declining to collect, so a small limit over a large window
+        // costs the prefix and not the window. A limit of zero halts before the first element is copied.
+        auto step = [&](value_t const &element) noexcept -> walk_control_t {
+            if (collected.size() == limit) return walk_control_t::halt_k;
+            collecting = collect(element, collected);
+            return failed(collecting) || collected.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
+        };
+
+        status_t const walked = walk_window(self, lower, upper, step);
+        return first_failure(walked, collecting);
+    }
+
+    /**
+     *  @brief Collects the half-open window in one span, through a transaction opened for the walk.
+     *
+     *  The store wrappers carry no half-open walk, and one transaction answers all four window shapes
+     *  alike; this one is read-only and unwinds rather than commits.
+     */
+    static status_t store_scan(releases_t &releases, void *store, key_variant_t const *lower,
+                               key_variant_t const *upper, std::size_t limit, basic_vector<entry_t> &collected) noexcept
+        requires ordered_k
+    {
+        shared_lock deferral {releases};
+        auto opened = store_of(store).transaction();
+        if (!opened) return opened.status();
+        return collect_window(*opened, lower, upper, limit, collected);
+    }
 
     /**
      *  @brief Erases the half-open window, with either end open.
@@ -303,11 +371,7 @@ struct store_bridge {
         requires ordered_k
     {
         shared_lock deferral {releases};
-        auto &self = store_of(store);
-        if (lower && upper) return self.erase_range(*lower, *upper);
-        if (lower) return self.erase_from(*lower);
-        if (upper) return self.erase_up_to(*upper);
-        return self.clear();
+        return erase_window(store_of(store), lower, upper);
     }
 
 #pragma endregion Ordered Surface
@@ -344,18 +408,27 @@ struct store_bridge {
         release_python_storage<cursor_t>(cursor);
     }
 
-    static bool cursor_next(void *cursor, key_variant_t &key, value_variant_t *value) noexcept
+    /**
+     *  @brief Takes one step, answering whether a member was handed over or why it could not be.
+     *
+     *  Both halves are copied through the reporting form rather than assigned: a text key or a text
+     *  value allocates, and a throwing copy inside this @c noexcept step would end the process rather
+     *  than the walk.
+     */
+    static expected<cursor_step_t> cursor_next(void *cursor, key_variant_t &key, value_variant_t *value) noexcept
         requires ordered_k
     {
-        bool handed = false;
-        if (cursor_of(cursor).exhausted()) return false;
+        if (cursor_of(cursor).exhausted()) return cursor_step_t::exhausted_k;
+        status_t copied = success_k;
+        cursor_step_t stepped = cursor_step_t::exhausted_k;
         cursor_of(cursor).next([&](value_t const &element) noexcept {
-            key = mapping_key_or_itself<value_t>(element);
+            copied = copy_into(key, mapping_key_or_itself<value_t>(element));
             if constexpr (associative_k)
-                if (value) *value = element.mapped;
-            handed = true;
+                if (succeeded(copied) && value) copied = copy_into(*value, element.mapped);
+            stepped = cursor_step_t::handed_k;
         });
-        return handed;
+        if (failed(copied)) return copied;
+        return stepped;
     }
 
     static expected<void *> transaction_make(void *store) noexcept {
@@ -418,87 +491,38 @@ struct store_bridge {
         return into.push_back(std::move(taken));
     }
 
-    /**
-     *  @brief Collects the half-open window, which is the read a phantom is detected against.
-     *
-     *  Which walk answers depends on which ends are named, because each records a different read and
-     *  the level is validated against exactly what was recorded: a closed window records that window,
-     *  an open end records one running to that end of the keyspace, and a window with no ends at all is
-     *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
-     *  against is the one the caller asked for rather than one this layer chose.
-     */
+    /** @brief Collects the half-open window from a transaction the caller owns. */
     static status_t transaction_scan(releases_t &releases, void *transaction, key_variant_t const *lower,
                                      key_variant_t const *upper, std::size_t limit,
                                      basic_vector<entry_t> &collected) noexcept
         requires ordered_k
     {
         shared_lock deferral {releases};
-        auto &self = transaction_of(transaction);
-        status_t collecting = success_k;
-        auto step = [&](value_t const &element) noexcept {
-            if (failed(collecting) || collected.size() == limit) return;
-            collecting = collect(element, collected);
-        };
-
-        if (lower && upper) {
-            status_t const walked = self.range(*lower, *upper, step);
-            return first_failure(walked, collecting);
-        }
-        if (lower) {
-            status_t const walked = self.range_from(*lower, step);
-            return first_failure(walked, collecting);
-        }
-        if (upper) {
-            status_t const walked = self.range_up_to(*upper, step);
-            return first_failure(walked, collecting);
-        }
-
-        status_t const walked = self.for_each(step);
-        return first_failure(walked, collecting);
+        return collect_window(transaction_of(transaction), lower, upper, limit, collected);
     }
 
-    /** @brief Stages a tombstone for every member of that same window. */
+    /**
+     *  @brief Stages a tombstone for every member of that same window.
+     *    One engine call per shape, so the read a commit is validated against is the one the window
+     *    named - and a window with no ends at all is the whole store, which @c clear answers for.
+     */
     static status_t transaction_erase_range(releases_t &releases, void *transaction, key_variant_t const *lower,
                                             key_variant_t const *upper) noexcept
         requires ordered_k
     {
         shared_lock deferral {releases};
-        auto &self = transaction_of(transaction);
-        if (lower && upper) return self.erase_range(*lower, *upper, no_op_t {});
-        if (lower) return self.erase_from(*lower, no_op_t {});
-        if (upper) return self.erase_up_to(*upper, no_op_t {});
-
-        // A transaction has no `clear`: erasing through one means staging a tombstone per member, and
-        // the members are collected before any of them is staged, because a tombstone moves what the
-        // merged walk answers underneath the walk that produced it.
-        basic_vector<entry_t> doomed;
-        status_t collecting = success_k;
-        if (status_t const walked = self.for_each([&](value_t const &element) noexcept {
-                if (succeeded(collecting)) collecting = collect(element, doomed);
-            });
-            failed(walked))
-            return walked;
-        if (failed(collecting)) return collecting;
-        for (std::size_t index = 0; index != doomed.size(); ++index)
-            if (status_t const staged = self.erase(doomed[index].key); failed(staged)) return staged;
-        return success_k;
+        return erase_window(transaction_of(transaction), lower, upper);
     }
 
-    static status_t transaction_stage(releases_t &releases, void *transaction) noexcept {
+    /**
+     *  @brief Forwards one argument-free lifecycle call with the container's release ledger held.
+     *    The whole family differs only in which member it names, so the member is the parameter and
+     *    the return type follows it - @c publish_under answers nothing and the rest a @c status_t.
+     */
+    template <auto member_>
+    static auto transaction_lifecycle(releases_t &releases, void *transaction) noexcept {
         shared_lock deferral {releases};
-        return transaction_of(transaction).stage();
-    }
-    static status_t transaction_commit(releases_t &releases, void *transaction) noexcept {
-        shared_lock deferral {releases};
-        return transaction_of(transaction).commit();
-    }
-    static status_t transaction_rollback(releases_t &releases, void *transaction) noexcept {
-        shared_lock deferral {releases};
-        return transaction_of(transaction).rollback();
-    }
-    static status_t transaction_reset(releases_t &releases, void *transaction) noexcept {
-        shared_lock deferral {releases};
-        return transaction_of(transaction).reset();
+        return (transaction_of(transaction).*member_)();
     }
 
     /**
@@ -512,10 +536,8 @@ struct store_bridge {
         requires(enumerable_k && associative_k)
     {
         int outcome = 0;
-        // The walk's own status is dropped here, and this is the one slot where that is right:
-        // `tp_traverse` answers the collector with an `int` that means "keep going" or "stop", and
-        // has no room for a reason. A walk that could not complete reports nothing rather than
-        // fewer objects, so the collector simply sees what was reachable at that moment.
+        // The walk's status is dropped because `tp_traverse` answers only "keep going" or "stop",
+        // so a walk that could not complete reports what was reachable at that moment.
         [[maybe_unused]] status_t const walked = store_of(store).for_each([&](value_t const &element) noexcept {
             if (outcome != 0) return;
             auto const *held = std::get_if<object_t>(&element.mapped.value);
@@ -529,7 +551,6 @@ struct store_bridge {
     /** @brief The whole table, with every slot a core cannot supply left null. */
     static constexpr store_ops_t table() noexcept {
         store_ops_t built {};
-        built.isolation = store_t::isolation_k;
         built.isolation_name = isolation_name_of(store_t::isolation_k);
         built.sharing_name = partitioned_k ? "partitioned" : "locked";
         built.is_associative = associative_k;
@@ -540,20 +561,24 @@ struct store_bridge {
         built.size = &size;
         built.clear = &clear;
         built.contains = &contains;
-        built.find = associative_k ? &find : nullptr;
         built.upsert = &upsert;
-        built.upsert_entries = associative_k ? &upsert_entries : nullptr;
-        built.upsert_members = associative_k ? nullptr : &upsert_members;
         built.erase = &erase;
-        built.insert_if_missing = associative_k ? &insert_if_missing : nullptr;
 
-        if constexpr (!associative_k) {
+        if constexpr (associative_k) {
+            built.find = &find;
+            built.upsert_entries = &upsert_entries;
+            built.insert_if_missing = &insert_if_missing;
+            built.transaction_find = &transaction_find;
+        }
+        else {
+            built.upsert_members = &upsert_members;
             built.set_algebra = &set_algebra;
             built.is_subset = &is_subset;
             built.is_disjoint = &is_disjoint;
         }
 
         if constexpr (ordered_k) {
+            built.store_scan = &store_scan;
             built.erase_range = &erase_range;
             built.pop_smallest = &pop_smallest;
             built.cursor_make = &cursor_make;
@@ -566,7 +591,6 @@ struct store_bridge {
         built.transaction_make = &transaction_make;
         built.transaction_destroy = &transaction_destroy;
         built.transaction_contains = &transaction_contains;
-        built.transaction_find = associative_k ? &transaction_find : nullptr;
         built.transaction_upsert = &transaction_upsert;
         built.transaction_erase = &transaction_erase;
         built.transaction_watch = &transaction_watch;
@@ -574,10 +598,18 @@ struct store_bridge {
             built.transaction_scan = &transaction_scan;
             built.transaction_erase_range = &transaction_erase_range;
         }
-        built.transaction_stage = &transaction_stage;
-        built.transaction_commit = &transaction_commit;
-        built.transaction_rollback = &transaction_rollback;
-        built.transaction_reset = &transaction_reset;
+        built.transaction_stage = &transaction_lifecycle<&transaction_t::stage>;
+        built.transaction_commit = &transaction_lifecycle<&transaction_t::commit>;
+        // Null where the engine decides and writes in one call, which is what a partitioned store does;
+        // the group reads the null and falls back to committing each participant in turn.
+        if constexpr (splits_its_commit<transaction_t>) {
+            built.transaction_validate = &transaction_lifecycle<&transaction_t::validate_for_commit>;
+            // Spelled out because the stamped overload shares the name, and only this one is wanted.
+            built.transaction_publish =
+                &transaction_lifecycle<static_cast<void (transaction_t::*)() noexcept>(&transaction_t::publish_under)>;
+        }
+        built.transaction_rollback = &transaction_lifecycle<&transaction_t::rollback>;
+        built.transaction_reset = &transaction_lifecycle<&transaction_t::reset>;
         return built;
     }
 };

@@ -1,6 +1,6 @@
 /**
  *  @brief Wraps any transactional store behind one shared mutex, making the store thread-safe while its
- *      transactions stay single-threaded.
+ *    transactions stay single-threaded.
  *  @author Ash Vardanian
  *  @file include/smashtable/locked_store.hpp
  *  @date October 13, 2022
@@ -240,6 +240,9 @@ class locked_store {
             transaction.erase_from(key, callback);
             transaction.erase_up_to(key, callback);
         };
+    /** @brief Whether the wrapped transaction stages a tombstone for every member it reads. */
+    static constexpr bool inner_transaction_clears_k =
+        requires(inner_transaction_t &transaction) { transaction.clear(); };
     /** @brief Whether the wrapped transaction revises a window of its own members. */
     static constexpr bool inner_transaction_revises_range_k =
         requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
@@ -264,6 +267,13 @@ class locked_store {
             transaction.lower_bound(key, callback, callback);
         };
 
+    /** @brief Whether an open transaction answers by ordinal, which only an order-statistics core does. */
+    static constexpr bool inner_transaction_is_ranked_k = requires(
+        inner_transaction_t const &transaction, identifier_t const &key, std::size_t ordinal, no_op_t callback) {
+        transaction.select(ordinal, callback, callback);
+        transaction.rank(key, callback, callback);
+    };
+
     /**
      *  @brief Whether an open transaction can be driven as one part of a sharded commit, which asks
      *    every part whether it may proceed before any of them publishes.
@@ -276,24 +286,14 @@ class locked_store {
         transaction.reset_at(stamp);
     };
 
-    /**
-     *  @brief Whether the wrapped transaction decides and writes in two steps, stamping its own versions.
-     *
-     *  The engines keeping no shared clock split their commit the same way, but publish without being
-     *  handed a stamp - each orders its own versions. A shard set spanning them still has to learn that
-     *  every partition may commit before any of them writes, so this surface has to travel too.
-     */
-    static constexpr bool inner_transaction_splits_commit_k = requires(inner_transaction_t &transaction) {
-        { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
-        transaction.publish_under();
-    };
+    /** @brief Whether the wrapped transaction decides and writes in two steps rather than one. */
+    static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
 
     class transaction_t {
         friend class locked_store;
         /**
-         *  @brief The store this transaction reaches through, held by pointer rather than reference.
-         *    A reference member deletes the defaulted move assignment, and a transaction that moves but
-         *    cannot be move-assigned is one no container can hold.
+         *  @brief The store this transaction reaches through, never null after construction.
+         *    A pointer rather than a reference, which would delete the defaulted move assignment.
          */
         locked_store *store_;
         /** @brief The inner store's own transaction, which stages entirely outside the mutex. */
@@ -446,6 +446,36 @@ class locked_store {
                                                std::forward<callback_missing_type_>(callback_missing));
         }
 
+        /**
+         *  @brief Hands @p callback_found the member this transaction reads at zero-based @p ordinal.
+         *  @param[in] callback_missing Fires when fewer members are there. Must be @c noexcept.
+         */
+        template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                                      callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ranked_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.select(ordinal, std::forward<callback_found_type_>(callback_found),
+                                             std::forward<callback_missing_type_>(callback_missing));
+        }
+
+        /**
+         *  @brief Hands @p callback_found how many members this transaction orders before @p comparable.
+         *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be @c noexcept.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires inner_transaction_is_ranked_k
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.rank(std::forward<comparable_type_>(comparable),
+                                           std::forward<callback_found_type_>(callback_found),
+                                           std::forward<callback_missing_type_>(callback_missing));
+        }
+
         /** @brief Hands @p callback_found the first member at or after @p comparable, or reports none. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -459,7 +489,10 @@ class locked_store {
                                                   std::forward<callback_missing_type_>(callback_missing));
         }
 
-        /** @brief Hands @p callback every member equal to @p comparable, this transaction's writes included. */
+        /**
+         *  @brief Hands @p callback every member equal to @p comparable, this transaction's writes included.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
             requires inner_transaction_matches_equals_k
@@ -469,7 +502,10 @@ class locked_store {
                                                   std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's writes included. */
+        /**
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's writes included.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -480,7 +516,10 @@ class locked_store {
                                             std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member at or after @p lower, with no upper end. */
+        /**
+         *  @brief Hands @p callback every member at or after @p lower, with no upper end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
             requires inner_transaction_walks_open_range_k
@@ -490,7 +529,10 @@ class locked_store {
                                                  std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end. */
+        /**
+         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires inner_transaction_walks_open_range_k
@@ -500,7 +542,10 @@ class locked_store {
                                                   std::forward<callback_type_>(callback));
         }
 
-        /** @brief Hands @p callback every member this transaction reads, in whatever order the store keeps. */
+        /**
+         *  @brief Hands @p callback every member this transaction reads, in whatever order the store keeps.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
             requires inner_transaction_enumerates_k
@@ -575,6 +620,14 @@ class locked_store {
             unique_lock _ {store_->mutex_};
             return inner_transaction_.erase_up_to(std::forward<upper_type_>(upper),
                                                   std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Stages a tombstone for every member this transaction reads. */
+        [[nodiscard]] status_t clear() noexcept
+            requires inner_transaction_clears_k
+        {
+            unique_lock _ {store_->mutex_};
+            return inner_transaction_.clear();
         }
 
         /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
@@ -972,8 +1025,8 @@ class locked_store {
 
     /**
      *  @brief Removes the smallest member and hands it over, or reports the store is empty.
-     *  The choice and the removal happen under one exclusive hold, so no writer can take the member
-     *  between the two.
+     *    The choice and the removal happen under one exclusive hold, so no writer can take the member
+     *    between the two.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
@@ -1056,6 +1109,10 @@ class locked_store {
                                         std::forward<callback_missing_type_>(callback_missing));
     }
 
+    /**
+     *  @brief Hands @p callback every member of [ @p lower, @p upper ), the walk under one shared hold.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -1116,6 +1173,9 @@ class locked_store {
      *  The one walk an unordered core can offer, and the whole of it runs under one shared lock, so a
      *  writer is held off for its length and the enumeration is a consistent snapshot: every element
      *  present when the call began is visited exactly once, and no element inserted during it is seen.
+     *
+     *  @note A callback answering @c walk_control_t stops the walk where it says to, which also ends
+     *    the shared hold early.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
@@ -1213,7 +1273,10 @@ class locked_store {
                                              std::forward<output_iterator_type_>(reservoir));
     }
 
-    /** @brief Hands @p callback every member equal to @p comparable, which for a unique-key store is one or none. */
+    /**
+     *  @brief Hands @p callback every member equal to @p comparable, which for a unique-key store is one or none.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
         requires inner_matches_equals_k

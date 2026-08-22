@@ -6,6 +6,7 @@
  *  @date January 12, 2023
  */
 #pragma once
+#include <compare> // `std::compare_three_way`
 #include <utility> // `std::move`
 #include <vector>  // `std::vector`
 
@@ -31,12 +32,20 @@ using parity_snapshot_map_t = snapshot_avl_map<std::uint64_t, std::uint64_t>;
 using parity_monotonic_map_t = monotonic_avl_map<std::uint64_t, std::uint64_t>;
 using parity_serializable_map_t = serializable_avl_map<std::uint64_t, std::uint64_t>;
 
+/** Weight-balanced rather than AVL, so the ordinal pairs are asked of a core that keeps subtree counts. */
+using parity_snapshot_ranked_map_t = snapshot_wb_map<std::uint64_t, std::uint64_t>;
+using parity_monotonic_ranked_map_t = monotonic_wb_map<std::uint64_t, std::uint64_t>;
+
 static_assert(transaction_mirrors_the_store<parity_snapshot_map_t>,
               "a snapshot store's transaction must mirror the store it opens on");
 static_assert(transaction_mirrors_the_store<parity_monotonic_map_t>,
               "a monotonic store's transaction must mirror the store it opens on");
 static_assert(transaction_mirrors_the_store<parity_serializable_map_t>,
               "a serializable store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_snapshot_ranked_map_t>,
+              "a ranked store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_monotonic_ranked_map_t>,
+              "a ranked store's transaction must mirror the store it opens on");
 
 static_assert(wrappers_honour_the_level<parity_serializable_map_t>,
               "a wrapper reporting a level must forward the surface that level is defined by");
@@ -54,6 +63,13 @@ inline constexpr isolation_t repeatable_reads_from_k = isolation_t::snapshot_k;
 
 /** @brief The level at which a predicate repeated inside one transaction must see the same members. */
 inline constexpr isolation_t stable_predicates_from_k = isolation_t::snapshot_k;
+
+/**
+ *  @brief The level at which one commit reaches a reader whole, rather than half of it at a time.
+ *    Below it a walk spanning several partitions is free to meet two commits at once, and the suite
+ *    asserts that it does - which is the anomaly Monotonic Atomic View is named for denying.
+ */
+inline constexpr isolation_t whole_commits_from_k = isolation_t::monotonic_atomic_view_k;
 
 /**
  *  @brief The level at which two blind writers to one key are separated, rather than one overwriting
@@ -91,7 +107,7 @@ void test_empty_transaction_commit() {
 
     container_t container;
     auto transaction = container.transaction();
-    transaction.has_value();
+    st_verify_(transaction.has_value());
 
     // Don't add anything, just commit
     st_verify_(transaction->stage());
@@ -237,7 +253,7 @@ void test_multi_key_atomicity_10_keys() {
 
     container_t container;
     auto transaction = container.transaction();
-    transaction.has_value();
+    st_verify_(transaction.has_value());
 
     // Insert 10 keys in transaction
     for (std::size_t i = 0; i < 10; ++i) st_verify_(transaction->upsert(trivial_id_to_member<member_t>(i, i * 10)));
@@ -462,14 +478,11 @@ void test_sequential_updates_never_regress() {
     st_verify_(container.find(trivial_id_to_key<member_t>(1),
                               [&](member_t const &e) noexcept { observed_values.push_back(e.mapped); }));
 
-    // Verify monotonicity: each value >= previous
+    // Each read answered the write before it, so these three are the sequence in the order it was written.
     st_verify_eq_(observed_values.size(), 3);
     st_verify_eq_(observed_values[0], 10);
     st_verify_eq_(observed_values[1], 20);
     st_verify_eq_(observed_values[2], 30);
-
-    for (size_t i = 1; i < observed_values.size(); ++i)
-        st_verify_ge_(observed_values[i], observed_values[i - 1], "monotonic violation, the value went backwards");
 }
 
 /**
@@ -502,11 +515,10 @@ void test_transaction_commits_maintain_order() {
     st_verify_(t2->stage());
     st_verify_(t2->commit());
 
-    // Observe T2's value - should be >= T1's value
+    // Observe T2's value, which is the later of the two commits and so the one that stands
     auto val2 = container.find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(val2.has_value());
     st_verify_eq_(val2->mapped, 200);
-    st_verify_ge_(val2->mapped, val1->mapped, "monotonic violation across transactions");
 }
 
 /**
@@ -801,14 +813,9 @@ void test_repeated_range_matches_isolation() {
 
     std::size_t const second_count = count_present();
 
-    if constexpr (at_least(container_t::isolation_k, stable_predicates_from_k)) {
+    if constexpr (at_least(container_t::isolation_k, stable_predicates_from_k))
         st_verify_eq_((second_count), (5), "a snapshot must not admit phantoms");
-        st_verify_eq_(first_count, second_count);
-    }
-    else {
-        st_verify_eq_((second_count), (7), "below snapshot, a repeated predicate sees the newest commits");
-        st_verify_gt_(second_count, first_count);
-    }
+    else st_verify_eq_((second_count), (7), "below snapshot, a repeated predicate sees the newest commits");
 }
 
 /**
@@ -1210,7 +1217,7 @@ void test_stateful_comparator_is_consulted() {
     // Above every key, so the first strict successor under a descending order is the largest key.
     constexpr std::size_t above_every_key_k = 1000;
 
-    auto built = make_around_comparator<container_type_>(comparator_t {ordering_t::descending_k});
+    auto built = make_around_comparator<container_type_>(comparator_t {stateful_comparator_ordering_t::descending_k});
     st_verify_(built.has_value() && "a container must be constructible around a comparator instance");
     auto &container = *built;
 
@@ -1388,6 +1395,46 @@ void test_watch_on_erased_key_can_commit() {
 }
 
 /**
+ *  @brief A watch on an absent key must refuse once that key is inserted and erased under it.
+ *
+ *  Both ends resolve to absence, so a watch comparing only presence matches itself across two commits
+ *  it never saw. What separates them is the generation the committed tombstone carries, which is why
+ *  absence is dated rather than spelled as one constant.
+ *
+ *  @warning An erase taken outside a transaction drops the entry rather than tombstoning it, so this
+ *    schedule is invisible below @c snapshot_k when the outsider writes through the store directly.
+ */
+template <typename container_type_>
+void test_watch_catches_an_insert_and_erase_under_it() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+
+    container_t container;
+    st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 100)));
+
+    auto observer = container.transaction();
+    st_verify_(observer->watch(trivial_id_to_key<member_t>(7)));
+
+    {
+        auto outsider = container.transaction();
+        st_verify_(outsider->upsert(trivial_id_to_member<member_t>(7, 700)));
+        st_verify_(outsider->stage());
+        st_verify_(outsider->commit());
+    }
+    {
+        auto outsider = container.transaction();
+        st_verify_(outsider->erase(trivial_id_to_key<member_t>(7)));
+        st_verify_(outsider->stage());
+        st_verify_(outsider->commit());
+    }
+
+    st_verify_(observer->upsert(trivial_id_to_member<member_t>(1, 200)));
+    st_verify_eq_(observer->stage(), status_t::read_conflict_k,
+                  "two commits landed under a watched absence, which it must not read as unchanged");
+}
+
+/**
  *  @brief A watch on an absent key must still match itself after a rollback.
  *    Rollback hands the transaction a new generation, so anchoring absence to the transaction's own
  *    generation would silently invalidate every absent watch it deliberately preserves.
@@ -1451,29 +1498,32 @@ void test_group_commits_participants_together() {
 }
 
 /**
- *  @brief When one participant refuses to stage, no participant is left staged.
+ *  @brief Drives one refused group stage, with @p refusing_index_ naming the participant that refuses.
  *
- *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made are
- *  still pending afterwards and the group can be retried without rebuilding them.
+ *  The caller picks that index from the store addresses rather than from the argument order, because
+ *  the group stages ascending by address and only a refusal above the first one leaves a staged
+ *  prefix for the undo to walk.
  */
-template <typename container_type_>
-void test_group_unwinds_every_participant_on_conflict() {
+template <std::size_t refusing_index_, typename container_type_>
+void verify_group_unwind_refused_at(container_type_ &first, container_type_ &second) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
+    constexpr std::size_t surviving_index_k = 1 - refusing_index_;
 
-    container_t first, second;
-    st_verify_(second.upsert(trivial_id_to_member<member_t>(7, 700)));
+    container_t &refusing = refusing_index_ == 0 ? first : second;
+    container_t &surviving = surviving_index_k == 0 ? first : second;
+    st_verify_(refusing.upsert(trivial_id_to_member<member_t>(7, 700)));
 
     auto group = make_transaction_group(first, second);
     st_verify_(group.has_value());
-    st_verify_(group->template participant<1>().watch(trivial_id_to_key<member_t>(7)));
-    st_verify_(group->template participant<0>().upsert(trivial_id_to_member<member_t>(3, 300)));
-    st_verify_(group->template participant<1>().upsert(trivial_id_to_member<member_t>(4, 400)));
+    st_verify_(group->template participant<refusing_index_>().watch(trivial_id_to_key<member_t>(7)));
+    st_verify_(group->template participant<surviving_index_k>().upsert(trivial_id_to_member<member_t>(3, 300)));
+    st_verify_(group->template participant<refusing_index_>().upsert(trivial_id_to_member<member_t>(4, 400)));
 
     // Move the watched key from outside, so this group's stage must be refused.
     {
-        auto interloper = second.transaction();
+        auto interloper = refusing.transaction();
         st_verify_(interloper->upsert(trivial_id_to_member<member_t>(7, 777)));
         st_verify_(interloper->stage());
         st_verify_(interloper->commit());
@@ -1484,11 +1534,42 @@ void test_group_unwinds_every_participant_on_conflict() {
     st_verify_eq_(status, status_t::read_conflict_k);
 
     // Nothing may be left staged in the participant that did succeed.
-    st_verify_(group->reset());
-    st_verify_((!first.find_copy(trivial_id_to_key<member_t>(3)).has_value()) &&
+    st_verify_((!surviving.find_copy(trivial_id_to_key<member_t>(3)).has_value()) &&
                "a refused group must leave no participant staged");
-    st_verify_((!second.find_copy(trivial_id_to_key<member_t>(4)).has_value()) &&
+    st_verify_((!refusing.find_copy(trivial_id_to_key<member_t>(4)).has_value()) &&
                "a refused group must leave no participant staged");
+
+    // A reset would have emptied the change set, and leaving the prefix staged would have moved it
+    // into the store, so a pending write here is what says the undo rolled back.
+    st_verify_ne_(group->template participant<surviving_index_k>().changes_count(), std::size_t {0},
+                  "an unwound participant must keep the writes it staged");
+
+    // Retrying is what the surviving writes were kept for, sharded or not - a rollback keeps the
+    // partition marks precisely so the next stage has somewhere to put them.
+    st_verify_(group->template participant<refusing_index_>().reset());
+    st_verify_(group->stage());
+    st_verify_(group->commit());
+    auto republished = surviving.find_copy(trivial_id_to_key<member_t>(3));
+    st_verify_((republished.has_value()) && "a rolled-back write must publish on the retry");
+    st_verify_eq_((republished->mapped), (300), "a rolled-back write must publish the value it carried");
+}
+
+/**
+ *  @brief When one participant refuses to stage, no participant is left staged.
+ *
+ *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made are
+ *  still pending afterwards and the group can be retried without rebuilding them.
+ */
+template <typename container_type_>
+void test_group_unwinds_every_participant_on_conflict() {
+
+    container_type_ first, second;
+
+    // Ordered by the same total order the group's own constructor asks for, since a builtin `>` over
+    // pointers into unrelated objects is unspecified and would leave the undo untested on some layouts.
+    if (std::compare_three_way {}(static_cast<void const *>(&second), static_cast<void const *>(&first)) > 0)
+        verify_group_unwind_refused_at<1>(first, second);
+    else verify_group_unwind_refused_at<0>(first, second);
 }
 
 #pragma endregion Transaction Groups

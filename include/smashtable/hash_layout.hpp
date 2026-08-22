@@ -60,10 +60,11 @@ inline constexpr std::size_t hash_bucket_capacity_k = 32;
 
 /**
  *  @brief Bucket header containing metadata for @c hash_bucket_capacity_k slots.
- *    Stores two parallel 32-bit bitmasks (population and deletion states) that combine to encode
- *    four possible states per slot using 2 bits each.
+ *
+ *  Two parallel 32-bit bitmasks - population and deletion - give each slot two bits, and so four states.
  *
  *  @section hash_layout_slot_state_encoding Slot State Encoding
+ *
  *  Each slot's state is determined by corresponding bits in both masks:
  *  - @c 00 (populations=0, deletions=0): Free slot, never used or fully freed
  *  - @c 01 (populations=0, deletions=1): Deleted slot, tombstone from lazy deletion
@@ -127,8 +128,9 @@ constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t ma
 
 /**
  *  @brief Scaling schema that computes the required number of slots for a target element count.
- *    Enforces a 75% maximum load factor (4/3 multiplier) to prevent pathological linear probing behavior.
- *    All slot counts are rounded up to powers of two to enable fast modulo operations via bitwise AND masks.
+ *
+ *  Caps the load factor at 75%, through a 4/3 multiplier, so linear probing cannot degenerate, and rounds
+ *  every slot count up to a power of two so the modulo is a bitwise AND.
  *
  *  @note The 75% load factor strikes a balance between memory efficiency and probe length:
  *    - Too high (>85%): Linear probing degrades into long search chains
@@ -186,8 +188,9 @@ struct hash_slots_count_t {
 
 /**
  *  @brief Metadata extraction template that derives type information for hash table elements.
- *    Computes element types, sizes, and alignment requirements from element/hasher template parameters.
- *    Uses the hasher's return type as @c offset_t for slot indexing (typically @c std::size_t).
+ *
+ *  Computes element types, sizes and alignment requirements from the element and hasher parameters, and
+ *  takes the hasher's return type as the @c offset_t that indexes slots.
  *
  *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, must be callable with the key type.
@@ -485,16 +488,18 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
 #pragma region Bucket Algorithms
 
 /**
- *  @brief Iterates over all populated slots in a bucket using optimized bit-scanning.
- *    More efficient than sequential iteration as it skips empty/deleted slots by analyzing
- *    the population bitmap with @c countr_zero.
+ *  @brief Iterates over the populated slots of a bucket by scanning its population bitmap.
+ *
+ *  Skips empty and deleted slots outright through @c countr_zero, rather than walking every one.
  *
  *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified
  *    during iteration to point to each populated slot sequentially.
  *  @param[in] callback Functor invoked for each populated slot, receiving @c hash_slot_ref.
+ *  @return Whether the bucket ran out or a halting callback stopped the walk first.
  */
 template <typename element_type_, typename hasher_type_, typename callback_type_>
-void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, callback_type_ &&callback) noexcept {
+walk_control_t for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot,
+                                       callback_type_ &&callback) noexcept {
 
     using offset_t = typename hash_slot_ref<element_type_, hasher_type_>::offset_t;
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
@@ -506,38 +511,10 @@ void for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, c
     while (populations_left) {
         offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
         slot.slot_ = bucket_start + index_in_bucket;
-        callback(slot);
+        if (hand_over(callback, slot) == walk_control_t::halt_k) return walk_control_t::halt_k;
         populations_left &= populations_left - 1;
     }
-}
-
-/**
- *  @brief Searches for an element within a bucket using optimized bit-scanning.
- *    Stops iteration early when the predicate returns @c true.
- *
- *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified
- *    during iteration to point to each populated slot until a match is found.
- *  @param[in] predicate Functor invoked for each populated slot. Must return @c true if the
- *    element matches (terminating the search) or @c false to continue.
- *  @return True if a matching element was found, false otherwise.
- */
-template <typename element_type_, typename hasher_type_, typename predicate_type_>
-bool find_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, predicate_type_ &&predicate) noexcept {
-
-    using offset_t = typename hash_slot_ref<element_type_, hasher_type_>::offset_t;
-    offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
-
-    hash_bucket_head_t const &head = slot.header_ref();
-    assert(!(head.lanes.populations & head.lanes.deletions) &&
-           "A locked slot would be skipped: this walk is only sound on a table nobody is probing");
-    hash_bucket_mask_t populations_left = head.lanes.populations & ~head.lanes.deletions;
-    while (populations_left) {
-        offset_t const index_in_bucket = static_cast<offset_t>(countr_zero(populations_left));
-        slot.slot_ = bucket_start + index_in_bucket;
-        if (predicate(slot)) return true;
-        populations_left &= populations_left - 1;
-    }
-    return false;
+    return walk_control_t::resume_k;
 }
 
 #pragma endregion Bucket Algorithms
@@ -546,10 +523,11 @@ bool find_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot, predi
 
 /**
  *  @brief The one allocation a table is carved from, and the counters describing it.
- *    Owns the buffer and the elements inside it, and frees both, so a table holding one needs no
- *    destructor of its own. This is also the only thing that passes between a growable table and a
- *    pinned one, which is what lets that hand-off be a move of a value rather than one type reaching
- *    into the other.
+ *
+ *  Owns the buffer and the elements inside it, and frees both, so a table holding one needs no
+ *  destructor of its own. This is also the only thing that passes between a growable table and a pinned
+ *  one, which is what lets that hand-off be a move of a value rather than one type reaching into the
+ *  other.
  *
  *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.

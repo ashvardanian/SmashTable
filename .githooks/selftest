@@ -123,7 +123,7 @@ assert_message_accepts() { # assert_message_accepts <label> <<< message
 
 # region Pre-commit fixtures
 
-assert_rejects "ascii arrows" "ASCII '->' arrow" src/probe.hpp <<'FIXTURE'
+assert_rejects "ascii arrows" "writes an arrow as '->'" src/probe.hpp <<'FIXTURE'
 /** @brief Maps a key -> a value. */
 int probe();
 FIXTURE
@@ -232,6 +232,27 @@ assert_rejects "bare @section" "@section without an anchor" src/probe.hpp <<'FIX
 /**
  *  @brief A probe.
  *  @section Overview
+ */
+void probe();
+FIXTURE
+
+assert_rejects "@section run into its body" "runs an @section into its body" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *
+ *  @section probe_overview Overview
+ *  Doxygen swallows this line into the title unless a blank line separates them.
+ */
+void probe();
+FIXTURE
+
+assert_accepts "@section separated from its body" src/probe.hpp <<'FIXTURE'
+/**
+ *  @brief A probe.
+ *
+ *  @section probe_overview Overview
+ *
+ *  A blank line keeps the title a title.
  */
 void probe();
 FIXTURE

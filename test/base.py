@@ -5,8 +5,8 @@ Baselines:
     rather than by repr, since only the sorted pair has a defined order.
 
 Matches C++ suite:
-    scripts/test_basic.hpp and scripts/test_consistency.hpp, which check the same invariants
-    one layer down.
+    the fixture half of scripts/test_basic.hpp, which builds the same matrices for the layer
+    below. This module declares no test of its own; the suites that import it hold those.
 
 Run:
     python -m pytest test/ -v
@@ -15,6 +15,7 @@ Run:
 """
 
 import dataclasses
+import enum
 import math
 import random
 import sys
@@ -38,10 +39,13 @@ set_class_names = [
     pytest.param("HashSet", id="hashset"),  # phase 2
 ]
 all_class_names = map_class_names + set_class_names
+# Every container the stub declares, whether or not this build exports it yet.
+container_class_names = ("SortedMap", "SortedSet", "HashMap", "HashSet")
 sorted_map_names = [map_class_names[0]]
 sorted_set_names = [set_class_names[0]]
 sorted_class_names = [map_class_names[0], set_class_names[0]]
 hash_map_names = [map_class_names[1]]
+hash_set_names = [set_class_names[1]]
 
 # Classes whose contents can be walked, which is what the structural oracle needs: it compares
 # against `dict` and `set`, and cannot run against a container it cannot enumerate.
@@ -80,6 +84,8 @@ isolation_levels = [
     pytest.param("serializable", id="serializable"),
     pytest.param("strict_serializable", id="strict"),
 ]
+# The levels whose reader answers at a stamp, which is what lets its reads repeat.
+stamped_isolation_levels = ("snapshot", "serializable", "strict_serializable")
 sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
 # endregion Matrices
@@ -108,12 +114,17 @@ def skip_unless_free_threaded() -> None:
 
 def exported_container_names() -> list[str]:
     """Which container classes this build actually ships."""
-    return [name for name in ("SortedMap", "SortedSet", "HashMap", "HashSet") if hasattr(st, name)]
+    return [name for name in container_class_names if hasattr(st, name)]
 
 
 def is_sorted_class(container_class: type) -> bool:
     """Whether iteration over this class promises key order."""
     return container_class.__name__.startswith("Sorted")
+
+
+def ordering_of(container_class: type) -> str:
+    """Named ordering of this class: "ordered" carries `popmin`, "unordered" does not."""
+    return "ordered" if is_sorted_class(container_class) else "unordered"
 
 
 def is_map_class(container_class: type) -> bool:
@@ -198,7 +209,7 @@ def effective_isolation(isolation: str, sharing: str) -> str:
     The single place the cap is spelled, so a core that changes what it can carry is one edit here
     rather than a sweep through the suite.
     """
-    if isolation in ("snapshot", "serializable", "strict_serializable"):
+    if isolation in stamped_isolation_levels:
         return isolation
     return "read_committed" if sharing == "partitioned" else "monotonic_atomic_view"
 
@@ -238,12 +249,30 @@ def _category(error: BaseException) -> type:
     raise AssertionError(f"unclassifiable error {error!r}")
 
 
-def outcome(call):
-    """`('ok', value)` or `('raised', KeyError)` - never a traceback escaping into the diff."""
+class Verdict(enum.Enum):
+    """Whether a call answered with a value or raised."""
+
+    returned = enum.auto()
+    raised = enum.auto()
+
+
+@dataclasses.dataclass(frozen=True)
+class Outcome:
+    """What one call did: the value it returned, or the stdlib family of the error it raised."""
+
+    verdict: Verdict
+    value: object
+
+    def __str__(self) -> str:
+        return f"{self.verdict.name} {self.value!r}"
+
+
+def outcome(call) -> Outcome:
+    """What `call` did, with an error reduced to its family - never a traceback in the diff."""
     try:
-        return ("ok", call())
+        return Outcome(Verdict.returned, call())
     except Exception as error:  # noqa: BLE001 - classification is the point
-        return ("raised", _category(error))
+        return Outcome(Verdict.raised, _category(error))
 
 
 def same_scalar(left, right) -> bool:
@@ -265,10 +294,21 @@ def same_scalar(left, right) -> bool:
 def same_result(left, right) -> bool:
     """Compares two returned values, descending into tuples so `popmin` pairs compare exactly."""
     if isinstance(left, tuple) and isinstance(right, tuple):
-        return len(left) == len(right) and all(same_result(a, b) for a, b in zip(left, right))
+        return len(left) == len(right) and all(same_result(one, other) for one, other in zip(left, right))
     if left is None or right is None:
         return left is right
     return same_scalar(left, right)
+
+
+class Compare(enum.Enum):
+    """How an op's returned value is held against the model's.
+
+    `any_member` is what `popmin` needs: only an ordered class promises which element it takes, so
+    the model is advanced to match the container's choice rather than run independently.
+    """
+
+    exact = enum.auto()
+    any_member = enum.auto()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -277,7 +317,7 @@ class Op:
 
     name: str
     args: tuple = ()
-    compare: str = "exact"  # "exact" | "member" | "ignore"
+    compare: Compare = Compare.exact
 
     def __str__(self) -> str:
         return f"{self.name}{self.args!r}"
@@ -324,21 +364,18 @@ def is_enumerable(container) -> bool:
 def assert_same_state(container, model) -> None:
     """Everything the container can be asked, asked of the model too.
 
-    Iteration is walked on every call rather than in a handful of dedicated tests, so the lazy
-    cursor is exercised thousands of times across a run.
-
-    A container that cannot enumerate itself is compared by length and by probing every key the
-    model holds. That is an equivalence rather than a weaker check: matching lengths mean the
-    container holds no key the model does not, so proving every model key present with the right
-    value proves the two agree.
+    A container that cannot be walked is pinned by its length and by probing every model key,
+    which is an equivalence rather than a weaker check: equal lengths leave the container no room
+    to hold a key the model does not.
     """
     assert len(container) == len(model), f"len {len(container)} vs {len(model)}"
+    for key in model:
+        assert key in container, f"model key {key!r} is absent from the container"
 
     if not is_enumerable(container):
-        for key in model:
-            assert key in container, f"model key {key!r} is absent from the container"
-            if isinstance(model, dict):
-                assert same_scalar(container[key], model[key]), f"{key!r}: {container[key]!r} vs {model[key]!r}"
+        if isinstance(model, dict):
+            for key, value in model.items():
+                assert same_scalar(container[key], value), f"{key!r}: {container[key]!r} vs {value!r}"
         return
 
     walked = list(container)
@@ -358,82 +395,74 @@ def assert_same_state(container, model) -> None:
     if is_sorted_class(type(container)):
         assert walked == sorted(model), "a sorted container iterated out of order"
 
-    for key in model:
-        assert key in container, f"model key {key!r} missing from the container"
-
 
 def apply_op(container, model, op: Op) -> None:
     """Runs `op` on both sides and asserts they agreed, on the value and on the state."""
     dispatch = run_map if isinstance(model, dict) else run_set
     got = outcome(lambda: dispatch(container, op))
 
-    if op.compare == "member":
-        # `popmin` removes *some* element; only the sorted classes promise which one, so the
-        # model is advanced to match the container's choice rather than run independently.
-        assert got[0] == "ok" or len(model) == 0, f"{op}: {got}"
-        if got[0] == "ok":
-            taken = got[1][0] if isinstance(got[1], tuple) else got[1]
+    if op.compare is Compare.any_member:
+        if got.verdict is Verdict.raised:
+            assert len(model) == 0, f"{op}: raised on a non-empty container"
+        else:
+            taken = got.value[0] if isinstance(got.value, tuple) else got.value
             assert taken in model, f"{op}: invented element {taken!r}"
             model.pop(taken) if isinstance(model, dict) else model.discard(taken)
-        else:
-            assert len(model) == 0, f"{op}: raised on a non-empty container"
     else:
         want = outcome(lambda: dispatch(model, op))
-        assert got[0] == want[0], f"{op}: container {got} vs model {want}"
-        if got[0] == "ok" and op.compare == "exact":
-            assert same_result(got[1], want[1]), f"{op}: returned {got[1]!r}, model returned {want[1]!r}"
+        assert got.verdict is want.verdict, f"{op}: container {got} vs model {want}"
+        if got.verdict is Verdict.returned:
+            assert same_result(got.value, want.value), f"{op}: returned {got.value!r}, model returned {want.value!r}"
+        else:
+            assert got.value is want.value, f"{op}: raised {got.value.__name__}, model raised {want.value.__name__}"
 
     assert_same_state(container, model)
 
 
-def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: int) -> list[Op]:
-    """A weighted walk over the mapping surface, biased toward mutation and toward key reuse."""
-    ops: list[Op] = []
-    for _ in range(count):
-        key = rng.choice(keys)
-        roll = rng.random()
-        if roll < 0.30:
-            ops.append(Op("setitem", (key, rng.choice(values))))
-        elif roll < 0.42:
-            ops.append(Op("delitem", (key,)))
-        elif roll < 0.52:
-            ops.append(Op("pop", (key, rng.choice(values))))
-        elif roll < 0.60:
-            ops.append(Op("setdefault", (key, rng.choice(values))))
-        elif roll < 0.66:
-            ops.append(Op("popmin", (), compare="member"))
-        elif roll < 0.70:
-            ops.append(Op("update", ({other: rng.choice(values) for other in rng.sample(list(keys), 3)},)))
-        elif roll < 0.72:
-            ops.append(Op("clear", ()))
-        elif roll < 0.86:
-            ops.append(Op("getitem", (key,)))
-        else:
-            ops.append(Op("get", (key, rng.choice(values))))
-    return ops
+def random_map_ops(rng: random.Random, keys: Sequence, values: Sequence, count: int, *, ordering: str) -> list[Op]:
+    """A weighted walk over the mapping surface, biased toward mutation and toward key reuse.
+
+    `ordering` is what `ordering_of` reports: only an ordered store carries `popmin`, so an
+    unordered one spends that share on a read instead of dropping the op and shortening the walk.
+    """
+    popmin_or_contains = (
+        (lambda key: Op("popmin", (), compare=Compare.any_member))
+        if ordering == "ordered"
+        else (lambda key: Op("contains", (key,)))
+    )
+    weighted = (
+        (30, lambda key: Op("setitem", (key, rng.choice(values)))),
+        (12, lambda key: Op("delitem", (key,))),
+        (10, lambda key: Op("pop", (key, rng.choice(values)))),
+        (8, lambda key: Op("setdefault", (key, rng.choice(values)))),
+        (6, popmin_or_contains),
+        (4, lambda key: Op("update", ({other: rng.choice(values) for other in rng.sample(keys, 3)},))),
+        (2, lambda key: Op("clear", ())),
+        (14, lambda key: Op("getitem", (key,))),
+        (14, lambda key: Op("get", (key, rng.choice(values)))),
+    )
+    weights, factories = zip(*weighted)
+    return [rng.choices(factories, weights)[0](rng.choice(keys)) for _ in range(count)]
 
 
-def random_set_ops(rng: random.Random, members: Sequence, count: int) -> list[Op]:
-    """The same walk over the set surface."""
-    ops: list[Op] = []
-    for _ in range(count):
-        member = rng.choice(members)
-        roll = rng.random()
-        if roll < 0.40:
-            ops.append(Op("add", (member,)))
-        elif roll < 0.55:
-            ops.append(Op("discard", (member,)))
-        elif roll < 0.62:
-            ops.append(Op("remove", (member,)))
-        elif roll < 0.68:
-            ops.append(Op("popmin", (), compare="member"))
-        elif roll < 0.72:
-            ops.append(Op("update", (rng.sample(list(members), 3),)))
-        elif roll < 0.74:
-            ops.append(Op("clear", ()))
-        else:
-            ops.append(Op("contains", (member,)))
-    return ops
+def random_set_ops(rng: random.Random, members: Sequence, count: int, *, ordering: str) -> list[Op]:
+    """The same walk over the set surface, with the same `ordering` rule for `popmin`."""
+    popmin_or_contains = (
+        (lambda member: Op("popmin", (), compare=Compare.any_member))
+        if ordering == "ordered"
+        else (lambda member: Op("contains", (member,)))
+    )
+    weighted = (
+        (40, lambda member: Op("add", (member,))),
+        (15, lambda member: Op("discard", (member,))),
+        (7, lambda member: Op("remove", (member,))),
+        (6, popmin_or_contains),
+        (4, lambda member: Op("update", (rng.sample(members, 3),))),
+        (2, lambda member: Op("clear", ())),
+        (26, lambda member: Op("contains", (member,))),
+    )
+    weights, factories = zip(*weighted)
+    return [rng.choices(factories, weights)[0](rng.choice(members)) for _ in range(count)]
 
 
 def replay(container, model, ops: Iterable[Op]) -> None:
@@ -446,3 +475,74 @@ def replay(container, model, ops: Iterable[Op]) -> None:
 
 
 # endregion Oracle
+
+
+# region Groups
+
+
+@dataclasses.dataclass(frozen=True)
+class Participant:
+    """One container in a group, beside the stdlib model standing in for it."""
+
+    container: object
+    model: object
+    keys: Sequence
+    values: Sequence
+
+    @property
+    def is_map(self) -> bool:
+        return isinstance(self.model, dict)
+
+
+def make_participants(rng: random.Random, specs: Sequence[tuple], count_each: int = 12) -> list[Participant]:
+    """Builds one participant per spec, each a `(class_name, key_type, value_mode, isolation, sharing)`.
+
+    Mixing the specs is the point: a group spanning a sorted map and a hashed set, or a scalar
+    container and an object one, exercises the group-wide passes that pick the strictest mode and
+    the canonical order, which a group of identical containers cannot.
+    """
+    participants = []
+    for class_name, key_type, value_mode, isolation, sharing in specs:
+        container_class = getattr(st, class_name)
+        container = make(container_class, key_type, value_mode, isolation, sharing)
+        keys = make_keys(key_type, count_each, rng)
+        values = [rng.randrange(1000) for _ in range(count_each)]
+        model = {} if is_map_class(container_class) else set()
+        participants.append(Participant(container, model, keys, values))
+    return participants
+
+
+def stage_group_writes(views, participants: Sequence[Participant], shadows, rng: random.Random) -> None:
+    """Writes a random batch through every view, advancing the shadow model in step."""
+    for view, participant, shadow in zip(views, participants, shadows):
+        for _ in range(rng.randint(1, 4)):
+            key = rng.choice(participant.keys)
+            if participant.is_map:
+                value = rng.choice(participant.values)
+                view[key] = value
+                shadow[key] = value
+            else:
+                view.add(key)
+                shadow.add(key)
+
+
+def assert_group_state(participants: Sequence[Participant]) -> None:
+    """Every participant agrees with its own model, which is what all-or-nothing means here."""
+    for index, participant in enumerate(participants):
+        try:
+            assert_same_state(participant.container, participant.model)
+        except AssertionError as error:
+            raise AssertionError(f"participant {index} diverged\n{error}") from None
+
+
+def shadows_of(participants: Sequence[Participant]) -> list[dict | set]:
+    """A copy of every model, to be adopted only if the group publishes."""
+    return [dict(one.model) if one.is_map else set(one.model) for one in participants]
+
+
+def adopt_shadows(participants: Sequence[Participant], shadows) -> list[Participant]:
+    """Replaces each participant's model with the shadow the round advanced."""
+    return [dataclasses.replace(one, model=shadow) for one, shadow in zip(participants, shadows)]
+
+
+# endregion Groups

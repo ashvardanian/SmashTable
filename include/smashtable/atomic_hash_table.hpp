@@ -1,5 +1,5 @@
 /**
- *  @brief A pinned open-addressed hash table: fixed capacity, per-operation atomicity, no iterators.
+ *  @brief A pinned open-addressed hash table: fixed capacity, per-slot atomicity, no iterators.
  *  @author Ash Vardanian
  *  @file include/smashtable/atomic_hash_table.hpp
  *  @date December 21, 2021
@@ -66,7 +66,8 @@ namespace ashvardanian::smashtable {
 #pragma region Atomic Table
 
 /**
- *  @brief A fixed-capacity open-addressed table, atomic per operation through per-slot spin locks.
+ *  @brief A fixed-capacity open-addressed table whose operations are atomic over the slot they touch,
+ *    through per-slot spin locks, and over nothing wider.
  *
  *  Built by adopting an allocation someone else sized, which is what guarantees the capacity was
  *  reserved before any thread could observe the table.

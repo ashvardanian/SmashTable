@@ -22,7 +22,9 @@ from .base import (
     isolation_levels,
     key_types,
     make,
+    populate,
     sharing_modes,
+    stamped_isolation_levels,
 )
 
 # region Reporting
@@ -92,11 +94,7 @@ def test_a_non_string_choice_is_refused(container_class, key_type, argument):
 def test_every_configuration_round_trips(container, keygen):
     """Whatever the level and the sharing, the container is still a container."""
     keys = keygen(8)
-    for index, key in enumerate(keys):
-        if hasattr(container, "add"):
-            container.add(key)
-        else:
-            container[key] = index
+    populate(container, keys, range(len(keys)))
     assert len(container) == len(keys)
     for key in keys:
         assert key in container
@@ -162,6 +160,66 @@ def test_monotonic_does_not_repeat_its_reads(keygen):
 
 
 # endregion Guarantees
+
+# region Atomic Reads
+
+
+def _committed_states(scanned) -> set:
+    """The distinct values a read's pairs came from, which is one for a read that did not tear."""
+    return {value for _, value in scanned}
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit mid-walk"
+)
+@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_lazy_walk_tears_where_a_scan_cannot(keygen, isolation, sharing):
+    """A walk straddling a whole-store commit reports both states; a scan answers at one of them.
+
+    `update` stages and commits the batch once, so every key changes together and a read reporting
+    two values assembled its answer out of two committed states.
+    """
+    keys = keygen(64)
+    container = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
+    container.update({key: 0 for key in keys})
+
+    walk = iter(container.items())
+    first = next(walk)
+    container.update({key: 1 for key in keys})
+    torn = [first, *walk]
+
+    assert _committed_states(torn) == {0, 1}, "the cursor is the one walk allowed to straddle a commit"
+    assert _committed_states(container.scan()) == {1}, "a scan answers at the newest state"
+
+
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two reads"
+)
+@pytest.mark.parametrize("sharing", sharing_modes, indirect=True)
+@pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+def test_a_scan_reports_one_committed_state_at_every_level(keygen, isolation, sharing):
+    """Neither scan mixes two states, and the level decides which one the participant reports.
+
+    A stamped participant repeats the state its transaction opened at, so its scan is the one that
+    answers `0` after the container has moved on to `1`.
+    """
+    keys = keygen(64)
+    container = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
+    container.update({key: 0 for key in keys})
+
+    group = st.transaction(container)
+    (view,) = group.begin()
+    container.update({key: 1 for key in keys})
+
+    stamped = effective_isolation(isolation, sharing) in stamped_isolation_levels
+    assert _committed_states(view.scan()) == ({0} if stamped else {1}), "a participant scan straddled the commit"
+    assert _committed_states(container.scan()) == {1}, "a container scan answers at the newest state"
+
+
+# endregion Atomic Reads
 
 # region Write Skew
 
@@ -234,38 +292,28 @@ def test_serializable_refuses_write_skew(keygen):
 # region Refusal Causes
 
 
-def _refusal_of(schedule, keygen) -> BaseException:
-    """Runs a two-transaction schedule at `serializable` and returns what refused the second."""
-    container = make(st.SortedMap, "int", isolation="serializable", sharing="locked")
-    with pytest.raises(st.ConflictError) as refusal:
-        schedule(container, keygen)
-    return refusal.value
-
-
 @pytest.mark.thread_unsafe(
     reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
 )
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_written_key_refuses_by_write_conflict(keygen):
     """Both transactions write one key, so the write set alone catches it."""
+    container = make(st.SortedMap, "int", isolation="serializable", sharing="locked")
+    (key,) = keygen(1)
+    container[key] = 0
 
-    def schedule(container, keygen):
-        (key,) = keygen(1)
-        container[key] = 0
-        hers = st.transaction(container)
-        (her_view,) = hers.begin()
-        his = st.transaction(container)
-        (his_view,) = his.begin()
-        her_view[key] = 10
-        his_view[key] = 20
-        hers.stage()
-        hers.commit()
+    hers = st.transaction(container)
+    (her_view,) = hers.begin()
+    his = st.transaction(container)
+    (his_view,) = his.begin()
+    her_view[key] = 10
+    his_view[key] = 20
+
+    hers.stage()
+    hers.commit()
+    with pytest.raises(st.WriteConflictError):
         his.stage()
         his.commit()
-
-    refusal = _refusal_of(schedule, keygen)
-    assert isinstance(refusal, st.WriteConflictError)
-    assert isinstance(refusal, st.ConflictError), "a caller catching the base must still catch this"
 
 
 @pytest.mark.thread_unsafe(
@@ -278,30 +326,27 @@ def test_a_read_key_refuses_by_read_conflict(keygen):
     The write sets are disjoint, so only validating what was read can refuse this - which is the
     difference `serializable` buys over `snapshot`.
     """
+    container = make(st.SortedMap, "int", isolation="serializable", sharing="locked")
+    read_key, written_key = keygen(2)
+    container[read_key] = 0
+    container[written_key] = 0
 
-    def schedule(container, keygen):
-        read_key, written_key = keygen(2)
-        container[read_key] = 0
-        container[written_key] = 0
-        hers = st.transaction(container)
-        (her_view,) = hers.begin()
-        his = st.transaction(container)
-        (his_view,) = his.begin()
-        his_view[read_key]  # he reads it
-        his_view[written_key] = 5  # and writes somewhere else entirely
-        her_view[read_key] = 10  # she writes what he read
-        hers.stage()
-        hers.commit()
+    hers = st.transaction(container)
+    (her_view,) = hers.begin()
+    his = st.transaction(container)
+    (his_view,) = his.begin()
+    his_view[read_key]  # he reads it
+    his_view[written_key] = 5  # and writes somewhere else entirely
+    her_view[read_key] = 10  # she writes what he read
+
+    hers.stage()
+    hers.commit()
+    with pytest.raises(st.ReadConflictError):
         his.stage()
         his.commit()
 
-    refusal = _refusal_of(schedule, keygen)
-    assert isinstance(refusal, st.ReadConflictError)
-    assert isinstance(refusal, st.ConflictError), "a caller catching the base must still catch this"
 
-
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_every_refusal_cause_is_catchable_as_one(keygen):
+def test_every_refusal_cause_is_catchable_as_one():
     """The three causes subclass `ConflictError`, so a retry loop need not know which it got."""
     for cause in (st.WriteConflictError, st.ReadConflictError, st.PhantomConflictError):
         assert issubclass(cause, st.ConflictError)
@@ -309,51 +354,21 @@ def test_every_refusal_cause_is_catchable_as_one(keygen):
         assert issubclass(cause, RuntimeError)
 
 
-def _phantom_at(level: str, keygen):
+def _phantom_at(level: str, keygen, *, lower_bound: str):
     """Runs the phantom schedule at `level`, returning what refused the scanner and what it saw.
 
-    One transaction scans a window that comes back empty, and another commits a key into that
-    window. Nothing overlaps: the write sets are disjoint and the scan recorded no key, because
-    there was none to record. Only validating the window itself can refuse this.
+    One transaction scans a window that comes back empty and another commits a key into it, with
+    disjoint write sets, so only validating the window itself can refuse this. A `lower_bound` of
+    "open" names no floor, leaving the store rather than the binding to decide what the window
+    covers.
     """
     container = make(st.SortedMap, "int", isolation=level, sharing="locked")
+    # `keygen` ascends, so the phantom lands inside the window scanned and `written_key` outside it.
     lower, inside, upper, written_key = keygen(4)
 
     hers = st.transaction(container)
     (her_view,) = hers.begin()
-    seen = her_view.scan(lower, upper)
-
-    his = st.transaction(container)
-    (his_view,) = his.begin()
-    his_view[inside] = "phantom"
-    his.stage()
-    his.commit()
-
-    her_view[written_key] = "elsewhere"
-    try:
-        hers.stage()
-        hers.commit()
-        return None, seen
-    except st.ConflictError as refusal:
-        return refusal, seen
-
-
-@pytest.mark.thread_unsafe(
-    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
-)
-def _phantom_below(level: str, keygen):
-    """The same schedule for a window bounded only from above, which names no lower key at all.
-
-    The store decides what "everything below this" covers, so the window a commit is validated
-    against is the one that was asked for rather than one the binding chose by spelling a floor.
-    """
-    container = make(st.SortedMap, "int", isolation=level, sharing="locked")
-    # Sorted, so `inside` is genuinely below `upper` and the phantom lands in the window scanned.
-    inside, upper, written_key = sorted(keygen(3))
-
-    hers = st.transaction(container)
-    (her_view,) = hers.begin()
-    seen = her_view.scan(None, upper)
+    seen = her_view.scan(lower if lower_bound == "named" else None, upper)
 
     his = st.transaction(container)
     (his_view,) = his.begin()
@@ -377,19 +392,21 @@ def _phantom_below(level: str, keygen):
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_window_open_at_the_bottom_still_catches_a_phantom(keygen, level):
     """A scan bounded only from above records a window, so a key committed into it refuses."""
-    refusal, seen = _phantom_below(level, keygen)
+    refusal, seen = _phantom_at(level, keygen, lower_bound="open")
     assert seen == [], "the window was empty, so only the window itself was read"
     assert isinstance(refusal, st.PhantomConflictError)
 
 
+@pytest.mark.thread_unsafe(
+    reason="the schedule is the test - a parallel copy sharing the container would commit between the two transactions"
+)
 @pytest.mark.parametrize("level", ["serializable", "strict_serializable"])
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
 def test_a_scanned_window_refuses_by_phantom_conflict(keygen, level):
     """A key committed into a window this transaction read is what the third cause names."""
-    refusal, seen = _phantom_at(level, keygen)
+    refusal, seen = _phantom_at(level, keygen, lower_bound="named")
     assert seen == [], "the window was empty, so no key was read and only the window itself was"
     assert isinstance(refusal, st.PhantomConflictError)
-    assert isinstance(refusal, st.ConflictError), "a caller catching the base must still catch this"
 
 
 @pytest.mark.thread_unsafe(
@@ -402,7 +419,7 @@ def test_snapshot_admits_a_phantom(keygen):
     Asserted as an anomaly the level permits rather than left untested, for the same reason write
     skew is: it is what the level above it exists to refuse. Berenson's A3 under a snapshot read.
     """
-    refusal, seen = _phantom_at("snapshot", keygen)
+    refusal, seen = _phantom_at("snapshot", keygen, lower_bound="named")
     assert seen == []
     assert refusal is None, "disjoint write sets give a snapshot commit nothing to conflict on"
 

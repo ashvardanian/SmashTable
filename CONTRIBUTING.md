@@ -20,18 +20,30 @@ build_debug/smashtable_test_avl_tree
 
 ### Running Tests
 
-Every container family runs the same suites, so `ctest` covers all four binaries:
+Every container family runs the same suites, so one `ctest` run covers every binary at once:
 
 ```bash
 ctest --test-dir build_debug --output-on-failure
 ```
 
-Run one binary directly, or narrow it with a substring matched against `suite.name`:
+Run one binary directly, or steer it with the two environment variables the harness reads:
 
 ```bash
 build_debug/smashtable_test_avl_tree
 SMASHTABLE_FILTER=transactional_consistency build_debug/smashtable_test_avl_tree
 SMASHTABLE_FILTER=basic_ops.insertion build_debug/smashtable_test_wb_tree
+SMASHTABLE_SEED=1234 build_debug/smashtable_test_wb_tree
+```
+
+`SMASHTABLE_FILTER` keeps the tests whose `suite.name` contains the substring and announces every one it skips.
+A filter matching nothing fails the binary rather than reporting an empty run as green, so a typo is loud instead of reassuring.
+
+`SMASHTABLE_SEED` is the seed every randomized suite draws from, so a failing run names the sequence that produced it.
+Unset means a fixed default, which keeps CI and an unattended build deterministic.
+Hunting for a rare defect is therefore a loop in the shell rather than an edit to the source:
+
+```bash
+for seed in $(seq 1 64); do SMASHTABLE_SEED=$seed build_debug/smashtable_test_avl_tree || break; done
 ```
 
 Assertions abort on the first failure and print the expression, file and line, so a run reports one defect rather than a list.
@@ -80,6 +92,13 @@ pytest test/ --parallel-threads=4 --iterations=2
 python -c "import sys, smashtable; assert not sys._is_gil_enabled()"
 ```
 
+`SMASHTABLE_TESTS_SEED` pins the seed the Python suite draws from, which is otherwise taken at random per run.
+Either way pytest prints it in its own header, so a failing run is reproducible by copying the number back:
+
+```bash
+SMASHTABLE_TESTS_SEED=42 pytest test/
+```
+
 ## Code Styling Guidelines
 
 Internal `private` data and functions should be suffixed with an underscore (`_`).
@@ -121,11 +140,11 @@ For example, in this codebase:
 CMake is formatted using `cmake-format` with the configuration specified in `.cmake-format.py`.
 Please ensure your code adheres to this style before submitting a pull request.
 
-Format C++ files:
+Format the C++ sources — the headers, the CPython bindings, the suites and the example:
 
 ```bash
-clang-format -i include/smashtable/*.hpp
-clang-format -i test.cpp example.cpp
+clang-format -i include/smashtable/*.hpp python/*.hpp python/*.cpp
+clang-format -i scripts/*.hpp scripts/*.cpp scripts/*.cu example.cpp
 ```
 
 Format CMake files:
@@ -134,56 +153,64 @@ Format CMake files:
 cmake-format -i CMakeLists.txt
 ```
 
-Check formatting without modifying:
+Check formatting without modifying, which is what the pre-commit hook does to the staged bytes:
 
 ```bash
-clang-format --dry-run --Werror include/smashtable/*.hpp
+clang-format --dry-run --Werror include/smashtable/*.hpp python/*.hpp python/*.cpp \
+    scripts/*.hpp scripts/*.cpp scripts/*.cu example.cpp
+```
+
+Python sources are `black` and `ruff` clean at the 120-column width `pyproject.toml` sets:
+
+```bash
+black test/ python/ example.py && ruff check test/ python/ example.py
 ```
 
 Documentation is trickier.
-All docstrings must use Doxygen-style comments.
-Here are a couple of examples.
-For minimalistic single-line descriptions:
-
-```cpp
-/** @brief Brief one-line description of the function or class. */
-```
-
-For more complex functions with many parameters, use the following template:
-
+Every docstring is a Doxygen block, and the voice the headers are converging on is short: `@brief` says what the thing does, a line of prose names the guarantee and the scope it holds over, and the block stops there.
+A tag earns its place only by carrying something the signature cannot.
 
 ```cpp
 /**
- *  @brief Some function similar to STL's @c std::map::try_emplace().
- *  @see https://en.cppreference.com/w/cpp/container/map/try_emplace.html
- *  @sa @c insert_if_missing() provides the same functionality under a less ambiguous name.
- *  @param[in] key Object comparable and convertible to @c element_t.
- *  @return pair<iterator, bool> Pair consisting of an iterator to the inserted or existing element.
- *  @retval second True if a new element was inserted, false if an existing element was found.
- */
-```
-
-For multi-line descriptions, use 4 spaces for continuation indents:
-
-```cpp
-/**
- *  @brief Erases all elements in the range [first, last) using const_iterators.
- *    Unlike STL, returns both the iterator following the last erased element and a status code.
- *    On error, some elements may have been erased (partial erase, matches STL's basic guarantee).
+ *  @brief Hands @p callback_found the element at zero-based position @p ordinal.
+ *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
  *
- *  @param[in] first Beginning of range to erase.
- *  @param[in] last End of range to erase (not erased).
- *  @return erase_result_t Contains iterator equal to @p last and status of the operation.
- *    Returns first error encountered, or success if all elements erased.
+ *  Exact at the newest commit, where the descent reads one augmented count per node. A reader at an
+ *  older snapshot is answered by a merged walk instead, since one count per node cannot answer for
+ *  an unbounded parameter.
  */
 ```
 
-Use `@see` for external references, `@sa` for internal cross-references, `@note` for attention points.
-Use `@retval` for enumerated return values.
-Mark class template parameters with `@tparam`.
-Mark function parameters with direction indicators: `@param[in]`, `@param[out]`, or `@param[inout]`.
-Mention them with `@p`.
-Mark class/type names and method names with `@c`.
-Put examples or multi-token code snippets in `@code` ... `@endcode` blocks.
-Use `@b` for bold text and `@a` for italics.
-Keep whitespaces on both sides of tags - `[ @p example]` not `[@p example]`.
+The dialect to avoid restates the signature and never reaches the guarantee:
+
+```cpp
+/**
+ *  @brief Selects an element by ordinal.
+ *  @param[in] ordinal The ordinal to select.
+ *  @param[in] callback_found The callback for the found case.
+ *  @param[in] callback_missing The callback for the missing case.
+ *  @return status_t The status code of the operation.
+ *  @retval success_k The element was found.
+ *  @retval key_not_found_k The element was not found.
+ *  @note Attention: the callbacks must be noexcept.
+ */
+```
+
+What falls out of the difference:
+
+- `@brief` on every symbol, and on most of them nothing else.
+  A one-liner is a whole docblock: `/** @brief What it does. */`.
+- Prose sits after the tags, below a blank line, and names the guarantee together with the scope it holds over.
+  Write the scope in wherever a sibling path in the same file would make the sentence false — an isolation level, a partition, a phase of the commit.
+- `@param` only where a parameter carries a constraint the signature does not, such as a callback that must be `noexcept` or a bound that is exclusive.
+  It always carries a direction — `@param[in]`, `@param[out]` or `@param[inout]` — since the pre-commit hook rejects a bare one.
+- `@return` names what the answer means rather than its type.
+  `@retval` is unused here: a return with named outcomes is one `@return` sentence listing them.
+- `@warning` for the edge a caller can fall off, such as a lock held across a callback or a moved-from store whose open transactions land nowhere.
+  There is no `@note`: an attention point either belongs in the prose or does not belong.
+- `@tparam` for template parameters, `@p` to mention a parameter, `@c` for a type or method name, `@b` for bold and `@a` for italics.
+  Backticks and Markdown emphasis print literally through Doxygen, and the hook rejects both inside a block.
+- `@see` for an external reference, `@sa` for one inside the repository, `@code` and `@endcode` around a multi-token snippet, and `@section` with an anchor before its title.
+- Continuation lines indent 4 spaces, and a tag keeps whitespace on both sides — `[ @p lower, @p upper )` rather than `[@p lower, @p upper)`.
+- Document every member of a type or none of them, and never with a trailing `//!<`.
+  The shared explanation belongs in the type's own docblock, where one sentence covers what a column of markers would repeat.

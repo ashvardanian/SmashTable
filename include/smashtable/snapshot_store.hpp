@@ -1,11 +1,13 @@
 /**
  *  @brief Multi-version transactional store granting every transaction a snapshot of the store as it
- *      stood when the transaction opened. Can be instantiated with any key-addressable core - AVL
- *      trees, weight-balanced trees, open-addressed tables - and gates its ordered surface behind the
- *      cores that supply an ordering. Exception-free, with all reads delivered through callbacks.
+ *    stood when the transaction opened.
  *  @author Ash Vardanian
  *  @file include/smashtable/snapshot_store.hpp
  *  @date August 17, 2026
+ *
+ *  Can be instantiated with any key-addressable core - AVL trees, weight-balanced trees, open-addressed
+ *  tables - and gates its ordered surface behind the cores that supply an ordering. Exception-free,
+ *  with all reads delivered through callbacks.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -380,21 +382,26 @@ class snapshot_clock_t {
 #pragma endregion Snapshot Clock
 
 /**
- *  @brief  Transactional store offering Snapshot Isolation over any key-addressable core.
- *    Not thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
+ *  @brief  Transactional store answering every read at one snapshot, over any key-addressable core.
+ *
+ *  @p isolation_ picks the rung: @c snapshot_k, @c serializable_k or @c strict_serializable_k. Not
+ *  thread-safe by itself. Entirely exception-free, with all methods marked @c noexcept.
  *
  *  @section snapshot_store_design_goals Design Goals
  *
  *  A transaction fixes one commit stamp when it opens and answers every read at it, so a value read
  *  twice reads the same both times and a range walked twice admits no key that was not there the
  *  first time. Writes are checked first-committer-wins: a transaction is refused if anything committed
- *  to a key it wrote or watched after its snapshot was taken.
+ *  to a key it wrote or watched after its snapshot was taken. At @c snapshot_k only a watched key is
+ *  re-checked; from @c serializable_k up every read and every window read is re-checked too.
  *
  *  @c monotonic_store keeps one published version per key and promises only Monotonic Atomic
  *  View. This store keeps every version a live snapshot can still reach, which is what buys the
  *  stronger promise and what the reclamation machinery below has to give back.
  *
  *  @see https://jepsen.io/consistency/models/snapshot-isolation
+ *  @see https://jepsen.io/consistency/models/serializable
+ *  @see https://jepsen.io/consistency/models/strict-serializable
  *
  *  @section snapshot_store_representation Representation
  *
@@ -453,12 +460,12 @@ class snapshot_store {
     static constexpr isolation_t isolation_k = isolation_;
 
     /**
-     *  @brief Whether a write waits for its own publication before returning to its caller.
+     *  @brief Whether a write made outside a transaction waits for its own publication before returning.
      *
-     *  Without the wait a commit can return while an older commit still writing itself out holds the
-     *  watermark below the stamp just drawn, so a transaction opening afterwards reads at a snapshot
-     *  that predates it - serializable, but not in real time. The wait is what closes that, and it
-     *  costs however long the older commit takes, which is unrelated work by another thread.
+     *  A transaction's own commit waits at every level, so this gates the direct write paths alone.
+     *  Without the wait such a write can return while an older commit still writing itself out holds
+     *  the watermark below the stamp just drawn, so a transaction opening afterwards reads at a
+     *  snapshot that predates it - serializable, but not in real time.
      */
     static constexpr bool awaits_publication_k = isolation_ == isolation_t::strict_serializable_k;
 
@@ -540,7 +547,8 @@ class snapshot_store {
 
         friend store_t;
 
-        store_t const *store_ {nullptr};
+        /** @brief The store whose entries this walk steps through. */
+        store_t const &store_;
         /** @brief First entry of the run the cursor stands on, @c end() once the walk is over. */
         entry_iterator_t position_;
         /** @brief One past the last entry of that run. */
@@ -551,20 +559,20 @@ class snapshot_store {
         generation_t snapshot_ {0};
 
         visible_cursor_t(store_t const &store, entry_iterator_t position, generation_t snapshot) noexcept
-            : store_(&store), position_(position), run_end_(position), snapshot_(snapshot) {
+            : store_(store), position_(position), run_end_(position), snapshot_(snapshot) {
             settle_();
         }
 
         /** @brief Delimits the run @c position_ opens and picks the version @c snapshot_ reads in it. */
         void settle_() noexcept {
-            auto const finish = store_->entries_.end();
+            auto const finish = store_.entries_.end();
             standing_ = nullptr;
             run_end_ = position_;
             if (position_ == finish) return;
 
             versioned_t const &head = *position_;
             versioned_t const *newest = nullptr;
-            while (run_end_ != finish && store_->same_key_(*run_end_, head)) {
+            while (run_end_ != finish && store_.same_key_(*run_end_, head)) {
                 versioned_t const &version = *run_end_;
                 if (visible_at(version.committed, snapshot_) &&
                     (!newest || stamp_of(newest->committed) < stamp_of(version.committed)))
@@ -590,7 +598,7 @@ class snapshot_store {
         [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
 
         /** @brief Whether the walk is over, which is when nothing more is readable. */
-        [[nodiscard]] bool exhausted() const noexcept { return position_ == store_->entries_.end(); }
+        [[nodiscard]] bool exhausted() const noexcept { return position_ == store_.entries_.end(); }
 
         /**
          *  @brief Hands @p callback_found the key the cursor stands on, or reports the walk is over.
@@ -761,7 +769,9 @@ class snapshot_store {
         }
 
         /**
-         *  @brief Whether every key this transaction read is untouched since its snapshot.
+         *  @brief Whether every key this transaction wrote, and every read it recorded, is untouched
+         *    since its snapshot. At @c snapshot_k the recorded reads are the explicit watches and
+         *    nothing else; from @c serializable_k up they are every read and every window read.
          *    Asked twice - once when staging, once when publishing - because a commit landing in between
          *    is the only thing that can invalidate a read after it was validated.
          *
@@ -823,15 +833,25 @@ class snapshot_store {
             store_ = nullptr;
         }
 
-        /** @brief Stages @p versioned under this transaction's generation, recording @p identifier as changed. */
+        /**
+         *  @brief Stages @p versioned under this transaction's generation, recording @p identifier as changed.
+         *    Refuses once the transaction is staged: staging reserved and validated exactly the changes
+         *    it found, so a later write would publish behind that check or be dropped by @c commit.
+         */
         [[nodiscard]] status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+            // A key written twice replaces its own staged version rather than adding one, so listing
+            // it twice would send the unwind looking for a version its first pass already took back.
+            bool const already_listed = changes_.find(identifier) != changes_.end();
             auto reserve_status = changed_identifiers_.reserve(changed_identifiers_.size() + 1);
             if (failed(reserve_status)) return reserve_status;
             versioned.generation = generation_;
             auto result = storage_shape_t::upsert(changes_, std::move(versioned));
             if (failed(result)) return out_of_memory_heap_k;
-            [[maybe_unused]] status_t const recorded =
-                changed_identifiers_.push_back(assume_reserved, std::move(identifier));
+            if (!already_listed) {
+                [[maybe_unused]] status_t const recorded =
+                    changed_identifiers_.push_back(assume_reserved, std::move(identifier));
+            }
             return success_k;
         }
 
@@ -843,8 +863,9 @@ class snapshot_store {
          */
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
-              accesses_(std::move(other.accesses_)), changed_identifiers_(std::move(other.changed_identifiers_)),
-              generation_(other.generation_), lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
+              accesses_(std::move(other.accesses_)), read_set_(other.read_set_),
+              changed_identifiers_(std::move(other.changed_identifiers_)), generation_(other.generation_),
+              lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
 
         transaction_t &operator=(transaction_t &&other) noexcept {
@@ -853,6 +874,7 @@ class snapshot_store {
             store_ = std::exchange(other.store_, nullptr);
             changes_ = std::move(other.changes_);
             accesses_ = std::move(other.accesses_);
+            read_set_ = other.read_set_;
             changed_identifiers_ = std::move(other.changed_identifiers_);
             generation_ = other.generation_;
             lease_ = std::move(other.lease_);
@@ -983,11 +1005,20 @@ class snapshot_store {
          *  @param[in] identifier Identifier to watch, borrowed and copied into the read set - the read
          *    set outlives the call, and a caller's identifier is never consumed by a read.
          *  @return Success unless the read set could not grow, or the identifier could not be copied.
+         *
+         *  Latches as well as answering, for the reason @c record_read_ gives: a caller may fold the
+         *  status into a first-failure and carry on, and the commit still has to refuse rather than pass
+         *  a validation it could not perform. At @c snapshot_k this is the only read validation there is.
          */
         [[nodiscard]] status_t watch(identifier_t const &identifier) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
-            if (!maybe_identifier) return maybe_identifier.status();
-            return accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
+            if (!maybe_identifier) {
+                read_set_ = read_set_t::unrecorded_k;
+                return maybe_identifier.status();
+            }
+            status_t const recorded = accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
+            if (failed(recorded)) read_set_ = read_set_t::unrecorded_k;
+            return recorded;
         }
 
         /** @brief Records @p versioned as the version this transaction read of its own key. */
@@ -995,13 +1026,19 @@ class snapshot_store {
             // Through `copy_safely` rather than a braced `identifier_t`, so a move-only identifier
             // compiles here and an identifier that allocates reports instead of throwing.
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(versioned.payload));
-            if (!maybe_identifier) return maybe_identifier.status();
-            return accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
+            if (!maybe_identifier) {
+                read_set_ = read_set_t::unrecorded_k;
+                return maybe_identifier.status();
+            }
+            status_t const recorded = accesses_.push_back({std::move(*maybe_identifier), access_t::read_k});
+            if (failed(recorded)) read_set_ = read_set_t::unrecorded_k;
+            return recorded;
         }
 
         /**
-         *  @brief Finds a member equal to @p comparable and records what it saw into the read set.
-         *    The watching counterpart to @c find: this one can fail, because a read set is memory.
+         *  @brief Finds a member equal to @p comparable and records the read at every level.
+         *    What @c find does on its own only from @c serializable_k up, so this is the call a
+         *    @c snapshot_k transaction needs; it can fail, because a read set is memory.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -1017,7 +1054,8 @@ class snapshot_store {
 
         /**
          *  @brief Finds a member @b equal to @p comparable, this transaction's own writes included.
-         *    You may want to @c watch() the received object, it is not done by default.
+         *    From @c serializable_k up the read records itself; at @c snapshot_k it does not, so a
+         *    caller wanting it validated at commit calls @c watch or @c find_and_watch.
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
          *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
@@ -1157,6 +1195,9 @@ class snapshot_store {
          *  The two sides are merged rather than concatenated, so the output is sorted even where a
          *  staged key falls between two committed ones, and a staged key masks the committed version
          *  of itself.
+         *
+         *  @note A callback answering @c walk_control_t stops the walk where it says to, though the
+         *    window it recorded is the one it asked for rather than the prefix it took.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1167,7 +1208,8 @@ class snapshot_store {
             auto const ordering = changes_.key_comp();
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                if (version.presence == presence_t::present_k) callback(version.payload);
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                 return probe_control_t::resume_k;
             });
             return recorded;
@@ -1175,7 +1217,8 @@ class snapshot_store {
 
         /**
          *  @brief Hands @p callback every member at or after @p lower, with no upper end.
-         *  Records a window running to the highest key, so a commit into it is a phantom.
+         *    Records a window running to the highest key, so a commit into it is a phantom.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
@@ -1183,7 +1226,8 @@ class snapshot_store {
         {
             status_t const recorded = record_window_read_(lower, lower, access_t::to_the_highest_k);
             merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
-                if (version.presence == presence_t::present_k) callback(version.payload);
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                 return probe_control_t::resume_k;
             });
             return recorded;
@@ -1191,8 +1235,9 @@ class snapshot_store {
 
         /**
          *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
-         *  Records a window running from the lowest key, so a caller never has to name a layout's floor
-         *  to say "everything below this".
+         *    Records a window running from the lowest key, so a caller never has to name a layout's floor
+         *    to say "everything below this".
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -1202,7 +1247,8 @@ class snapshot_store {
             auto const ordering = changes_.key_comp();
             merge_all_([&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                if (version.presence == presence_t::present_k) callback(version.payload);
+                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                 return probe_control_t::resume_k;
             });
             return recorded;
@@ -1227,18 +1273,23 @@ class snapshot_store {
             status_t const recorded = record_whole_keyspace_read_();
             if constexpr (ordered_core_k) {
                 merge_all_([&](versioned_t const &version) noexcept {
-                    if (version.presence == presence_t::present_k) callback(version.payload);
+                    if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
+                    if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                     return probe_control_t::resume_k;
                 });
             }
             else {
-                for (auto staged = changes_.begin(); staged != changes_.end(); ++staged)
-                    if ((*staged).presence == presence_t::present_k) callback((*staged).payload);
+                for (auto staged = changes_.begin(); staged != changes_.end(); ++staged) {
+                    if ((*staged).presence != presence_t::present_k) continue;
+                    if (hand_over(callback, (*staged).payload) == walk_control_t::halt_k) return recorded;
+                }
 
                 // A key this transaction wrote is answered from its own version above, so the committed
                 // side skips whatever `changes_` already speaks for and never emits a key twice.
                 store_ref().for_each_at_(snapshot_, [&](value_t const &value) noexcept {
-                    if (changes_.find(mapping_key_or_itself<value_t>(value)) == changes_.end()) callback(value);
+                    if (changes_.find(mapping_key_or_itself<value_t>(value)) != changes_.end())
+                        return walk_control_t::resume_k;
+                    return hand_over(callback, value);
                 });
             }
             return recorded;
@@ -1423,6 +1474,18 @@ class snapshot_store {
         }
 
         /**
+         *  @brief Stages a tombstone for every member this transaction reads, so a commit empties the store.
+         *
+         *  At @c serializable_k the read recorded here is the whole keyspace, which no pair of bounds can
+         *  spell, so any commit published since the snapshot turns this transaction away - where a bounded
+         *  erase is turned away only by a commit inside its own window. Below that level nothing is
+         *  recorded and the walk is the only cost.
+         */
+        [[nodiscard]] status_t clear() noexcept {
+            return erase_walked_([&](auto &&step) noexcept { return for_each(step); }, no_op_t {});
+        }
+
+        /**
          *  @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result.
          *
          *  Collected before revising for the same reason the erasing walks collect: a staged write moves
@@ -1546,9 +1609,7 @@ class snapshot_store {
          *  the merged view answers and a walk revising itself would step over its own neighbours.
          */
         template <typename walk_type_, typename callback_type_>
-        [[nodiscard]] status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept
-            requires ordered_core_k
-        {
+        [[nodiscard]] status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept {
             changed_identifiers_vector_t doomed(
                 changed_identifiers_allocator_t(storage_shape_t::allocator_of(store_ref().entries_)));
             status_t collecting = success_k;
@@ -1565,7 +1626,8 @@ class snapshot_store {
             if (failed(collecting)) return collecting;
 
             for (std::size_t index = 0; index != doomed.size(); ++index)
-                if (status_t const staged = erase(doomed[index]); failed(staged)) return staged;
+                if (status_t const staged = erase(doomed[index]); failed(staged) && staged != key_not_found_k)
+                    return staged;
             return success_k;
         }
 
@@ -1618,8 +1680,9 @@ class snapshot_store {
         /**
          *  @brief Moves every pending write into the store, invisible, and reserves everything a
          *    commit would otherwise have to allocate.
-         *  @return Success, @c consistency_k when a watched or written key moved under this
-         *    transaction, or an allocation failure that leaves the store untouched.
+         *  @return Success; @c write_conflict_k, @c read_conflict_k or @c phantom_conflict_k naming
+         *    which check turned this transaction away; or an allocation failure that leaves the store
+         *    untouched.
          */
         [[nodiscard]] status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1667,6 +1730,20 @@ class snapshot_store {
          */
         [[nodiscard]] status_t commit() noexcept {
             if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
+            publish_under();
+            return success_k;
+        }
+
+        /**
+         *  @brief Draws this store's stamp and publishes every staged version under it, refusing nothing.
+         *
+         *  The no-stamp half of the split, so a caller spanning several stores can ask all of them
+         *  through @c validate_for_commit and only then tell each to write. The sibling engines keeping
+         *  no clock spell it the same way and order their own versions; this one draws a stamp first.
+         *
+         *  @warning Only ever called after @c validate_for_commit answered success, with nothing since.
+         */
+        void publish_under() noexcept {
             auto &store = store_ref();
 
             snapshot_clock_t::commit_in_flight_t in_flight;
@@ -1681,7 +1758,6 @@ class snapshot_store {
             store.clock_->await_published(in_flight.stamp());
             snapshot_ = store.clock_->take_snapshot(lease_);
             prune_committed();
-            return success_k;
         }
 
         /**
@@ -1729,6 +1805,8 @@ class snapshot_store {
         /**
          *  @brief Pulls every staged version back into the transaction, leaving it retryable.
          *    The watches are kept, since a read concern outlives the write that failed on it.
+         *  @return Success, @c operation_not_permitted_k when nothing was staged, @c consistency_k when
+         *    a staged version went missing before the rollback reached it, or an allocation failure.
          */
         [[nodiscard]] status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1904,7 +1982,7 @@ class snapshot_store {
     dated_entries_t entries_;
     /** @brief The clock this store keeps for itself, and the one it uses until somebody attaches another. */
     snapshot_clock_t owned_clock_ {};
-    /** @brief Where every stamp and every snapshot comes from, which a shard set repoints at one it shares. */
+    /** @brief Where every stamp and every snapshot comes from, never null; a shard set repoints it at a shared one. */
     snapshot_clock_t *clock_ {&owned_clock_};
     /** @brief Keys whose newest published version says they are there. */
     std::size_t live_count_ {0};
@@ -2090,14 +2168,15 @@ class snapshot_store {
             walk_visible_keys_(
                 entries_.begin(), [](versioned_t const &) noexcept { return true; }, snapshot,
                 [&](value_t const &value) noexcept {
-                    callback(value);
+                    if (hand_over(callback, value) == walk_control_t::halt_k) return probe_control_t::halt_k;
                     return probe_control_t::resume_k;
                 });
         }
         else {
             for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
                 versioned_t const &version = *cursor;
-                if (readable_version_(identifier_of(version), snapshot) == &version) callback(version.payload);
+                if (readable_version_(identifier_of(version), snapshot) != &version) continue;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return;
             }
         }
     }
@@ -2540,9 +2619,10 @@ class snapshot_store {
 
     /**
      *  @brief Opens one part of a sharded transaction at a @p snapshot and @p generation drawn elsewhere.
-     *    Registers nothing with the clock: the owner of the snapshot holds the one claim that answers
-     *    for every part, so a claim per part would only make the low-water mark count the same reader
-     *    sixteen times.
+     *
+     *  Registers nothing with the clock: the owner of the snapshot holds the one claim that answers
+     *  for every part, so a claim per part would only make the low-water mark count the same reader
+     *  sixteen times.
      */
     [[nodiscard]] expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept {
         return transaction_t {*this, snapshot, generation};
@@ -2600,6 +2680,14 @@ class snapshot_store {
     }
 
     /**
+     *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
+     *
+     *  The one ordering every read here descends on; a caller comparing keys any other way is ordering
+     *  them differently from the store that holds them.
+     */
+    [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
+
+    /**
      *  @brief Hands @p callback_found the smallest member the newest published commit shows.
      *
      *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens with:
@@ -2608,13 +2696,6 @@ class snapshot_store {
      *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be @c noexcept.
      */
-    /**
-     *  @brief How this store orders its keys, so a bounded walk can stop without guessing.
-     *  The one ordering every read here descends on; a caller comparing keys any other way is
-     *  ordering them differently from the store that holds them.
-     */
-    [[nodiscard]] comparator_t key_comp() const noexcept { return entries_.key_comp().comparator; }
-
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept
@@ -2738,7 +2819,10 @@ class snapshot_store {
         return visible_at_(std::forward<comparable_type_>(comparable), published_stamp_());
     }
 
-    /** @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit. */
+    /**
+     *  @brief Hands @p callback every member in [ @p lower, @p upper ) as of the newest published commit.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
@@ -2747,7 +2831,7 @@ class snapshot_store {
     {
         range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
                   [&](value_t const &value) noexcept {
-                      callback(value);
+                      if (hand_over(callback, value) == walk_control_t::halt_k) return probe_control_t::halt_k;
                       return probe_control_t::resume_k;
                   });
         return success_k;
@@ -2907,9 +2991,9 @@ class snapshot_store {
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, refusing the group if any key is there.
      *
-     *  @return Success, @c key_already_exists_k, @c consistency_k when another writer took one of these
-     *    keys while the group was being staged, or an allocation failure. Nothing is published unless
-     *    all of it is.
+     *  @return Success, @c key_already_exists_k, @c write_conflict_k or @c read_conflict_k when another
+     *    writer took one of these keys while the group was being staged, or an allocation failure.
+     *    Nothing is published unless all of it is.
      *
      *  @note The clash is probed at the newest published stamp while the group is staged against the
      *    snapshot the call opened on, so a key this very range inserted earlier is not seen as a clash.
@@ -2927,8 +3011,8 @@ class snapshot_store {
 
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, skipping the keys already there.
-     *  @return Success, @c consistency_k when another writer took one of these keys, or an allocation
-     *    failure. Nothing is published unless all of it is.
+     *  @return Success, @c write_conflict_k or @c read_conflict_k when another writer took one of these
+     *    keys, or an allocation failure. Nothing is published unless all of it is.
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -2939,8 +3023,8 @@ class snapshot_store {
 
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, whether or not the keys are there.
-     *  @return Success, @c consistency_k when another writer took one of these keys, or an allocation
-     *    failure. Nothing is published unless all of it is.
+     *  @return Success, @c write_conflict_k when another writer took one of these keys - this path
+     *    reads none of them - or an allocation failure. Nothing is published unless all of it is.
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -2951,8 +3035,9 @@ class snapshot_store {
 
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, refusing the group if any key is absent.
-     *  @return Success, @c key_not_found_k, @c consistency_k when another writer took one of these keys,
-     *    or an allocation failure. Nothing is published unless all of it is.
+     *  @return Success, @c key_not_found_k, @c write_conflict_k or @c read_conflict_k when another
+     *    writer took one of these keys, or an allocation failure. Nothing is published unless all of
+     *    it is.
      */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -3032,6 +3117,7 @@ class snapshot_store {
      *  write to the store while the walk runs.
      *
      *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
@@ -3438,9 +3524,9 @@ using snapshot_hash_map =
 /**
  *  @brief Snapshot isolation with the read set validated at commit as well as the write set.
  *
- *  That is serializability without real-time ordering: every committed history is equivalent to some
- *  serial one, but a transaction that opened on an older snapshot and read only untouched keys commits
- *  @b in @b the @b past, so one starting after another returned may still not see it.
+ *  That is serializability: every committed history is equivalent to some serial one. A transaction
+ *  commit here already waits for its own publication, so what the strict rung adds reaches only a
+ *  sharded commit and a write made outside a transaction.
  */
 template <typename collection_type_>
 using serializable_store = snapshot_store<collection_type_, isolation_t::serializable_k>;
@@ -3485,8 +3571,9 @@ using serializable_hash_map =
  *    sees that commit.
  *
  *  Refuses exactly what @c serializable_store refuses - the two differ only in when a commit becomes
- *  visible. A commit here waits for its own publication before answering, which costs however long an
- *  older overlapping commit takes to finish writing itself out.
+ *  visible. A sharded commit and a write made outside a transaction wait for their own publication
+ *  here, which a transaction commit does at either level, and the wait costs however long an older
+ *  overlapping commit takes to finish writing itself out.
  */
 template <typename collection_type_>
 using strict_serializable_store = snapshot_store<collection_type_, isolation_t::strict_serializable_k>;

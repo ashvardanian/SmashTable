@@ -1,10 +1,11 @@
 /**
- *  @brief Transactional set container with ACID semantics, built on @c std::set for baseline reference. Provides
- *      2-phase commit transactions with optimistic concurrency control through watch/CAS operations. All operations
- *      use callback-based APIs and are exception-safe via @c noexcept wrappers.
+ *  @brief Transactional set promising Monotonic Atomic View, built on @c std::set as a baseline oracle.
  *  @author Ash Vardanian
  *  @file include/smashtable/reference_store.hpp
  *  @date October 12, 2022
+ *
+ *  Provides 2-phase commit transactions with optimistic concurrency control through watch/CAS operations.
+ *  All operations use callback-based APIs and are exception-safe via @c noexcept wrappers.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -14,6 +15,7 @@
 #include <set>         // `std::set` for inner versioned entries
 #include <stdexcept>   // `std::length_error`, which MSVC does not reach through `<set>`
 #include <type_traits> // `std::is_nothrow_invocable_v`
+#include <utility>     // `std::as_const`
 #include <vector>      // `std::vector` for watches
 
 #include "shared.hpp"
@@ -44,21 +46,23 @@ template <typename callable_type_>
 }
 
 /**
- *  @brief  Transactional set providing ACID semantics with 2-phase commit and watch/CAS operations.
- *    Built on @c std::set as a baseline reference implementation. Not thread-safe by itself.
+ *  @brief  Transactional set providing 2-phase commit and watch/CAS operations at Monotonic Atomic View.
+ *
+ *  Built on @c std::set as a baseline reference implementation. Not thread-safe by itself.
  *
  *  @section reference_store_design_goals Design Goals
  *
- *  All operations are atomic. When updating multiple values, you don't want to break in an intermediate state
- *  where only some updates succeeded. With two-phase commit transactions, you can stage many changes and commit
- *  them all at once, or rollback if something goes wrong. Common use case: synchronizing updates across multiple
- *  data stores while maintaining consistency guarantees.
+ *  A commit is all-or-nothing. When updating multiple values, you don't want to break in an intermediate
+ *  state where only some updates succeeded. With two-phase commit transactions, you can stage many changes
+ *  and commit them all at once, or rollback if something goes wrong. Common use case: synchronizing updates
+ *  across multiple data stores. Nothing here is durable - there is no log and no fsync - so a commit means
+ *  visible, not survived.
  *
  *  The API is simple, generalizable, and lightweight. This collection @b doesn't provide snapshots or full MVCC
  *  (Multi-Version Concurrency Control). If you start a transaction and "watch" values through it, there's no
  *  guarantee the value hasn't been updated before the transaction began and the entry was added to the watched
- *  list. Only "Monotonic Atomic View" consistency is guaranteed, including its inferior "Read Committed" and
- *  "Read Uncommitted" levels. Transactions cannot observe writes from other uncommitted transactions.
+ *  list. Only "Monotonic Atomic View" is guaranteed, which is rung two of the five @c isolation_t names and
+ *  so also gives "Read Committed". Transactions cannot observe writes from other uncommitted transactions.
  *
  *  @see https://jepsen.io/consistency/models/monotonic-atomic-view
  *  @see https://jepsen.io/consistency/models/read-committed
@@ -187,6 +191,9 @@ class reference_store {
         template <typename callback_staged_type_ = no_op_t>
         [[nodiscard]] status_t stage_(value_t &&element, presence_t presence, identifier_t &&identifier,
                                       callback_staged_type_ &&callback_staged = {}) noexcept {
+            // Refused once staged: staging reserved and validated exactly the changes it found, so a
+            // later write would publish behind that check or be dropped by `commit`.
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             return invoke_safely([&]() {
                 changed_identifiers_.reserve(changed_identifiers_.size() + 1);
                 auto iterator = changes_.lower_bound(element);
@@ -282,14 +289,9 @@ class reference_store {
          */
         [[nodiscard]] status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
-            for (watched_identifier_t const &watched : watches_) {
-                watch_t latest = missing_watch();
-                store.find_committed_entry_(watched.identifier, [&](versioned_entry_t const &entry) noexcept {
-                    latest = watch_shape_of(&entry);
-                });
-                if (latest != watched.watch) return status_t::read_conflict_k;
-            }
-            return success_k;
+            return validate_watches(watches_, [&](auto const &identifier, auto &&on_found, auto &&on_missing) noexcept {
+                store.find_committed_entry_(identifier, on_found, on_missing);
+            });
         }
 
         /** @brief Erases every entry this transaction staged under its own generation. */
@@ -551,7 +553,9 @@ class reference_store {
             auto remember = [&](identifier_t &&owned, watch_t watch) noexcept {
                 status = invoke_safely([&]() { watches_.push_back({std::move(owned), watch}); });
             };
-            store_ref().find_visible_entry_(
+            // The finder validation uses, not the one `find` uses: a committed tombstone dates the
+            // absence it stands for, and a watch that could not see it would date nothing.
+            store_ref().find_committed_entry_(
                 identifier,
                 [&](versioned_entry_t const &entry) noexcept {
                     auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
@@ -738,6 +742,7 @@ class reference_store {
          *  @param[in] lower Lower bound of the range (inclusive).
          *  @param[in] upper Upper bound of the range (exclusive).
          *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -746,17 +751,18 @@ class reference_store {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
-            for (auto it = lower_internal; it != upper_internal; ++it)
-                if (it->presence == presence_t::present_k) callback(it->payload);
+            for (auto staged = lower_internal; staged != upper_internal; ++staged) {
+                if (staged->presence != presence_t::present_k) continue;
+                if (hand_over(callback, staged->payload) == walk_control_t::halt_k) return success_k;
+            }
 
             // Then, iterate over external store, skipping entries that were modified or deleted locally
             return store_ref().range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                      [&](value_t const &external_element) noexcept {
-                                         // Check if this entry exists in local changes
-                                         auto local_state = changes_.find(external_element);
-                                         // Not modified locally, include it
-                                         if (local_state == changes_.end()) callback(external_element);
-                                         // If modified locally, we already processed it above
+                                         // A key changed locally was already handed over above
+                                         if (changes_.find(external_element) != changes_.end())
+                                             return walk_control_t::resume_k;
+                                         return hand_over(callback, external_element);
                                      });
         }
 
@@ -833,19 +839,23 @@ class reference_store {
          *  while the walk runs.
          *
          *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
             static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                           "callback must be noexcept invocable with value_t const &");
 
-            for (auto iterator = changes_.begin(); iterator != changes_.end(); ++iterator)
-                if (iterator->presence == presence_t::present_k) callback(iterator->payload);
+            for (auto iterator = changes_.begin(); iterator != changes_.end(); ++iterator) {
+                if (iterator->presence != presence_t::present_k) continue;
+                if (hand_over(callback, iterator->payload) == walk_control_t::halt_k) return success_k;
+            }
 
             // A key this transaction touched is answered from its own version above, so the committed
             // side skips whatever `changes_` already speaks for and never emits a key twice.
             return store_ref().for_each([&](value_t const &external_element) noexcept {
-                if (changes_.find(external_element) == changes_.end()) callback(external_element);
+                if (changes_.find(external_element) != changes_.end()) return walk_control_t::resume_k;
+                return hand_over(callback, external_element);
             });
         }
 
@@ -872,8 +882,11 @@ class reference_store {
                 return visited;
             if (failed(collecting)) return collecting;
 
+            // A member the walk saw and somebody else erased in between is already gone, which is what
+            // this call was asking for rather than a key the caller misnamed.
             for (identifier_t const &identifier : doomed)
-                if (status_t const staged = erase(identifier); failed(staged)) return staged;
+                if (status_t const staged = erase(identifier); failed(staged) && staged != key_not_found_k)
+                    return staged;
             return success_k;
         }
 
@@ -941,6 +954,14 @@ class reference_store {
                                    std::forward<callback_type_>(callback));
         }
 
+        /**
+         *  @brief Stages a tombstone for every member this transaction reads, so a commit empties the store.
+         *    Unlike the bounded erases it names no key at all, so it serves an unordered core too.
+         */
+        [[nodiscard]] status_t clear() noexcept {
+            return erase_accepted_([](value_t const &) noexcept { return true; }, no_op_t {});
+        }
+
         /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1006,11 +1027,9 @@ class reference_store {
 #pragma endregion Transaction Range Operations
 
         /**
-         *  @brief Validates watches and stages all changes to the main store, making them visible but uncommitted.
-         *    Fails with @c status_t::consistency_k if any watched elements changed.
-         *
-         *  @return Success, @c operation_not_permitted_k if the transaction is already staged, or a
-         *    consistency error if a watch fails to match.
+         *  @brief Validates every watch and moves all changes into the main store, still uncommitted.
+         *  @return Success, @c operation_not_permitted_k when already staged, or @c read_conflict_k when
+         *    a watched key moved under this transaction.
          */
         [[nodiscard]] status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1099,7 +1118,7 @@ class reference_store {
          *  leaves the transaction staged and retryable - and a caller spreading one commit across
          *  several stores asks every one of them before any of them writes.
          *
-         *  @return Success, @c consistency_k when a watched key moved under this transaction, or
+         *  @return Success, @c read_conflict_k when a watched key moved under this transaction, or
          *    @c operation_not_permitted_k when nothing was staged.
          */
         [[nodiscard]] status_t validate_for_commit() const noexcept {
@@ -1359,6 +1378,7 @@ class reference_store {
      *  a transaction with all the same elements put into it.
      *
      *  @section reference_store_why_not_take_r_value Why not take R-Value?
+     *
      *  We want this operation to be consistent, as the rest of the container,
      *  so we need a place to return all the objects, if the operation fails.
      *  With R-Value, the batch would be lost.
@@ -1803,14 +1823,17 @@ class reference_store {
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Iterate through all entries with this key (should be at most one visible)
-        for (auto it = range.first; it != range.second; ++it)
-            if (visible_now(it->committed) && it->presence == presence_t::present_k) callback(it->payload);
+        for (auto version = range.first; version != range.second; ++version) {
+            if (!visible_now(version->committed) || version->presence != presence_t::present_k) continue;
+            if (hand_over(callback, version->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 
@@ -1896,15 +1919,17 @@ class reference_store {
      *  write to the store while the walk runs.
      *
      *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
 
-        for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator)
-            if (visible_now(iterator->committed) && iterator->presence == presence_t::present_k)
-                callback(iterator->payload);
+        for (auto iterator = entries_.begin(); iterator != entries_.end(); ++iterator) {
+            if (!visible_now(iterator->committed) || iterator->presence != presence_t::present_k) continue;
+            if (hand_over(callback, iterator->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 
@@ -1919,6 +1944,7 @@ class reference_store {
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
      *  @param[in] callback Callback invoked for each element in range. Must be @c noexcept.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -1926,20 +1952,19 @@ class reference_store {
                                  callback_type_ &&callback = {}) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
-        for (; lower_iterator != upper_iterator; ++lower_iterator)
-            if (visible_now(lower_iterator->committed) && lower_iterator->presence == presence_t::present_k)
-                callback(lower_iterator->payload);
+        for (; lower_iterator != upper_iterator; ++lower_iterator) {
+            if (!visible_now(lower_iterator->committed) || lower_iterator->presence != presence_t::present_k) continue;
+            if (hand_over(callback, lower_iterator->payload) == walk_control_t::halt_k) return success_k;
+        }
         return success_k;
     }
 
     /**
-     *  @brief Iterates over key-value associations in [ @p lower, @p upper), providing mutable value access.
-     *    Only enabled for mapping types. Callback receives (key_type const&, value_type&).
-     *    Updates generation for each accessed element.
+     *  @brief Hands @p callback each visible member of [ @p lower, @p upper ) to revise, re-stamping each.
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Callback invoked with (key_type const&, value_type&) for each element. Must be @c noexcept.
+     *  @param[in] callback Invoked with ( @c identifier_t @c const @c &, @c mapped_t @c & ). Must be @c noexcept.
      *  @return Always success here; the status is reported so a mutator that can fail on a sibling
      *    engine has the same channel on all three.
      */
@@ -1951,14 +1976,23 @@ class reference_store {
         generation_t generation = next_generation_();
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
-        for (; lower_iterator != upper_iterator; ++lower_iterator) {
-            if (!visible_now(lower_iterator->committed) || lower_iterator->presence == presence_t::erased_k) continue;
-            // ! STL's `std::set::iterator` dereferencing operator returns immutable references
-            // ! to isolate keys from possible modifications, corrupting the ordered layout.
-            auto &entry = const_cast<versioned_entry_t &>(*lower_iterator);
-            callback(entry.payload.key, entry.payload.mapped);
-            entry.generation = generation;
+
+        // The comparator breaks a key tie on the generation, so re-stamping an entry where it lies
+        // reorders a live node under the set. Each one is detached, revised while it belongs to no
+        // container, and parked until the walk is done - a re-stamped node sorts above its own older
+        // versions, so putting it straight back would hand it to this same walk a second time.
+        entry_set_t revised(entries_.key_comp(), entries_.get_allocator());
+        while (lower_iterator != upper_iterator) {
+            if (!visible_now(lower_iterator->committed) || lower_iterator->presence == presence_t::erased_k) {
+                ++lower_iterator;
+                continue;
+            }
+            auto detached = entries_.extract(lower_iterator++);
+            callback(std::as_const(detached.value().payload.key), detached.value().payload.mapped);
+            detached.value().generation = generation;
+            revised.insert(std::move(detached));
         }
+        entries_.merge(revised);
         return success_k;
     }
 

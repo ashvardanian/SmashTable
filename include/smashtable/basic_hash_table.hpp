@@ -103,8 +103,9 @@ constexpr bool is_iterator() {
 
 /**
  *  @brief Forward iterator for hash tables using simplified slot-based addressing.
- *    Inherits the three region pointers and the slot index from @c hash_slot_ref, and adds a
- *    counter of unvisited slots. Implements @c std::forward_iterator_tag for sequential traversal.
+ *
+ *  Inherits the three region pointers and the slot index from @c hash_slot_ref, and adds a counter
+ *  of unvisited slots. Implements @c std::forward_iterator_tag for sequential traversal.
  *
  *  @c slots_remaining counts the slots left to visit and reaching zero @b is the end, which is what
  *  @c is_end and @c isnt_end report and what the @c end_sentinel_t comparisons consult. Two
@@ -243,6 +244,7 @@ class basic_hash_table {
 
     /**
      *  @brief A return type for the insert function, similar to @c insert_return_type in STL.
+     *
      *  @c position names the stored or the conflicting element, and the end when nothing was stored.
      *  @c outcome says which of the four happened, so a key already taken, a probe with no slot left
      *  and an allocation the table could not make are all distinguishable from one another, without
@@ -329,9 +331,11 @@ class basic_hash_table {
 
     /**
      *  @brief Makes room for one more key, unless @p wanted is already stored and needs no room.
-     *    An element the table already holds is overwritten in place, so asking the allocator for a
-     *    slot before the probe has established the key is absent turns a plain overwrite into an
-     *    allocation failure the caller has no way to satisfy.
+     *
+     *  An element the table already holds is overwritten in place, so asking the allocator for a
+     *  slot before the probe has established the key is absent turns a plain overwrite into an
+     *  allocation failure the caller has no way to satisfy.
+     *
      *  @param[in] tags Markers for special acceleration: @c assume_unique_t has already answered
      *    the question the presence probe would ask, so the growth is decided without one.
      *  @return @c unchanged_k when nothing had to move, @c reallocated_k after a growth, and
@@ -877,7 +881,7 @@ class basic_hash_table {
     end_sentinel_t end() const noexcept { return end_sentinel_t {}; }
     end_sentinel_t cend() const noexcept { return end_sentinel_t {}; }
 
-    /** @brief Invokes the callback for every populated slot, bucket by bucket. */
+    /** @brief Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<slot_ref_t>>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
         slot_ref_t slot;
@@ -885,12 +889,12 @@ class basic_hash_table {
         offset_t const buckets = bucket_count();
         for (offset_t bucket_index = 0; bucket_index != buckets; ++bucket_index) {
             slot.slot_ = bucket_index * hash_bucket_capacity_k;
-            for_each_in_hash_bucket(slot, callback);
+            if (for_each_in_hash_bucket(slot, callback) == walk_control_t::halt_k) break;
         }
         return success_k;
     }
 
-    /** @brief Invokes the callback for every populated slot, bucket by bucket. */
+    /** @brief Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<const_slot_ref_t>>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         const_slot_ref_t slot;
@@ -898,7 +902,7 @@ class basic_hash_table {
         offset_t const buckets = bucket_count();
         for (offset_t bucket_index = 0; bucket_index != buckets; ++bucket_index) {
             slot.slot_ = bucket_index * hash_bucket_capacity_k;
-            for_each_in_hash_bucket(slot, callback);
+            if (for_each_in_hash_bucket(slot, callback) == walk_control_t::halt_k) break;
         }
         return success_k;
     }
@@ -923,10 +927,12 @@ class basic_hash_table {
 
     /**
      *  @brief Deleted: hint-based emplace is not supported.
-     *    A hint names a position, and an open-addressed table decides position by hashing the key,
-     *    so there is nothing a caller could usefully hint at. Declaring it deleted rather than
-     *    omitting it turns a port from @c std::unordered_map into a signposted error instead of an
-     *    unexplained missing member. Use @c emplace, or @c probe_to_upsert for finer control.
+     *
+     *  A hint names a position, and an open-addressed table decides position by hashing the key,
+     *  so there is nothing a caller could usefully hint at. Declaring it deleted rather than
+     *  omitting it turns a port from @c std::unordered_map into a signposted error instead of an
+     *  unexplained missing member. Use @c emplace, or @c probe_to_upsert for finer control.
+     *
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/emplace_hint
      */
     template <typename... args_types_>

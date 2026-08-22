@@ -12,7 +12,7 @@ import pytest
 
 import smashtable as st
 
-from .base import group_sizes, key_types, make, map_class_names, sorted_class_names, transaction_styles
+from .base import group_sizes, key_types, make, map_class_names, sharing_modes, transaction_styles
 
 
 class _Abort(Exception):
@@ -57,11 +57,10 @@ def test_a_view_reads_its_own_writes(container, keygen):
 def test_a_raise_discards_everything(container, keygen):
     """A block that raises applies nothing, and the exception propagates unchanged."""
     keys = keygen(20)
-    with pytest.raises(_Abort):
-        with st.transaction(container) as (view,):
-            for key in keys:
-                view[key] = "doomed"
-            raise _Abort
+    with pytest.raises(_Abort), st.transaction(container) as (view,):
+        for key in keys:
+            view[key] = "doomed"
+        raise _Abort
     assert len(container) == 0
 
 
@@ -77,7 +76,7 @@ def test_a_batch_lands_whole(container, keygen):
 
 
 @pytest.mark.thread_unsafe(
-    reason="its premise is a single writer - a parallel copy of the test sharing the container would disturb the very watch or count it asserts on"
+    reason="its premise is a single writer - a parallel copy of the test sharing the container would erase the key this one expects to find"
 )
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
@@ -116,8 +115,13 @@ def test_an_empty_transaction_commits(container):
 
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_stage_then_rollback_applies_nothing(container, keygen):
-    """Rolling a staged transaction back pulls the changes out again."""
+def test_stage_then_rollback_applies_nothing_but_keeps_the_writes(container_class, key_type, keygen):
+    """Rolling a staged transaction back pulls the changes out of the store and back into it.
+
+    Surviving writes are what separate rollback from reset, so the container is private: the key
+    this republishes would otherwise outlive the body and meet the next run of it.
+    """
+    container = make(container_class, key_type)
     key = keygen(1)[0]
     group = st.transaction(container)
     (view,) = group.begin()
@@ -125,6 +129,9 @@ def test_stage_then_rollback_applies_nothing(container, keygen):
     group.stage()
     group.rollback()
     assert key not in container
+    group.stage()
+    group.commit()
+    assert container[key] == "staged", "a rollback dropped the writes rather than pulling them back"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -162,24 +169,60 @@ def test_reset_discards_pending_changes(container, keygen):
 
 @pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_a_finished_group_refuses_more_work(container, keygen):
-    """After commit the group is done, and its views say so rather than writing anywhere."""
+def test_a_closed_block_refuses_more_work(container, keygen):
+    """A view that escapes its `with` block writes nowhere, whatever the group did inside it."""
     key = keygen(1)[0]
-    group = st.transaction(container)
-    (view,) = group.begin()
-    view[key] = "x"
-    group.stage()
-    group.commit()
+    with st.transaction(container) as (view,):
+        view[key] = "x"
     with pytest.raises(st.StateError):
         view[key] = "again"
 
 
+@pytest.mark.parametrize("class_name", map_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_a_finished_transaction_cannot_be_reset(key_type, keygen):
-    """A committed transaction is over, and `reset` must not hand its views a second turn.
+def test_a_committed_group_is_open_again(container, keygen):
+    """A commit returns the group to where it started, so the handle takes a second round.
 
-    Regression: reset wrote the open state unconditionally, so a finished group could be reopened
-    and committed again, applying a fresh set of writes through a transaction that had ended.
+    The reused round reads at the snapshot its own commit published rather than a fresh one, so a
+    caller who wants the world as it stands calls `reset` first.
+    """
+    keys = keygen(2)
+    group = st.transaction(container)
+    (view,) = group.begin()
+    view[keys[0]] = "first"
+    group.stage()
+    group.commit()
+
+    view[keys[1]] = "second"
+    group.stage()
+    group.commit()
+    assert container[keys[0]] == "first" and container[keys[1]] == "second", f"{container!r}"
+
+
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_closed_handle_cannot_be_reset(key_type, keygen):
+    """A `with` block that has closed hands its handle back to nobody, `reset` included."""
+    container = make(st.SortedMap, key_type)
+    keys = keygen(2)
+
+    group = st.transaction(container)
+    with group as (view,):
+        view[keys[0]] = "first"
+    assert dict(container) == {keys[0]: "first"}
+
+    with pytest.raises(st.StateError):
+        group.reset()
+    with pytest.raises(st.StateError):
+        group.begin()
+    assert dict(container) == {keys[0]: "first"}, f"a closed handle wrote again: {dict(container)}"
+
+
+@pytest.mark.parametrize("key_type", key_types)
+def test_a_committed_group_resets_and_runs_again(key_type, keygen):
+    """`reset` after a commit is accepted here as it is in C++, and the next round lands.
+
+    A `reset` takes each participant a fresh snapshot, which is what separates this shape from
+    reusing a committed group directly.
     """
     container = make(st.SortedMap, key_type)
     keys = keygen(2)
@@ -189,13 +232,34 @@ def test_a_finished_transaction_cannot_be_reset(key_type, keygen):
     view[keys[0]] = "first"
     group.stage()
     group.commit()
-    assert dict(container) == {keys[0]: "first"}
 
-    with pytest.raises(st.StateError):
-        group.reset()
-    with pytest.raises(st.StateError):
-        group.begin()
-    assert dict(container) == {keys[0]: "first"}, "a finished transaction wrote again"
+    group.reset()
+    (view,) = group.begin()
+    view[keys[1]] = "second"
+    group.stage()
+    group.commit()
+    assert dict(container) == {keys[0]: "first", keys[1]: "second"}, f"{dict(container)}"
+
+
+@pytest.mark.parametrize("sharing", sharing_modes)
+def test_reset_after_staging_leaves_the_participant_writable(sharing):
+    """Reset returns a staged transaction to open, so the writes it refuses while staged land again.
+
+    Swept over `sharing` because the two carry the staged flag in different places: the sharded
+    wrapper keeps one of its own beside the per-partition ones, and a reset has to clear both.
+    """
+    container = make(st.SortedMap, "int", isolation="snapshot", sharing=sharing)
+
+    group = st.transaction(container)
+    (view,) = group.begin()
+    view[1] = "discarded"
+    group.stage()
+    group.reset()
+
+    view[2] = "kept"
+    group.stage()
+    group.commit()
+    assert dict(container) == {2: "kept"}, f"{dict(container)}"
 
 
 @pytest.mark.parametrize("key_type", key_types)
@@ -252,11 +316,10 @@ def test_a_raise_leaves_neither_container_touched(container_class, key_type, key
     first = make(container_class, key_type)
     second = make(container_class, key_type)
     key = keygen(1)[0]
-    with pytest.raises(_Abort):
-        with st.transaction(first, second) as (left, right):
-            left[key] = "a"
-            right[key] = "b"
-            raise _Abort
+    with pytest.raises(_Abort), st.transaction(first, second) as (left, right):
+        left[key] = "a"
+        right[key] = "b"
+        raise _Abort
     assert len(first) == 0 and len(second) == 0
 
 
@@ -310,16 +373,12 @@ def test_atomic_rejects_a_foreign_object(container):
         st.transaction(container, {})
 
 
-@pytest.mark.parametrize("class_name", sorted_class_names)
 @pytest.mark.parametrize("key_type", key_types)
-def test_a_group_may_mix_maps_and_sets(container_class, key_type, keygen):
+def test_a_group_may_mix_maps_and_sets(key_type, keygen):
     """A map and a set commit together, which the single-class binding could not express."""
-    from .base import is_map_class
-
     mapping = make(st.SortedMap, key_type)
     members = make(st.SortedSet, key_type)
     key = keygen(1)[0]
-    assert is_map_class(st.SortedMap)
     with st.transaction(mapping, members) as (map_view, set_view):
         map_view[key] = "value"
         set_view.add(key)
@@ -332,9 +391,8 @@ def test_a_set_participant_refuses_a_value(key_type, keygen):
     """Assigning a value to a set participant is a TypeError pointing at add()."""
     members = make(st.SortedSet, key_type)
     key = keygen(1)[0]
-    with pytest.raises(TypeError):
-        with st.transaction(members) as (view,):
-            view[key] = "value"
+    with pytest.raises(TypeError), st.transaction(members) as (view,):
+        view[key] = "value"
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
@@ -342,14 +400,12 @@ def test_a_set_participant_refuses_a_value(key_type, keygen):
 def test_a_map_participant_refuses_add(container, keygen):
     """Calling add on a map participant is a TypeError pointing at assignment."""
     key = keygen(1)[0]
-    with pytest.raises(TypeError):
-        with st.transaction(container) as (view,):
-            view.add(key)
+    with pytest.raises(TypeError), st.transaction(container) as (view,):
+        view.add(key)
 
 
 @pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_containers_may_use_different_key_types(container_class, key_type, keygen):
+def test_containers_may_use_different_key_types(container_class):
     """A group does not require its participants to agree on a key layout."""
     by_number = make(container_class, "int")
     by_name = make(container_class, "str")

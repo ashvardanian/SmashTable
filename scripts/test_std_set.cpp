@@ -55,6 +55,10 @@ using transactional_composite_map_t =
 using transactional_heavy_map_t = reference_store<mapping<heavy_key_t, guarded_payload_t>, std::less<void>,
                                                   std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
+#pragma endregion Type Aliases
+
+#pragma region Basic Operations Tests
+
 /** @brief Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_trivial_set_t>();
@@ -79,7 +83,7 @@ static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests insertion patterns (ascending, descending, random) for all AVL containers */
+/** @brief Tests ascending, descending, and random insertion patterns across every container here. */
 static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_trivial_set_t>();
     test_basic_insertion_patterns<transactional_tracking_set_t>();
@@ -91,7 +95,7 @@ static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk insertion from iterators for all AVL containers */
+/** @brief Tests bulk insertion from iterators across every container here. */
 static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<transactional_trivial_set_t>();
     test_bulk_insertion_from_iterators<transactional_tracking_set_t>();
@@ -138,6 +142,10 @@ static void basic_ops_heterogeneous_lookups() {
     test_heterogeneous_composite_find<transactional_composite_map_t>();
     test_heterogeneous_heavy_string_view_find<transactional_heavy_map_t>();
 }
+
+#pragma endregion Basic Operations Tests
+
+#pragma region Consistency and Transaction Tests for Sets
 
 static void transactional_consistency_empty_transaction_commit() {
     test_empty_transaction_commit<transactional_trivial_set_t>();
@@ -256,6 +264,13 @@ static void transactional_consistency_watch_on_erased_key_can_commit() {
     test_watch_on_erased_key_can_commit<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_watch_catches_an_insert_and_erase_under_it() {
+    test_watch_catches_an_insert_and_erase_under_it<transactional_trivial_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_tracking_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_composite_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_absent_watch_survives_rollback() {
     test_absent_watch_survives_rollback<transactional_trivial_map_t>();
     test_absent_watch_survives_rollback<transactional_tracking_map_t>();
@@ -337,11 +352,11 @@ static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_heavy_map_t>();
 }
 
-#pragma endregion Type Aliases
-
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
 }
+
+#pragma endregion Consistency and Transaction Tests for Sets
 
 #pragma region Std Store Defects
 
@@ -375,7 +390,7 @@ static void std_store_defects_vacuum_leaves_staged_entries() {
     test_vacuum_leaves_staged_entries<transactional_heavy_map_t>();
 }
 
-static void std_store_defects_commit_reports_lost_versions() {
+static void std_store_defects_staged_versions_survive_a_clear() {
     test_staged_versions_survive_a_clear<transactional_trivial_map_t>();
     test_staged_versions_survive_a_clear<transactional_composite_map_t>();
     test_staged_versions_survive_a_clear<transactional_heavy_map_t>();
@@ -445,7 +460,7 @@ static void std_store_defects_stage_refuses_when_already_staged() {
     test_stage_refuses_when_already_staged<transactional_heavy_map_t>();
 }
 
-static void std_store_defects_rollback_reports_lost_versions() {
+static void std_store_defects_rollback_recovers_what_it_staged() {
     test_rollback_recovers_what_it_staged<transactional_trivial_map_t>();
     test_rollback_recovers_what_it_staged<transactional_composite_map_t>();
     test_rollback_recovers_what_it_staged<transactional_heavy_map_t>();
@@ -514,6 +529,8 @@ int main() {
                          transactional_consistency_moved_transaction_unwinds_once);
     failures += run_test(filter, "transactional_consistency.watch_on_erased_key_can_commit",
                          transactional_consistency_watch_on_erased_key_can_commit);
+    failures += run_test(filter, "transactional_consistency.watch_catches_an_insert_and_erase_under_it",
+                         transactional_consistency_watch_catches_an_insert_and_erase_under_it);
     failures += run_test(filter, "transactional_consistency.absent_watch_survives_rollback",
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
@@ -542,8 +559,8 @@ int main() {
                          std_store_defects_erase_range_skips_tombstones);
     failures += run_test(filter, "std_store_defects.vacuum_leaves_staged_entries",
                          std_store_defects_vacuum_leaves_staged_entries);
-    failures += run_test(filter, "std_store_defects.commit_reports_lost_versions",
-                         std_store_defects_commit_reports_lost_versions);
+    failures += run_test(filter, "std_store_defects.staged_versions_survive_a_clear",
+                         std_store_defects_staged_versions_survive_a_clear);
     failures += run_test(filter, "std_store_defects.commit_reports_success_when_published",
                          std_store_defects_commit_reports_success_when_published);
     failures += run_test(filter, "std_store_defects.staged_entries_keep_one_generation",
@@ -575,7 +592,7 @@ int main() {
     failures += run_test(filter, "std_store_defects.stage_refuses_when_already_staged",
                          std_store_defects_stage_refuses_when_already_staged);
     failures += run_test(filter, "std_store_defects.rollback_recovers_what_it_staged",
-                         std_store_defects_rollback_reports_lost_versions);
+                         std_store_defects_rollback_recovers_what_it_staged);
     failures += run_test(filter, "std_store_defects.transaction_bounds_skip_locally_erased",
                          std_store_defects_transaction_bounds_skip_locally_erased);
 

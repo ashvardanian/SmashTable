@@ -162,8 +162,9 @@ void test_transaction_walks_collision_runs(std::size_t groups = 4) {
 /**
  *  @brief A hash lookup compares a bounded number of candidates, however many keys are present.
  *
- *  A table's whole claim is that a probe run stays short. Nothing measured it, so a lookup that walked
- *  the table rather than the run would have passed every other assertion in the suite.
+ *  A table's whole claim is that a probe run stays short. The defect that breaks it is one pathological
+ *  run at one key, so every key is probed rather than a stride of them, and the worst run the table can
+ *  produce at @p size is stated outright - it moves only when the hash, the load factor or @p size does.
  */
 template <typename container_type_>
 void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
@@ -176,16 +177,15 @@ void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
         st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier)));
 
     std::size_t worst_equalities = 0;
-    for (std::size_t identifier = 0; identifier < size; identifier += 97) {
-        call_tally_t::reset();
+    for (std::size_t identifier = 0; identifier != size; ++identifier) {
+        counting_call_tally_t::reset();
         st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
-        std::size_t const equalities = call_tally_t::equalities_count();
+        std::size_t const equalities = counting_call_tally_t::equalities_count();
         worst_equalities = equalities > worst_equalities ? equalities : worst_equalities;
     }
 
-    // A run is a constant multiple of the load factor, never a function of the table's size.
-    st_verify_gt_(worst_equalities, 0, "the probe must have compared something, or this proves nothing");
-    st_verify_lt_(worst_equalities, 64, "a lookup must walk its probe run, not the table");
+    // The worst run this hash and this load factor produce over @p size keys, measured over all of them.
+    st_verify_eq_(worst_equalities, 19, "a lookup must walk its probe run, not the table");
 }
 
 #pragma endregion Lookup Cost

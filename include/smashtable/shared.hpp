@@ -1,6 +1,6 @@
 /**
  *  @brief Vocabulary shared by every container - status codes, @c expected, key-value @c mapping, the versioning
- *      machinery transactions are built on, and the concepts stating what a container must offer to back one.
+ *    machinery transactions are built on, and the concepts stating what a container must offer to back one.
  *  @author Ash Vardanian
  *  @file include/smashtable/shared.hpp
  *  @date October 13, 2022
@@ -434,10 +434,8 @@ struct assume_unique_t {
 inline constexpr assume_unique_t assume_unique {};
 
 /**
- *  @brief Tag to assume input range is sorted, enable O(n) bulk construction.
- *    Allows building balanced tree from sorted range without individual insertions.
- *    Precondition: Elements must be in sorted order according to comparator.
- *  @warning If precondition violated (unsorted input), behavior is undefined.
+ *  @brief Tag to assume the input range is ascending, which buys an O(n) bulk build.
+ *  @warning An unsorted range is undefined behaviour, not a refusal.
  */
 struct assume_sorted_t {
     explicit assume_sorted_t() = default;
@@ -782,7 +780,8 @@ constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(st
  *  The top two differ only in when a commit becomes visible, never in what they refuse: both validate
  *  every read, so neither admits write skew or a phantom. @c strict_serializable_k additionally waits
  *  for its own publication before returning, so a transaction opening after a commit returned cannot
- *  be ordered before it - which @c serializable_k permits, and which costs whatever the wait costs.
+ *  be ordered before it. A transaction commit waits at both levels, so the difference reaches only a
+ *  sharded commit and a write made outside a transaction.
  *
  *  @see https://jepsen.io/consistency
  */
@@ -793,6 +792,33 @@ enum class isolation_t : std::uint8_t {
     serializable_k = 3,
     strict_serializable_k = 4,
 };
+
+/** @brief Whether a walk carries on after handing an element over, for a callback that can say. */
+enum class walk_control_t : bool { resume_k, halt_k };
+
+/**
+ *  @brief Whether @p callback_type_ can stop a walk, rather than taking every element it is offered.
+ *
+ *  A callback answering @c walk_control_t is asked whether to carry on; one answering @c void is
+ *  asking for everything. The difference is resolved where the walk runs rather than by a flag.
+ */
+template <typename callback_type_, typename element_type_>
+constexpr bool halts_the_walk = requires(callback_type_ &callback, element_type_ element) {
+    { callback(element) } noexcept -> std::same_as<walk_control_t>;
+};
+
+/**
+ *  @brief Hands @p element to @p callback and answers whether the walk carries on.
+ *    A callback that cannot say resumes it, so a walk asks here instead of branching on the shape.
+ */
+template <typename callback_type_, typename element_type_>
+[[nodiscard]] constexpr walk_control_t hand_over(callback_type_ &&callback, element_type_ &&element) noexcept {
+    if constexpr (halts_the_walk<callback_type_, element_type_>) return callback(element);
+    else {
+        callback(element);
+        return walk_control_t::resume_k;
+    }
+}
 
 /** @brief Whether @p offered is at least as strong a promise as @p required. */
 constexpr bool at_least(isolation_t offered, isolation_t required) noexcept {
@@ -860,50 +886,64 @@ struct watch_t {
     presence_t presence {presence_t::present_k};
 
     inline bool operator==(watch_t const &watch) const noexcept {
-        return watch.presence == presence && watch.generation == generation;
-    }
-    inline bool operator!=(watch_t const &watch) const noexcept {
-        return watch.presence != presence || watch.generation != generation;
+        return generation == watch.generation && presence == watch.presence;
     }
 };
 
 /**
- *  @brief What a watch on a key that is not there records, and what validation must match it with.
+ *  @brief What a watch on a key with no entry at all records.
  *
- *  Absence is spelled as a tombstone at @c absent_generation_k rather than as a separate state: a
- *  committed tombstone is reported as found - the public @c find has to see it in order to hide it -
- *  while validation resolves that same key to missing, so the two paths only agree if a watch on an
- *  absent key and a watch on an erased one record the very same shape.
+ *  A key erased through a transaction carries a committed tombstone and dates its absence by that
+ *  tombstone's generation, which is what tells an absence nothing disturbed apart from one an insert
+ *  and an erase closed over again. This constant is what remains when there is no tombstone to date.
+ *
+ *  @warning Absence is dated only while a tombstone survives. An erase taken outside a transaction
+ *    drops the entry outright, and @c vacuum, @c clear and the ranged erases reclaim one a watch may
+ *    still hold - so a watch can miss drift once its tombstone is gone, and can report drift that is
+ *    only the reclamation. Neither @c monotonic_store nor @c reference_store pins reclamation behind
+ *    an open reader the way @c snapshot_store does.
  */
 constexpr watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
 
 /**
- *  @brief The watch a read resolving to @p resolved should record, or the missing shape when it resolves
- *    to nothing. A key erased and a key never present record the same shape, which is what lets a watch
- *    on an absent key compare equal to one on an erased key.
+ *  @brief The watch a read resolving to @p resolved should record, or @c missing_watch when it resolves
+ *    to nothing at all. A committed tombstone keeps its own generation rather than collapsing onto the
+ *    constant, so two absences separated by a commit do not compare equal.
+ *
+ *  Both ends of a watch must resolve through the same finder, or a tombstone one end cannot see reads
+ *  as drift on the other. Both engines therefore watch through the finder validation uses.
  */
 template <typename versioned_type_>
 [[nodiscard]] constexpr watch_t watch_shape_of(versioned_type_ const *resolved) noexcept {
-    if (!resolved || resolved->presence != presence_t::present_k) return missing_watch();
+    if (!resolved) return missing_watch();
     return watch_t {resolved->generation, resolved->presence};
+}
+
+/**
+ *  @brief Whether a watched key moved between @p recorded and what it resolves to @p now.
+ *    Not equality: an absence a vacuum stripped of its date is the absence that was already read.
+ */
+[[nodiscard]] inline bool watch_drifted(watch_t recorded, watch_t now) noexcept {
+    if (recorded == now) return false;
+    bool const stood_absent = recorded.presence == presence_t::erased_k;
+    return !(stood_absent && now == missing_watch());
 }
 
 /**
  *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
  *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
  *  @param[in] resolve_latest Invoked as @c resolve_latest(identifier,on_found,on_missing) . Must be noexcept.
- *  @return @c success_k, or @c read_conflict_k for the first watch that fails to match.
+ *  @return @c success_k, or @c read_conflict_k for the first watch that drifted.
  */
 template <typename watches_type_, typename resolver_type_>
 [[nodiscard]] status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
-    watch_t const entry_missing = missing_watch();
     for (auto const &identifier_and_watch : watches) {
-        bool drifted = false;
+        // An identifier nothing resolves to keeps the shape it was given here, which is the absent one.
+        watch_t latest = missing_watch();
         resolve_latest(
-            identifier_and_watch.identifier,
-            [&](auto const &entry) noexcept { drifted = entry != identifier_and_watch.watch; },
-            [&]() noexcept { drifted = entry_missing != identifier_and_watch.watch; });
-        if (drifted) return status_t::read_conflict_k;
+            identifier_and_watch.identifier, [&](auto const &entry) noexcept { latest = watch_shape_of(&entry); },
+            no_op_t {});
+        if (watch_drifted(identifier_and_watch.watch, latest)) return status_t::read_conflict_k;
     }
     return success_k;
 }
@@ -1085,10 +1125,7 @@ struct versioning_for {
         versioned_t(value_t &&payload) noexcept : payload(std::move(payload)) {}
 
         bool operator==(watch_t const &watch) const noexcept {
-            return watch.presence == presence && watch.generation == generation;
-        }
-        bool operator!=(watch_t const &watch) const noexcept {
-            return watch.presence != presence || watch.generation != generation;
+            return generation == watch.generation && presence == watch.presence;
         }
     };
 
@@ -1304,9 +1341,10 @@ inline constexpr std::size_t atomic_alignment = atomic_ref<integral_type_>::requ
 
 /**
  *  @brief Relaxed atomic increment of a plain counter, returning the post-increment value.
- *    Relaxed suffices for a counter read by value - a statistic, or a version stamp compared for
- *    identity and recency - because one location has a total modification order. It publishes
- *    nothing: a caller needing the data a counter describes to be visible must order that itself.
+ *
+ *  Relaxed suffices for a counter read by value - a statistic, or a version stamp compared for
+ *  identity and recency - because one location has a total modification order. It publishes
+ *  nothing: a caller needing the data a counter describes to be visible must order that itself.
  */
 template <typename integral_type_>
 constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
@@ -1540,8 +1578,9 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 
 /**
  *  @brief What a store keeping no stamps contributes to a shard set, which is nothing at all.
- *    Named so a wrapper declares its clock and its reader's claim unconditionally, and pays nothing
- *    for either where there is no clock to share.
+ *
+ *  Named so a wrapper declares its clock and its reader's claim unconditionally, and pays nothing for
+ *  either where there is no clock to share.
  */
 struct no_clock_t {
     /** @brief The claim a reader of such a store never takes. */
@@ -1734,9 +1773,10 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
 
 /**
  *  @brief The owned element a core stores, as distinct from the view it hands out.
- *    A node-based container returns a reference to the element it holds, so the two coincide; an
- *    open-addressed table keeps keys and values in separate regions and can only view an entry as a
- *    pair of references, which nothing above it can own, copy, or version.
+ *
+ *  A node-based container returns a reference to the element it holds, so the two coincide; an
+ *  open-addressed table keeps keys and values in separate regions and can only view an entry as a
+ *  pair of references, which nothing above it can own, copy, or version.
  */
 template <typename collection_type_, typename = void>
 struct owned_value_of {
@@ -1799,6 +1839,23 @@ concept optimistically_concurrent_store =
         { transaction.rollback() } noexcept -> std::same_as<status_t>;
         { transaction.reset() } noexcept -> std::same_as<status_t>;
     };
+
+/**
+ *  @brief Whether an open transaction can be asked to commit in two steps rather than one.
+ *
+ *  A commit spanning several stores has to learn that every one of them may proceed before any of
+ *  them writes. A transaction offering only @c commit decides and writes in the same call, so a
+ *  caller cannot ask first, and a refusal from a later participant arrives over writes an earlier
+ *  one has already published.
+ *
+ *  @c publish_under is the no-stamp spelling: an engine keeping a clock draws its own stamp inside
+ *  it, and one keeping none orders its own versions. Neither can refuse.
+ */
+template <typename transaction_type_>
+concept splits_its_commit = requires(transaction_type_ &transaction) {
+    { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
+    transaction.publish_under();
+};
 
 /**
  *  @brief A two-phase commit over several stores at once.
@@ -1866,16 +1923,30 @@ class transaction_group {
 
     /**
      *  @brief Opens one transaction per store, or none at all.
-     *    A store that refuses leaves the already-opened transactions to their destructors, which is
-     *    why they must unwind themselves.
+     *
+     *  @return The group; @c invalid_argument_k when one store is named twice; or the first store's
+     *    own refusal, which leaves the transactions opened before it to their destructors.
+     *
+     *  A store named twice would take two participants over one snapshot, neither seeing the other's
+     *  writes, so the later commit overwrites the earlier one and no conflict is reported.
      */
     [[nodiscard]] static expected<transaction_group> make(store_types_ &...stores) noexcept {
-        std::tuple<expected<typename store_types_::transaction_t>...> opened {stores.transaction()...};
-        bool const all_opened =
-            std::apply([](auto const &...maybe) noexcept { return (static_cast<bool>(maybe) && ...); }, opened);
-        if (!all_opened) return status_t::out_of_memory_heap_k;
-
         std::array<void const *, participants_k> const addresses {static_cast<void const *>(&stores)...};
+        // Quadratic over a handful of participants known at compile time, which beats a set here.
+        for (std::size_t position = 1; position != participants_k; ++position)
+            for (std::size_t earlier = 0; earlier != position; ++earlier)
+                if (addresses[position] == addresses[earlier]) return status_t::invalid_argument_k;
+
+        std::tuple<expected<typename store_types_::transaction_t>...> opened {stores.transaction()...};
+        status_t const refused = std::apply(
+            [](auto const &...maybe) noexcept {
+                status_t first = success_k;
+                ((first = first_failure(first, maybe.status())), ...);
+                return first;
+            },
+            opened);
+        if (failed(refused)) return refused;
+
         auto moved = std::apply([](auto &...maybe) noexcept { return transactions_t {std::move(*maybe)...}; }, opened);
         return transaction_group {std::move(moved), addresses};
     }
@@ -1921,35 +1992,85 @@ class transaction_group {
     }
 
     /**
-     *  @brief Publishes every participant, drawing each one's commit stamp.
-     *    Refuses with @c consistency_k when a participant's watch was overwritten by a commit that
-     *    landed while this group sat staged; nothing else can turn a staged group away.
+     *  @brief Whether this group asks every participant before letting any of them write.
+     *
+     *  Needs all of them to offer the split, since one participant deciding and writing in the same
+     *  call puts a refusal from a later one over writes an earlier one already published. A lone
+     *  participant is excluded because it has nothing to tear against, and asking it separately would
+     *  only widen the window a wrapper's own lock closes when it commits in one call.
+     */
+    static constexpr bool asks_before_writing_k =
+        participants_k > 1 && (splits_its_commit<typename store_types_::transaction_t> && ...);
+
+    /**
+     *  @brief Publishes the participants, drawing each one's commit stamp.
+     *
+     *  @return Success; whichever check turned a participant away; or @c operation_not_permitted_k
+     *    when the group is not staged.
+     *
+     *  Where @c asks_before_writing_k, every participant is asked before any writes, so a refusal
+     *  publishes nothing and the group stays staged, which is the one state @c rollback accepts. A
+     *  participant may still be committed over between the two passes - what the split buys is that
+     *  the second pass cannot refuse, not that nothing can change beneath it.
+     *
+     *  Where it does not hold, each participant is committed in turn. A refusal by the first has
+     *  published nothing and leaves the group staged too. A refusal by any later one drops the group
+     *  to pending, which refuses both @c commit and @c rollback - the position decides that, not
+     *  whether anything was published, since a torn commit cannot be told apart from an untorn one
+     *  without asking every participant what it did. Only @c reset then clears the rest.
      */
     [[nodiscard]] status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
-        status_t result = success_k;
-        for (std::size_t position = 0; position != participants_k; ++position) {
-            status_t const one =
-                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
-            if (failed(one)) result = one;
+        if constexpr (asks_before_writing_k) {
+            for (std::size_t position = 0; position != participants_k; ++position)
+                if (status_t const refused = visit_at_(
+                        order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+                    failed(refused))
+                    return refused;
+
+            for (std::size_t position = 0; position != participants_k; ++position) {
+                [[maybe_unused]] status_t const published = visit_at_(order_[position], [](auto &transaction) noexcept {
+                    transaction.publish_under();
+                    return success_k;
+                });
+            }
+        }
+        else {
+            for (std::size_t position = 0; position != participants_k; ++position)
+                if (status_t const refused =
+                        visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
+                    failed(refused)) {
+                    // Whatever the earlier participants published is out, so the group stops calling
+                    // itself staged and leaves `reset` to discard the rest.
+                    if (position != 0) staging_ = staging_t::pending_k;
+                    return refused;
+                }
         }
         staging_ = staging_t::pending_k;
-        return result;
+        return success_k;
     }
 
-    /** @brief Pulls every staged write back into its transaction, leaving the group retryable. */
+    /**
+     *  @brief Pulls every staged write back into its transaction, leaving the group retryable.
+     *
+     *  @return Success; the refusal it stopped at; or @c operation_not_permitted_k when the group is
+     *    not staged.
+     *
+     *  Only a rollback that reached every participant clears the staged flag. Clearing it after a
+     *  refusal would advertise a group whose later participants are still staged, and the next
+     *  @c stage would stage a second time over the first.
+     */
     [[nodiscard]] status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
-        status_t result = success_k;
-        // Ascending store address, as every other pass takes, so a participant holding a lock across
-        // the phases meets the same order here and cannot deadlock against another group.
-        for (std::size_t position = 0; position != participants_k; ++position) {
-            status_t const one =
-                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
-            if (failed(one)) result = one;
-        }
+        // Ascending store address, as every forward pass takes - only an unwind descends - so a
+        // participant holding a lock across the phases cannot deadlock against another group.
+        for (std::size_t position = 0; position != participants_k; ++position)
+            if (status_t const refused =
+                    visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
+                failed(refused))
+                return refused;
         staging_ = staging_t::pending_k;
-        return result;
+        return success_k;
     }
 
     /** @brief Discards every participant's staged and pending changes. */
@@ -2152,81 +2273,193 @@ template <algebra_t algebra_>
     return membership == membership_t::on_one_side_k;
 }
 
-/**
- *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
- *
- *  @warning Neither side is held between elements, and the two have separate clocks, so a member
- *    written to either during the walk may be seen or missed. Pass transactions rather than stores
- *    where that matters - a common instant is something only the caller can arrange.
- */
-template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
-[[nodiscard]] status_t walk_algebra(first_type_ const &first, second_type_ const &second,
-                                    callback_type_ &&callback) noexcept {
+/** @brief Whether a crossed walk carries on past a member, or the answer no longer needs it. */
+enum class comparison_t : bool { carry_on_k, settled_k };
 
-    status_t probed = success_k;
-    auto sweep = [&](auto const &walked, auto const &probing, auto keeps) noexcept {
-        return walked.for_each([&](auto const &member) noexcept {
-            if (failed(probed)) return;
+/**
+ *  @brief How many members a crossed walk carries out of one side before it puts that side down.
+ *    The only memory such a walk holds, on its own stack; a larger chunk re-seeds the walk fewer
+ *    times and costs that much more of it.
+ */
+inline constexpr std::size_t algebra_chunk_k = 512;
+
+/**
+ *  @brief Whether a side hands out a read transaction whose ordered walk resumes from a key it saw.
+ *    A side that does need not be held while the other is taken, which is what two crossing
+ *    comparisons need in order not to wedge on a writer queued between them.
+ */
+template <typename side_type_>
+concept resumes_from_a_key = requires(side_type_ &side, typename side_type_::transaction_t const &reading,
+                                      typename side_type_::identifier_t const &key, no_op_t callback) {
+    typename side_type_::value_t;
+    side.transaction();
+    reading.smallest(callback, callback);
+    reading.range_from(key, callback);
+    reading.contains(key);
+    requires std::is_nothrow_default_constructible_v<typename side_type_::value_t>;
+};
+
+/**
+ *  @brief Hands @p visitor every member of @p walked with whether @p probing holds it too, stopping
+ *    where the visitor calls the answer settled.
+ *
+ *  A pair that resumes from a key is read through one read transaction each, @p walked a chunk at a
+ *  time, and neither side is held while the other is taken. A pair that does not - an unordered
+ *  store, or a transaction a caller opened - probes @p probing from inside the walk of @p walked, so
+ *  two crossing comparisons can wedge there.
+ *
+ *  @note A chunked side shows one instant for the whole comparison from @c snapshot_k up, and a
+ *    chunk boundary is a point it may move at below that. From @c serializable_k up every probe is
+ *    recorded, so the probing side's read set grows with the walked side.
+ */
+template <typename walked_type_, typename probing_type_, typename visitor_type_>
+[[nodiscard]] status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing,
+                                        visitor_type_ &&visitor) noexcept {
+
+    if constexpr (resumes_from_a_key<walked_type_> && resumes_from_a_key<probing_type_>) {
+        using member_t = typename walked_type_::value_t;
+        auto reading_walked = walked.transaction();
+        if (!reading_walked) return reading_walked.status();
+        auto reading_probing = probing.transaction();
+        if (!reading_probing) return reading_probing.status();
+
+        member_t chunk[algebra_chunk_k] {};
+        member_t resume {};
+        member_t next_resume {};
+        status_t copied = success_k;
+        auto take = [&](member_t &target, member_t const &member) noexcept {
+            auto copy = copy_safely(member);
+            if (!copy) return void(copied = copy.status());
+            target = std::move(*copy);
+        };
+
+        // The walk needs a key to start from and no level names a floor, so the smallest member is one.
+        status_t const seeded =
+            reading_walked->smallest([&](member_t const &member) noexcept { take(resume, member); }, no_op_t {});
+        if (failed(seeded)) return seeded;
+        if (failed(copied)) return copied;
+
+        for (;;) {
+            std::size_t seen = 0;
+            auto collect = [&](member_t const &member) noexcept -> walk_control_t {
+                if (seen > algebra_chunk_k || failed(copied)) return walk_control_t::halt_k;
+                take(seen == algebra_chunk_k ? next_resume : chunk[seen], member);
+                ++seen;
+                return seen > algebra_chunk_k ? walk_control_t::halt_k : walk_control_t::resume_k;
+            };
+            status_t const swept = reading_walked->range_from(mapping_key_or_itself<member_t>(resume), collect);
+            if (failed(swept)) return swept;
+            if (failed(copied)) return copied;
+
+            std::size_t const filled = seen < algebra_chunk_k ? seen : algebra_chunk_k;
+            for (std::size_t index = 0; index != filled; ++index) {
+                expected<bool> const shared = reading_probing->contains(mapping_key_or_itself<member_t>(chunk[index]));
+                if (!shared) return shared.status();
+                membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+                if (visitor(chunk[index], membership) == comparison_t::settled_k) return success_k;
+            }
+            if (seen <= algebra_chunk_k) return success_k;
+            resume = std::move(next_resume);
+        }
+    }
+    else {
+        status_t probed = success_k;
+        status_t const swept = walked.for_each([&](auto const &member) noexcept -> walk_control_t {
             expected<bool> const shared = probing.contains(member);
             if (!shared) {
                 probed = shared.status();
-                return;
+                return walk_control_t::halt_k;
             }
             membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
+            return visitor(member, membership) == comparison_t::settled_k ? walk_control_t::halt_k
+                                                                          : walk_control_t::resume_k;
+        });
+        if (failed(swept)) return swept;
+        return probed;
+    }
+}
+
+/**
+ *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
+ *
+ *  @warning The two sides keep separate clocks, so the pair is never one instant however it is read.
+ *    Each side is read through a read transaction opened here, which fixes what that side shows from
+ *    @c snapshot_k up; pass transactions to choose the instants yourself, at the cost of the nested
+ *    walk @c compare_crossed_ falls back to.
+ */
+template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
+[[nodiscard]] status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &&callback) noexcept {
+
+    auto sweep = [&](auto &side, auto &other, auto keeps) noexcept {
+        return compare_crossed_(side, other, [&](auto const &member, membership_t membership) noexcept {
             if (keeps(membership)) callback(member);
+            return comparison_t::carry_on_k;
         });
     };
 
-    status_t walked = sweep(first, second,
-                            [](membership_t membership) noexcept { return algebra_keeps_first<algebra_>(membership); });
-    if (failed(walked)) return walked;
-    if (failed(probed)) return probed;
+    status_t swept = sweep(first, second,
+                           [](membership_t membership) noexcept { return algebra_keeps_first<algebra_>(membership); });
+    if (failed(swept)) return swept;
 
     if constexpr (algebra_walks_both<algebra_>()) {
-        walked =
-            sweep(second, first, [](membership_t membership) noexcept { return algebra_keeps_second(membership); });
-        if (failed(walked)) return walked;
+        swept = sweep(second, first, [](membership_t membership) noexcept { return algebra_keeps_second(membership); });
+        if (failed(swept)) return swept;
     }
-    return probed;
+    return success_k;
 }
 
 /**
  *  @brief Whether every member of @p first is also in @p second.
- *  Settled at the first member @p second lacks, though the walk still runs to the end - @c for_each
- *  offers no way to halt it. What stops is the probing, which is the part that costs.
+ *    Settled at the first member @p second lacks, and the walk of @p first stops there.
+ *
+ *  A side with more members than the other cannot be contained in it, which is the whole answer
+ *  without a walk. Both counts are read before either side is touched, so the pair is a decision
+ *  about the sizes at one moment rather than a size from one moment weighed against a walk from
+ *  another.
  */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_subset(first_type_ const &first, second_type_ const &second) noexcept {
+[[nodiscard]] expected<bool> is_subset(first_type_ &first, second_type_ &second) noexcept {
+    // One side contains itself, and the unordered walk below would probe the lock it already holds.
+    if constexpr (std::is_same_v<first_type_, second_type_>)
+        if (&first == &second) return true;
+    if (first.size() > second.size()) return false;
     bool subset = true;
-    status_t probed = success_k;
-    status_t const walked = first.for_each([&](auto const &member) noexcept {
-        if (!subset || failed(probed)) return;
-        expected<bool> const shared = second.contains(member);
-        if (!shared) return void(probed = shared.status());
-        subset = *shared;
+    status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
+        subset = membership == membership_t::on_both_sides_k;
+        return subset ? comparison_t::carry_on_k : comparison_t::settled_k;
     });
-    if (failed(walked)) return walked;
-    if (failed(probed)) return probed;
+    if (failed(compared)) return compared;
     return subset;
 }
 
+/** @brief Walks @p first probing @p second, settling at the first member they share. */
+template <typename first_type_, typename second_type_>
+[[nodiscard]] expected<bool> is_disjoint_walking_(first_type_ &first, second_type_ &second) noexcept {
+    bool disjoint = true;
+    status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
+        disjoint = membership == membership_t::on_one_side_k;
+        return disjoint ? comparison_t::carry_on_k : comparison_t::settled_k;
+    });
+    if (failed(compared)) return compared;
+    return disjoint;
+}
+
 /**
- *  @brief Whether the two sides share no member.
- *  Settled at the first shared member, on the same terms as @c is_subset.
+ *  @brief Whether the two sides share no member, on the same terms as @c is_subset.
+ *
+ *  Sharing is symmetric, so the walk takes the smaller side and probes the larger.
  */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_disjoint(first_type_ const &first, second_type_ const &second) noexcept {
-    bool disjoint = true;
-    status_t probed = success_k;
-    status_t const walked = first.for_each([&](auto const &member) noexcept {
-        if (!disjoint || failed(probed)) return;
-        expected<bool> const shared = second.contains(member);
-        if (!shared) return void(probed = shared.status());
-        disjoint = !*shared;
-    });
-    if (failed(walked)) return walked;
-    if (failed(probed)) return probed;
-    return disjoint;
+[[nodiscard]] expected<bool> is_disjoint(first_type_ &first, second_type_ &second) noexcept {
+    if constexpr (std::is_same_v<first_type_, second_type_>) {
+        // Self against self shares every member it has, and the unordered walk below would probe the
+        // lock it already holds.
+        if (&first == &second) return first.size() == 0;
+        // Decided once rather than by calling back the other way round, which two racing sizes could
+        // keep bouncing, and which would demand the reverse instantiation of an asymmetric pair.
+        if (first.size() > second.size()) return is_disjoint_walking_(second, first);
+    }
+    return is_disjoint_walking_(first, second);
 }
 
 #pragma endregion Set Algebra

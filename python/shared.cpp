@@ -15,7 +15,9 @@
  */
 
 #include <cassert>
+
 #include <functional>
+#include <limits>
 #include <string_view>
 
 #include "shared.hpp"
@@ -52,24 +54,6 @@ static bool key_less_bytes(key_variant_t const &first, key_variant_t const &seco
     return assume_layout<bytes_t>(first).data < assume_layout<bytes_t>(second).data;
 }
 
-static std::size_t key_hash_i64(key_variant_t const &key) noexcept {
-    return std::hash<std::int64_t> {}(assume_layout<std::int64_t>(key));
-}
-
-static std::size_t key_hash_u64(key_variant_t const &key) noexcept {
-    return std::hash<std::uint64_t> {}(assume_layout<std::uint64_t>(key));
-}
-
-static std::size_t key_hash_str(key_variant_t const &key) noexcept {
-    return std::hash<std::string> {}(assume_layout<utf8_t>(key).text);
-}
-
-static std::size_t key_hash_bytes(key_variant_t const &key) noexcept {
-    // Salted apart from the text hash so `str` and `bytes` with the same octets do not share a
-    // partition layout by accident; the two never mix in one container, so only sharding sees it.
-    return std::hash<std::string> {}(assume_layout<bytes_t>(key).data) ^ 0x9E3779B97F4A7C15ull;
-}
-
 // An unbounded walk needs a value strictly below every stored key, and a default-constructed variant
 // would carry the wrong alternative for three of the four layouts - reading a `std::string` out of an
 // `int64_t`. Each layout names its own floor instead.
@@ -78,10 +62,10 @@ static std::size_t key_hash_bytes(key_variant_t const &key) noexcept {
 
 #pragma region Key Layout Tables
 
-key_ops_t const key_ops_i64 {key_type_t::i64_k, "int", &key_less_i64, &key_hash_i64};
-key_ops_t const key_ops_u64 {key_type_t::u64_k, "uint", &key_less_u64, &key_hash_u64};
-key_ops_t const key_ops_str {key_type_t::str_k, "str", &key_less_str, &key_hash_str};
-key_ops_t const key_ops_bytes {key_type_t::bytes_k, "bytes", &key_less_bytes, &key_hash_bytes};
+key_ops_t const key_ops_i64 {key_type_t::i64_k, "int", &key_less_i64};
+key_ops_t const key_ops_u64 {key_type_t::u64_k, "uint", &key_less_u64};
+key_ops_t const key_ops_str {key_type_t::str_k, "str", &key_less_str};
+key_ops_t const key_ops_bytes {key_type_t::bytes_k, "bytes", &key_less_bytes};
 
 #pragma endregion Key Layout Tables
 
@@ -357,6 +341,31 @@ PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value)
     return pair;
 }
 
+/** @brief Builds one element in whichever shape @p yields names. */
+static PyObject *element_to_python(key_variant_t const &key, value_variant_t const &value,
+                                   cursor_yields_t yields) noexcept {
+    switch (yields) {
+    case cursor_yields_t::keys_k: return key_to_python(key);
+    case cursor_yields_t::values_k: return value_to_python(value);
+    case cursor_yields_t::items_k: return pair_to_python(key, value);
+    }
+    return nullptr;
+}
+
+PyObject *entries_to_python(basic_vector<entry_t> const &collected, cursor_yields_t yields) noexcept {
+    PyObject *listed = PyList_New(static_cast<Py_ssize_t>(collected.size()));
+    if (!listed) return nullptr;
+    for (std::size_t index = 0; index != collected.size(); ++index) {
+        PyObject *element = element_to_python(collected[index].key, collected[index].mapped, yields);
+        if (!element) {
+            Py_DECREF(listed);
+            return nullptr;
+        }
+        PyList_SET_ITEM(listed, static_cast<Py_ssize_t>(index), element);
+    }
+    return listed;
+}
+
 #pragma endregion Converting Back Out
 
 #pragma region Errors
@@ -364,8 +373,10 @@ PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value)
 int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
     if (succeeded(status)) return 0;
     switch (status) {
+    // Not a `ConflictError`: this says a version this transaction staged was gone before it could
+    // unwind, which is a broken invariant rather than a race a retry could win.
     case status_t::consistency_k:
-        PyErr_SetString(state->conflict_error, "a watched key changed since this transaction began");
+        PyErr_SetString(state->error, "a staged version was missing when this transaction unwound");
         break;
     // The three below say which of a validation's checks turned the transaction away, so a retry
     // loop can tell a race it will win next time from a read window it should narrow first.
@@ -450,7 +461,7 @@ static PyObject *cursor_next(PyObject *self) noexcept {
 
     key_variant_t found_key;
     value_variant_t found_value;
-    bool advanced = false;
+    expected<cursor_step_t> advanced {cursor_step_t::exhausted_k, success_k};
 
     // The probe takes partition locks, so the GIL is dropped around it - except where a value may be
     // an object, since moving one touches a refcount. A set has no values to move, so only a map can
@@ -459,18 +470,20 @@ static PyObject *cursor_next(PyObject *self) noexcept {
     run_over_values(step_mode, walk->lock, [&]() noexcept {
         if (!walk->walk || walk->remaining == 0) return;
         advanced = header->store_ops->cursor_next(walk->walk, found_key, over_a_map ? &found_value : nullptr);
-        if (advanced && walk->remaining > 0) --walk->remaining;
+        if (advanced && *advanced == cursor_step_t::handed_k && walk->remaining > 0) --walk->remaining;
     });
 
-    // No exception set, which CPython reads as `StopIteration`
-    if (!advanced) return nullptr;
-
-    switch (walk->yields) {
-    case cursor_yields_t::keys_k: return key_to_python(found_key);
-    case cursor_yields_t::values_k: return value_to_python(found_value);
-    case cursor_yields_t::items_k: return pair_to_python(found_key, found_value);
+    // A step that could not be answered ends the walk with a reason, which a caller must not read as
+    // the walk having run out - so it raises rather than leaving CPython to see `StopIteration`.
+    if (!advanced) {
+        module_state_t *state = state_of_type(self);
+        if (state) { [[maybe_unused]] int const raised = raise_for(state, advanced.status()); }
+        return nullptr;
     }
-    return nullptr;
+    // No exception set, which CPython reads as `StopIteration`
+    if (*advanced == cursor_step_t::exhausted_k) return nullptr;
+
+    return element_to_python(found_key, found_value, walk->yields);
 }
 
 static PyType_Slot cursor_slots[] = {
@@ -489,20 +502,8 @@ PyType_Spec cursor_spec = {"smashtable._Cursor", sizeof(cursor_object_t), 0,
 PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t yields, key_variant_t const *start,
                      key_variant_t const *stop, Py_ssize_t limit) noexcept {
     auto const *header = object_as<container_object_t>(container);
-
-    // A set has no values, so asking one for values or items is a programming error rather than an
-    // empty result - it would yield a default-constructed zero for every member.
-    if (!header->store_ops->is_associative && yields != cursor_yields_t::keys_k) {
-        PyErr_SetString(PyExc_TypeError, "a set has no values to walk");
-        return nullptr;
-    }
-
-    // An unordered core supplies no bounds, so there is nothing to step through. No class installs a
-    // walk over one, which is what makes this unreachable rather than merely refused.
-    if (!header->store_ops->is_ordered) {
-        PyErr_SetString(PyExc_TypeError, "this store has no ordering to walk");
-        return nullptr;
-    }
+    assert(header->store_ops->is_ordered && "ordered walk over an unordered core");
+    assert((header->store_ops->is_associative || yields == cursor_yields_t::keys_k) && "a set has no values to walk");
 
     // Opened before the object is built, so a store that cannot open a walk raises rather than
     // handing back a cursor that would end on its first step.
@@ -638,14 +639,14 @@ PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yi
 #pragma region Windowed Arguments
 
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
-                        PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept {
+                        PyObject *&start, PyObject *&stop, std::size_t &limit) noexcept {
     if (count > 2) {
         PyErr_Format(PyExc_TypeError, "%s() takes at most two positional arguments", called);
         return false;
     }
     start = count > 0 ? args[0] : nullptr;
     stop = count > 1 ? args[1] : nullptr;
-    limit = -1;
+    limit = std::numeric_limits<std::size_t>::max();
     if (!keywords) return true;
 
     Py_ssize_t const named = PyTuple_GET_SIZE(keywords);
@@ -668,14 +669,15 @@ bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t co
         }
         else if (PyUnicode_CompareWithASCIIString(name, "limit") == 0) {
             if (value == Py_None) continue;
-            limit = PyNumber_AsSsize_t(value, PyExc_OverflowError);
-            if (limit == -1 && PyErr_Occurred()) return false;
-            // Negative is the walk's own spelling for uncounted, so a caller passing one would
-            // silently receive the whole window rather than nothing.
-            if (limit < 0) {
+            Py_ssize_t const wanted = PyNumber_AsSsize_t(value, PyExc_OverflowError);
+            if (wanted == -1 && PyErr_Occurred()) return false;
+            // Refused rather than folded into the uncounted spelling, which would hand back the whole
+            // window to a caller who asked for none of it.
+            if (wanted < 0) {
                 PyErr_SetString(PyExc_ValueError, "limit cannot be negative");
                 return false;
             }
+            limit = static_cast<std::size_t>(wanted);
         }
         else {
             PyErr_Format(PyExc_TypeError, "%s() got an unexpected keyword argument '%U'", called, name);

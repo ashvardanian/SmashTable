@@ -15,6 +15,7 @@ Run:
 """
 
 import gc
+import itertools
 import pathlib
 import subprocess
 import sys
@@ -28,8 +29,7 @@ from .base import sharing_modes
 # region The cases
 
 # Each stores an object whose `__del__` reads the container, then releases it through a different
-# write path. The store destroys what it displaces while holding its own non-recursive lock, so the
-# release has to happen after that call has returned rather than inside it.
+# write path: the release has to land after the store's own call has returned, not inside its lock.
 
 
 def _watcher(container, seen):
@@ -40,40 +40,40 @@ def _watcher(container, seen):
     return Watcher
 
 
-def overwrite(m, boom):
-    m[1] = boom()
-    m[1] = None
+def overwrite(container, watcher_class):
+    container[1] = watcher_class()
+    container[1] = None
 
 
-def delete_item(m, boom):
-    m[1] = boom()
-    del m[1]
+def delete_item(container, watcher_class):
+    container[1] = watcher_class()
+    del container[1]
 
 
-def clear(m, boom):
-    m[1] = boom()
-    m.clear()
+def clear(container, watcher_class):
+    container[1] = watcher_class()
+    container.clear()
 
 
-def delete_slice(m, boom):
-    m[1] = boom()
-    del m[0:9]
+def delete_slice(container, watcher_class):
+    container[1] = watcher_class()
+    del container[0:9]
 
 
-def handle_write(m, boom):
-    m[1] = boom()
-    with st.transaction(m) as (view,):
+def handle_write(container, watcher_class):
+    container[1] = watcher_class()
+    with st.transaction(container) as (view,):
         view[1] = None
 
 
-def handle_delete(m, boom):
-    m[1] = boom()
-    with st.transaction(m) as (view,):
+def handle_delete(container, watcher_class):
+    container[1] = watcher_class()
+    with st.transaction(container) as (view,):
         del view[1]
 
 
-def teardown(m, boom):
-    m[1] = boom()
+def teardown(container, watcher_class):
+    container[1] = watcher_class()
     replacement = st.SortedMap(key=int, value="object")
     replacement[1] = 1
 
@@ -83,11 +83,9 @@ RELEASE_PATHS = (overwrite, delete_item, clear, delete_slice, handle_write, hand
 
 def exercise_every_path() -> None:
     """Every release path against both sharing strategies. Hangs if a finalizer is run under a lock."""
-    for sharing in ("locked", "partitioned"):
-        for path in RELEASE_PATHS:
-            container = st.SortedMap(key=int, value="object", sharing=sharing)
-            seen: list[int] = []
-            path(container, _watcher(container, seen))
+    for sharing, path in itertools.product(("locked", "partitioned"), RELEASE_PATHS):
+        container = st.SortedMap(key=int, value="object", sharing=sharing)
+        path(container, _watcher(container, []))
 
 
 # endregion The cases
@@ -104,9 +102,8 @@ def test_no_release_path_deadlocks():
     mutex held, so a finalizer touching that container waited on a lock its own write was holding.
     """
     try:
-        # Anchored to the directory holding the `test` package rather than to the caller's cwd: an
-        # installed wheel is tested from somewhere else entirely, and `-m test.finalizers` would fail
-        # there for the wrong reason and read as the deadlock this is watching for.
+        # Anchored to the directory holding the `test` package, so a wheel tested from elsewhere
+        # still finds `test.finalizers` instead of failing in a way that reads as the deadlock.
         finished = subprocess.run(
             [sys.executable, "-m", "test.finalizers"],
             capture_output=True,
@@ -132,7 +129,7 @@ def test_a_finalizer_may_touch_its_container_during_collection(sharing):
 
     class Nasty:
         def __init__(self, owner):
-            self.owner = owner  # closes the cycle: container -> Nasty -> container
+            self.owner = owner  # closes the cycle: container → Nasty → container
 
         def __del__(self):
             observed.append(len(self.owner))

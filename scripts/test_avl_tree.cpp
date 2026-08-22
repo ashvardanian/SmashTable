@@ -183,7 +183,7 @@ static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests insertion patterns (ascending, descending, random) for all AVL containers */
+/** @brief Tests ascending, descending, and random insertion patterns across every container here. */
 static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<trivial_set_t>();
     test_basic_insertion_patterns<tracking_set_t>();
@@ -203,7 +203,7 @@ static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk insertion from iterators for all AVL containers */
+/** @brief Tests bulk insertion from iterators across every container here. */
 static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<trivial_set_t>();
     test_bulk_insertion_from_iterators<tracking_set_t>();
@@ -467,6 +467,13 @@ static void transactional_consistency_watch_on_erased_key_can_commit() {
     test_watch_on_erased_key_can_commit<transactional_heavy_map_t>();
 }
 
+static void transactional_consistency_watch_catches_an_insert_and_erase_under_it() {
+    test_watch_catches_an_insert_and_erase_under_it<transactional_trivial_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_tracking_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_composite_map_t>();
+    test_watch_catches_an_insert_and_erase_under_it<transactional_heavy_map_t>();
+}
+
 static void transactional_consistency_absent_watch_survives_rollback() {
     test_absent_watch_survives_rollback<transactional_trivial_map_t>();
     test_absent_watch_survives_rollback<transactional_tracking_map_t>();
@@ -548,11 +555,11 @@ static void transactional_consistency_reset_clears_transaction_state() {
     test_reset_clears_transaction_state<transactional_heavy_map_t>();
 }
 
-#pragma endregion Consistency and Transaction Tests for Sets
-
 static void transactional_consistency_stateful_comparator_is_consulted() {
     test_stateful_comparator_is_consulted<transactional_tracking_set_t>();
 }
+
+#pragma endregion Consistency and Transaction Tests for Sets
 
 #pragma region Structural Invariants
 
@@ -609,10 +616,7 @@ static void test_copy_preserves_parent_links() {
     auto copied = tree.copy();
     st_verify_(copied.has_value());
     verify_invariants(*copied);
-
-    std::size_t walked = 0;
-    for ([[maybe_unused]] auto const &member : *copied) ++walked;
-    st_verify_eq_(walked, tree.size());
+    st_verify_eq_(std::distance(copied->begin(), copied->end()), tree.size());
 }
 
 /** @brief The perfectly balanced tree built from a sorted range must be linked both ways. */
@@ -630,10 +634,7 @@ static void test_bulk_sorted_insert_links_parents() {
                                           std::make_move_iterator(sorted.end()), assume_sorted_t {}));
         verify_invariants(tree);
         st_verify_eq_(tree.size(), count + 1);
-
-        std::size_t walked = 0;
-        for ([[maybe_unused]] auto const &member : tree) ++walked;
-        st_verify_eq_(walked, tree.size());
+        st_verify_eq_(std::distance(tree.begin(), tree.end()), tree.size());
     }
 }
 
@@ -688,10 +689,7 @@ static void test_split_and_erase_range_stay_balanced() {
             st_verify_(rebuilt.upsert(trivial_id_to_member<member_t>(index)));
         rebuilt.erase_range(trivial_id_to_key<member_t>(total / 4), trivial_id_to_key<member_t>(total / 2));
         verify_invariants(rebuilt);
-
-        std::size_t walked = 0;
-        for ([[maybe_unused]] auto const &member : rebuilt) ++walked;
-        st_verify_eq_(walked, rebuilt.size());
+        st_verify_eq_(std::distance(rebuilt.begin(), rebuilt.end()), rebuilt.size());
     }
 }
 
@@ -709,10 +707,7 @@ static void test_merge_unique_stays_balanced() {
         evens.merge(odds, assume_unique_t {});
         verify_invariants(evens);
         st_verify_eq_(evens.size(), total * 2);
-
-        std::size_t walked = 0;
-        for ([[maybe_unused]] auto const &member : evens) ++walked;
-        st_verify_eq_(walked, evens.size());
+        st_verify_eq_(std::distance(evens.begin(), evens.end()), evens.size());
 
         // Fully ordered inputs take the join fast path instead of the split-based one.
         tree_type_ low, high;
@@ -728,13 +723,13 @@ static void test_merge_unique_stays_balanced() {
 
 /** @brief Randomized insert and erase sequence, re-checking every invariant after each mutation. */
 template <typename tree_type_>
-static void test_random_mutations_preserve_invariants(std::size_t steps = 4000, unsigned int seed = 42) {
+static void test_random_mutations_preserve_invariants() {
     using member_t = typename tree_type_::value_type;
-    std::mt19937 generator(seed);
+    std::mt19937 generator(test_seed_for(__func__));
     tree_type_ tree;
     std::set<trivial_id_t> oracle;
 
-    for (std::size_t step = 0; step < steps; ++step) {
+    for (std::size_t step = 0; step < 4000; ++step) {
         trivial_id_t const identifier = generator() % 300;
         if (generator() % 2) {
             st_verify_(tree.upsert(trivial_id_to_member<member_t>(identifier)));
@@ -794,7 +789,7 @@ static void test_node_equal_range() {
 }
 
 /** @brief A bulk upsert pays for its nodes while staging them, and the merge that follows cannot fail. */
-static void test_bulk_upsert_pays_only_while_staging() {
+static void structure_bulk_upsert_pays_only_while_staging() {
     using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
 
     allocation_ledger_t ledger;
@@ -829,7 +824,7 @@ static void test_bulk_upsert_pays_only_while_staging() {
  *  A node that was made, one that was already there, and an allocation that never came back are
  *  three answers, and none of them should have to be read off a null check.
  */
-static void test_upsert_reports_placement() {
+static void structure_upsert_reports_placement() {
     using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
     using placement_t = typename budget_set_t::node_t::node_placement_t;
     allocation_ledger_t ledger;
@@ -859,7 +854,7 @@ static void test_upsert_reports_placement() {
 }
 
 /** @brief Move-only entries must survive the assignment operator of an upsert result. */
-static void test_move_only_upsert_assignment() {
+static void structure_move_only_upsert_assignment() {
     struct move_only_key_t {
         trivial_id_t unique_id = 0;
         std::unique_ptr<int> payload;
@@ -929,6 +924,20 @@ static void structure_node_equal_range() {
     test_node_equal_range<trivial_map_t>();
 }
 
+/** @brief Erasing through a @c const_iterator must compile, unlink the node, and leave the tree balanced. */
+static void structure_erase_const_iterator() {
+    trivial_set_t tree;
+    for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
+
+    trivial_set_t::const_iterator const position = tree.find(trivial_key_t(2));
+    st_verify_(position != tree.end());
+    auto const erased = tree.erase(position);
+    st_verify_(erased.status);
+    st_verify_eq_(tree.contains(trivial_key_t(2)), false);
+    st_verify_eq_(tree.size(), 2u);
+    verify_invariants(tree);
+}
+
 #pragma endregion Structural Invariants
 
 #pragma region Commit Stamp
@@ -991,28 +1000,13 @@ static void fixture_coverage_rollback_balances_counted_keys() {
     test_rollback_balances_counted_keys<monotonic_avl_map<counted_key_t, int>>();
 }
 
-#pragma endregion Fixture Coverage
-
-/** @brief Erasing through a const iterator must instantiate; nothing in the tree called it before. */
-static void structure_erase_const_iterator() {
-
-    trivial_set_t tree;
-    for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
-
-    trivial_set_t::const_iterator const position = tree.find(trivial_key_t(2));
-    st_verify_(position != tree.end());
-    auto const erased = tree.erase(position);
-    st_verify_(erased.status);
-    st_verify_eq_(tree.contains(trivial_key_t(2)), false);
-    st_verify_eq_(tree.size(), 2u);
-    verify_invariants(tree);
-}
-
 using overaligned_set_t = monotonic_avl_set<overaligned_key_t>;
 
 static void fixture_coverage_container_honours_over_alignment() {
     test_container_honours_over_alignment<overaligned_set_t>();
 }
+
+#pragma endregion Fixture Coverage
 
 #pragma region Allocation Failure
 
@@ -1129,6 +1123,8 @@ int main() {
                          transactional_consistency_moved_transaction_unwinds_once);
     failures += run_test(filter, "transactional_consistency.watch_on_erased_key_can_commit",
                          transactional_consistency_watch_on_erased_key_can_commit);
+    failures += run_test(filter, "transactional_consistency.watch_catches_an_insert_and_erase_under_it",
+                         transactional_consistency_watch_catches_an_insert_and_erase_under_it);
     failures += run_test(filter, "transactional_consistency.absent_watch_survives_rollback",
                          transactional_consistency_absent_watch_survives_rollback);
     failures += run_test(filter, "transactional_consistency.disjoint_keys_both_succeed",
@@ -1160,10 +1156,10 @@ int main() {
                          structure_random_mutations_preserve_invariants);
     failures += run_test(filter, "structure.iterator_post_decrement", structure_iterator_post_decrement);
     failures += run_test(filter, "structure.node_equal_range", structure_node_equal_range);
-    failures +=
-        run_test(filter, "structure.bulk_upsert_pays_only_while_staging", test_bulk_upsert_pays_only_while_staging);
-    failures += run_test(filter, "structure.move_only_upsert_assignment", test_move_only_upsert_assignment);
-    failures += run_test(filter, "structure.upsert_reports_placement", test_upsert_reports_placement);
+    failures += run_test(filter, "structure.bulk_upsert_pays_only_while_staging",
+                         structure_bulk_upsert_pays_only_while_staging);
+    failures += run_test(filter, "structure.move_only_upsert_assignment", structure_move_only_upsert_assignment);
+    failures += run_test(filter, "structure.upsert_reports_placement", structure_upsert_reports_placement);
 
     failures += run_test(filter, "transactional_defects.direct_write_spares_staged_version",
                          transactional_defects_direct_write_spares_staged_version);

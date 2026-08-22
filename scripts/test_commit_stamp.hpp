@@ -76,13 +76,25 @@ void test_lost_update_is_refused() {
     auto first = container.transaction();
     auto second = container.transaction();
 
+    // Whether a watch fired is a separate fact from what it read, so two callbacks that never ran
+    // cannot agree their way past this by leaving both seeds untouched.
     int read_by_first = 0, read_by_second = 0;
+    std::size_t watches_fired = 0;
     st_verify_(first->find_and_watch(
-        trivial_id_to_key<member_t>(1), [&](member_t const &member) noexcept { read_by_first = int(member.mapped); },
+        trivial_id_to_key<member_t>(1),
+        [&](member_t const &member) noexcept {
+            read_by_first = int(member.mapped);
+            ++watches_fired;
+        },
         []() noexcept {}));
     st_verify_(second->find_and_watch(
-        trivial_id_to_key<member_t>(1), [&](member_t const &member) noexcept { read_by_second = int(member.mapped); },
+        trivial_id_to_key<member_t>(1),
+        [&](member_t const &member) noexcept {
+            read_by_second = int(member.mapped);
+            ++watches_fired;
+        },
         []() noexcept {}));
+    st_verify_eq_(watches_fired, std::size_t {2}, "both watches must have read the key they were pointed at");
     st_verify_eq_(read_by_first, read_by_second);
 
     // Each stages the increment it computed. Neither is committed, so neither refuses the other.

@@ -24,6 +24,10 @@ build/
 dist/
 wheelhouse/
 
+# Resolver output, not an input. A library declares its ranges in `pyproject.toml` and every consumer
+# resolves its own, so a committed lock would pin nothing but this checkout's dev environment.
+uv.lock
+
 # Interpreter and tooling caches
 __pycache__/
 *.py[cod]

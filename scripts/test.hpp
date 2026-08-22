@@ -7,8 +7,12 @@
  *  @section test_environment_variables Environment Variables
  *
  *  - @c SMASHTABLE_FILTER : substring matched against a test's "suite.name" label; only matching tests
- *    run. Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, so a
- *    mistyped filter reads as a skip rather than as an empty suite.
+ *    run. Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, and
+ *    a filter that matched nothing fails the binary rather than reporting an empty suite as passing.
+ *
+ *  - @c SMASHTABLE_SEED : the seed every randomized suite draws from, so a failure names the run that
+ *    produced it. Unset means @c default_seed_k, which keeps an unattended build deterministic, while a
+ *    value that is not a whole number aborts rather than quietly reproducing the default run.
  *
  *  @section test_failure_model Failure Model
  *
@@ -18,15 +22,18 @@
  *  signal handler turns that into a backtrace.
  */
 #pragma once
+#include <csignal> // `std::signal`, `SIGSEGV`, `SIGABRT`
 #include <cstdio>  // `std::fprintf`, `std::setvbuf`
 #include <cstdlib> // `std::abort`, `std::getenv`
-#include <csignal> // `std::signal`, `SIGSEGV`, `SIGABRT`
 #include <cstring> // `std::strstr`
 
+#include <atomic>      // `std::atomic`
 #include <chrono>      // `std::chrono::steady_clock`
 #include <exception>   // `std::exception`
 #include <format>      // `std::format_to`, `std::format_string`
 #include <iterator>    // `std::output_iterator`
+#include <limits>      // `std::numeric_limits`
+#include <string_view> // `std::string_view`
 #include <type_traits> // `std::is_void_v`
 #include <utility>     // `std::cmp_equal`, `std::cmp_less`
 
@@ -35,7 +42,7 @@
 #include <unistd.h>   // `STDERR_FILENO`
 #endif
 
-#include <smashtable/shared.hpp> // `status_t`, `succeeded`, `name_of`
+#include <smashtable/shared.hpp> // `status_t`, `succeeded`, `name_of`, `hash`
 
 #pragma region Assertions
 
@@ -194,6 +201,58 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
 
 namespace ashvardanian::smashtable::scripts {
 
+#pragma region Randomization
+
+/** @brief The seed a randomized suite draws from when @c SMASHTABLE_SEED is unset. */
+inline constexpr unsigned int default_seed_k = 42;
+
+/**
+ *  @brief Reads @c SMASHTABLE_SEED, or @c default_seed_k when it is unset.
+ *  @warning Aborts on anything but a run of decimal digits below 2^32, so a sign or a stray space
+ *    names no run rather than wrapping into one.
+ *
+ *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a defect
+ *  nobody can reproduce. The seed is therefore an input the runner prints, so a failing run names the
+ *  sequence that produced it and a sweep is a loop in the shell rather than an edit to the source.
+ */
+[[nodiscard]] inline unsigned int test_seed() noexcept {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    char const *const requested = std::getenv("SMASHTABLE_SEED");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    if (!requested || requested[0] == '\0') return default_seed_k;
+    // Digit by digit rather than through `strtoul`, which skips leading spaces, negates a minus, and
+    // wraps an overflow - three ways for a typo to come back as a seed nobody chose.
+    unsigned long long parsed = 0;
+    bool whole = true;
+    for (char const *scan = requested; *scan != '\0' && whole; ++scan) {
+        whole = *scan >= '0' && *scan <= '9';
+        if (whole) parsed = parsed * 10 + static_cast<unsigned long long>(*scan - '0');
+        whole = whole && parsed <= std::numeric_limits<unsigned int>::max();
+    }
+    if (whole) return static_cast<unsigned int>(parsed);
+    std::fprintf(stderr, "SMASHTABLE_SEED=\"%s\" is not a whole number below 2^32, so it names no run.\n", requested);
+    std::abort();
+}
+
+/**
+ *  @brief The seed one suite draws from, mixed from @c test_seed() and the suite's own name.
+ *
+ *  Two suites seeded alike walk one sequence between them and cover half of what their count suggests.
+ *  Passing @c __func__ keeps the name that separates them the same name the compiler already knows, so
+ *  a suite cannot be added, renamed, or moved into another binary and collide with one already there.
+ */
+[[nodiscard]] inline unsigned int test_seed_for(std::string_view suite) noexcept {
+    std::size_t const named = hash<std::string_view> {}(suite);
+    return static_cast<unsigned int>(hash<std::size_t> {}(named ^ test_seed()));
+}
+
+#pragma endregion Randomization
+
 #pragma region Crash Localization
 
 /**
@@ -220,6 +279,8 @@ inline void install_test_signal_handlers() noexcept {
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::signal(SIGSEGV, test_fatal_signal_handler);
     std::signal(SIGABRT, test_fatal_signal_handler);
+    // Validated here so a typo stops every binary at the start, seeded suites or not.
+    [[maybe_unused]] unsigned int const seed = test_seed();
 }
 
 #pragma endregion Crash Localization
@@ -278,6 +339,20 @@ inline void print_line(std::FILE *stream, std::format_string<args_types_...> pat
 }
 
 /**
+ *  @brief Process-wide count of the tests that actually ran, which is what a filter can zero out.
+ *
+ *  Kept here rather than threaded through @c run_test's signature because that signature is called
+ *  several hundred times across nine suites, while @c report_test_failures - the one function that
+ *  decides the exit code - is called nine times.
+ */
+struct test_tally_t {
+    static inline std::atomic<std::size_t> executed {0};
+
+    static void note_execution() noexcept { executed.fetch_add(1, std::memory_order_relaxed); }
+    static std::size_t executed_count() noexcept { return executed.load(std::memory_order_relaxed); }
+};
+
+/**
  *  @brief Runs one named test, honoring @p filter, timing it, and reporting the outcome.
  *  @param[in] filter Substring matched against @p name, or @c nullptr to run everything.
  *  @param[in] name The test's "suite.name" label, which is also its filter key.
@@ -299,6 +374,7 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
         return 0;
     }
 
+    test_tally_t::note_execution();
     print_line(stdout, "- {} ...", name);
     std::fflush(stdout);
     auto const started = std::chrono::steady_clock::now();
@@ -316,10 +392,19 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
     return 0;
 }
 
-/** @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status. */
+/**
+ *  @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status.
+ *
+ *  A filter that matched nothing fails here rather than passing: every test skipping leaves no failures
+ *  to count, so a mistyped filter would otherwise be indistinguishable from a green suite.
+ */
 inline int report_test_failures(std::size_t failures) noexcept {
     if (failures != 0) {
-        print_line(stderr, "\n{} test(s) failed.", failures);
+        print_line(stderr, "\n{} test(s) failed under SMASHTABLE_SEED={}.", failures, test_seed());
+        return 1;
+    }
+    if (char const *const filter = test_filter(); filter && filter[0] != '\0' && test_tally_t::executed_count() == 0) {
+        print_line(stderr, "\nSMASHTABLE_FILTER=\"{}\" matched no test, so nothing ran.", filter);
         return 1;
     }
     print_line(stdout, "\nAll tests passed!");

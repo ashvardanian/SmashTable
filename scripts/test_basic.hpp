@@ -1,9 +1,21 @@
 /**
- *  @brief Template test functions for basic container operations. Includes insert/erase/find/range operations and
- *      heterogeneous lookup tests. Templates can be instantiated for any container supporting the common interface.
+ *  @brief The fixture library the whole tree draws on - keys, payloads, budgets, tallies, allocators and
+ *      comparators - plus the suites for basic container operations written over them.
  *  @author Ash Vardanian
  *  @file scripts/test_basic.hpp
- *  @date January 12, 2023
+ *  @date October 25, 2025
+ *
+ *  @section test_basic_fixtures Fixtures
+ *
+ *  Most of the file is fixtures rather than suites. Keys range from a trivial identifier to a heap-backed
+ *  one whose copy can fail, values the same way, and the allocator, comparator and payload types carry
+ *  budgets and tallies so a refusal can be aimed at one call. Every other test header includes this one
+ *  for those types, so a change here is a change to every binary in the tree.
+ *
+ *  @section test_basic_suites Suites
+ *
+ *  The suites cover insert, erase, find and range access plus heterogeneous lookup, and are templates any
+ *  container answering the common interface can be instantiated with.
  */
 #pragma once
 #include <cstdint> // `std::uintptr_t`
@@ -16,6 +28,7 @@
 #include <functional>  // `std::less`, `std::equal_to`
 #include <limits>      // `std::numeric_limits`
 #include <new>         // `std::nothrow`
+#include <random>      // `std::mt19937`
 #include <string_view> // `std::string_view`
 #include <type_traits> // `std::remove_cvref_t`
 #include <vector>      // `std::vector`
@@ -626,7 +639,7 @@ struct budgeted_key_t {
 #pragma region Stateful Comparator
 
 /** @brief Which way a @c stateful_comparator orders, named so a call site never reads as a bare flag. */
-enum class ordering_t : bool { ascending_k, descending_k };
+enum class stateful_comparator_ordering_t : bool { ascending_k, descending_k };
 
 /**
  *  @brief Stateful comparator with runtime configuration.
@@ -638,14 +651,15 @@ struct stateful_comparator {
     using is_transparent = void;
 
     baseline_comparator_t baseline_comparator {};
-    ordering_t ordering {ordering_t::ascending_k};
+    stateful_comparator_ordering_t ordering {stateful_comparator_ordering_t::ascending_k};
 
     stateful_comparator() noexcept = default;
-    explicit stateful_comparator(ordering_t requested) noexcept : ordering(requested) {}
+    explicit stateful_comparator(stateful_comparator_ordering_t requested) noexcept : ordering(requested) {}
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        return ordering == ordering_t::descending_k ? baseline_comparator(rhs, lhs) : baseline_comparator(lhs, rhs);
+        return ordering == stateful_comparator_ordering_t::descending_k ? baseline_comparator(rhs, lhs)
+                                                                        : baseline_comparator(lhs, rhs);
     }
 };
 
@@ -661,7 +675,7 @@ using stateful_comparator_t = stateful_comparator<>;
  *  Reset immediately before the operation under test and read immediately after: a comparator is copied
  *  by value into every container that holds one, so there is nowhere else the count could live.
  */
-struct call_tally_t {
+struct counting_call_tally_t {
     static inline std::atomic<std::size_t> comparisons {0};
     static inline std::atomic<std::size_t> equalities {0};
     static inline std::atomic<std::size_t> hashes {0};
@@ -679,25 +693,6 @@ struct call_tally_t {
     static std::size_t comparisons_count() noexcept { return comparisons.load(std::memory_order_relaxed); }
     static std::size_t equalities_count() noexcept { return equalities.load(std::memory_order_relaxed); }
     static std::size_t hashes_count() noexcept { return hashes.load(std::memory_order_relaxed); }
-
-    /** @brief Ceiling of the base-two logarithm of @p size, which is the depth a balanced tree promises. */
-    static std::size_t logarithm_of(std::size_t size) noexcept {
-        std::size_t bits = 0;
-        while ((std::size_t {1} << bits) < size) ++bits;
-        return bits;
-    }
-
-    /**
-     *  @brief Aborts unless the comparisons since the last reset stay within @p multiple logarithms of
-     *    @p size, which is what separates an order statistic from a linear walk.
-     *
-     *  The bound is @p multiple × (log2(@p size) + 1), the trailing term covering the empty and
-     *  single-element cases where the logarithm is zero but one comparison still happens.
-     */
-    static void verify_comparisons_logarithmic(std::size_t size, std::size_t multiple) noexcept {
-        std::size_t const allowed = multiple * (logarithm_of(size) + 1);
-        st_verify_le_(comparisons_count(), allowed, "the operation compared more than a logarithm of times");
-    }
 };
 
 /**
@@ -712,7 +707,7 @@ struct counting_comparator {
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        call_tally_t::note_comparison();
+        counting_call_tally_t::note_comparison();
         return baseline_comparator(lhs, rhs);
     }
 };
@@ -731,7 +726,7 @@ struct counting_equals {
 
     template <typename lhs_type_, typename rhs_type_>
     bool operator()(lhs_type_ const &lhs, rhs_type_ const &rhs) const noexcept {
-        call_tally_t::note_equality();
+        counting_call_tally_t::note_equality();
         return baseline_equals(lhs, rhs);
     }
 };
@@ -747,7 +742,7 @@ struct counting_hash_t {
 
     template <typename key_type_>
     std::size_t operator()(key_type_ const &key) const noexcept {
-        call_tally_t::note_hash();
+        counting_call_tally_t::note_hash();
         return hash<std::remove_cvref_t<key_type_>> {}(key);
     }
 };
@@ -974,7 +969,7 @@ void test_single_element_operations() {
  * @brief Tests insertion in ascending, descending, and random order
  */
 template <typename container_type_>
-void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 42) {
+void test_basic_insertion_patterns(std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -1003,9 +998,10 @@ void test_basic_insertion_patterns(std::size_t size = 100, unsigned int seed = 4
     st_verify_eq_(container.size(), 0);
 
     // Test 3: Random insertion (tests worst-case AVL patterns)
-    std::srand(seed); // Fixed seed for reproducibility
+    // Local, so one suite's draws never depend on what another drew from a shared generator.
+    std::mt19937 generator(test_seed_for(__func__));
     for (std::size_t index = 0; index < size; ++index) {
-        trivial_id_t random_id = static_cast<trivial_id_t>(std::rand());
+        trivial_id_t const random_id = static_cast<trivial_id_t>(generator());
         auto new_member = trivial_id_to_member<member_t>(random_id);
         st_verify_(container.upsert(std::move(new_member)));
         st_verify_eq_(container.contains(trivial_id_to_key<member_t>(random_id)), true);
@@ -1124,36 +1120,35 @@ void test_range_query_head_state(std::size_t size = 100) {
     for (std::size_t index = 0; index < size; ++index)
         st_verify_(container.upsert(trivial_id_to_member<member_t>(index)));
 
-    // Query in windows and verify we get elements within the range
+    // The keys are contiguous, so a ten-wide window has one answer and only one. A closed range would
+    // show eleven keys and a top of index+10, which is what pins the half-open convention here.
     for (std::size_t index = 0; index < size; index += 10) {
         std::size_t count = 0;
         auto min_key = trivial_id_to_key<member_t>(size);
         auto max_key = trivial_id_to_key<member_t>(0);
-        st_verify_(container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 9),
+        st_verify_(container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 10),
                                    [&](member_t const &member) noexcept {
                                        min_key = std::min(min_key, mapping_key_or_itself<member_t>(member));
                                        max_key = std::max(max_key, mapping_key_or_itself<member_t>(member));
                                        count++;
                                    }));
-        st_verify_gt_(count, 0);
-        if (count > 0) {
-            st_verify_ge_(min_key, trivial_id_to_key<member_t>(index));
-            st_verify_le_(max_key, trivial_id_to_key<member_t>(index + 10));
-        }
+        st_verify_eq_(count, 10, "a half-open ten-wide window over contiguous keys holds ten of them");
+        st_verify_eq_(min_key, trivial_id_to_key<member_t>(index));
+        st_verify_eq_(max_key, trivial_id_to_key<member_t>(index + 9));
     }
 
-    for (std::size_t index = 0; index < size - 1; ++index) {
-        auto idx_key = trivial_id_to_key<member_t>(index);
-        auto maybe_member = container.upper_bound_copy(idx_key);
-        st_verify_(maybe_member);
-        st_verify_ge_(mapping_key_or_itself(*maybe_member), idx_key);
-    }
+    // Contiguous keys give both bounds one answer each, and they are different answers - which is what
+    // separates a strict bound from a non-strict one rather than letting either stand in for the other.
+    for (std::size_t index = 0; index + 1 < size; ++index) {
+        auto const sought_key = trivial_id_to_key<member_t>(index);
 
-    for (std::size_t index = 0; index < size - 1; ++index) {
-        auto idx_key = trivial_id_to_key<member_t>(index);
-        auto maybe_member = container.lower_bound_copy(idx_key);
-        st_verify_(maybe_member);
-        st_verify_ge_(mapping_key_or_itself(*maybe_member), idx_key);
+        auto const above = container.upper_bound_copy(sought_key);
+        st_verify_(above);
+        st_verify_eq_(mapping_key_or_itself(*above), trivial_id_to_key<member_t>(index + 1));
+
+        auto const at_or_above = container.lower_bound_copy(sought_key);
+        st_verify_(at_or_above);
+        st_verify_eq_(mapping_key_or_itself(*at_or_above), sought_key);
     }
 }
 

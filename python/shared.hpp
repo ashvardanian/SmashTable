@@ -57,14 +57,12 @@ PyCFunction as_pycfunction(function_type_ function) noexcept {
 /** @brief UTF-8 text, kept distinct from bytes so a @c str never reads back as @c bytes. */
 struct utf8_t {
     std::string text;
-    bool operator<(utf8_t const &other) const noexcept { return text < other.text; }
     bool operator==(utf8_t const &other) const noexcept { return text == other.text; }
 };
 
 /** @brief An opaque byte string, never decoded. */
 struct bytes_t {
     std::string data;
-    bool operator<(bytes_t const &other) const noexcept { return data < other.data; }
     bool operator==(bytes_t const &other) const noexcept { return data == other.data; }
 };
 
@@ -79,12 +77,11 @@ class releases_t;
  */
 struct object_t {
     PyObject *held {nullptr};
-    /** @brief The container's ledger this reference reports its drop to, null where none was named. */
+    /** @brief The container's ledger this reference reports its drop to, null once moved from. */
     releases_t *releases {nullptr};
 
     object_t() = default;
-    explicit object_t(PyObject *borrowed, releases_t *ledger = nullptr) noexcept
-        : held(Py_XNewRef(borrowed)), releases(ledger) {}
+    explicit object_t(PyObject *borrowed, releases_t *ledger) noexcept : held(Py_XNewRef(borrowed)), releases(ledger) {}
     object_t(object_t const &other) noexcept : held(Py_XNewRef(other.held)), releases(other.releases) {}
     object_t(object_t &&other) noexcept
         : held(std::exchange(other.held, nullptr)), releases(std::exchange(other.releases, nullptr)) {}
@@ -102,9 +99,6 @@ struct object_t {
         return *this;
     }
     ~object_t() noexcept { give_back(std::exchange(held, nullptr), releases); }
-
-    // Never ordered or hashed - only a value may be an object, and values are neither.
-    bool operator==(object_t const &other) const noexcept { return held == other.held; }
 
   private:
     /**
@@ -138,8 +132,6 @@ struct key_variant_t {
     explicit key_variant_t(std::uint64_t integer) noexcept : value(integer) {}
     explicit key_variant_t(utf8_t &&text) noexcept : value(std::move(text)) {}
     explicit key_variant_t(bytes_t &&data) noexcept : value(std::move(data)) {}
-
-    [[nodiscard]] std::size_t index() const noexcept { return value.index(); }
 
     /**
      *  @brief Deep copy that reports allocation failure instead of throwing.
@@ -178,9 +170,6 @@ struct value_variant_t {
     explicit value_variant_t(utf8_t &&text) noexcept : value(std::move(text)) {}
     explicit value_variant_t(bytes_t &&data) noexcept : value(std::move(data)) {}
     explicit value_variant_t(object_t &&object) noexcept : value(std::move(object)) {}
-
-    [[nodiscard]] std::size_t index() const noexcept { return value.index(); }
-    [[nodiscard]] bool holds_object() const noexcept { return std::holds_alternative<object_t>(value); }
 
     /** @brief Deep copy that reports allocation failure instead of throwing. */
     [[nodiscard]] expected<value_variant_t> copy() const noexcept {
@@ -351,28 +340,8 @@ void run_over_values(value_mode_t mode, spin_shared_mutex_t &lock, operation_typ
  */
 enum class key_type_t : std::uint8_t { i64_k, u64_k, str_k, bytes_k };
 
-/** @brief Binds each enumerator to the alternative it names, so the two cannot drift apart. */
-template <key_type_t type_>
-inline constexpr std::size_t key_alternative_k = static_cast<std::size_t>(type_);
-static_assert(std::variant_size_v<decltype(key_variant_t::value)> == 4);
-static_assert(
-    std::is_same_v<std::variant_alternative_t<key_alternative_k<key_type_t::i64_k>, decltype(key_variant_t::value)>,
-                   std::int64_t>);
-static_assert(
-    std::is_same_v<std::variant_alternative_t<key_alternative_k<key_type_t::u64_k>, decltype(key_variant_t::value)>,
-                   std::uint64_t>);
-static_assert(
-    std::is_same_v<std::variant_alternative_t<key_alternative_k<key_type_t::str_k>, decltype(key_variant_t::value)>,
-                   utf8_t>);
-static_assert(
-    std::is_same_v<std::variant_alternative_t<key_alternative_k<key_type_t::bytes_k>, decltype(key_variant_t::value)>,
-                   bytes_t>);
-
 /** @brief Strict weak ordering over two keys of one layout. Never sees a mismatched pair. */
 using key_less_fn_t = bool (*)(key_variant_t const &, key_variant_t const &) noexcept;
-
-/** @brief Hash of one key, used to pick its partition. Equal keys must hash equally. */
-using key_hash_fn_t = std::size_t (*)(key_variant_t const &) noexcept;
 
 /**
  *  @brief Everything a store needs to know about its key layout, resolved once at construction.
@@ -381,14 +350,13 @@ using key_hash_fn_t = std::size_t (*)(key_variant_t const &) noexcept;
  *  pointer a store holds is to a cache-resident object it never writes.
  *
  *  @c type names the layout and @c name is what @c key_type reports back - @c "int", @c "uint",
- *  @c "str" or @c "bytes". The three function pointers order two keys, hash one, and write the
- *  layout's smallest key, which is where an unbounded walk begins.
+ *  @c "str" or @c "bytes". @c less orders two keys of that layout, which is the one decision a store
+ *  cannot make from the variant alone - hashing and equality both read the alternative directly.
  */
 struct key_ops_t {
     key_type_t type;
     char const *name;
     key_less_fn_t less;
-    key_hash_fn_t hash;
 };
 
 extern key_ops_t const key_ops_i64;
@@ -431,23 +399,13 @@ struct key_less_t {
     }
 };
 
-/** @brief Hashes keys through the function chosen at construction. Deleted default, for the same reason. */
-struct key_hash_t {
-    key_hash_fn_t hash;
-
-    key_hash_t() = delete;
-    explicit constexpr key_hash_t(key_hash_fn_t function) noexcept : hash(function) {}
-
-    std::size_t operator()(key_variant_t const &key) const noexcept { return hash(key); }
-};
-
 /**
- *  @brief Hashes a key by its layout, without consulting the table a store was built with.
+ *  @brief Hashes a key by its layout, which the variant already knows without a table to consult.
  *
  *  Stateless and default-constructible on purpose: an unordered core builds its hasher itself, with
- *  no seed passed in, so the function-pointer form @c key_hash_t takes cannot be used there. The
- *  switch costs one predictable branch per operation rather than the per-comparison dispatch that
- *  @c key_ops_t exists to avoid, because a probe hashes once and then compares.
+ *  no seed passed in, so a function-pointer form could not be used there. The visit costs one
+ *  predictable branch per operation rather than the per-comparison dispatch that @c key_ops_t exists
+ *  to avoid, because a probe hashes once and then compares.
  */
 struct key_variant_hash_t {
     std::size_t operator()(key_variant_t const &key) const noexcept {
@@ -480,6 +438,9 @@ struct key_variant_equal_t {
 
 using entry_t = mapping<key_variant_t, value_variant_t>;
 
+/** @brief Whether a cursor step wrote an element, which a refusal is distinct from and not a kind of. */
+enum class cursor_step_t : bool { handed_k, exhausted_k };
+
 /**
  *  @brief One store instantiation reduced to a table of function pointers, resolved once.
  *
@@ -501,9 +462,7 @@ using entry_t = mapping<key_variant_t, value_variant_t>;
  *  collapses the found-and-missing pair the C++ side uses.
  */
 struct store_ops_t {
-    /** @brief What this instantiation promises, straight from the store's @c isolation_k. */
-    isolation_t isolation;
-    /** @brief That promise as a Jepsen name, which @c isolation reports back. */
+    /** @brief What this instantiation promises, as the Jepsen name @c isolation reports back. */
     char const *isolation_name;
     /** @brief How the store is shared, which @c sharing reports back verbatim. */
     char const *sharing_name;
@@ -517,14 +476,14 @@ struct store_ops_t {
     /** @brief Destroys a store @c make handed back. Never called with null. */
     void (*destroy)(releases_t &releases, void *store) noexcept;
 
+    /** @brief How many members the store holds, which it answers without a status because it cannot fail. */
     std::size_t (*size)(void *store) noexcept;
+    /** @brief Drops every member, reporting whatever the store refused with. */
     status_t (*clear)(releases_t &releases, void *store) noexcept;
     /**
-     *  @brief Whether @p key is held, reported through @p present.
-     *
-     *  The answer is an out-parameter for the same reason the bounds use one: membership is a read,
-     *  and at a serializable level a read records itself and can therefore refuse. "Not held" and
-     *  "could not be answered" are different facts.
+     *  @brief Whether @p key is held, or why that could not be answered.
+     *    Membership is a read, and from @c serializable_k up a read records itself and can refuse, so
+     *    "not held" and "could not be answered" stay different facts.
      */
     expected<bool> (*contains)(void *store, key_variant_t const &key) noexcept;
     /** @brief Reads a mapped value, or reports @c key_not_found_k. Null on a set, which has none. */
@@ -584,12 +543,13 @@ struct store_ops_t {
 
     /**
      *  @brief Takes one step, writing the key and, for a map, the value.
-     *  @return Whether a member was handed over; false once the walk is over.
+     *  @return Whether a member was handed over; false once the walk is over; a status where the step
+     *    could not be answered at all, which is not the same fact as the walk having ended.
      *
      *  The two halves are written into borrowed storage rather than returned, because a walk reuses one
      *  key across every step and a text layout would otherwise allocate per element.
      */
-    bool (*cursor_next)(void *cursor, key_variant_t &key, value_variant_t *value) noexcept;
+    expected<cursor_step_t> (*cursor_next)(void *cursor, key_variant_t &key, value_variant_t *value) noexcept;
 
     /** @brief Whether every member of @p first is also in @p second, on the same terms. */
     expected<bool> (*is_subset)(void *first, void *second) noexcept;
@@ -606,6 +566,20 @@ struct store_ops_t {
     expected<value_variant_t> (*insert_if_missing)(releases_t &releases, void *store, key_variant_t const &key,
                                                    value_variant_t &&value) noexcept;
 
+    /**
+     *  @brief Collects the half-open window into @p collected, in key order. Null on an unordered core.
+     *
+     *  One transaction for the whole window rather than a cursor re-locked per element, so the list
+     *  holds the single committed state that transaction read - at @c monotonic_atomic_view_k and
+     *  above, since @c read_committed_k promises no such thing.
+     *
+     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements are
+     *  copied rather than referenced, because a Python object is built from them after the lock drops.
+     *  A set leaves every @c mapped default-constructed.
+     */
+    status_t (*store_scan)(releases_t &releases, void *store, key_variant_t const *lower, key_variant_t const *upper,
+                           std::size_t limit, basic_vector<entry_t> &collected) noexcept;
+
     /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(releases_t &releases, void *store, key_variant_t const *lower,
                             key_variant_t const *upper) noexcept;
@@ -621,13 +595,19 @@ struct store_ops_t {
 
     /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
     expected<void *> (*transaction_make)(void *store) noexcept;
+    /** @brief Unwinds and frees a transaction, whatever state it was left in. */
     void (*transaction_destroy)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Whether this transaction reads @p key, its own staged writes included. */
     expected<bool> (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
+    /** @brief The value this transaction reads for @p key, or @c key_not_found_k. */
     expected<value_variant_t> (*transaction_find)(releases_t &releases, void *transaction,
                                                   key_variant_t const &key) noexcept;
+    /** @brief Stages an insert or overwrite. @p value is read, and null for a set, which stores the key alone. */
     status_t (*transaction_upsert)(releases_t &releases, void *transaction, key_variant_t &&key,
                                    value_variant_t *value) noexcept;
+    /** @brief Stages a tombstone for @p key, reporting @c key_not_found_k where it reads nothing there. */
     status_t (*transaction_erase)(releases_t &releases, void *transaction, key_variant_t const &key) noexcept;
+    /** @brief Records what @p key reads as now, so a commit refuses if anything published over it. */
     status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
 
     /**
@@ -648,9 +628,21 @@ struct store_ops_t {
     status_t (*transaction_erase_range)(releases_t &releases, void *transaction, key_variant_t const *lower,
                                         key_variant_t const *upper) noexcept;
 
+    /** @brief Reserves room for every staged change, so the commit that follows allocates nothing. */
     status_t (*transaction_stage)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Publishes every staged change under one stamp, or reports whichever check turned it away. */
     status_t (*transaction_commit)(releases_t &releases, void *transaction) noexcept;
+    /**
+     *  @brief The asking half of a split commit: answers whether publishing would be refused, writing nothing.
+     *    Null on a store whose commit cannot be split, which a group asks about before it uses either half.
+     */
+    status_t (*transaction_validate)(releases_t &releases, void *transaction) noexcept;
+    /** @brief The writing half, which returns nothing because a validated publish has nothing left to refuse. */
+    void (*transaction_publish)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Pulls staged changes back into the transaction, which keeps them for a retry rather than dropping them.
+     */
     status_t (*transaction_rollback)(releases_t &releases, void *transaction) noexcept;
+    /** @brief Abandons everything staged and pending, which is what separates it from a rollback. */
     status_t (*transaction_reset)(releases_t &releases, void *transaction) noexcept;
 };
 
@@ -733,7 +725,7 @@ object_type_ *object_as(PyObject *object) noexcept {
  *  tables their types install.
  *
  *  @c ordinal is what stops two groups deadlocking on each other. A transaction stages its participants in
- *  ordinal order rather than argument order, so @c atomic(a, b) on one thread and @c atomic(b, a) on
+ *  ordinal order rather than argument order, so @c transaction(a, b) on one thread and @c transaction(b, a) on
  *  another acquire the same partition locks in the same sequence; without it each would hold what the
  *  other waits for. Any consistent total order would do - creation order is used because it is
  *  reproducible across runs, which an address is not, and a hang is the one failure worth being able
@@ -811,7 +803,6 @@ struct mapping_view_object_t {
  *  @brief Builds a cursor over a store, optionally bounded.
  *  @param[in] state The module state holding the cursor type.
  *  @param[in] container The container to walk, borrowed; a strong reference is taken.
- *  @param[in] family Which store the store holds.
  *  @param[in] yields What each step should produce.
  *  @param[in] start Inclusive lower bound, or @c nullptr to begin at the layout's floor.
  *  @param[in] stop Exclusive upper bound, or @c nullptr for unbounded.
@@ -836,10 +827,11 @@ extern PyType_Spec hash_set_spec;
 /**
  *  @brief Visits every element once, in key order, stepping exactly as the Python cursor does.
  *
- *  For the whole-container operations - @c __repr__, @c __eq__, the set algebra - which need every
- *  element but have no reason to build a Python object per step. Same exclusive-successor stepping as
- *  the cursor, so the two cannot disagree about what "every element" means, and the same tolerance of
- *  concurrent change: a key erased under the walk is harmless, one inserted behind it is missed.
+ *  For @c __eq__, which needs every element but has no reason to build a Python object per step. Same
+ *  exclusive-successor stepping as the Python cursor, so the two cannot disagree about what "every
+ *  element" means, and the same tolerance of concurrent change: a key erased under the walk is
+ *  harmless, one inserted behind it is missed. @c scan reads through one transaction and tolerates
+ *  neither.
  *
  *  Only ever called on an ordered container, whose table carries the two bounds. A set hands the
  *  callback a value nothing wrote, since it has none.
@@ -857,16 +849,18 @@ template <typename callback_type_>
 
     key_variant_t found_key;
     value_variant_t found_value;
-    while (table->cursor_next(*opened, found_key, &found_value)) {
-        // A callback answering `bool` stops the walk when it says so; one answering `void` is asking
-        // for every element, and the difference is resolved here rather than by a flag.
-        if constexpr (std::is_same_v<decltype(callback(found_key, found_value)), bool>) {
-            if (!callback(found_key, found_value)) break;
+    status_t stepping = success_k;
+    while (true) {
+        expected<cursor_step_t> const stepped = table->cursor_next(*opened, found_key, &found_value);
+        if (!stepped) {
+            stepping = stepped.status();
+            break;
         }
-        else { callback(found_key, found_value); }
+        if (*stepped == cursor_step_t::exhausted_k) break;
+        callback(found_key, found_value);
     }
     table->cursor_destroy(container->releases, *opened);
-    return success_k;
+    return stepping;
 }
 
 #pragma endregion Cursors
@@ -874,7 +868,7 @@ template <typename callback_type_>
 #pragma region Transactions
 
 /**
- *  @brief One participant in a transaction transaction, whatever container it came from.
+ *  @brief One participant in a transaction, whatever container it came from.
  *
  *  Holds the open transaction type-erased, beside the table that knows how to drive it. Every uniform
  *  operation - stage, commit, rollback, reset, erase, watch, contains - is one indirect call, with no
@@ -887,14 +881,13 @@ template <typename callback_type_>
  *  where a missed acquisition corrupts rather than fails.
  */
 struct participant_t {
-    store_ops_t const *table {nullptr};
-    void *transaction {nullptr};
-    key_ops_t const *ops {nullptr};
+    store_ops_t const *table;
+    void *transaction;
+    key_ops_t const *ops;
     /** @brief The ledger of the container this participates in; see @c releases_t. */
-    releases_t *releases {nullptr};
-    value_mode_t mode {value_mode_t::scalars_k};
+    releases_t *releases;
+    value_mode_t mode;
 
-    participant_t() = default;
     participant_t(store_ops_t const *table, void *transaction, key_ops_t const *ops, releases_t *releases,
                   value_mode_t mode) noexcept
         : table(table), transaction(transaction), ops(ops), releases(releases), mode(mode) {}
@@ -963,17 +956,28 @@ struct participant_t {
     }
     [[nodiscard]] status_t stage() noexcept { return table->transaction_stage(*releases, transaction); }
     [[nodiscard]] status_t commit() noexcept { return table->transaction_commit(*releases, transaction); }
+    [[nodiscard]] status_t validate_for_commit() noexcept {
+        return table->transaction_validate(*releases, transaction);
+    }
+    void publish_under() noexcept { table->transaction_publish(*releases, transaction); }
+    /**
+     *  @brief Whether this participant can be asked whether it may commit before any of them writes.
+     *    A store deciding and writing in one call leaves the pair null, and a group holding one falls
+     *    back to committing each participant in turn.
+     */
+    [[nodiscard]] bool splits_commit() const noexcept { return table->transaction_validate != nullptr; }
     [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(*releases, transaction); }
     [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(*releases, transaction); }
 };
 
 /**
- *  @brief Where a transaction stands.
+ *  @brief Whether the Python object owning a transaction is still usable, which the engine never asks.
  *
- *  One enum rather than a pair of flags, so "staged" and "finished" cannot both be true - which two
- *  booleans prevented only through the order of two assignments.
+ *  A @c with block records here that it is over, so a @c Participant that escaped the block cannot
+ *  keep writing through it. Kept apart from @c staging_t, which answers for the participants
+ *  rather than for the handle.
  */
-enum class group_state_t : std::uint8_t { open_k, staged_k, finished_k };
+enum class group_lifetime_t : std::uint8_t { usable_k, finished_k };
 
 /**
  *  @brief A transaction of containers updated all-or-nothing.
@@ -982,6 +986,9 @@ enum class group_state_t : std::uint8_t { open_k, staged_k, finished_k };
  *  parallel to it, while @c parts holds the open transactions in canonical staging order. It lives
  *  inside the object, placement-constructed into @c PyObject_GC_New's storage, and reports a failed
  *  reservation as a status rather than throwing - an exception has nowhere to go inside a C-API frame.
+ *
+ *  @c state says whether the participants are staged and @c lifetime whether the handle is still
+ *  usable, which are different questions - see both enums above.
  *
  *  @c lock makes the state test, the pass over @c parts and the state transition one span. Each of
  *  those passes drops the GIL, so without it two threads could both see an open group and both stage
@@ -992,7 +999,8 @@ struct transaction_object_t {
     PyObject *views;
     spin_shared_mutex_t lock;
     basic_vector<participant_t> parts;
-    group_state_t state;
+    staging_t state;
+    group_lifetime_t lifetime;
 };
 
 /**
@@ -1094,20 +1102,20 @@ bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases
 bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &result) noexcept;
 
 /**
- *  @brief Builds a new Python object from a stored key.
- *  @return A new reference, or @c nullptr with an exception set.
- */
-/**
  *  @brief Reads the @c (start, stop, limit) a windowed call takes, in both spellings.
  *  @param[in] called The method's name, which every message here quotes.
  *  @param[out] start Borrowed bound object, or null; @c Py_None counts as null.
  *  @param[out] stop The same for the upper end.
- *  @param[out] limit How many elements at most, or -1 for uncounted.
+ *  @param[out] limit How many elements at most, or the maximum for uncounted.
  *  @return True on success; false with a @c TypeError or @c ValueError set.
  */
 bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
-                        PyObject *&start, PyObject *&stop, Py_ssize_t &limit) noexcept;
+                        PyObject *&start, PyObject *&stop, std::size_t &limit) noexcept;
 
+/**
+ *  @brief Builds a new Python object from a stored key.
+ *  @return A new reference, or @c nullptr with an exception set.
+ */
 PyObject *key_to_python(key_variant_t const &key) noexcept;
 
 /**
@@ -1121,6 +1129,13 @@ PyObject *value_to_python(value_variant_t const &value) noexcept;
  *  @return A new reference, or @c nullptr with an exception set.
  */
 PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value) noexcept;
+
+/**
+ *  @brief Builds the list a scan hands back, one element per collected entry.
+ *  @param[in] yields Which half of each entry becomes an element; a set only ever names its keys.
+ *  @return A new reference, or @c nullptr with an exception set.
+ */
+PyObject *entries_to_python(basic_vector<entry_t> const &collected, cursor_yields_t yields) noexcept;
 
 #pragma endregion Conversion
 

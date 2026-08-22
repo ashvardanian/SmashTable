@@ -10,8 +10,8 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`, `SIZE_MAX`
 
+#include <array>      // `std::array`
 #include <atomic>     // `std::atomic`
-#include <chrono>     // `std::chrono::steady_clock`
 #include <functional> // `std::equal_to`, `std::hash`, `std::less`
 #include <limits>     // `std::numeric_limits`
 #include <memory>     // `std::allocator`
@@ -319,138 +319,335 @@ static void shared_mutex_excludes() {
  *    stream slips back in and parks them forever.
  */
 static void shared_mutex_admits_every_writer() {
-    spin_shared_mutex_t mutex;
-    std::atomic<bool> reading {true};
-    std::atomic<std::size_t> finished_writers {0};
-
-    // The readers hold long enough, and re-enter fast enough, that their count effectively never
-    // reaches zero on its own - so a writer only ever gets in by turning them away.
+    // The readers re-enter fast enough that their count effectively never reaches zero, so a writer
+    // only gets in by turning them away; the budget is fifty times the deepest run seen.
     constexpr std::size_t writers_count_k = 3;
     constexpr std::size_t readers_count_k = 10;
     constexpr std::size_t acquisitions_per_writer_k = 30;
-    constexpr int reader_hold_spins_k = 20000;
+    constexpr std::size_t acquisitions_per_reader_k = 250000;
+    constexpr int reader_hold_steps_k = 20000;
+    constexpr int writer_hold_steps_k = 2000;
 
-    // The readers go first and are given a moment to saturate, so every writer arrives at a lock
-    // that is already busy and has to park.
+    spin_shared_mutex_t mutex;
+    std::atomic<bool> reading {true};
+    std::atomic<std::size_t> readers_announced {0};
+    std::atomic<std::size_t> readers_spent {0};
+
     std::vector<std::thread> readers;
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         readers.emplace_back([&]() noexcept {
-            while (reading.load(std::memory_order_relaxed)) {
+            bool announced = false;
+            volatile unsigned hold = 0;
+            std::size_t round = 0;
+            for (; round < acquisitions_per_reader_k && reading.load(std::memory_order_relaxed); ++round) {
                 shared_lock<spin_shared_mutex_t> guard {mutex};
-                for (int spin = 0; spin != reader_hold_spins_k; ++spin)
-                    std::atomic_signal_fence(std::memory_order_seq_cst);
+                if (!announced) {
+                    announced = true;
+                    readers_announced.fetch_add(1, std::memory_order_relaxed);
+                }
+                // Volatile, so the optimizer cannot drop the hold.
+                for (int step = 0; step != reader_hold_steps_k; ++step) hold = hold + 1;
             }
+            if (round == acquisitions_per_reader_k) readers_spent.fetch_add(1, std::memory_order_relaxed);
         });
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Every reader has held the lock once before the first writer exists, so each writer arrives at
+    // a lock the readers are already streaming through.
+    while (readers_announced.load(std::memory_order_relaxed) < readers_count_k) std::this_thread::yield();
 
     std::vector<std::thread> writers;
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         writers.emplace_back([&]() noexcept {
+            volatile unsigned hold = 0;
             for (std::size_t iteration = 0; iteration != acquisitions_per_writer_k; ++iteration) {
                 unique_lock<spin_shared_mutex_t> guard {mutex};
-                for (int spin = 0; spin != 2000; ++spin) std::atomic_signal_fence(std::memory_order_seq_cst);
+                for (int step = 0; step != writer_hold_steps_k; ++step) hold = hold + 1;
             }
-            finished_writers.fetch_add(1);
         });
 
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (finished_writers.load() != writers_count_k && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    st_verify_eq_(finished_writers.load(), writers_count_k);
     for (auto &writer : writers) writer.join();
-    reading.store(false);
+    reading.store(false, std::memory_order_relaxed);
     for (auto &reader : readers) reader.join();
+
+    // A parked writer outlives the readers, so starvation reads as a reader that ran out of budget.
+    st_verify_eq_(readers_spent.load(), std::size_t {0}, "a reader spent its budget while a writer was parked");
 }
 
 #pragma endregion Shared Mutex Tests
 
 #pragma region Transaction Group Tests
 
-/** @brief A store that records the order its phases are visited in, and nothing else. */
-struct recording_store_t {
+/** @brief The lifecycle step a logged entry names. */
+enum class phase_t : std::uint8_t {
+    open_k,
+    stage_k,
+    validate_k,
+    publish_k,
+    commit_k,
+    rollback_k,
+    reset_k,
+};
+
+/** @brief One lifecycle call a recording store logged, and where in the group that store sits. */
+struct recorded_call_t {
+    phase_t phase {phase_t::open_k};
+    std::size_t position {0};
+};
+
+/** @brief Whether a store's transaction offers the two-step commit a group prefers over one call. */
+enum class commit_shape_t : bool {
+    one_call_k,
+    split_k,
+};
+
+/**
+ *  @brief What one store hands back from each step, so a group can be steered into any refusal.
+ *    Every member is that step's own status, and @c success_k lets it through.
+ */
+struct refusals_t {
+    status_t opening {success_k};
+    status_t stage {success_k};
+    status_t validate_for_commit {success_k};
+    status_t commit {success_k};
+    status_t rollback {success_k};
+    status_t reset {success_k};
+};
+
+/** @brief A store that records the order its steps are visited in, and refuses where it is told to. */
+template <commit_shape_t shape_ = commit_shape_t::one_call_k>
+struct recording_store {
     using is_transactional = std::true_type;
     using identifier_t = int;
     static constexpr isolation_t isolation_k = isolation_t::monotonic_atomic_view_k;
 
-    std::vector<int> *log {nullptr};
-    int label {0};
+    std::vector<recorded_call_t> &log;
+    std::size_t position {0};
+    refusals_t refusals {};
 
     struct transaction_t {
-        std::vector<int> *log {nullptr};
-        int label {0};
+        // Pointers, not references: the transaction has to stay move-assignable.
+        std::vector<recorded_call_t> *log;
+        std::size_t position;
+        refusals_t const *refusals;
 
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
         transaction_t(transaction_t const &) = delete;
         transaction_t &operator=(transaction_t const &) = delete;
-        transaction_t(std::vector<int> *log, int label) noexcept : log(log), label(label) {}
+        transaction_t(std::vector<recorded_call_t> *log, std::size_t position, refusals_t const *refusals) noexcept
+            : log(log), position(position), refusals(refusals) {}
 
         [[nodiscard]] status_t reserve(std::size_t) noexcept { return success_k; }
         [[nodiscard]] status_t watch(identifier_t) noexcept { return success_k; }
-        [[nodiscard]] status_t stage() noexcept { return record(1); }
-        [[nodiscard]] status_t commit() noexcept { return record(2); }
-        [[nodiscard]] status_t rollback() noexcept { return record(3); }
-        [[nodiscard]] status_t reset() noexcept { return record(4); }
+        [[nodiscard]] status_t stage() noexcept { return record(phase_t::stage_k, refusals->stage); }
+        [[nodiscard]] status_t commit() noexcept { return record(phase_t::commit_k, refusals->commit); }
+        [[nodiscard]] status_t rollback() noexcept { return record(phase_t::rollback_k, refusals->rollback); }
+        [[nodiscard]] status_t reset() noexcept { return record(phase_t::reset_k, refusals->reset); }
+
+        [[nodiscard]] status_t validate_for_commit() noexcept
+            requires(shape_ == commit_shape_t::split_k)
+        {
+            return record(phase_t::validate_k, refusals->validate_for_commit);
+        }
+
+        void publish_under() noexcept
+            requires(shape_ == commit_shape_t::split_k)
+        {
+            [[maybe_unused]] status_t const published = record(phase_t::publish_k, success_k);
+        }
 
       private:
-        status_t record(int phase) noexcept {
-            log->push_back(phase * 100 + label);
-            return success_k;
+        status_t record(phase_t phase, status_t status) noexcept {
+            log->push_back(recorded_call_t {phase, position});
+            return status;
         }
     };
 
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
-        return expected<transaction_t> {transaction_t {log, label}, success_k};
+        if (failed(refusals.opening)) return refusals.opening;
+        log.push_back(recorded_call_t {phase_t::open_k, position});
+        return expected<transaction_t> {transaction_t {&log, position, &refusals}, success_k};
     }
 };
 
+/** @brief The stores @p log holds for @p phase by their position in the group, in visit order. */
+static std::vector<std::size_t> stores_visited(std::vector<recorded_call_t> const &log, phase_t phase) {
+    std::vector<std::size_t> visited;
+    for (recorded_call_t const &call : log)
+        if (call.phase == phase) visited.push_back(call.position);
+    return visited;
+}
+
 /** @brief Every phase walks the participants in one address order, rollback included. */
 static void transaction_group_walks_one_order() {
-    std::vector<int> log;
-    recording_store_t first {&log, 1}, second {&log, 2}, third {&log, 3};
+    std::vector<recorded_call_t> log;
+    recording_store<> first {log, 0}, second {log, 1}, third {log, 2};
 
     auto group_result = make_transaction_group(first, second, third);
     st_verify_(group_result);
     auto &group = *group_result;
 
     st_verify_eq_(group.stage(), success_k);
-    std::vector<int> const staged = log;
-    st_verify_eq_(staged.size(), 3u);
-
+    std::vector<std::size_t> const ordered = stores_visited(log, phase_t::stage_k);
+    st_verify_eq_(ordered.size(), 3u);
     st_verify_eq_(group.rollback(), success_k);
+
+    // Staging a second time takes that same order, and rollback follows it too.
     log.clear();
-
     st_verify_eq_(group.stage(), success_k);
-    st_verify_(log == staged);
+    st_verify_(stores_visited(log, phase_t::stage_k) == ordered);
     st_verify_eq_(group.rollback(), success_k);
+    st_verify_(stores_visited(log, phase_t::rollback_k) == ordered);
 
-    // Rollback visits the same participants in the same order as staging did.
-    std::vector<int> rolled;
-    for (int const phase : log)
-        if (phase / 100 == 3) rolled.push_back(phase % 100);
-    std::vector<int> ordered;
-    for (int const phase : staged) ordered.push_back(phase % 100);
-    st_verify_(rolled == ordered);
-
-    // Commit and reset take that same order.
+    // Commit and reset take it as well.
     log.clear();
     st_verify_eq_(group.stage(), success_k);
     st_verify_eq_(group.commit(), success_k);
-    std::vector<int> committed;
-    for (int const phase : log)
-        if (phase / 100 == 2) committed.push_back(phase % 100);
-    st_verify_(committed == ordered);
+    st_verify_(stores_visited(log, phase_t::commit_k) == ordered);
 
     log.clear();
     st_verify_eq_(group.reset(), success_k);
-    std::vector<int> discarded;
-    for (int const phase : log) discarded.push_back(phase % 100);
-    st_verify_(discarded == ordered);
+    st_verify_(stores_visited(log, phase_t::reset_k) == ordered);
 
     // The phases refuse to run out of turn.
     st_verify_eq_(group.rollback(), operation_not_permitted_k);
     st_verify_eq_(group.commit(), operation_not_permitted_k);
+}
+
+/** @brief A refused rollback stops where it was refused and leaves the group staged. */
+static void transaction_group_rollback_stops_at_refusal() {
+    std::vector<recorded_call_t> log;
+    // Array members ascend in address, so the group visits these in the order they are named.
+    std::array<recording_store<>, 3> stores {{{log, 0}, {log, 1}, {log, 2}}};
+    stores[1].refusals.rollback = operation_would_block_k;
+
+    auto group_result = make_transaction_group(stores[0], stores[1], stores[2]);
+    st_verify_(group_result);
+    auto &group = *group_result;
+
+    st_verify_eq_(group.stage(), success_k);
+    log.clear();
+    st_verify_eq_(group.rollback(), operation_would_block_k);
+
+    // The participant past the refusal was never asked, so it is still staged.
+    std::vector<std::size_t> const reached {0, 1};
+    st_verify_(stores_visited(log, phase_t::rollback_k) == reached);
+
+    // And the group still says so, which is what keeps the next `stage` from staging twice over.
+    st_verify_eq_(group.staging(), staging_t::staged_k);
+    st_verify_eq_(group.stage(), operation_not_permitted_k);
+
+    // Lifting the refusal lets the rollback reach every participant and reopen the group.
+    stores[1].refusals.rollback = success_k;
+    log.clear();
+    st_verify_eq_(group.rollback(), success_k);
+    std::vector<std::size_t> const every {0, 1, 2};
+    st_verify_(stores_visited(log, phase_t::rollback_k) == every);
+    st_verify_eq_(group.staging(), staging_t::pending_k);
+}
+
+/** @brief One store named twice is refused before either participant is opened. */
+static void transaction_group_refuses_a_duplicate_store() {
+    std::vector<recorded_call_t> log;
+    recording_store<> only {log, 0}, other {log, 1};
+
+    auto duplicated = make_transaction_group(only, only);
+    st_verify_eq_(duplicated.status(), invalid_argument_k);
+    st_verify_(log.empty());
+
+    // A repeat is caught wherever it sits, not only next to itself.
+    auto separated = make_transaction_group(only, other, only);
+    st_verify_eq_(separated.status(), invalid_argument_k);
+    st_verify_(log.empty());
+
+    // Two distinct stores are what the refusal is not about.
+    auto distinct = make_transaction_group(only, other);
+    st_verify_(distinct);
+    std::vector<std::size_t> const opened {0, 1};
+    st_verify_(stores_visited(log, phase_t::open_k) == opened);
+}
+
+/** @brief A store refusing to open reports its own status, and the caller hears the first of them. */
+static void transaction_group_reports_what_refused_to_open() {
+    std::vector<recorded_call_t> log;
+    recording_store<> first {log, 0}, second {log, 1};
+
+    second.refusals.opening = operation_not_permitted_k;
+    auto refused = make_transaction_group(first, second);
+    st_verify_eq_(refused.status(), operation_not_permitted_k);
+
+    // Two refusals fold to the one the caller named first, in argument order.
+    first.refusals.opening = capacity_exhausted_k;
+    auto both_refused = make_transaction_group(first, second);
+    st_verify_eq_(both_refused.status(), capacity_exhausted_k);
+}
+
+/** @brief A commit that published nothing stays staged, and one that tore drops to pending. */
+static void transaction_group_torn_commit_stops_claiming_staged() {
+    using store_t = recording_store<>;
+    static_assert(!transaction_group<store_t, store_t, store_t>::asks_before_writing_k,
+                  "a one-call commit is what leaves a group able to tear");
+
+    std::vector<recorded_call_t> log;
+    // Array members ascend in address, so the group visits these in the order they are named.
+    std::array<store_t, 3> stores {{{log, 0}, {log, 1}, {log, 2}}};
+
+    // The first participant refusing publishes nothing, so the group is staged and still retryable.
+    stores[0].refusals.commit = write_conflict_k;
+    auto intact_result = make_transaction_group(stores[0], stores[1], stores[2]);
+    st_verify_(intact_result);
+    auto &intact = *intact_result;
+    st_verify_eq_(intact.stage(), success_k);
+    st_verify_eq_(intact.commit(), write_conflict_k);
+    st_verify_eq_(intact.staging(), staging_t::staged_k);
+    st_verify_eq_(intact.rollback(), success_k);
+
+    // A refusal after one participant published cannot be pulled back, so the group stops saying staged.
+    stores[0].refusals.commit = success_k;
+    stores[1].refusals.commit = write_conflict_k;
+    auto torn_result = make_transaction_group(stores[0], stores[1], stores[2]);
+    st_verify_(torn_result);
+    auto &torn = *torn_result;
+    st_verify_eq_(torn.stage(), success_k);
+    st_verify_eq_(torn.commit(), write_conflict_k);
+    st_verify_eq_(torn.staging(), staging_t::pending_k);
+
+    // Neither phase that needs a staged group will run, and `reset` is what clears the rest.
+    st_verify_eq_(torn.commit(), operation_not_permitted_k);
+    st_verify_eq_(torn.rollback(), operation_not_permitted_k);
+    log.clear();
+    st_verify_eq_(torn.reset(), success_k);
+    std::vector<std::size_t> const every {0, 1, 2};
+    st_verify_(stores_visited(log, phase_t::reset_k) == every);
+}
+
+/** @brief Where every participant splits its commit, a refusal publishes nothing at all. */
+static void transaction_group_split_commit_publishes_nothing_on_refusal() {
+    using store_t = recording_store<commit_shape_t::split_k>;
+    static_assert(transaction_group<store_t, store_t>::asks_before_writing_k,
+                  "two split participants are asked before either writes");
+
+    std::vector<recorded_call_t> log;
+    std::array<store_t, 2> stores {{{log, 0}, {log, 1}}};
+    stores[1].refusals.validate_for_commit = write_conflict_k;
+
+    auto group_result = make_transaction_group(stores[0], stores[1]);
+    st_verify_(group_result);
+    auto &group = *group_result;
+
+    st_verify_eq_(group.stage(), success_k);
+    log.clear();
+    st_verify_eq_(group.commit(), write_conflict_k);
+    st_verify_(stores_visited(log, phase_t::publish_k).empty());
+
+    // Nothing was written, so the group is staged and the caller may still unwind or retry it.
+    st_verify_eq_(group.staging(), staging_t::staged_k);
+    stores[1].refusals.validate_for_commit = success_k;
+    log.clear();
+    st_verify_eq_(group.commit(), success_k);
+    std::vector<std::size_t> const every {0, 1};
+    st_verify_(stores_visited(log, phase_t::publish_k) == every);
+    st_verify_eq_(group.staging(), staging_t::pending_k);
 }
 
 #pragma endregion Transaction Group Tests
@@ -514,23 +711,31 @@ static void commit_stamp_visibility_matrix() {
     st_verify_(visible_at(static_cast<commit_stamp_t>(generation_t {0}), 0));
 }
 
+/**
+ *  @brief The ladder weakest rung first, which is the order @c at_least is asked to agree with.
+ *
+ *  Written out rather than derived, because a walk generated from @c isolation_t could only confirm the
+ *  enum agrees with itself. The count is pinned to the strongest rung so a new one cannot join the enum
+ *  and skip the walk, which is how @c strict_serializable_k once went untested.
+ */
+constexpr std::array<isolation_t, 5> isolation_ladder_k {
+    isolation_t::read_committed_k, isolation_t::monotonic_atomic_view_k, isolation_t::snapshot_k,
+    isolation_t::serializable_k,   isolation_t::strict_serializable_k,
+};
+static_assert(isolation_ladder_k.size() == static_cast<std::size_t>(isolation_t::strict_serializable_k) + 1,
+              "a rung joined or left `isolation_t` without joining the walk over it");
+
 /** @brief Every ordered pair of isolation levels, so the enum's order is load-bearing. */
 static void isolation_levels_compare_by_strength() {
-    constexpr isolation_t levels_k[] = {
-        isolation_t::read_committed_k,
-        isolation_t::monotonic_atomic_view_k,
-        isolation_t::snapshot_k,
-        isolation_t::serializable_k,
-    };
-    constexpr std::size_t levels_count_k = sizeof(levels_k) / sizeof(levels_k[0]);
-
-    for (std::size_t offered = 0; offered != levels_count_k; ++offered)
-        for (std::size_t required = 0; required != levels_count_k; ++required)
-            st_verify_eq_(at_least(levels_k[offered], levels_k[required]), offered >= required);
+    for (std::size_t stronger = 0; stronger != isolation_ladder_k.size(); ++stronger)
+        for (std::size_t weaker = 0; weaker != isolation_ladder_k.size(); ++weaker)
+            st_verify_eq_(at_least(isolation_ladder_k[stronger], isolation_ladder_k[weaker]), stronger >= weaker);
 
     static_assert(at_least(isolation_t::serializable_k, isolation_t::read_committed_k));
     static_assert(!at_least(isolation_t::read_committed_k, isolation_t::snapshot_k));
     static_assert(at_least(isolation_t::snapshot_k, isolation_t::snapshot_k));
+    static_assert(at_least(isolation_t::strict_serializable_k, isolation_t::serializable_k));
+    static_assert(!at_least(isolation_t::serializable_k, isolation_t::strict_serializable_k));
 }
 
 /** @brief An entry standing in for what a store resolves a watched identifier to. */
@@ -539,10 +744,7 @@ struct resolved_entry_t {
     presence_t presence {presence_t::present_k};
 
     bool operator==(watch_t const &watch) const noexcept {
-        return watch.presence == presence && watch.generation == generation;
-    }
-    bool operator!=(watch_t const &watch) const noexcept {
-        return watch.presence != presence || watch.generation != generation;
+        return generation == watch.generation && presence == watch.presence;
     }
 };
 
@@ -672,6 +874,16 @@ int main() {
     failures += run_test(filter, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
 
     failures += run_test(filter, "transaction_group.walks_one_order", transaction_group_walks_one_order);
+    failures +=
+        run_test(filter, "transaction_group.rollback_stops_at_refusal", transaction_group_rollback_stops_at_refusal);
+    failures +=
+        run_test(filter, "transaction_group.refuses_a_duplicate_store", transaction_group_refuses_a_duplicate_store);
+    failures += run_test(filter, "transaction_group.reports_what_refused_to_open",
+                         transaction_group_reports_what_refused_to_open);
+    failures += run_test(filter, "transaction_group.torn_commit_stops_claiming_staged",
+                         transaction_group_torn_commit_stops_claiming_staged);
+    failures += run_test(filter, "transaction_group.split_commit_publishes_nothing",
+                         transaction_group_split_commit_publishes_nothing_on_refusal);
 
     failures += run_test(filter, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
 
