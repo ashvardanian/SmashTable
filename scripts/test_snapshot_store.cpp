@@ -1206,7 +1206,8 @@ static void test_insert_if_missing_reports_outcome() {
     st_verify_(store.insert_if_missing(
         trivial_id_to_member<member_t>(1, 100), [&](auto const &member) noexcept { inserted_mapped = member.mapped; },
         [&](auto const &) noexcept { ++existing_calls; }));
-    st_verify_eq_(inserted_mapped, 100);
+    st_verify_((inserted_mapped) && "the callback that separates the two cases never fired");
+    st_verify_eq_(*inserted_mapped, 100);
     st_verify_eq_(existing_calls, 0);
 
     // The second call declines, which is still a success, so only the callback separates the cases.
@@ -1215,7 +1216,8 @@ static void test_insert_if_missing_reports_outcome() {
     st_verify_(store.insert_if_missing(
         trivial_id_to_member<member_t>(1, 999), [&](auto const &) noexcept { ++inserted_calls; },
         [&](auto const &member) noexcept { existing_mapped = member.mapped; }));
-    st_verify_eq_(existing_mapped, 100);
+    st_verify_((existing_mapped) && "the callback that separates the two cases never fired");
+    st_verify_eq_(*existing_mapped, 100);
     st_verify_eq_(inserted_calls, 0);
     st_verify_eq_(mapped_or_absent(store, 1), 100);
 }

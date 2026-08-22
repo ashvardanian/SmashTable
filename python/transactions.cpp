@@ -551,6 +551,10 @@ static int Transaction_traverse(PyObject *self, visitproc visit, void *arg) noex
 
 static int Transaction_clear(PyObject *self) noexcept {
     auto *group = object_as<transaction_object_t>(self);
+    // Every participant holds a transaction into a container's store, and unwinding one reads that
+    // store. So they go before the references keeping those stores alive do - which is the order
+    // the deallocator already takes, and which the collector reaches here instead.
+    group->parts.clear();
     Py_CLEAR(group->views);
     Py_CLEAR(group->containers);
     return 0;
