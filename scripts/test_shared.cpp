@@ -12,7 +12,6 @@
 
 #include <array>      // `std::array`
 #include <atomic>     // `std::atomic`
-#include <chrono>     // `std::chrono::steady_clock`
 #include <functional> // `std::equal_to`, `std::hash`, `std::less`
 #include <limits>     // `std::numeric_limits`
 #include <memory>     // `std::allocator`
@@ -320,48 +319,58 @@ static void shared_mutex_excludes() {
  *    stream slips back in and parks them forever.
  */
 static void shared_mutex_admits_every_writer() {
-    spin_shared_mutex_t mutex;
-    std::atomic<bool> reading {true};
-    std::atomic<std::size_t> finished_writers {0};
-
-    // The readers hold long enough, and re-enter fast enough, that their count effectively never
-    // reaches zero on its own - so a writer only ever gets in by turning them away.
+    // The readers re-enter fast enough that their count effectively never reaches zero, so a writer
+    // only gets in by turning them away; the budget is fifty times the deepest run seen.
     constexpr std::size_t writers_count_k = 3;
     constexpr std::size_t readers_count_k = 10;
     constexpr std::size_t acquisitions_per_writer_k = 30;
-    constexpr int reader_hold_spins_k = 20000;
+    constexpr std::size_t acquisitions_per_reader_k = 250000;
+    constexpr int reader_hold_steps_k = 20000;
+    constexpr int writer_hold_steps_k = 2000;
 
-    // The readers go first and are given a moment to saturate, so every writer arrives at a lock
-    // that is already busy and has to park.
+    spin_shared_mutex_t mutex;
+    std::atomic<bool> reading {true};
+    std::atomic<std::size_t> readers_announced {0};
+    std::atomic<std::size_t> readers_spent {0};
+
     std::vector<std::thread> readers;
     for (std::size_t reader = 0; reader != readers_count_k; ++reader)
         readers.emplace_back([&]() noexcept {
-            while (reading.load(std::memory_order_relaxed)) {
+            bool announced = false;
+            volatile unsigned hold = 0;
+            std::size_t round = 0;
+            for (; round < acquisitions_per_reader_k && reading.load(std::memory_order_relaxed); ++round) {
                 shared_lock<spin_shared_mutex_t> guard {mutex};
-                for (int spin = 0; spin != reader_hold_spins_k; ++spin)
-                    std::atomic_signal_fence(std::memory_order_seq_cst);
+                if (!announced) {
+                    announced = true;
+                    readers_announced.fetch_add(1, std::memory_order_relaxed);
+                }
+                // Volatile, so the optimizer cannot drop the hold.
+                for (int step = 0; step != reader_hold_steps_k; ++step) hold = hold + 1;
             }
+            if (round == acquisitions_per_reader_k) readers_spent.fetch_add(1, std::memory_order_relaxed);
         });
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    // Every reader has held the lock once before the first writer exists, so each writer arrives at
+    // a lock the readers are already streaming through.
+    while (readers_announced.load(std::memory_order_relaxed) < readers_count_k) std::this_thread::yield();
 
     std::vector<std::thread> writers;
     for (std::size_t writer = 0; writer != writers_count_k; ++writer)
         writers.emplace_back([&]() noexcept {
+            volatile unsigned hold = 0;
             for (std::size_t iteration = 0; iteration != acquisitions_per_writer_k; ++iteration) {
                 unique_lock<spin_shared_mutex_t> guard {mutex};
-                for (int spin = 0; spin != 2000; ++spin) std::atomic_signal_fence(std::memory_order_seq_cst);
+                for (int step = 0; step != writer_hold_steps_k; ++step) hold = hold + 1;
             }
-            finished_writers.fetch_add(1);
         });
 
-    auto const deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
-    while (finished_writers.load() != writers_count_k && std::chrono::steady_clock::now() < deadline)
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-
-    st_verify_eq_(finished_writers.load(), writers_count_k);
     for (auto &writer : writers) writer.join();
-    reading.store(false);
+    reading.store(false, std::memory_order_relaxed);
     for (auto &reader : readers) reader.join();
+
+    // A parked writer outlives the readers, so starvation reads as a reader that ran out of budget.
+    st_verify_eq_(readers_spent.load(), std::size_t {0}, "a reader spent its budget while a writer was parked");
 }
 
 #pragma endregion Shared Mutex Tests

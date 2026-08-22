@@ -115,9 +115,17 @@ def drive_threads():
 
     def drive(worker, count: int, timeout: float = 60.0) -> None:
         # Every worker is submitted before any is awaited, or the threads would run one at a time.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=count) as pool:
-            for future in [pool.submit(worker, index) for index in range(count)]:
-                future.result(timeout=timeout)
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=count)
+        try:
+            futures = [pool.submit(worker, index) for index in range(count)]
+            raised = (future.exception(timeout=timeout) for future in futures)
+            failures = [error for error in raised if error is not None]
+        finally:
+            # Never wait here: a worker that hung is what the timeout above is reporting.
+            pool.shutdown(wait=False)
+        # A broken barrier is how one worker's failure reaches the others, so it never outranks theirs.
+        if failures:
+            raise min(failures, key=lambda error: isinstance(error, threading.BrokenBarrierError))
 
     return drive
 

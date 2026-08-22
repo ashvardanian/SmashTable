@@ -65,8 +65,9 @@ def test_concurrent_readers_never_raise(container, drive_threads):
 def test_iteration_concurrent_with_mutation_never_crashes(container_class, key_type, drive_threads, crossing_gate):
     """A walk running alongside writers terminates and never yields one key twice.
 
-    The walker starts before the gate and runs past the last writer, so its span contains theirs,
-    and the container is private so a parallel copy of the body cannot write into it.
+    The container is private so a parallel copy of the body cannot write into it, the walker's span
+    contains every writer's, and whether any one walk met a write is the scheduler's to decide, so
+    only distinctness is asserted of those.
     """
     container = make(container_class, key_type)
     seeded, per_writer, writers, walks = 100, 100, 2, 20
@@ -75,22 +76,22 @@ def test_iteration_concurrent_with_mutation_never_crashes(container_class, key_t
     stop = threading.Event()
     gate = crossing_gate(1 + writers)
     finished = []
-    tally = {"walks": 0, "grew": 0}
+    tally = {"walks": 0}
 
     def walk_once() -> list:
         walked = list(container)
         assert len(set(walked)) == len(walked), f"{len(walked)} yields, {len(set(walked))} distinct"
         return walked
 
-    def worker(index: int) -> None:
-        if index == 0:
-            before = walk_once()
-            gate.wait()
-            assert len(before) == seeded, f"{len(before)} keys walked before the writers were released"
-            while tally["walks"] < walks or not stop.is_set():
-                tally["walks"] += 1
-                tally["grew"] += len(walk_once()) > seeded
-            return
+    def walk_across_writes() -> None:
+        before = walk_once()
+        gate.wait()
+        assert len(before) == seeded, f"{len(before)} keys walked before the writers were released"
+        while tally["walks"] < walks or not stop.is_set():
+            tally["walks"] += 1
+            walk_once()
+
+    def write_one_block(index: int) -> None:
         gate.wait()
         try:
             # Writer blocks start above the seeded keys and never reach each other's.
@@ -101,9 +102,17 @@ def test_iteration_concurrent_with_mutation_never_crashes(container_class, key_t
             if len(finished) == writers:
                 stop.set()
 
+    def worker(index: int) -> None:
+        if index == 0:
+            walk_across_writes()
+        else:
+            write_one_block(index)
+
     drive_threads(worker, 1 + writers)
-    assert tally["grew"], f"none of the {tally['walks']} walks saw a writer's key, so this proves nothing"
     wanted = seeded + writers * per_writer
+    # Every writer has finished, so this walk spans all of their keys.
+    after = walk_once()
+    assert len(after) == wanted, f"{len(after)} keys walked after the writers"
     assert len(container) == wanted, f"len {len(container)} vs {wanted}"
 
 
@@ -138,53 +147,73 @@ def test_only_the_group_in_flight_is_ever_half_visible(container_class, key_type
     """A settled group is in both containers, an aborted one in neither, and the skew never reverses.
 
     Publication follows creation order rather than argument order, so the group names the two
-    reversed and the container made second may never be found ahead of the one made first.
+    reversed and the container made second may never be found ahead of the one made first. The
+    sampler meets the writer at each round and stays in it until the round publishes, so it reads
+    across every commit rather than wherever the scheduler happened to drop it.
     """
     earlier = make(container_class, key_type)
     later = make(container_class, key_type)
     rounds, batch = 200, 100
-    stop = threading.Event()
     gate = crossing_gate(2)
-    # The round the writer has entered. A stale read only ever names an older, more settled round.
-    reached = [0]
-    tally = {"passes": 0, "later_ahead": 0}
+    # The round the writer is about to publish, and the last one it finished.
+    entered = [0]
+    finished = [-1]
+    tally = {"later_ahead": 0, "samples": 0}
+
+    def sample() -> None:
+        tally["samples"] += 1
+        round_number = entered[0]
+        # `later` is read first, so finding it there and not in `earlier` really is a lead.
+        leading = round_number * batch
+        tally["later_ahead"] += leading in later and leading not in earlier
+        if round_number == 0:
+            return
+        settled = (round_number - 1) * batch
+        if (round_number - 1) % 3:
+            assert settled in earlier and settled in later, f"round {round_number - 1} in one container only"
+        else:
+            assert settled not in earlier and settled not in later, f"aborted round {round_number - 1} landed"
+
+    def publish_one_round(round_number: int) -> None:
+        base = round_number * batch
+        with contextlib.suppress(RuntimeError), st.transaction(later, earlier) as (into_later, into_earlier):
+            # A batch rather than one key, so publishing the first container is not instant.
+            for offset in range(batch):
+                into_later[base + offset] = base + offset
+                into_earlier[base + offset] = base + offset
+            # Every third round aborts, so the sampler must find it in neither container.
+            if round_number % 3 == 0:
+                raise RuntimeError("abort")
+
+    def publish_every_round() -> None:
+        for round_number in range(rounds):
+            entered[0] = round_number
+            gate.wait()
+            try:
+                publish_one_round(round_number)
+            finally:
+                # A round the sampler is still spinning on must be marked however it ended.
+                finished[0] = round_number
+
+    def sample_every_round() -> None:
+        for round_number in range(rounds):
+            gate.wait()
+            sample()
+            while finished[0] < round_number:
+                sample()
 
     def worker(index: int) -> None:
-        # Index 0 writes the groups, aborting every third; the other samples until it stops.
-        if index != 0:
-            gate.wait()
-            while not stop.is_set():
-                tally["passes"] += 1
-                round_number = reached[0]
-                # `later` is read first, so finding it there and not in `earlier` really is a lead.
-                leading = round_number * batch
-                tally["later_ahead"] += leading in later and leading not in earlier
-                if round_number == 0:
-                    continue
-                settled = (round_number - 1) * batch
-                if (round_number - 1) % 3:
-                    assert settled in earlier and settled in later, f"round {round_number - 1} in one container only"
-                else:
-                    assert settled not in earlier and settled not in later, f"aborted round {round_number - 1} landed"
-            return
-        gate.wait()
         try:
-            for round_number in range(rounds):
-                reached[0] = round_number
-                base = round_number * batch
-                with contextlib.suppress(RuntimeError), st.transaction(later, earlier) as (into_later, into_earlier):
-                    # A batch rather than one key, so publishing the first container is not instant.
-                    for offset in range(batch):
-                        into_later[base + offset] = base + offset
-                        into_earlier[base + offset] = base + offset
-                    if round_number % 3 == 0:
-                        raise RuntimeError("abort")
-        finally:
-            stop.set()
+            if index == 0:
+                publish_every_round()
+            else:
+                sample_every_round()
+        except BaseException:
+            gate.abort()
+            raise
 
     drive_threads(worker, 2)
-    assert tally["passes"], "the sampler never entered its loop, so this proves nothing"
-    assert not tally["later_ahead"], f"the container staged second led {tally['later_ahead']} of {tally['passes']}"
+    assert not tally["later_ahead"], f"the container staged second led {tally['later_ahead']} of {tally['samples']}"
     committed = {
         key
         for round_number in range(rounds)
@@ -200,8 +229,9 @@ def test_only_the_group_in_flight_is_ever_half_visible(container_class, key_type
 def test_one_iterator_shared_by_many_threads(container, keygen, drive_threads, crossing_gate):
     """Threads pulling from one iterator between them see every key exactly once.
 
-    A step releases the GIL, so the cursor needs a lock of its own; the walk is long enough that no
-    one thread drains it alone and leaves that lock never asked for.
+    A step releases the GIL so the cursor needs a lock of its own, and every thread takes one step
+    before any of them drains, so that lock is provably contended rather than left to a scheduler
+    that may hand the whole walk to whoever starts first.
     """
     threads = 8
     keys = keygen(30_000)
@@ -213,18 +243,28 @@ def test_one_iterator_shared_by_many_threads(container, keygen, drive_threads, c
     pulled = []
     sink = threading.Lock()
 
-    def worker(_: int) -> None:
+    def pull_one_share() -> list:
         gate.wait()
-        # Pulled first and merged after, so the lock never serializes the walk it is testing.
-        mine = []
-        for key in walk:
-            mine.append(key)
+        # There are far more keys than threads, so every one of these steps answers.
+        first = next(walk, None)
+        mine = [] if first is None else [first]
+        gate.wait()
+        mine.extend(walk)
+        return mine
+
+    def worker(_: int) -> None:
+        try:
+            mine = pull_one_share()
+        except BaseException:
+            gate.abort()
+            raise
+        # Merged after the pull, so the sink never serializes the walk it is testing.
         with sink:
             seen.extend(mine)
             pulled.append(len(mine))
 
     drive_threads(worker, threads)
-    assert sum(1 for count in pulled if count) > 1, "one thread drained the cursor, so this proves nothing"
+    assert sum(1 for count in pulled if count) == threads, "the cursor reported exhaustion with keys left"
     assert len(seen) == len(keys), "a key was yielded twice or lost"
     assert set(seen) == set(keys)
 
