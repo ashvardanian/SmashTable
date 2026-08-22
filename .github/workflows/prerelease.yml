@@ -2,10 +2,10 @@ name: Pre-Release
 
 on:
   push:
-    branches: ["main-dev"]
+    branches: ["main"]
     paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
   pull_request:
-    branches: ["main", "main-dev"]
+    branches: ["main*"]
     paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
 
 env:
@@ -16,9 +16,11 @@ env:
 permissions:
   contents: read
 
+# One group per source branch: `push` covers `main` and a request covers every `main*` branch, so a
+# branch with an open request is built once. Superseded request runs cancel; `main` runs finish.
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
 
