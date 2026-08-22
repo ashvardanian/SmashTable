@@ -13,7 +13,6 @@ permissions:
   id-token: write
 
 jobs:
-
   versioning:
     name: Update Version
     runs-on: ubuntu-24.04
@@ -47,6 +46,9 @@ jobs:
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
+          # Checkout persists whatever credential it used, and the push below inherits it. Without
+          # this the ref update arrives as `github-actions[bot]`, which holds no role to bypass with.
+          token: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
       - name: Perform Rebase
         run: |
           git config user.name "github-actions[bot]"
@@ -71,7 +73,17 @@ jobs:
         # One entry per interpreter variant. A `cp314-*` glob stops before the `t`, so a flat list
         # silently ships zero free-threaded wheels while looking complete.
         python-version: ["312", "313", "314", "314t"]
-        os: [ubuntu-24.04, ubuntu-24.04-arm, macos-15, windows-2025]
+        os:
+          [
+            ubuntu-24.04,
+            ubuntu-24.04-arm,
+            macos-15,
+            windows-2025,
+            windows-11-arm,
+          ]
+        exclude:
+          # No free-threaded ARM64 interpreter ships for Windows, so the pair would build nothing.
+          - { os: windows-11-arm, python-version: "314t" }
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -81,6 +93,7 @@ jobs:
         uses: pypa/cibuildwheel@v4.2.0
         env:
           CIBW_BUILD: cp${{ matrix.python-version }}-*
+          CIBW_ARCHS_WINDOWS: ${{ matrix.os == 'windows-11-arm' && 'ARM64' || 'AMD64 x86' }}
           CIBW_TEST_GROUPS: test
           CIBW_TEST_COMMAND: pytest {project}/test/ -x -q
 
@@ -100,9 +113,43 @@ jobs:
           name: cibw-${{ matrix.os }}-cp${{ matrix.python-version }}
           path: wheelhouse/*.whl
 
+  build_sdist:
+    name: Source Distribution
+    needs: versioning
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Set Up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: 3.x
+      - name: Build Source Distribution
+        run: |
+          python -m pip install --upgrade build
+          python -m build --sdist
+
+      # The extension compiles against headers no `Extension` entry lists as a source, so a sdist
+      # that omits them installs nowhere.
+      - name: Assert the Headers Travel
+        shell: bash
+        run: |
+          count=$(tar tzf dist/*.tar.gz | grep -c "include/smashtable/.*\.hpp")
+          echo "headers carried by the source distribution: ${count}"
+          test "$count" -gt 0
+
+      - name: Upload Source Distribution
+        uses: actions/upload-artifact@v7
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
   publish_python:
     name: Publish Python
-    needs: build_wheels
+    needs: [build_wheels, build_sdist]
     runs-on: ubuntu-24.04
     environment:
       name: pypi
@@ -113,7 +160,7 @@ jobs:
       - name: Download Artifacts
         uses: actions/download-artifact@v8
         with:
-          pattern: cibw-*
+          pattern: "{cibw-*,sdist}"
           path: dist
           merge-multiple: true
       - name: Publish to PyPI
