@@ -309,7 +309,7 @@ FetchContent_Declare(
     GIT_TAG main
 )
 FetchContent_MakeAvailable(smashtable)
-target_link_libraries(your_target PRIVATE smashtable::smashtable)
+target_link_libraries(your_target PRIVATE smashtable::header)
 ```
 
 For a system-wide install, standard CMake package discovery works:
@@ -320,7 +320,7 @@ sudo cmake --install build_release
 
 ```cmake
 find_package(smashtable REQUIRED)
-target_link_libraries(your_target PRIVATE smashtable::smashtable)
+target_link_libraries(your_target PRIVATE smashtable::header)
 ```
 
 The library throws nowhere, and will not let you make it.

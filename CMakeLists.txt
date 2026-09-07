@@ -16,7 +16,7 @@
 #
 # Targets:
 #
-#   * smashtable::smashtable - the INTERFACE library consumers link, carrying the include path and
+#   * smashtable::header - the INTERFACE library consumers link, carrying the include path and
 #     `cxx_std_20`. Spelled the same through `add_subdirectory` and `find_package(smashtable)`.
 #   * smashtable_warnings - INTERFACE flags for our own tests and example, never for consumers.
 #   * smashtable_example - compile-time tour instantiating the shared API over every container family.
@@ -89,15 +89,16 @@ if (SMASHTABLE_IS_MAIN_PROJECT AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
 endif ()
 
 # Header-only library
-add_library(smashtable INTERFACE)
-add_library(smashtable::smashtable ALIAS smashtable)
+add_library(smashtable_header INTERFACE)
+add_library(smashtable::header ALIAS smashtable_header)
+set_target_properties(smashtable_header PROPERTIES EXPORT_NAME header)
 
 target_include_directories(
-    smashtable INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    smashtable_header INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
                          $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-target_compile_features(smashtable INTERFACE cxx_std_20)
+target_compile_features(smashtable_header INTERFACE cxx_std_20)
 
 # Compiler warnings for tests/examples
 add_library(smashtable_warnings INTERFACE)
@@ -139,44 +140,44 @@ option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visi
 
 if (SMASHTABLE_BUILD_TESTS)
     add_executable(smashtable_example example.cpp)
-    target_link_libraries(smashtable_example PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_example PRIVATE smashtable::header smashtable_warnings)
 
     # Individual test executables for faster incremental builds
     add_executable(smashtable_test_std_set scripts/test_std_set.cpp)
     target_include_directories(smashtable_test_std_set PRIVATE scripts/)
-    target_link_libraries(smashtable_test_std_set PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_std_set PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_avl_tree scripts/test_avl_tree.cpp)
     target_include_directories(smashtable_test_avl_tree PRIVATE scripts/)
-    target_link_libraries(smashtable_test_avl_tree PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_avl_tree PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_wb_tree scripts/test_wb_tree.cpp)
     target_include_directories(smashtable_test_wb_tree PRIVATE scripts/)
-    target_link_libraries(smashtable_test_wb_tree PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_wb_tree PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_partitioned scripts/test_partitioned.cpp)
     target_include_directories(smashtable_test_partitioned PRIVATE scripts/)
-    target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_hash_table scripts/test_hash_table.cpp)
     target_include_directories(smashtable_test_hash_table PRIVATE scripts/)
-    target_link_libraries(smashtable_test_hash_table PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_hash_table PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_monotonic_hash scripts/test_monotonic_hash.cpp)
     target_include_directories(smashtable_test_monotonic_hash PRIVATE scripts/)
-    target_link_libraries(smashtable_test_monotonic_hash PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_monotonic_hash PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_snapshot_store scripts/test_snapshot_store.cpp)
     target_include_directories(smashtable_test_snapshot_store PRIVATE scripts/)
-    target_link_libraries(smashtable_test_snapshot_store PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_snapshot_store PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_shared scripts/test_shared.cpp)
     target_include_directories(smashtable_test_shared PRIVATE scripts/)
-    target_link_libraries(smashtable_test_shared PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_shared PRIVATE smashtable::header smashtable_warnings)
 
     add_executable(smashtable_test_vector scripts/test_vector.cpp)
     target_include_directories(smashtable_test_vector PRIVATE scripts/)
-    target_link_libraries(smashtable_test_vector PRIVATE smashtable::smashtable smashtable_warnings)
+    target_link_libraries(smashtable_test_vector PRIVATE smashtable::header smashtable_warnings)
 
     # The CUDA leg is opt-out rather than opt-in, but only materializes where a device compiler exists.
     # `check_language` finding one says nothing about a device being present, so the binary itself
@@ -199,7 +200,7 @@ if (SMASHTABLE_BUILD_TESTS)
 
         add_executable(smashtable_test_concurrent_cuda scripts/test_atomic_cuda.cu)
         target_include_directories(smashtable_test_concurrent_cuda PRIVATE scripts/)
-        target_link_libraries(smashtable_test_concurrent_cuda PRIVATE smashtable::smashtable)
+        target_link_libraries(smashtable_test_concurrent_cuda PRIVATE smashtable::header)
 
         # `--expt-relaxed-constexpr` is what makes the library's `constexpr` surface device-callable;
         # without it every probe, lock and unlock is a host function a kernel may not call.
@@ -236,7 +237,7 @@ if (SMASHTABLE_INSTALL)
     )
 
     install(
-        TARGETS smashtable
+        TARGETS smashtable_header
         EXPORT smashtableTargets
         INCLUDES
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
