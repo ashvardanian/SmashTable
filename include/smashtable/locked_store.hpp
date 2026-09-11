@@ -298,7 +298,17 @@ class locked_store {
         locked_store *store_;
         /** @brief The inner store's own transaction, which stages entirely outside the mutex. */
         inner_transaction_t inner_transaction_;
+        /**
+         *  @brief The hold @c validate_for_commit leaves on the mutex for the publication, rollback
+         *    or reset that answers it; empty between such pairs, and released with the transaction.
+         */
+        unique_lock<mutex_t> validation_;
         static_assert(std::is_nothrow_move_constructible<inner_transaction_t>());
+
+        /** @brief The mutex for one call: the hold a validation left, or a fresh one. */
+        unique_lock<mutex_t> held_() noexcept {
+            return validation_ ? std::move(validation_) : unique_lock<mutex_t> {store_->mutex_};
+        }
 
       public:
         transaction_t(locked_store &db, inner_transaction_t &&inner_transaction) noexcept
@@ -367,17 +377,17 @@ class locked_store {
         }
 
         [[nodiscard]] status_t reset() noexcept {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.reset();
         }
 
         [[nodiscard]] status_t rollback() noexcept {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.rollback();
         }
 
         [[nodiscard]] status_t commit() noexcept {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.commit();
         }
 
@@ -689,17 +699,22 @@ class locked_store {
 #pragma region Sharded Commit
 
         /**
-         *  @brief The part of a commit an outer shard set drives itself, one call per phase.
+         *  @brief The part of a commit an outer shard set or a transaction group drives itself, one
+         *    call per phase.
          *
-         *  A shard set asks every part whether it may proceed, publishes all of them under one stamp,
-         *  then reclaims - so the phases are separate calls rather than one @c commit. Each takes this
-         *  store's own mutex; the outer wrapper holds its partition locks around all of them, and the
-         *  two orders never cross, since a partition lock is always taken first.
+         *  A caller spanning several stores asks every part whether it may proceed, publishes all of
+         *  them, then reclaims - so the phases are separate calls rather than one @c commit. The
+         *  validation takes this store's mutex exclusively and keeps it until the publication, the
+         *  rollback or the reset that follows: a writer slipping in between would move a watched key
+         *  after the answer, which is the lost update the watch was taken against. Callers take the
+         *  stores in ascending address, so two of them holding across the phases cannot deadlock; a
+         *  shard set holds its partition locks around all of this, and the two orders never cross,
+         *  since a partition lock is always taken first.
          */
-        [[nodiscard]] status_t validate_for_commit() const noexcept
+        [[nodiscard]] status_t validate_for_commit() noexcept
             requires(inner_transaction_shards_k || inner_transaction_splits_commit_k)
         {
-            shared_lock _ {store_->mutex_};
+            validation_ = held_();
             return inner_transaction_.validate_for_commit();
         }
 
@@ -707,7 +722,7 @@ class locked_store {
         void publish_under(commit_stamp_t stamp) noexcept
             requires inner_transaction_shards_k
         {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             inner_transaction_.publish_under(stamp);
         }
 
@@ -715,7 +730,7 @@ class locked_store {
         void publish_under() noexcept
             requires inner_transaction_splits_commit_k
         {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             inner_transaction_.publish_under();
         }
 
@@ -738,7 +753,7 @@ class locked_store {
         [[nodiscard]] status_t reset_at(generation_t snapshot) noexcept
             requires inner_transaction_shards_k
         {
-            unique_lock _ {store_->mutex_};
+            unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.reset_at(snapshot);
         }
 

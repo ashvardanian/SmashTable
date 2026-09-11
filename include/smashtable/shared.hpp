@@ -2200,16 +2200,33 @@ class spin_shared_mutex_t {
     }
 };
 
-/** @brief Holds @p mutex_type_ exclusively for the enclosing scope. */
+/**
+ *  @brief Holds @p mutex_type_ exclusively for the enclosing scope, or for as long as whoever it
+ *    is moved into keeps it; an empty one holds nothing, so a hold can outlive one call.
+ */
 template <typename mutex_type_>
 class unique_lock {
-    mutex_type_ &mutex_;
+    mutex_type_ *mutex_ = nullptr;
 
   public:
-    explicit unique_lock(mutex_type_ &mutex) noexcept : mutex_(mutex) { mutex_.lock(); }
-    ~unique_lock() noexcept { mutex_.unlock(); }
+    unique_lock() noexcept = default;
+    explicit unique_lock(mutex_type_ &mutex) noexcept : mutex_(&mutex) { mutex_->lock(); }
+    unique_lock(unique_lock &&other) noexcept : mutex_(std::exchange(other.mutex_, nullptr)) {}
+    unique_lock &operator=(unique_lock &&other) noexcept {
+        release();
+        mutex_ = std::exchange(other.mutex_, nullptr);
+        return *this;
+    }
+    ~unique_lock() noexcept { release(); }
     unique_lock(unique_lock const &) = delete;
     unique_lock &operator=(unique_lock const &) = delete;
+
+    /** @brief Whether this holds a mutex. */
+    explicit operator bool() const noexcept { return mutex_ != nullptr; }
+    /** @brief Gives the mutex back early; harmless on an empty one. */
+    void release() noexcept {
+        if (mutex_) std::exchange(mutex_, nullptr)->unlock();
+    }
 };
 
 /** @brief Holds @p mutex_type_ for shared reading over the enclosing scope. */
