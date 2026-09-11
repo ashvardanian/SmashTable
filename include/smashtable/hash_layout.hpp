@@ -453,6 +453,10 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
     constexpr void lock() const noexcept {
         hash_bucket_head_t const header_mask = header_mask_();
         while (true) {
+            // Read until the two bits are not both set, then claim: a locked slot costs no store.
+            if ((atomic_ref<std::uint64_t>(base_t::header_ref().u64).load(memory_order_relaxed_k) & header_mask.u64) ==
+                header_mask.u64)
+                continue;
             future_header_.u64 =
                 atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_or(header_mask.u64, memory_order_acquire_k) &
                 header_mask.u64;
