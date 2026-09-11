@@ -83,6 +83,26 @@ jobs:
           done
           test -z "$failed"
 
+  verify_models:
+    name: Check Promela models
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          path: smashtable
+      - name: Checkout ForkUnion for the memory model and the runner
+        uses: actions/checkout@v7
+        with:
+          repository: ashvardanian/ForkUnion
+          ref: main-v4
+          path: forkunion
+      - name: Install Spin
+        run: sudo apt-get update && sudo apt-get install -y spin
+      - name: Check the models
+        run: smashtable/verification/check.sh
+
   test_ubuntu:
     name: ${{ matrix.name }}
     needs: test_headers

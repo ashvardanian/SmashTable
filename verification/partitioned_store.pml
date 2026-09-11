@@ -1,0 +1,162 @@
+/**
+ *  `partitioned_store` from `include/smashtable/partitioned_store.hpp` over a shared clock:
+ *  a commit holds every partition it reached, ascending, asks each whether it may proceed
+ *  before any writes, draws one drawn, writes every partition under it, moves the watermark
+ *  once the last is written, and steps each partition's epoch with a release as it lets go.
+ *
+ *  Two committers over two partitions and one reader. The first committer reaches both
+ *  partitions; the second reaches the second alone or both, as it likes. A reader draws its
+ *  snapshot from the watermark under the clock's mutex and reads each partition under its
+ *  shared lock; under `-Dscenario=cursor` it reads each partition's epoch with acquire and
+ *  the partition without a lock, as a cursor deciding whether to re-read does.
+ *
+ *  Invariants:
+ *  - nothing is written before every reached partition validated;
+ *  - the watermark never passes a drawn still in flight, and never falls;
+ *  - a reader naming a drawn sees every partition of that commit: whatever it reads under its
+ *    snapshot carries a version at or past every commit whose drawn the snapshot covers.
+ *    `-Dwithout_watermark_mutex` draws the snapshot relaxed outside the clock's mutex and
+ *    reads the partitions without their locks, and under views names a drawn whose versions it
+ *    cannot see;
+ *  - ascending locks never deadlock: `-Dwithout_ascending_order` has the second committer take
+ *    the partitions descending, and Spin finds the wait cycle as an invalid end state;
+ *  - a cursor that acquired an epoch reads the partition at least as new as the epoch's step
+ *    left it. `-Dwithout_epoch_release` steps the epoch relaxed and the cursor reads stale.
+ */
+#include "weak_memory.pml"
+#include "spin_shared_mutex.pml"
+
+// The knob's values are integers, so a typo fails the range check below.
+#define snapshot_reader 1
+#define cursor 2
+#ifndef scenario
+#define scenario snapshot_reader
+#endif
+#if scenario < snapshot_reader || scenario > cursor
+#error "scenario is snapshot_reader or cursor"
+#endif
+
+// The threads, by role, apart from the processes that play them; the committers name themselves.
+#define reader_thread 2
+#define partitions 2
+
+// The words: each partition's mutex, version and epoch, and the clock's mutex, watermark and stamp counter.
+#define mutex(partition) (partition)
+#define version(partition) (2 + (partition))
+#define epoch(partition) (4 + (partition))
+#define clock_mutex 6
+#define published_stamp 7
+#define commits 8
+
+#ifdef without_epoch_release
+#define epoch_order order_relaxed
+#else
+#define epoch_order order_release
+#endif
+
+byte committers_started;
+byte finished;
+int in_flight[2];              // each committer's drawn stamp until its commit is whole
+int stamp_of[2];               // each committer's stamp, once drawn
+bool touches[2 * partitions];  // which partitions each committer reached
+bool validated[2 * partitions];
+int version_at_epoch[2 * partitions * 4]; // the version a partition held when its epoch stepped
+#define at(committer, partition) ((committer) * partitions + (partition))
+
+active [2] proctype committer() {
+    byte me, partition, first, last, step;
+    int seen, drawn, whole;
+    atomic { me = committers_started; committers_started++ };
+    touches[at(me, 1)] = true;
+    if
+    :: me == 0 || skip -> touches[at(me, 0)] = true
+    :: skip
+    fi;
+    // the reached partitions, ascending: partitioned_store.hpp:510-513, 1112
+#ifdef without_ascending_order
+    if :: me == 1 -> first = 1; last = 0 :: else -> first = 0; last = 1 fi;
+#else
+    first = 0; last = 1;
+#endif
+    if :: touches[at(me, first)] -> lock(me, mutex(first)) :: else fi;
+    if :: touches[at(me, last)] -> lock(me, mutex(last)) :: else fi;
+    // validate_for_commit on every reached partition before any writes: partitioned_store.hpp:1113-1117
+    for (partition : 0 .. partitions - 1) { validated[at(me, partition)] = touches[at(me, partition)] };
+    // begin_commit: the stamp drawn under the clock's mutex, and recorded in flight: snapshot_store.hpp:310-317
+    lock(me, clock_mutex);
+    read_modify_write(me, commits, order_relaxed, seen, seen + 1);
+    drawn = seen + 1;
+    atomic { in_flight[me] = drawn; stamp_of[me] = drawn };
+    unlock(me, clock_mutex);
+    // publish_under on every reached partition: partitioned_store.hpp:1121-1123
+    for (partition : 0 .. partitions - 1) {
+        if
+        :: touches[at(me, partition)] ->
+            assert(validated[at(me, 0)] == touches[at(me, 0)] && validated[at(me, 1)] == touches[at(me, 1)]);
+            store(me, version(partition), order_relaxed, drawn)
+        :: else
+        fi
+    };
+    // end_commit: the watermark moves to one below the oldest in flight, or to the newest drawn: snapshot_store.hpp:324-336
+    lock(me, clock_mutex);
+    in_flight[me] = 0;
+    if
+    :: in_flight[1 - me] != 0 -> whole = in_flight[1 - me] - 1
+    :: else -> whole = newest_value(commits)
+    fi;
+    assert(whole >= newest_value(published_stamp));
+    store(me, published_stamp, order_relaxed, whole);
+    unlock(me, clock_mutex);
+    // release: each partition's epoch stepped with a release, then its lock dropped: partitioned_store.hpp:466, 520-522
+    for (partition : 0 .. partitions - 1) {
+        if
+        :: touches[at(me, partition)] ->
+            atomic {
+                read_modify_write(me, epoch(partition), epoch_order, seen, seen + 1);
+                version_at_epoch[partition * 4 + seen + 1] = newest_value(version(partition))
+            };
+            unlock(me, mutex(partition))
+        :: else
+        fi
+    };
+    finished++
+}
+
+active proctype reader() {
+    byte partition, each;
+    int seen, snapshot, seen_version, seen_epoch;
+#if scenario == cursor
+    // a cursor: the epoch with acquire, then the partition without a lock: partitioned_store.hpp:471
+    for (partition : 0 .. partitions - 1) {
+        load(reader_thread, epoch(partition), order_acquire, seen_epoch);
+        load(reader_thread, version(partition), order_relaxed, seen_version);
+        assert(seen_version >= version_at_epoch[partition * 4 + seen_epoch])
+    }
+#else
+    // take_snapshot: the watermark under the clock's mutex: snapshot_store.hpp:296-307
+#ifndef without_watermark_mutex
+    lock(reader_thread, clock_mutex);
+#endif
+    load(reader_thread, published_stamp, order_relaxed, snapshot);
+#ifndef without_watermark_mutex
+    unlock(reader_thread, clock_mutex);
+#endif
+    // each partition under its shared lock: a commit the snapshot covers is seen on every partition it reached
+    for (partition : 0 .. partitions - 1) {
+#ifndef without_watermark_mutex
+        lock_shared(reader_thread, mutex(partition));
+#endif
+        load(reader_thread, version(partition), order_relaxed, seen_version);
+        for (each : 0 .. 1) {
+            if
+            :: stamp_of[each] != 0 && stamp_of[each] <= snapshot && touches[at(each, partition)] ->
+                assert(seen_version >= stamp_of[each])
+            :: else
+            fi
+        };
+#ifndef without_watermark_mutex
+        unlock_shared(reader_thread, mutex(partition));
+#endif
+    }
+#endif
+}
