@@ -389,12 +389,9 @@ class atomic_hash_table {
             else {
                 call_unused(current);
                 current.mark_populated();
-                current.unlock();
-
-                // Change this counter afterwards - in a relaxed manner.
-                // Somebody else might be already searching for this slot,
-                // we don't want them to wait :)
+                // Under the lock, as `erase` subtracts, so the count never passes through zero.
                 atomic_add_fetch<offset_t>(storage_.populated_count, 1);
+                current.unlock();
                 return success_k;
             }
 
