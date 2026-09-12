@@ -32,12 +32,12 @@ So a usable type reads `locked_store<snapshot_store<basic_avl_tree<…>>>` for o
 Nesting the two wrappers is redundant rather than clever: every call would take an inner lock inside a partition lock that already excludes.
 
 |                             | Isolation               |    Writers    | Transactions |      Ordered      |
-| --------------------------- | ----------------------- | :-----------: | :----------: | :---------------: |
-| `basic_vector`              | —                       |  one thread   |      —       |         —         |
-| `basic_avl_tree`            | —                       |  one thread   |      —       |         ✔         |
-| `basic_wb_tree`             | —                       |  one thread   |      —       | `rank` · `select` |
-| `basic_hash_table`          | —                       |  one thread   |      —       |         —         |
-| `atomic_hash_table`         | — ⁴                     |  per slot ⁴   |      —       |         —         |
+| :-------------------------- | :---------------------- | :-----------: | :----------: | :---------------: |
+| `basic_vector`              | …                       |  one thread   |      …       |         …         |
+| `basic_avl_tree`            | …                       |  one thread   |      …       |         ✔         |
+| `basic_wb_tree`             | …                       |  one thread   |      …       | `rank` · `select` |
+| `basic_hash_table`          | …                       |  one thread   |      …       |         …         |
+| `atomic_hash_table`         | … ⁴                     |  per slot ⁴   |      …       |         …         |
 | `monotonic_store`           | Monotonic Atomic View ⁶ |  one thread   |      ✔       |     inherits      |
 | `snapshot_store`            | Snapshot ⁷              |  one thread   |      ✔       |    inherits ²     |
 | `serializable_store`        | Serializable ⁸          |  one thread   |      ✔       |    inherits ²     |
@@ -556,7 +556,7 @@ Range writes publish under one stamp, so a reader on an older snapshot sees all 
 What it costs, on an AVL core over `mapping<key, int>`:
 
 |                               | `monotonic_store` | `snapshot_store`    |
-| ----------------------------- | ----------------- | ------------------- |
+| :---------------------------- | :---------------- | :------------------ |
 | Resident per key, one version | 80 B              | 72 B                |
 | Each retained older version   | 48 B chain node   | 72 B, a full entry  |
 | Read of one key               | one chain head    | the key's whole run |

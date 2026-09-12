@@ -23,7 +23,6 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-
   versioning:
     name: Update Version
     runs-on: ubuntu-24.04
@@ -114,12 +113,24 @@ jobs:
         include:
           - { name: "Ubuntu (GCC 14)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Release, flags: "" }
           - { name: "Ubuntu (Clang 18)", cc: clang-18, cxx: clang++-18, package: clang-18, type: Release, flags: "" }
-          - { name: "Ubuntu (Sanitizers)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Debug,
-              flags: "-fsanitize=address,undefined -fno-omit-frame-pointer" }
+          - {
+              name: "Ubuntu (Sanitizers)",
+              cc: gcc-14,
+              cxx: g++-14,
+              package: g++-14,
+              type: Debug,
+              flags: "-fsanitize=address,undefined -fno-omit-frame-pointer",
+            }
           # The hash table's lock-free slot protocol is the only concurrent code in the tree, and
           # a data race in it is invisible to the address and behaviour sanitizers.
-          - { name: "Ubuntu (Thread Sanitizer)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Debug,
-              flags: "-fsanitize=thread -fno-omit-frame-pointer" }
+          - {
+              name: "Ubuntu (Thread Sanitizer)",
+              cc: gcc-14,
+              cxx: g++-14,
+              package: g++-14,
+              type: Debug,
+              flags: "-fsanitize=thread -fno-omit-frame-pointer",
+            }
     env:
       CC: ${{ matrix.cc }}
       CXX: ${{ matrix.cxx }}

@@ -20,7 +20,7 @@ import smashtable as st
 
 def section(title: str) -> None:
     """Prints a heading, so the output reads as a walkthrough rather than a log."""
-    print(f"\n{title}\n{'─' * len(title)}")
+    print(f"\n{title}")
 
 
 def shows(label: str, value) -> None:
