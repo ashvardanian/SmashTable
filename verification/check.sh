@@ -4,7 +4,7 @@
 # outcome the assertion forbids - the variants that drop an order or hold a lock less long. The
 # memory models and the runner's functions live in ForkUnion's `verification/`, beside this
 # repository inside USearch and checked out beside it in CI.
-# Needs `spin` and a C compiler.
+# Needs `spin` and a C compiler; a GenMC on the path, or named by `GENMC`, also runs the clients.
 
 set -u
 cd "$(dirname "$0")"
@@ -46,5 +46,27 @@ verify atomic_hash_table.pml fail -Dwithout_unlock_release
 verify atomic_hash_table.pml fail -Dwithout_lock_acquire
 verify atomic_hash_table.pml fail -Dmemory=sequential -Dwithout_count_under_lock
 verify atomic_hash_table.pml pass -Dmemory=sequential -Dscenario=exhausted
+
+section "snapshot_reader.pml: a pinned reader's claim against commits that prune, and a transaction adopting its stamp"
+verify snapshot_reader.pml pass -Dmemory=sequential
+verify snapshot_reader.pml pass
+verify snapshot_reader.pml fail -Dmemory=sequential -Dwithout_lease
+verify snapshot_reader.pml pass -Dmemory=sequential -Dscenario=adoption
+verify snapshot_reader.pml pass -Dscenario=adoption
+verify snapshot_reader.pml fail -Dmemory=sequential -Dscenario=adoption -Dwithout_shared_lease
+
+section "partitioned_erase.pml: a store-level window write spanning partitions under one stamp"
+verify partitioned_erase.pml pass -Dmemory=sequential
+verify partitioned_erase.pml pass
+verify partitioned_erase.pml fail -Dmemory=sequential -Dwithout_one_stamp
+
+section "snapshot_reader.cpp and partitioned_erase.cpp: the same two protocols under GenMC"
+if genmc_ready; then
+    verify_client snapshot_reader.cpp pass
+    verify_client snapshot_reader.cpp fail -Dwithout_lease
+    verify_client snapshot_reader.cpp fail -Dwithout_shared_lease
+    verify_client partitioned_erase.cpp pass
+    verify_client partitioned_erase.cpp fail -Dwithout_one_stamp
+fi
 
 finish

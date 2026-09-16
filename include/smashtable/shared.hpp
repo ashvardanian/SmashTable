@@ -1438,6 +1438,117 @@ constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
     atomic_ref<integral_type_>(counter).notify_all();
 }
 
+#pragma region Instruction Set Targets
+
+// Which kits a build can carry, decided by the architecture, the compiler and any `-D` a caller set.
+// These say what compiles, never what the processor running it can execute - `row_search.hpp` probes
+// that separately, because a binary built for one machine is routinely run on another.
+
+#if defined(__x86_64__) || defined(_M_X64)
+#define ST_TARGET_X8664_ 1
+#else
+#define ST_TARGET_X8664_ 0
+#endif
+
+#if defined(__aarch64__) || defined(_M_ARM64)
+#define ST_TARGET_ARM64_ 1
+#else
+#define ST_TARGET_ARM64_ 0
+#endif
+
+#if defined(__riscv) && defined(__riscv_xlen) && __riscv_xlen == 64
+#define ST_TARGET_RISCV64_ 1
+#else
+#define ST_TARGET_RISCV64_ 0
+#endif
+
+// Each kit compiles wherever its architecture and compiler allow, and a caller may force one off with `-D`.
+#if !defined(ST_TARGET_HASWELL)
+#if ST_TARGET_X8664_ && !defined(__CUDACC__) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+#define ST_TARGET_HASWELL 1
+#else
+#define ST_TARGET_HASWELL 0
+#endif
+#elif ST_TARGET_HASWELL && !ST_TARGET_X8664_
+#undef ST_TARGET_HASWELL
+#define ST_TARGET_HASWELL 0
+#endif
+
+#if !defined(ST_TARGET_SKYLAKE)
+#if ST_TARGET_X8664_ && !defined(__CUDACC__) && \
+    (defined(__GNUC__) || defined(__clang__) || (defined(_MSC_VER) && _MSC_VER >= 1920))
+#define ST_TARGET_SKYLAKE 1
+#else
+#define ST_TARGET_SKYLAKE 0
+#endif
+#elif ST_TARGET_SKYLAKE && !ST_TARGET_X8664_
+#undef ST_TARGET_SKYLAKE
+#define ST_TARGET_SKYLAKE 0
+#endif
+
+#if !defined(ST_TARGET_NEON)
+#if ST_TARGET_ARM64_ && !defined(__CUDACC__)
+#define ST_TARGET_NEON 1
+#else
+#define ST_TARGET_NEON 0
+#endif
+#elif ST_TARGET_NEON && !ST_TARGET_ARM64_
+#undef ST_TARGET_NEON
+#define ST_TARGET_NEON 0
+#endif
+
+#if !defined(ST_TARGET_SVE)
+#if ST_TARGET_ARM64_ && !defined(__CUDACC__) && !defined(_MSC_VER) && \
+    ((defined(__clang__) && __clang_major__ >= 12) || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 11))
+#define ST_TARGET_SVE 1
+#else
+#define ST_TARGET_SVE 0
+#endif
+#elif ST_TARGET_SVE && !ST_TARGET_ARM64_
+#undef ST_TARGET_SVE
+#define ST_TARGET_SVE 0
+#endif
+
+#if !defined(ST_TARGET_RVV)
+#if ST_TARGET_RISCV64_ && !defined(__CUDACC__) && \
+    ((defined(__clang__) && __clang_major__ >= 17) || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 14))
+#define ST_TARGET_RVV 1
+#else
+#define ST_TARGET_RVV 0
+#endif
+#elif ST_TARGET_RVV && !ST_TARGET_RISCV64_
+#undef ST_TARGET_RVV
+#define ST_TARGET_RVV 0
+#endif
+
+// GCC on RISC-V rejects `#pragma GCC target`, so its RVV functions carry the attribute one by one.
+#if ST_TARGET_RVV && !defined(__clang__) && defined(__GNUC__)
+#define ST_TARGET_RVV_ATTRIBUTE_ __attribute__((target("arch=+v")))
+#else
+#define ST_TARGET_RVV_ATTRIBUTE_
+#endif
+
+#if ST_TARGET_HASWELL || ST_TARGET_SKYLAKE
+#include <immintrin.h>
+#endif
+#if ST_TARGET_X8664_ && defined(_MSC_VER)
+#include <intrin.h> // `__cpuidex`, `_xgetbv`
+#endif
+#if ST_TARGET_NEON
+#include <arm_neon.h>
+#endif
+#if ST_TARGET_SVE
+#include <arm_sve.h>
+#endif
+#if ST_TARGET_RVV
+#include <riscv_vector.h>
+#endif
+#if (ST_TARGET_ARM64_ || ST_TARGET_RISCV64_) && defined(__linux__)
+#include <sys/auxv.h> // `getauxval`, `AT_HWCAP`
+#endif
+
+#pragma endregion Instruction Set Targets
+
 #pragma endregion Device Portability
 
 #pragma region Numeric Helpers

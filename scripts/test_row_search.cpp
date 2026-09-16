@@ -1,0 +1,424 @@
+/**
+ *  @brief Tests for the row kits and the static layouts: every kit this processor runs against the serial kit, and
+ *    both layouts against a sorted array.
+ *  @author Ash Vardanian
+ *  @file scripts/test_row_search.cpp
+ *  @date September 15, 2026
+ */
+#undef NDEBUG // ! A test's oracle must stay live in every build
+#define ST_STRICT_CALLBACK_CHECKS_ 1
+
+#include <cstddef> // `std::size_t`
+#include <cstdint> // `std::uint64_t`
+#include <cstring> // `std::memcmp`
+
+#include <algorithm> // `std::lower_bound`, `std::sort`
+#include <concepts>  // `std::same_as`
+#include <limits>    // `std::numeric_limits`
+#include <random>    // `std::mt19937_64`
+#include <span>      // `std::span`
+
+#include <smashtable/basic_vector.hpp>
+#include <smashtable/row_search.hpp>
+#include <smashtable/immutable_b_tree.hpp>
+#include <smashtable/immutable_splus_tree.hpp>
+
+#include "test.hpp"
+
+using namespace ashvardanian::smashtable;
+using namespace ashvardanian::smashtable::scripts;
+
+namespace {
+
+#pragma region Key Generation
+
+/** The distributions a row is drawn from, each aimed at a place a kit could go wrong. */
+enum class key_shape_t : std::uint8_t {
+    uniform_k,
+    all_zeros_k,
+    all_ones_k,
+    tied_high_words_k,
+    integer_identities_k,
+    sign_boundary_k,
+};
+
+constexpr key_shape_t key_shapes_k[] = {
+    key_shape_t::uniform_k,         key_shape_t::all_zeros_k,          key_shape_t::all_ones_k,
+    key_shape_t::tied_high_words_k, key_shape_t::integer_identities_k, key_shape_t::sign_boundary_k,
+};
+
+template <typename key_type_>
+[[nodiscard]] constexpr key_type_ key_from_words(std::uint64_t high, std::uint64_t low) noexcept {
+    if constexpr (std::same_as<key_type_, key128_t>) return key128_t {high, low};
+    else return static_cast<key_type_>(low);
+}
+
+template <typename key_type_>
+[[nodiscard]] constexpr key_type_ predecessor_or_self(key_type_ key) noexcept {
+    if constexpr (std::same_as<key_type_, key128_t>) {
+        if (key.low != 0) return key128_t {key.high, key.low - 1};
+        if (key.high != 0) return key128_t {key.high - 1, std::numeric_limits<std::uint64_t>::max()};
+        return key;
+    }
+    else return key == std::numeric_limits<key_type_>::min() ? key : static_cast<key_type_>(key - 1);
+}
+
+/** Fills @p keys from @p shape: ties land in the high word of a 16-byte key and as repeats in an integer. */
+template <typename key_type_>
+void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &generator) {
+    std::uint64_t const all_ones = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const tied_word = generator();
+    std::uint64_t const boundary = sizeof(key_type_) == 4 ? std::uint64_t {1} << 31 : std::uint64_t {1} << 63;
+    for (key_type_ &key : keys) {
+        std::uint64_t const random_high = generator();
+        std::uint64_t const random_low = generator();
+        switch (shape) {
+        case key_shape_t::uniform_k: key = key_from_words<key_type_>(random_high, random_low); break;
+        case key_shape_t::all_zeros_k: key = key_from_words<key_type_>(0, 0); break;
+        case key_shape_t::all_ones_k: key = key_from_words<key_type_>(all_ones, all_ones); break;
+        case key_shape_t::tied_high_words_k:
+            key = std::same_as<key_type_, key128_t> ? key_from_words<key_type_>(tied_word, random_low)
+                                                    : key_from_words<key_type_>(0, tied_word + random_low % 3);
+            break;
+        case key_shape_t::integer_identities_k: key = key_from_words<key_type_>(0, random_low % 4096); break;
+        case key_shape_t::sign_boundary_k:
+            key = key_from_words<key_type_>(boundary - 2 + random_high % 4, boundary - 2 + random_low % 4);
+            break;
+        }
+    }
+}
+
+/** Collects the keys worth asking about: the extremes, the boundary, and a sample of the row with its neighbours. */
+template <typename key_type_>
+void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator, basic_vector<key_type_> &wanted) {
+    std::uint64_t const all_ones = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const boundary = std::uint64_t {1} << 63;
+    wanted.clear();
+    for (key_type_ const extreme :
+         {key_from_words<key_type_>(0, 0), key_from_words<key_type_>(all_ones, all_ones),
+          key_from_words<key_type_>(0, all_ones), key_from_words<key_type_>(all_ones, 0),
+          key_from_words<key_type_>(boundary, boundary), key_from_words<key_type_>(0, 1u << 31),
+          std::numeric_limits<key_type_>::min(), std::numeric_limits<key_type_>::max()})
+        st_verify_(wanted.push_back(key_type_ {extreme}));
+    std::size_t const stride = keys.size() / 24 + 1;
+    for (std::size_t index = 0; index < keys.size(); index += stride) {
+        st_verify_(wanted.push_back(key_type_ {keys[index]}));
+        st_verify_(wanted.push_back(successor_or_self(keys[index])));
+        st_verify_(wanted.push_back(predecessor_or_self(keys[index])));
+    }
+    for (std::size_t draw = 0; draw < 8; ++draw)
+        st_verify_(wanted.push_back(key_from_words<key_type_>(generator(), generator())));
+}
+
+/** The standard bound over a sorted span, which is what every rank here must agree with. */
+template <typename key_type_>
+[[nodiscard]] std::size_t lower_bound_of(std::span<key_type_ const> sorted, key_type_ wanted) {
+    return static_cast<std::size_t>(std::lower_bound(sorted.begin(), sorted.end(), wanted) - sorted.begin());
+}
+
+#pragma endregion Key Generation
+
+#pragma region Kit Equivalence
+
+/** Splits a 16-byte row into its two columns, the way a split node stores it. */
+void split_columns(std::span<key128_t const> keys, basic_vector<std::uint64_t> &high_words,
+                   basic_vector<std::uint64_t> &low_words) {
+    st_verify_(high_words.resize(keys.size()));
+    st_verify_(low_words.resize(keys.size()));
+    for (std::size_t index = 0; index < keys.size(); ++index) {
+        high_words[index] = keys[index].high;
+        low_words[index] = keys[index].low;
+    }
+}
+
+template <typename kit_type_, typename key_type_, std::size_t extent_>
+void verify_row(std::span<key_type_ const, extent_> row, std::span<key_type_ const> wanted, bool is_sorted) {
+    basic_vector<std::uint64_t> high_words;
+    basic_vector<std::uint64_t> low_words;
+    if constexpr (std::same_as<key_type_, key128_t>) split_columns(row, high_words, low_words);
+    for (key_type_ const key : wanted) {
+        std::size_t const expected_below = serial_row_kit_t::count_below(row, key);
+        st_verify_eq_(kit_type_::count_below(row, key), expected_below);
+        st_verify_eq_(count_not_above<kit_type_>(row, key), count_not_above<serial_row_kit_t>(row, key));
+        if constexpr (std::same_as<key_type_, key128_t>) {
+            std::span<std::uint64_t const, extent_> const highs(high_words.data(), row.size());
+            std::span<std::uint64_t const, extent_> const lows(low_words.data(), row.size());
+            st_verify_eq_(serial_row_kit_t::count_below(highs, lows, key), expected_below);
+            st_verify_eq_(kit_type_::count_below(highs, lows, key), expected_below);
+            st_verify_eq_(count_not_above<kit_type_>(highs, lows, key), count_not_above<serial_row_kit_t>(row, key));
+        }
+        if (is_sorted) {
+            std::span<key_type_ const> const sorted(row.data(), row.size());
+            st_verify_eq_(count_below_sorted<kit_type_>(sorted, key), lower_bound_of(sorted, key));
+            if constexpr (std::same_as<key_type_, key128_t>)
+                st_verify_eq_(
+                    count_below_sorted<kit_type_>(std::span<std::uint64_t const>(high_words.data(), row.size()),
+                                                  std::span<std::uint64_t const>(low_words.data(), row.size()), key),
+                    lower_bound_of(sorted, key));
+        }
+    }
+}
+
+template <typename kit_type_, typename key_type_>
+void verify_rows_of(std::mt19937_64 &generator) {
+    constexpr std::size_t long_lengths[] = {127, 128, 129, 255, 256, 257, 511, 512, 513, 1023, 1024, 1025, 4099};
+    basic_vector<key_type_> keys;
+    basic_vector<key_type_> wanted;
+    for (key_shape_t const shape : key_shapes_k) {
+        for (std::size_t length = 0; length < 70 + std::size(long_lengths); ++length) {
+            std::size_t const row_length = length < 70 ? length : long_lengths[length - 70];
+            st_verify_(keys.resize(row_length));
+            fill_keys(std::span<key_type_>(keys.data(), row_length), shape, generator);
+            std::span<key_type_ const> const row(keys.data(), row_length);
+            collect_wanted(row, generator, wanted);
+            std::span<key_type_ const> const asked(wanted.data(), wanted.size());
+            verify_row<kit_type_>(row, asked, false);
+            std::sort(keys.begin(), keys.end());
+            verify_row<kit_type_>(row, asked, true);
+        }
+        // A static extent is the width a medium fixes, and the kit may unroll its loop for it.
+        for (std::size_t const extent : {4u, 8u, 16u, 32u, 64u, 128u, 256u, 512u, 1024u}) {
+            st_verify_(keys.resize(extent));
+            fill_keys(std::span<key_type_>(keys.data(), extent), shape, generator);
+            std::sort(keys.begin(), keys.end());
+            collect_wanted(std::span<key_type_ const>(keys.data(), extent), generator, wanted);
+            std::span<key_type_ const> const asked(wanted.data(), wanted.size());
+            switch (extent) {
+            case 4: verify_row<kit_type_>(std::span<key_type_ const, 4>(keys.data(), 4), asked, true); break;
+            case 8: verify_row<kit_type_>(std::span<key_type_ const, 8>(keys.data(), 8), asked, true); break;
+            case 16: verify_row<kit_type_>(std::span<key_type_ const, 16>(keys.data(), 16), asked, true); break;
+            case 32: verify_row<kit_type_>(std::span<key_type_ const, 32>(keys.data(), 32), asked, true); break;
+            case 64: verify_row<kit_type_>(std::span<key_type_ const, 64>(keys.data(), 64), asked, true); break;
+            case 128: verify_row<kit_type_>(std::span<key_type_ const, 128>(keys.data(), 128), asked, true); break;
+            case 256: verify_row<kit_type_>(std::span<key_type_ const, 256>(keys.data(), 256), asked, true); break;
+            case 512: verify_row<kit_type_>(std::span<key_type_ const, 512>(keys.data(), 512), asked, true); break;
+            default: verify_row<kit_type_>(std::span<key_type_ const, 1024>(keys.data(), 1024), asked, true); break;
+            }
+        }
+    }
+}
+
+template <typename kit_type_>
+void verify_kit_rows(kit_type_) {
+    std::mt19937_64 generator(test_seed_for(name_of(kit_type_::kit_k)));
+    verify_rows_of<kit_type_, std::uint32_t>(generator);
+    verify_rows_of<kit_type_, std::int32_t>(generator);
+    verify_rows_of<kit_type_, std::uint64_t>(generator);
+    verify_rows_of<kit_type_, std::int64_t>(generator);
+    verify_rows_of<kit_type_, key128_t>(generator);
+}
+
+#pragma endregion Kit Equivalence
+
+#pragma region Layout Equivalence
+
+template <typename layout_type_>
+void verify_layout(layout_type_ const &layout, std::span<typename layout_type_::key_t const> sorted,
+                   std::span<typename layout_type_::key_t const> wanted) {
+    using key_t = typename layout_type_::key_t;
+    st_verify_eq_(layout.size(), sorted.size());
+    st_verify_eq_(layout.size_bytes(), layout_type_::size_bytes(sorted.size()));
+    st_verify_eq_(layout.size_bytes() % layout_type_::format_t::bytes_per_row_k, 0u);
+
+    for (key_t const key : wanted) {
+        std::size_t const expected_rank = lower_bound_of(sorted, key);
+        st_verify_eq_(layout.rank(key), expected_rank);
+        auto const found = layout.find(key);
+        if (expected_rank < sorted.size() && sorted[expected_rank] == key) st_verify_eq_(found, expected_rank);
+        else st_verify_eq_(found.status(), status_t::key_not_found_k);
+        // A range walk from the bound must continue in sorted order.
+        auto walk = layout.lower_bound(key);
+        for (std::size_t step = 0; step < 6 && expected_rank + step < sorted.size(); ++step, ++walk) {
+            st_verify_eq_(walk.rank(), expected_rank + step);
+            st_verify_(*walk == sorted[expected_rank + step]);
+        }
+    }
+
+    std::size_t const stride = sorted.size() / 3000 + 1;
+    for (std::size_t ordinal = 0; ordinal < sorted.size(); ordinal += stride) {
+        st_verify_(layout.select(ordinal) == sorted[ordinal]);
+        st_verify_(*layout.at_rank(ordinal) == sorted[ordinal]);
+    }
+
+    std::size_t walked = 0;
+    for (auto walk = layout.begin(); walk != layout.end(); ++walk, ++walked) st_verify_(*walk == sorted[walked]);
+    st_verify_eq_(walked, sorted.size());
+    st_verify_(layout.at_rank(sorted.size()) == layout.end());
+}
+
+template <typename kit_type_, typename key_type_, std::size_t keys_per_row_>
+void verify_layouts_of(std::mt19937_64 &generator) {
+    using btree_t = immutable_b_tree<key_type_, keys_per_row_, kit_type_>;
+    using splus_t = immutable_splus_tree<key_type_, keys_per_row_, kit_type_>;
+    std::size_t const row = keys_per_row_;
+    std::size_t const fanout = row + 1;
+    std::size_t const sizes[] = {
+        0,
+        1,
+        row - 1,
+        row,
+        row + 1,
+        2 * row + 1,
+        row * fanout - 1,
+        row * fanout,
+        row * fanout + 1,
+        row * fanout * fanout / 3 + 7,
+        3000 + generator() % 9000,
+    };
+    basic_vector<key_type_> keys;
+    basic_vector<key_type_> wanted;
+    for (key_shape_t const shape : key_shapes_k)
+        for (std::size_t const size : sizes) {
+            if (size > (std::size_t {1} << 20)) continue;
+            st_verify_(keys.resize(size));
+            fill_keys(std::span<key_type_>(keys.data(), size), shape, generator);
+            std::sort(keys.begin(), keys.end());
+            std::span<key_type_ const> const sorted(keys.data(), size);
+            collect_wanted(sorted, generator, wanted);
+            std::span<key_type_ const> const asked(wanted.data(), wanted.size());
+
+            auto btree = btree_t::make(sorted);
+            st_verify_(btree);
+            verify_layout(*btree, sorted, asked);
+            auto splus = splus_t::make(sorted);
+            st_verify_(splus);
+            verify_layout(*splus, sorted, asked);
+        }
+
+    // Out-of-order input is refused rather than built into a tree that answers wrongly.
+    key_type_ const reversed[] = {key_from_words<key_type_>(0, 2), key_from_words<key_type_>(0, 1)};
+    st_verify_eq_(btree_t::make(std::span<key_type_ const>(reversed, 2)).status(), status_t::invalid_argument_k);
+    st_verify_eq_(splus_t::make(std::span<key_type_ const>(reversed, 2)).status(), status_t::invalid_argument_k);
+}
+
+template <typename kit_type_>
+void verify_kit_layouts(kit_type_) {
+    std::mt19937_64 generator(test_seed_for(name_of(kit_type_::kit_k)));
+    // Widths from each medium - a cache line, a 512-byte and a 4096-byte block - and a few odd ones for the arithmetic.
+    verify_layouts_of<kit_type_, key128_t, 2>(generator);
+    verify_layouts_of<kit_type_, key128_t, 3>(generator);
+    verify_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(64u)>(generator);
+    verify_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(512u)>(generator);
+    verify_layouts_of<kit_type_, key128_t, keys_per_row<key128_t>(4096u)>(generator);
+    verify_layouts_of<kit_type_, std::uint64_t, 5>(generator);
+    verify_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(64u)>(generator);
+    verify_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(512u)>(generator);
+    verify_layouts_of<kit_type_, std::uint64_t, keys_per_row<std::uint64_t>(4096u)>(generator);
+    verify_layouts_of<kit_type_, std::int64_t, keys_per_row<std::int64_t>(64u)>(generator);
+    verify_layouts_of<kit_type_, std::int32_t, keys_per_row<std::int32_t>(512u)>(generator);
+    verify_layouts_of<kit_type_, std::uint32_t, keys_per_row<std::uint32_t>(512u)>(generator);
+}
+
+#pragma endregion Layout Equivalence
+
+#pragma region Tests
+
+/** Whether @p kit runs here, printing what happened to it either way so a log lists the kits that ran. */
+[[nodiscard]] bool kit_runs_here(row_kit_t kit) {
+    if (!row_kit_compiled(kit)) print_line(stdout, "  {} kit: not compiled into this build", name_of(kit));
+    else if (!row_kit_supported(kit))
+        print_line(stdout, "  {} kit: compiled, but this processor cannot run it", name_of(kit));
+    else {
+        print_line(stdout, "  {} kit: running", name_of(kit));
+        return true;
+    }
+    return false;
+}
+
+void verify_rows_through(row_kit_t kit) {
+    if (kit_runs_here(kit))
+        visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit_rows(kit_instance); });
+}
+
+void verify_layouts_through(row_kit_t kit) {
+    if (kit_runs_here(kit))
+        visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit_layouts(kit_instance); });
+}
+
+/** The serial kit is the reference, so it answers to the definitions directly: byte order, bounds and widths. */
+void row_search_serial_matches_definitions() {
+    std::mt19937_64 generator(test_seed_for(__func__));
+    for (std::size_t draw = 0; draw < 4096; ++draw) {
+        std::byte first_bytes[16];
+        std::byte second_bytes[16];
+        for (std::size_t index = 0; index < 16; ++index) {
+            // Few distinct bytes, so equal prefixes of every length occur.
+            first_bytes[index] = static_cast<std::byte>(generator() % 3 * 0x7F);
+            second_bytes[index] = static_cast<std::byte>(generator() % 3 * 0x7F);
+        }
+        key128_t const first = key128_t::from_bytes(first_bytes);
+        key128_t const second = key128_t::from_bytes(second_bytes);
+        int const byte_order = std::memcmp(first_bytes, second_bytes, 16);
+        st_verify_eq_(first < second, byte_order < 0);
+        st_verify_eq_(first == second, byte_order == 0);
+        std::byte round_trip[16];
+        first.to_bytes(round_trip);
+        st_verify_eq_(std::memcmp(round_trip, first_bytes, 16), 0);
+    }
+
+    std::uint64_t const words[] = {0, 1, 5, 5, 9, std::numeric_limits<std::uint64_t>::max()};
+    std::span<std::uint64_t const> const row(words, 6);
+    st_verify_eq_(serial_row_kit_t::count_below(row, std::uint64_t {5}), 2u);
+    st_verify_eq_(count_not_above<serial_row_kit_t>(row, std::uint64_t {5}), 4u);
+    st_verify_eq_(count_not_above<serial_row_kit_t>(row, std::numeric_limits<std::uint64_t>::max()), 6u);
+
+    // An integer identity parks in the low word and orders as its value.
+    st_verify_((key128_t {0, 42} < key128_t {0, 43}));
+    st_verify_((key128_t {0, std::numeric_limits<std::uint64_t>::max()} < key128_t {1, 0}));
+
+    st_verify_eq_(keys_per_row<key128_t>(512u), 32u);
+    st_verify_eq_(keys_per_row<key128_t>(4096u), 256u);
+    st_verify_eq_(keys_per_row<key128_t>(64u), 4u);
+    st_verify_eq_(keys_per_row<std::uint64_t>(512u), 64u);
+    st_verify_eq_(keys_per_row<std::uint32_t>(4096u), 1024u);
+    using block_format_t = row_format<key128_t, 32>;
+    using page_format_t = row_format<std::uint64_t, 512>;
+    st_verify_eq_(block_format_t::bytes_per_row_k, 512u);
+    st_verify_eq_(page_format_t::bytes_per_row_k, 4096u);
+    st_verify_eq_(immutable_b_tree<key128_t>::keys_per_row_k, 32u);
+
+    row_kit_t const detected = detect_row_kit();
+    st_verify_(row_kit_compiled(detected));
+    st_verify_(row_kit_supported(detected));
+    print_line(stdout, "  detected kit: {}", name_of(detected));
+}
+
+void row_search_serial_kit() { verify_rows_through(row_kit_t::serial_k); }
+void row_search_haswell_kit() { verify_rows_through(row_kit_t::haswell_k); }
+void row_search_skylake_kit() { verify_rows_through(row_kit_t::skylake_k); }
+void row_search_neon_kit() { verify_rows_through(row_kit_t::neon_k); }
+void row_search_sve_kit() { verify_rows_through(row_kit_t::sve_k); }
+void row_search_rvv_kit() { verify_rows_through(row_kit_t::rvv_k); }
+
+void layouts_serial_kit() { verify_layouts_through(row_kit_t::serial_k); }
+void layouts_haswell_kit() { verify_layouts_through(row_kit_t::haswell_k); }
+void layouts_skylake_kit() { verify_layouts_through(row_kit_t::skylake_k); }
+void layouts_neon_kit() { verify_layouts_through(row_kit_t::neon_k); }
+void layouts_sve_kit() { verify_layouts_through(row_kit_t::sve_k); }
+void layouts_rvv_kit() { verify_layouts_through(row_kit_t::rvv_k); }
+
+#pragma endregion Tests
+
+} // namespace
+
+int main() {
+    install_test_signal_handlers();
+    char const *const filter = test_filter();
+    std::size_t failures = 0;
+
+    failures += run_test(filter, "row_search.serial_matches_definitions", row_search_serial_matches_definitions);
+    failures += run_test(filter, "row_search.serial_kit", row_search_serial_kit);
+    failures += run_test(filter, "row_search.haswell_kit", row_search_haswell_kit);
+    failures += run_test(filter, "row_search.skylake_kit", row_search_skylake_kit);
+    failures += run_test(filter, "row_search.neon_kit", row_search_neon_kit);
+    failures += run_test(filter, "row_search.sve_kit", row_search_sve_kit);
+    failures += run_test(filter, "row_search.rvv_kit", row_search_rvv_kit);
+    failures += run_test(filter, "layouts.serial_kit", layouts_serial_kit);
+    failures += run_test(filter, "layouts.haswell_kit", layouts_haswell_kit);
+    failures += run_test(filter, "layouts.skylake_kit", layouts_skylake_kit);
+    failures += run_test(filter, "layouts.neon_kit", layouts_neon_kit);
+    failures += run_test(filter, "layouts.sve_kit", layouts_sve_kit);
+    failures += run_test(filter, "layouts.rvv_kit", layouts_rvv_kit);
+
+    return report_test_failures(failures);
+}

@@ -28,6 +28,11 @@
 #     `scripts/test_unordered.hpp` instead, including the threaded ones.
 #   * smashtable_test_monotonic_hash - the transactional store over the open-addressed table,
 #     running only the point-access suites an unordered core can answer.
+#   * smashtable_test_row_search, _flat_set, _ring - the ordered kits: every compiled row kit the processor
+#     runs against the serial kit, the static B-tree and S+ tree against a sorted array, the micro-set
+#     through each kit, and the ring.
+#   * smashtable_bench_row_search - row kits per medium width, and both static layouts against a binary
+#     search, printing a machine block. Built with the tests and never registered with CTest.
 #   * smashtable_test_concurrent_cuda - the pinned lock-free table driven from kernels and from the
 #     host over one managed allocation. Built only where `nvcc` is visible, and skipping at runtime
 #     when no device is, so a GPU-less machine still configures and tests green.
@@ -95,7 +100,7 @@ set_target_properties(smashtable_header PROPERTIES EXPORT_NAME header)
 
 target_include_directories(
     smashtable_header INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
-                         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+                                $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_compile_features(smashtable_header INTERFACE cxx_std_20)
@@ -179,6 +184,22 @@ if (SMASHTABLE_BUILD_TESTS)
     target_include_directories(smashtable_test_vector PRIVATE scripts/)
     target_link_libraries(smashtable_test_vector PRIVATE smashtable::header smashtable_warnings)
 
+    add_executable(smashtable_test_row_search scripts/test_row_search.cpp)
+    target_include_directories(smashtable_test_row_search PRIVATE scripts/)
+    target_link_libraries(smashtable_test_row_search PRIVATE smashtable::header smashtable_warnings)
+
+    add_executable(smashtable_test_flat_set scripts/test_flat_set.cpp)
+    target_include_directories(smashtable_test_flat_set PRIVATE scripts/)
+    target_link_libraries(smashtable_test_flat_set PRIVATE smashtable::header smashtable_warnings)
+
+    add_executable(smashtable_test_ring scripts/test_ring.cpp)
+    target_include_directories(smashtable_test_ring PRIVATE scripts/)
+    target_link_libraries(smashtable_test_ring PRIVATE smashtable::header smashtable_warnings)
+
+    add_executable(smashtable_bench_row_search scripts/bench_row_search.cpp)
+    target_include_directories(smashtable_bench_row_search PRIVATE scripts/)
+    target_link_libraries(smashtable_bench_row_search PRIVATE smashtable::header smashtable_warnings)
+
     # The CUDA leg is opt-out rather than opt-in, but only materializes where a device compiler exists.
     # `check_language` finding one says nothing about a device being present, so the binary itself
     # skips when `cudaGetDeviceCount` comes back empty - that is what keeps a GPU-less runner green.
@@ -220,6 +241,9 @@ if (SMASHTABLE_BUILD_TESTS)
     add_test(NAME test_snapshot_store COMMAND smashtable_test_snapshot_store)
     add_test(NAME test_shared COMMAND smashtable_test_shared)
     add_test(NAME test_vector COMMAND smashtable_test_vector)
+    add_test(NAME test_row_search COMMAND smashtable_test_row_search)
+    add_test(NAME test_flat_set COMMAND smashtable_test_flat_set)
+    add_test(NAME test_ring COMMAND smashtable_test_ring)
     if (TARGET smashtable_test_concurrent_cuda)
         add_test(NAME test_atomic_cuda COMMAND smashtable_test_concurrent_cuda)
     endif ()
