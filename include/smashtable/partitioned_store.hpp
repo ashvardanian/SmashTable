@@ -107,16 +107,6 @@ class partitioned_store {
     using clock_t = typename shared_clock_of<inner_store_t>::type;
 
     /**
-     *  @brief Whether the part decides visibility by stamp and lets a shard set hand every partition
-     *    the very same clock, which is what a snapshot spanning partitions is made of.
-     */
-    static constexpr bool inner_shares_clock_k =
-        requires(inner_store_t &store, clock_t &clock, typename inner_store_t::generation_t stamp) {
-            store.attach_clock(clock);
-            store.transaction_at(stamp, stamp);
-        };
-
-    /**
      *  @brief A reader takes and releases one partition's lock at a time, so it can catch a commit
      *    half-applied however the commit itself was written - unless what a reader sees is decided by
      *    a stamp rather than by what happens to be published when it looks.
@@ -127,181 +117,22 @@ class partitioned_store {
      *  whole. A part deciding visibility any other way is capped at @c read_committed_k, which is the
      *  weakest level named and so the floor a cap can reach.
      */
-    static constexpr isolation_t isolation_k =
-        partitions_k == 1 || inner_shares_clock_k ? inner_store_t::isolation_k : isolation_t::read_committed_k;
+    static constexpr isolation_t isolation_k = partitions_k == 1 || offers_shared_clock<inner_store_t, clock_t>
+                                                   ? inner_store_t::isolation_k
+                                                   : isolation_t::read_committed_k;
 
     /**
      *  @brief Whether a plain read on a part files something a commit-time check has to validate.
      *    Below @c serializable_k a read files nothing, so marking its partition would buy a lock for
      *    no check.
      */
-    static constexpr bool inner_records_reads_k = at_least(inner_store_t::isolation_k, isolation_t::serializable_k);
 
     using comparator_t = typename inner_store_t::comparator_t;
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
 
-    /**
-     *  @brief Whether the partitioned store carries the ordered surface, which an unordered core denies it.
-     *    The forwards below are gated on this, so an unordered store loses them at overload resolution
-     *    rather than deep inside an instantiation.
-     */
-    static constexpr bool inner_is_ordered_k =
-        requires(inner_store_t &store, identifier_t const &key, no_op_t callback) {
-            store.lower_bound(key, callback, callback);
-            store.upper_bound(key, callback, callback);
-            store.range(key, key, callback);
-            store.erase_range(key, key, callback);
-        };
-
-    /** @brief Whether a partition draws one member of a range at random. */
-    static constexpr bool inner_samples_one_k =
-        requires(inner_store_t const &store, identifier_t const &key, no_op_t callback) {
-            store.sample_one(key, key, callback, callback);
-        };
-
-    /** @brief Whether a partition fills a reservoir from a range. */
-    static constexpr bool inner_samples_reservoir_k =
-        requires(inner_store_t const &store, identifier_t const &key, no_op_t callback, std::size_t seen) {
-            store.sample_reservoir(key, key, callback, seen, seen, callback);
-        };
-
     /** @brief Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
-
-    /** @brief Whether an open transaction carries the ordered surface its store does. */
-    static constexpr bool inner_transaction_is_ordered_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.upper_bound(key, callback, callback);
-        };
-
-    /** @brief Whether the wrapped transaction counts the members matching a key. */
-    static constexpr bool inner_transaction_counts_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key) { transaction.count(key); };
-    /** @brief Whether the wrapped transaction erases a window of its own keys. */
-    static constexpr bool inner_transaction_erases_range_k =
-        requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.erase_range(key, key, callback);
-            transaction.erase_from(key, callback);
-            transaction.erase_up_to(key, callback);
-        };
-    /** @brief Whether the wrapped transaction stages a tombstone for every member it reads. */
-    static constexpr bool inner_transaction_clears_k =
-        requires(inner_transaction_t &transaction) { transaction.clear(); };
-    /** @brief Whether the wrapped transaction revises a window of its own members. */
-    static constexpr bool inner_transaction_revises_range_k =
-        requires(inner_transaction_t &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.update_range(key, key, callback);
-        };
-    /** @brief Whether an open transaction answers an inclusive bound, which a merged scan needs to seed from. */
-    static constexpr bool inner_transaction_lower_bounds_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.lower_bound(key, callback, callback);
-        };
-
-    /** @brief Whether a partition enumerates its members with no ordering to walk them in. */
-    static constexpr bool inner_enumerates_k =
-        requires(inner_store_t const &store, no_op_t callback) { store.for_each(callback); };
-
-    /** @brief Whether a partition reclaims superseded versions on demand. */
-    static constexpr bool inner_reclaims_k = requires(inner_store_t &store) { store.vacuum(); };
-
-    /** @brief Whether a partition reclaims a window of the keyspace rather than all of it. */
-    static constexpr bool inner_reclaims_range_k =
-        requires(inner_store_t &store, identifier_t const &key) { store.vacuum(key, key); };
-
-    /**
-     *  @brief Whether a partition answers by ordinal, which only an order-statistics core does.
-     *    The forwards below are gated on this, so a core keeping no subtree counts loses them at
-     *    overload resolution rather than deep inside an instantiation.
-     */
-    static constexpr bool inner_is_ranked_k =
-        requires(inner_store_t const &store, identifier_t const &key, std::size_t ordinal, no_op_t callback) {
-            store.select(ordinal, callback, callback);
-            store.rank(key, callback, callback);
-        };
-
-    /** @brief Whether a partition rewrites the mapped side of a range in place. */
-    static constexpr bool inner_revises_range_k = requires(
-        inner_store_t &store, identifier_t const &key, no_op_t callback) { store.update_range(key, key, callback); };
-
-    /** @brief Whether a partition refuses an occupied key rather than writing over it. */
-    static constexpr bool inner_refuses_occupied_key_k =
-        requires(inner_store_t &store, value_t &&element) { store.insert(std::move(element)); };
-
-    /** @brief Whether that refusal also says which element declined the insert. */
-    static constexpr bool inner_reports_occupied_key_k =
-        requires(inner_store_t &store, value_t &&element, no_op_t callback) {
-            store.insert(std::move(element), callback, callback);
-        };
-
-    /** @brief Whether a partition refuses an absent key rather than creating it. */
-    static constexpr bool inner_refuses_absent_key_k =
-        requires(inner_store_t &store, value_t &&element) { store.update(std::move(element)); };
-
-    /** @brief Whether an open transaction refuses an occupied key rather than writing over it. */
-    static constexpr bool inner_transaction_refuses_occupied_key_k =
-        requires(inner_transaction_t &transaction, value_t &&element) { transaction.insert(std::move(element)); };
-
-    /** @brief Whether that refusal, inside a transaction, also says which element declined the insert. */
-    static constexpr bool inner_transaction_reports_occupied_key_k =
-        requires(inner_transaction_t &transaction, value_t &&element, no_op_t callback) {
-            transaction.insert(std::move(element), callback, callback);
-        };
-
-    /** @brief Whether an open transaction refuses an absent key rather than creating it. */
-    static constexpr bool inner_transaction_refuses_absent_key_k =
-        requires(inner_transaction_t &transaction, value_t &&element) { transaction.update(std::move(element)); };
-
-    /** @brief Whether a partition erases an open-ended window of the keyspace. */
-    static constexpr bool inner_erases_open_range_k =
-        requires(inner_store_t &store, identifier_t const &key, no_op_t callback) {
-            store.erase_from(key, callback);
-            store.erase_up_to(key, callback);
-        };
-
-    /** @brief Whether a partition answers every member equal to a key rather than only the first. */
-    static constexpr bool inner_matches_equals_k = requires(inner_store_t const &store, identifier_t const &key,
-                                                            no_op_t callback) { store.equal_range(key, callback); };
-
-    /** @brief Whether a partition keeps superseded versions and can count them. */
-    static constexpr bool inner_counts_versions_k = requires(inner_store_t const &store, identifier_t const &key) {
-        store.versions_count();
-        store.versions_count(key);
-    };
-
-    /** @brief Whether a partition names the snapshot no open reader sits below. */
-    static constexpr bool inner_marks_low_water_k = requires(inner_store_t const &store) { store.low_water_mark(); };
-
-    /** @brief Whether a partition spells an overwriting write as @c insert_or_assign. */
-    static constexpr bool inner_assigns_over_key_k =
-        requires(inner_store_t &store, value_t &&element) { store.insert_or_assign(std::move(element)); };
-
-    /** @brief Whether an open transaction reports what it has staged so far. */
-    static constexpr bool inner_transaction_reports_changes_k = requires(inner_transaction_t const &transaction) {
-        transaction.has_changes();
-        transaction.changes_count();
-    };
-
-    /** @brief Whether an open transaction refuses an occupied key silently rather than with a status. */
-    static constexpr bool inner_transaction_skips_occupied_key_k = requires(
-        inner_transaction_t &transaction, value_t &&element) { transaction.insert_if_missing(std::move(element)); };
-
-    /** @brief Whether an open transaction enumerates what its snapshot and its own writes show. */
-    static constexpr bool inner_transaction_enumerates_k =
-        requires(inner_transaction_t const &transaction, no_op_t callback) { transaction.for_each(callback); };
-
-    /** @brief Whether an open transaction walks a half-open window of the keyspace. */
-    static constexpr bool inner_transaction_walks_range_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.range(key, key, callback);
-        };
-
-    /** @brief Whether an open transaction answers every member equal to a key. */
-    static constexpr bool inner_transaction_matches_equals_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.equal_range(key, callback);
-        };
 
     /** @brief Whether an open transaction sizes its watch list ahead of the writes that fill it. */
     static constexpr bool inner_transaction_reserves_k =
@@ -309,14 +140,16 @@ class partitioned_store {
 
     /** @brief Whether a partition answers reads at a stamp somebody else pinned, registering nothing itself. */
     static constexpr bool inner_reads_at_a_stamp_k =
-        inner_shares_clock_k && requires(inner_store_t const &store, generation_t stamp) { store.reader_at(stamp); };
+        offers_shared_clock<inner_store_t, clock_t> &&
+        requires(inner_store_t const &store, generation_t stamp) { store.reader_at(stamp); };
 
     /**
      *  @brief Whether a partition stages a window's writes invisibly and publishes them under a stamp it
      *    is handed, which is what lets one stamp span every partition of a store-level window write.
      */
     static constexpr bool inner_publishes_under_a_stamp_k =
-        inner_shares_clock_k && requires(typename inner_store_t::publication_t &publication, commit_stamp_t stamp) {
+        offers_shared_clock<inner_store_t, clock_t> &&
+        requires(typename inner_store_t::publication_t &publication, commit_stamp_t stamp) {
             publication.publish_under(stamp);
             publication.prune_published();
         };
@@ -664,14 +497,6 @@ class partitioned_store {
         return published;
     }
 
-    /** @brief Whether a merged walk wants the key after the one its step was just handed. */
-    enum class merge_control_t : std::uint8_t {
-        /** @brief The step wants the next key of the merged order. */
-        resume_k,
-        /** @brief The step has what it came for, and the walk stops here. */
-        halt_k,
-    };
-
     /** @brief Whether a partition still has a key to contribute to a merged walk. */
     enum class front_state_t : std::uint8_t {
         /** @brief Every key this partition holds has already been handed to the step. */
@@ -736,7 +561,7 @@ class partitioned_store {
         while (true) {
             marked_partition_t const smallest = smallest_front_(comparator, fronts, states);
             if (smallest.presence != marked_presence_t::one_marked_k) return walked;
-            if (step(smallest.index, fronts[smallest.index]) == merge_control_t::halt_k) return walked;
+            if (step(smallest.index, fronts[smallest.index]) == probe_control_t::halt_k) return walked;
 
             // The bound outlives the front it came from, since refilling the front is what overwrites it.
             identifier_t const consumed = std::move(fronts[smallest.index]);
@@ -749,27 +574,6 @@ class partitioned_store {
         }
     }
 
-    /** @brief Whether a partition names its smallest member without being given a bound to beat. */
-    static constexpr bool inner_names_its_smallest_k =
-        requires(inner_store_t const &store, no_op_t callback) { store.smallest(callback, callback); };
-
-    /** @brief Whether an open transaction on a partition names the smallest member it reads. */
-    static constexpr bool inner_transaction_names_its_smallest_k =
-        requires(typename inner_store_t::transaction_t const &transaction, no_op_t callback) {
-            transaction.smallest(callback, callback);
-        };
-
-    /** @brief Whether a partition's transaction answers ordinals, which is what seeds a walk with no bound. */
-    static constexpr bool inner_transaction_is_ranked_k =
-        requires(typename inner_store_t::transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.select(std::size_t {0}, callback, callback);
-            transaction.rank(key, callback, callback);
-        };
-
-    /** @brief Whether a partition removes its own smallest member as one operation. */
-    static constexpr bool inner_pops_its_smallest_k =
-        requires(inner_store_t &store, no_op_t callback) { store.pop_smallest(callback, callback); };
-
     /**
      *  @brief Seeds every front with the smallest key its partition holds, for a walk with no lower bound.
      *
@@ -778,12 +582,12 @@ class partitioned_store {
      *  all over a core that keeps subtree counts and nothing else.
      */
     auto seed_from_the_start_() const noexcept
-        requires inner_names_its_smallest_k || inner_is_ranked_k
+        requires offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>
     {
         return [this](std::size_t partition_index, auto &&fill) noexcept {
             // Only one of these exists on a given inner store, so the other branch has to be discarded
             // rather than merely unevaluated - a ternary would instantiate both.
-            if constexpr (inner_names_its_smallest_k) {
+            if constexpr (offers_smallest<inner_store_t>) {
                 [[maybe_unused]] status_t const seeded = partitions_[partition_index].smallest(fill, no_op_t {});
             }
             else { [[maybe_unused]] status_t const seeded = partitions_[partition_index].select(0, fill, no_op_t {}); }
@@ -810,7 +614,7 @@ class partitioned_store {
             comparator, parts, seed_front, [&](std::size_t partition_index, identifier_t const &key) noexcept {
                 answered = parts[partition_index].find(key, callback_found, no_op_t {});
                 delivered = true;
-                return merge_control_t::halt_k;
+                return probe_control_t::halt_k;
             });
         if (!delivered) callback_missing();
         return first_failure(walked, answered);
@@ -995,21 +799,23 @@ class partitioned_store {
 
     /** @brief A walk of every member in ascending order, resumable and holding no lock between steps. */
     [[nodiscard]] ordered_cursor_t cursor() const noexcept
-        requires inner_is_ordered_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+        requires offers_ordered_surface<inner_store_t> &&
+                 (offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>)
     {
         return ordered_cursor_t {*this};
     }
 
     /** @brief The same walk, begun at the first member ordered at or after @p from. */
     [[nodiscard]] ordered_cursor_t cursor_from(identifier_t from) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         return ordered_cursor_t {*this, std::move(from)};
     }
 
     /** @brief The same walk, stopping before @p upper. */
     [[nodiscard]] ordered_cursor_t cursor_up_to(identifier_t upper) const noexcept
-        requires inner_is_ordered_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+        requires offers_ordered_surface<inner_store_t> &&
+                 (offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>)
     {
         ordered_cursor_t walking {*this};
         walking.bound_ = std::move(upper);
@@ -1019,7 +825,7 @@ class partitioned_store {
 
     /** @brief The same walk over [ @p from, @p upper ). */
     [[nodiscard]] ordered_cursor_t cursor_range(identifier_t from, identifier_t upper) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         ordered_cursor_t walking {*this, std::move(from)};
         walking.bound_ = std::move(upper);
@@ -1112,7 +918,7 @@ class partitioned_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires inner_is_ordered_k
+            requires offers_ordered_surface<inner_store_t>
         {
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             partitions_at_t const parts {store_->partitions_, snapshot_};
@@ -1123,14 +929,14 @@ class partitioned_store {
                     reached = first_failure(reached, parts[partition_index].lower_bound(lower, fill, no_op_t {}));
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
+                    if (!store_->comparator_(key, upper)) return probe_control_t::halt_k;
                     walk_control_t control = walk_control_t::resume_k;
                     reached = first_failure(
                         reached,
                         parts[partition_index].find(
                             key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
                             no_op_t {}));
-                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
+                    return control == walk_control_t::halt_k ? probe_control_t::halt_k : probe_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1146,7 +952,7 @@ class partitioned_store {
         partitioned_store *store_;
         /**
          *  @brief One inner transaction per partition, opened on one snapshot and generation where
-         *    @c inner_shares_clock_k, and otherwise each under its own lock at its own moment.
+         *    @c offers_shared_clock<inner_store_t, clock_t>, and otherwise each under its own lock at its own moment.
          */
         partition_transactions_t partitions_;
         /**
@@ -1199,7 +1005,7 @@ class partitioned_store {
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
                 writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
                 inner_transaction_t &part = partitions_[reached.index];
-                if constexpr (inner_shares_clock_k) {
+                if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
                     [[maybe_unused]] status_t const unwound = part.reset_at(lease_.snapshot());
                 }
                 else { [[maybe_unused]] status_t const unwound = part.reset(); }
@@ -1217,7 +1023,7 @@ class partitioned_store {
          *  paid by the next operation, and only when there is one.
          */
         void settle_snapshot_() const noexcept {
-            if constexpr (inner_shares_clock_k) {
+            if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
                 if (unsettled_stamp_ == 0) return;
                 clock_t &clock = store_->clock_;
                 clock.await_published(static_cast<commit_stamp_t>(unsettled_stamp_));
@@ -1242,7 +1048,7 @@ class partitioned_store {
          *  @param[in] seed Opens one partition's cursor where the window starts.
          *  @param[in] within Whether a key is still inside the window.
          *  @param[in] record Records one partition's window, handed the key the walk stopped on, or null
-         *    when it ran out.
+         *    when it ran out. Never called below @c serializable_k, where there is no read set to grow.
          *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
          */
         template <typename seed_type_, typename within_type_, typename record_type_, typename callback_type_>
@@ -1253,7 +1059,7 @@ class partitioned_store {
         {
             using cursor_t = decltype(std::declval<inner_transaction_t const &>().cursor());
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
 
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             std::array<cursor_t, partitions_k> cursors;
@@ -1282,7 +1088,7 @@ class partitioned_store {
                 cursors[smallest_in].advance();
             }
 
-            if constexpr (!inner_records_reads_k) return success_k;
+            if constexpr (!records_what_it_reads<inner_store_t>) return success_k;
             else {
                 // Recorded before the locks go, while the key the walk stopped on is still where it was read.
                 identifier_t const *const stopped_key = stopped ? &mapping_key_or_itself<value_t>(*stopped) : nullptr;
@@ -1349,7 +1155,7 @@ class partitioned_store {
          *  them is what keeps a refusal honest.
          */
         status_t commit_together_() noexcept
-            requires(!inner_shares_clock_k && inner_transaction_splits_commit_k)
+            requires(!offers_shared_clock<inner_store_t, clock_t> && inner_transaction_splits_commit_k)
         {
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
             for (marked_partition_t reached = touched_.first_marked();
@@ -1384,7 +1190,7 @@ class partitioned_store {
          *  the order every other multi-partition walk here takes them in.
          */
         status_t commit_under_one_stamp_() noexcept
-            requires inner_shares_clock_k
+            requires offers_shared_clock<inner_store_t, clock_t>
         {
             clock_t &clock = store_->clock_;
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
@@ -1468,7 +1274,7 @@ class partitioned_store {
          *  caller may number commits by this.
          */
         [[nodiscard]] generation_t commit_stamp() const noexcept
-            requires inner_shares_clock_k
+            requires offers_shared_clock<inner_store_t, clock_t>
         {
             return committed_stamp_;
         }
@@ -1477,7 +1283,7 @@ class partitioned_store {
             settle_snapshot_();
             // A reset discards the staged writes along with everything else, so the guard on them goes too.
             staging_ = staging_t::pending_k;
-            if constexpr (inner_shares_clock_k) {
+            if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
                 // One snapshot for every partition, drawn once, exactly as opening the transaction did.
                 generation_t const snapshot = store_->clock_.take_snapshot(lease_);
                 auto status =
@@ -1551,7 +1357,7 @@ class partitioned_store {
         [[nodiscard]] status_t commit() noexcept {
             settle_snapshot_();
             status_t published = success_k;
-            if constexpr (inner_shares_clock_k) published = commit_under_one_stamp_();
+            if constexpr (offers_shared_clock<inner_store_t, clock_t>) published = commit_under_one_stamp_();
             else published = commit_together_();
             if (succeeded(published)) staging_ = staging_t::pending_k;
             return published;
@@ -1572,7 +1378,7 @@ class partitioned_store {
                                     callback_missing_type_ &&callback_missing = {}) const noexcept {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
-            if constexpr (inner_records_reads_k) touched_.mark(partition_index);
+            if constexpr (records_what_it_reads<inner_store_t>) touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
                                                      std::forward<callback_found_type_>(callback_found),
@@ -1595,7 +1401,7 @@ class partitioned_store {
         [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
-            if constexpr (inner_records_reads_k) touched_.mark(partition_index);
+            if constexpr (records_what_it_reads<inner_store_t>) touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
         }
@@ -1622,10 +1428,10 @@ class partitioned_store {
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                            callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires inner_transaction_lower_bounds_k
+            requires transaction_offers_lower_bound<inner_store_t>
         {
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             status_t seeded = success_k;
             status_t const merged = store_t::first_merged_(
                 store_->comparator_, partitions_, store_->mutexes_,
@@ -1643,10 +1449,10 @@ class partitioned_store {
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                            callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires inner_transaction_is_ordered_k
+            requires transaction_offers_upper_bound<inner_store_t>
         {
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             status_t seeded = success_k;
             status_t const merged = store_t::first_merged_(
                 store_->comparator_, partitions_, store_->mutexes_,
@@ -1666,7 +1472,7 @@ class partitioned_store {
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
-            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+            requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             if constexpr (inner_transaction_walks_unrecorded_k)
                 return walk_window_([&](inner_transaction_t const &part) noexcept { return part.cursor_from(lower); },
@@ -1677,7 +1483,7 @@ class partitioned_store {
                                     },
                                     callback);
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             status_t reached = success_k;
             status_t const walked = store_t::walk_merged_(
@@ -1692,7 +1498,7 @@ class partitioned_store {
                         partitions_[partition_index].find(
                             key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
                             no_op_t {}));
-                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
+                    return control == walk_control_t::halt_k ? probe_control_t::halt_k : probe_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1705,7 +1511,7 @@ class partitioned_store {
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires inner_transaction_names_its_smallest_k && inner_transaction_is_ordered_k
+            requires transaction_offers_smallest<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             if constexpr (inner_transaction_walks_unrecorded_k)
                 return walk_window_([](inner_transaction_t const &part) noexcept { return part.cursor(); },
@@ -1716,7 +1522,7 @@ class partitioned_store {
                                     },
                                     callback);
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             status_t reached = success_k;
             status_t const walked = store_t::walk_merged_(
@@ -1725,14 +1531,14 @@ class partitioned_store {
                     reached = first_failure(reached, partitions_[partition_index].smallest(fill, no_op_t {}));
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
+                    if (!store_->comparator_(key, upper)) return probe_control_t::halt_k;
                     walk_control_t control = walk_control_t::resume_k;
                     reached = first_failure(
                         reached,
                         partitions_[partition_index].find(
                             key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
                             no_op_t {}));
-                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
+                    return control == walk_control_t::halt_k ? probe_control_t::halt_k : probe_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1744,10 +1550,10 @@ class partitioned_store {
          *  zeroth ordinal where a partition counts its members but does not name its smallest.
          */
         auto seed_transactions_from_the_start_() const noexcept
-            requires inner_transaction_names_its_smallest_k || inner_transaction_is_ranked_k
+            requires transaction_offers_smallest<inner_store_t> || transaction_offers_order_statistics<inner_store_t>
         {
             return [this](std::size_t partition_index, auto &&fill) noexcept {
-                if constexpr (inner_transaction_names_its_smallest_k) {
+                if constexpr (transaction_offers_smallest<inner_store_t>) {
                     [[maybe_unused]] status_t const seeded = partitions_[partition_index].smallest(fill, no_op_t {});
                 }
                 else {
@@ -1765,11 +1571,11 @@ class partitioned_store {
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
                                         callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires inner_transaction_is_ordered_k &&
-                     (inner_transaction_names_its_smallest_k || inner_transaction_is_ranked_k)
+            requires transaction_offers_upper_bound<inner_store_t> &&
+                     (transaction_offers_smallest<inner_store_t> || transaction_offers_order_statistics<inner_store_t>)
         {
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             bool delivered = false;
             status_t reached = success_k;
@@ -1779,7 +1585,7 @@ class partitioned_store {
                     reached =
                         first_failure(reached, partitions_[partition_index].find(key, callback_found, no_op_t {}));
                     delivered = true;
-                    return merge_control_t::halt_k;
+                    return probe_control_t::halt_k;
                 });
             if (!delivered) callback_missing();
             return first_failure(reached, walked);
@@ -1794,10 +1600,10 @@ class partitioned_store {
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
                                       callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires inner_transaction_is_ranked_k && inner_transaction_is_ordered_k
+            requires transaction_offers_order_statistics<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             std::size_t position = 0;
             bool delivered = false;
@@ -1805,11 +1611,11 @@ class partitioned_store {
             status_t const walked = store_t::walk_merged_(
                 store_->comparator_, partitions_, seed_transactions_from_the_start_(),
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (position++ != ordinal) return merge_control_t::resume_k;
+                    if (position++ != ordinal) return probe_control_t::resume_k;
                     reached =
                         first_failure(reached, partitions_[partition_index].find(key, callback_found, no_op_t {}));
                     delivered = true;
-                    return merge_control_t::halt_k;
+                    return probe_control_t::halt_k;
                 });
             if (!delivered) callback_missing();
             return first_failure(reached, walked);
@@ -1825,10 +1631,10 @@ class partitioned_store {
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires inner_transaction_is_ranked_k && inner_transaction_is_ordered_k
+            requires transaction_offers_order_statistics<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             std::size_t counted = 0;
             bool found = false;
@@ -1836,9 +1642,9 @@ class partitioned_store {
                 store_t::walk_merged_(store_->comparator_, partitions_, seed_transactions_from_the_start_(),
                                       [&](std::size_t, identifier_t const &key) noexcept {
                                           if (store_->comparator_(key, comparable))
-                                              return ++counted, merge_control_t::resume_k;
+                                              return ++counted, probe_control_t::resume_k;
                                           found = !store_->comparator_(comparable, key);
-                                          return merge_control_t::halt_k;
+                                          return probe_control_t::halt_k;
                                       });
             if (found) callback_found(counted);
             else callback_missing();
@@ -1857,7 +1663,7 @@ class partitioned_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+            requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             if constexpr (inner_transaction_walks_unrecorded_k)
                 return walk_window_([&](inner_transaction_t const &part) noexcept { return part.cursor_from(lower); },
@@ -1868,7 +1674,7 @@ class partitioned_store {
                                     },
                                     callback);
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             status_t reached = success_k;
             status_t const walked = store_t::walk_merged_(
@@ -1877,14 +1683,14 @@ class partitioned_store {
                     reached = first_failure(reached, partitions_[partition_index].lower_bound(lower, fill, no_op_t {}));
                 },
                 [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (!store_->comparator_(key, upper)) return merge_control_t::halt_k;
+                    if (!store_->comparator_(key, upper)) return probe_control_t::halt_k;
                     walk_control_t control = walk_control_t::resume_k;
                     reached = first_failure(
                         reached,
                         partitions_[partition_index].find(
                             key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
                             no_op_t {}));
-                    return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
+                    return control == walk_control_t::halt_k ? probe_control_t::halt_k : probe_control_t::resume_k;
                 });
             return first_failure(reached, walked);
         }
@@ -1922,7 +1728,7 @@ class partitioned_store {
          *  already there.
          */
         [[nodiscard]] status_t insert(value_t &&element) noexcept
-            requires inner_transaction_refuses_occupied_key_k
+            requires transaction_offers_insert<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1940,7 +1746,7 @@ class partitioned_store {
         template <typename callback_inserted_type_, typename callback_existing_type_>
         [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
                                       callback_existing_type_ &&callback_existing) noexcept
-            requires inner_transaction_reports_occupied_key_k
+            requires transaction_offers_insert_naming_occupant<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1954,7 +1760,7 @@ class partitioned_store {
 
         /** @brief Stages @p element only if its key is already taken, refusing to create one. */
         [[nodiscard]] status_t update(value_t &&element) noexcept
-            requires inner_transaction_refuses_absent_key_k
+            requires transaction_offers_update<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1966,7 +1772,7 @@ class partitioned_store {
 
         /** @brief Stages @p element only if its key is free, leaving an incumbent untouched. */
         [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept
-            requires inner_transaction_skips_occupied_key_k
+            requires transaction_offers_insert_if_missing<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1979,11 +1785,11 @@ class partitioned_store {
         /** @brief Hands @p callback every member equal to @p comparable, which one partition owns outright. */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
-            requires inner_transaction_matches_equals_k
+            requires transaction_offers_equal_range<inner_store_t>
         {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
-            if constexpr (inner_records_reads_k) touched_.mark(partition_index);
+            if constexpr (records_what_it_reads<inner_store_t>) touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].equal_range(std::forward<comparable_type_>(comparable),
                                                             std::forward<callback_type_>(callback));
@@ -1994,11 +1800,11 @@ class partitioned_store {
         /** @brief How many members equal @p comparable, which one partition alone can answer. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept
-            requires inner_transaction_counts_k
+            requires transaction_offers_count<inner_store_t>
         {
             settle_snapshot_();
             std::size_t const partition_index = store_->bucket_(comparable);
-            if constexpr (inner_records_reads_k) touched_.mark(partition_index);
+            if constexpr (records_what_it_reads<inner_store_t>) touched_.mark(partition_index);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return partitions_[partition_index].count(std::forward<comparable_type_>(comparable));
         }
@@ -2011,7 +1817,7 @@ class partitioned_store {
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
-            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+            requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
             status_t const answered = lower_bound(
@@ -2024,7 +1830,7 @@ class partitioned_store {
         /** @brief Copies out the first member after @p comparable in the merged order. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
-            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+            requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
             status_t const answered = upper_bound(
@@ -2043,7 +1849,7 @@ class partitioned_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires inner_transaction_erases_range_k
+            requires transaction_offers_range_erasure<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -2054,7 +1860,7 @@ class partitioned_store {
         /** @brief Stages a tombstone for every member at or after @p lower, in every partition. */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
-            requires inner_transaction_erases_range_k
+            requires transaction_offers_range_erasure<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -2064,7 +1870,7 @@ class partitioned_store {
         /** @brief Stages a tombstone for every member before @p upper, in every partition. */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires inner_transaction_erases_range_k
+            requires transaction_offers_range_erasure<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -2077,7 +1883,7 @@ class partitioned_store {
          *    reported - the same as the bounded erases beside it, and unlike the store's own @c clear.
          */
         [[nodiscard]] status_t clear() noexcept
-            requires inner_transaction_clears_k
+            requires transaction_offers_clear<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -2089,7 +1895,7 @@ class partitioned_store {
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
                                             callback_type_ &&callback) noexcept
-            requires inner_transaction_revises_range_k
+            requires transaction_offers_update_range<inner_store_t>
         {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -2102,7 +1908,7 @@ class partitioned_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                           callback_type_ &&callback) const noexcept
-            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+            requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
@@ -2128,7 +1934,7 @@ class partitioned_store {
         [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                                 std::size_t &seen, std::size_t capacity,
                                                 output_iterator_type_ &&reservoir) const noexcept
-            requires inner_transaction_lower_bounds_k && inner_transaction_is_ordered_k
+            requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                           "a reservoir copies into the caller's buffer, so the member must copy without throwing");
@@ -2149,10 +1955,10 @@ class partitioned_store {
          */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
-            requires inner_transaction_enumerates_k
+            requires transaction_offers_for_each<inner_store_t>
         {
             settle_snapshot_();
-            if constexpr (inner_records_reads_k) mark_every_part_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 shared_lock_t lock {store_->mutexes_[partition_index]};
                 walk_control_t control = walk_control_t::resume_k;
@@ -2187,7 +1993,7 @@ class partitioned_store {
 
         /** @brief Whether anything is staged in any part, which is transaction-local and needs no lock. */
         [[nodiscard]] bool has_changes() const noexcept
-            requires inner_transaction_reports_changes_k
+            requires transaction_offers_change_report<inner_store_t>
         {
             for (inner_transaction_t const &part : partitions_)
                 if (part.has_changes()) return true;
@@ -2196,7 +2002,7 @@ class partitioned_store {
 
         /** @brief How many writes are staged across every part, which is transaction-local and needs no lock. */
         [[nodiscard]] std::size_t changes_count() const noexcept
-            requires inner_transaction_reports_changes_k
+            requires transaction_offers_change_report<inner_store_t>
         {
             std::size_t counted = 0;
             for (inner_transaction_t const &part : partitions_) counted += part.changes_count();
@@ -2240,13 +2046,13 @@ class partitioned_store {
 
     /** @brief Points every partition at this store's clock, which is what makes them one snapshot. */
     void share_clock_with_parts_() noexcept {
-        if constexpr (inner_shares_clock_k)
+        if constexpr (offers_shared_clock<inner_store_t, clock_t>)
             for (inner_store_t &part : partitions_) part.attach_clock(clock_);
     }
 
     /** @brief Takes over @p other's stamps and readers, then re-points the partitions that came with them. */
     void adopt_clock_of_(partitioned_store &other) noexcept {
-        if constexpr (inner_shares_clock_k) clock_.adopt(other.clock_);
+        if constexpr (offers_shared_clock<inner_store_t, clock_t>) clock_.adopt(other.clock_);
         share_clock_with_parts_();
     }
 
@@ -2260,12 +2066,12 @@ class partitioned_store {
     [[nodiscard]] expected<transaction_t> open_transaction_(typename clock_t::snapshot_lease_t &&lease,
                                                             [[maybe_unused]] generation_t snapshot) noexcept {
         [[maybe_unused]] generation_t generation = 0;
-        if constexpr (inner_shares_clock_k) generation = clock_.next_generation();
+        if constexpr (offers_shared_clock<inner_store_t, clock_t>) generation = clock_.next_generation();
 
         // Ascending order, one lock at a time, like every other all-partition walk here.
         auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
             writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
-            if constexpr (inner_shares_clock_k)
+            if constexpr (offers_shared_clock<inner_store_t, clock_t>)
                 return partitions_[partition_index].transaction_at(snapshot, generation);
             else return partitions_[partition_index].transaction();
         });
@@ -2332,7 +2138,7 @@ class partitioned_store {
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
         typename clock_t::snapshot_lease_t lease;
         [[maybe_unused]] generation_t snapshot = 0;
-        if constexpr (inner_shares_clock_k) snapshot = clock_.take_snapshot(lease);
+        if constexpr (offers_shared_clock<inner_store_t, clock_t>) snapshot = clock_.take_snapshot(lease);
         return open_transaction_(std::move(lease), snapshot);
     }
 
@@ -2455,7 +2261,7 @@ class partitioned_store {
      *    inner store's promise whole.
      */
     [[nodiscard]] status_t insert(value_t &&element) noexcept
-        requires inner_refuses_occupied_key_k
+        requires offers_insert<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
@@ -2471,7 +2277,7 @@ class partitioned_store {
     template <typename callback_inserted_type_, typename callback_existing_type_>
     [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
                                   callback_existing_type_ &&callback_existing) noexcept
-        requires inner_reports_occupied_key_k
+        requires offers_insert_naming_occupant<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
@@ -2482,7 +2288,7 @@ class partitioned_store {
 
     /** @brief Writes one element only if its key is already taken, refusing to create one. */
     [[nodiscard]] status_t update(value_t &&element) noexcept
-        requires inner_refuses_absent_key_k
+        requires offers_update<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
@@ -2507,7 +2313,7 @@ class partitioned_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                        callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         status_t seeded = success_k;
         status_t const merged = first_merged_(
@@ -2528,7 +2334,8 @@ class partitioned_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires inner_is_ordered_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+        requires offers_ordered_surface<inner_store_t> &&
+                 (offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>)
     {
         return first_merged_(comparator_, partitions_, mutexes_, seed_from_the_start_(),
                              std::forward<callback_found_type_>(callback_found),
@@ -2546,14 +2353,15 @@ class partitioned_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
                                         callback_missing_type_ &&callback_missing = {}) noexcept
-        requires inner_is_ordered_k && inner_pops_its_smallest_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+        requires offers_ordered_surface<inner_store_t> && offers_pop_smallest<inner_store_t> &&
+                 (offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>)
     {
         every_part_lock<unique_lock_t> _ {mutexes_};
         std::size_t chosen = partitions_k;
         status_t const walked = walk_merged_(comparator_, partitions_, seed_from_the_start_(),
                                              [&](std::size_t partition_index, identifier_t const &) noexcept {
                                                  chosen = partition_index;
-                                                 return merge_control_t::halt_k;
+                                                 return probe_control_t::halt_k;
                                              });
         if (failed(walked)) return walked;
         if (chosen == partitions_k) {
@@ -2567,7 +2375,8 @@ class partitioned_store {
 
     /** @brief Copies out the smallest member and removes it, or reports @c key_not_found_k. */
     [[nodiscard]] expected<value_t> pop_smallest_copy() noexcept
-        requires inner_is_ordered_k && inner_pops_its_smallest_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+        requires offers_ordered_surface<inner_store_t> && offers_pop_smallest<inner_store_t> &&
+                 (offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>)
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const popped =
@@ -2578,7 +2387,8 @@ class partitioned_store {
 
     /** @brief Copies out the smallest member, or reports @c key_not_found_k. */
     [[nodiscard]] expected<value_t> smallest_copy() const noexcept
-        requires inner_is_ordered_k && (inner_names_its_smallest_k || inner_is_ranked_k)
+        requires offers_ordered_surface<inner_store_t> &&
+                 (offers_smallest<inner_store_t> || offers_order_statistics<inner_store_t>)
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const looked_up =
@@ -2598,7 +2408,7 @@ class partitioned_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                        callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         status_t seeded = success_k;
         status_t const merged = first_merged_(
@@ -2624,7 +2434,7 @@ class partitioned_store {
     /** @brief Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = lower_bound(
@@ -2637,7 +2447,7 @@ class partitioned_store {
     /** @brief Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = upper_bound(
@@ -2662,7 +2472,7 @@ class partitioned_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
         walk_merged_(
@@ -2672,11 +2482,11 @@ class partitioned_store {
                     partitions_[partition_index].lower_bound(lower, fill, no_op_t {});
             },
             [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                if (!comparator_(key, upper)) return merge_control_t::halt_k;
+                if (!comparator_(key, upper)) return probe_control_t::halt_k;
                 walk_control_t control = walk_control_t::resume_k;
                 [[maybe_unused]] status_t const answered = partitions_[partition_index].find(
                     key, [&](value_t const &element) noexcept { control = hand_over(callback, element); }, no_op_t {});
-                return control == walk_control_t::halt_k ? merge_control_t::halt_k : merge_control_t::resume_k;
+                return control == walk_control_t::halt_k ? probe_control_t::halt_k : probe_control_t::resume_k;
             });
         return success_k;
     }
@@ -2693,7 +2503,7 @@ class partitioned_store {
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
                                        callback_type_ &&callback = {}) noexcept
-        requires inner_is_ordered_k
+        requires offers_ordered_surface<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
             return publish_every_part_([&](typename inner_store_t::publication_t &part) noexcept {
@@ -2711,7 +2521,7 @@ class partitioned_store {
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
-        requires inner_erases_open_range_k
+        requires offers_open_range_erasure<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
             return publish_every_part_(
@@ -2727,7 +2537,7 @@ class partitioned_store {
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
-        requires inner_erases_open_range_k
+        requires offers_open_range_erasure<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
             return publish_every_part_([&](typename inner_store_t::publication_t &part) noexcept {
@@ -2752,7 +2562,7 @@ class partitioned_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-        requires inner_revises_range_k
+        requires offers_update_range<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
             return publish_every_part_([&](typename inner_store_t::publication_t &part) noexcept {
@@ -2784,12 +2594,12 @@ class partitioned_store {
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
-        requires inner_enumerates_k
+        requires offers_for_each<inner_store_t>
     {
         // One snapshot, then one partition lock at a time against it: a commit spanning the partitions
         // is wholly below the snapshot or wholly above it, so the walk cannot meet half of one. Holding
         // every lock instead would stall every writer for as long as the caller takes to consume.
-        if constexpr (inner_shares_clock_k) {
+        if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
             auto reader = const_cast<partitioned_store &>(*this).transaction();
             if (!reader) return reader.status();
             return reader->for_each(std::forward<callback_type_>(callback));
@@ -2816,7 +2626,7 @@ class partitioned_store {
      *    A partition whose sweep cannot refuse always answers with a count.
      */
     [[nodiscard]] expected<std::size_t> vacuum() noexcept
-        requires inner_reclaims_k
+        requires offers_vacuum<inner_store_t>
     {
         std::size_t reclaimed = 0;
         // Ascending order, one partition at a time, like every other all-partition walk here.
@@ -2838,7 +2648,7 @@ class partitioned_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t>
     [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
-        requires inner_reclaims_range_k
+        requires offers_vacuum_window<inner_store_t>
     {
         std::size_t reclaimed = 0;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
@@ -2866,18 +2676,18 @@ class partitioned_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
                                   callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires inner_is_ranked_k
+        requires offers_order_statistics<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
         std::size_t position = 0;
         bool delivered = false;
         walk_merged_(comparator_, partitions_, seed_from_the_start_(),
                      [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                         if (position++ != ordinal) return merge_control_t::resume_k;
+                         if (position++ != ordinal) return probe_control_t::resume_k;
                          [[maybe_unused]] status_t const answered =
                              partitions_[partition_index].find(key, callback_found, no_op_t {});
                          delivered = true;
-                         return merge_control_t::halt_k;
+                         return probe_control_t::halt_k;
                      });
         if (!delivered) callback_missing();
         return success_k;
@@ -2892,7 +2702,7 @@ class partitioned_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                 callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires inner_is_ranked_k
+        requires offers_order_statistics<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
         std::size_t position = 0;
@@ -2901,10 +2711,10 @@ class partitioned_store {
                      [&](std::size_t, identifier_t const &key) noexcept {
                          if (comparator_(key, comparable)) {
                              ++position;
-                             return merge_control_t::resume_k;
+                             return probe_control_t::resume_k;
                          }
                          found = !comparator_(comparable, key);
-                         return merge_control_t::halt_k;
+                         return probe_control_t::halt_k;
                      });
         if (found) callback_found(position);
         else callback_missing();
@@ -2921,7 +2731,7 @@ class partitioned_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                       callback_type_ &&callback) const noexcept
-        requires inner_samples_one_k
+        requires offers_sample_one<inner_store_t>
     {
         std::size_t partition_index = generator() % partitions_k;
         shared_lock_t _ {mutexes_[partition_index]};
@@ -2941,7 +2751,7 @@ class partitioned_store {
     [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                             std::size_t &seen, std::size_t reservoir_capacity,
                                             output_iterator_type_ &&reservoir) const noexcept
-        requires inner_samples_reservoir_k
+        requires offers_sample_reservoir<inner_store_t>
     {
         // Ascending order, blocking, like every other all-partition walk here.
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
@@ -2980,7 +2790,7 @@ class partitioned_store {
     /** @brief Hands @p callback every member equal to @p comparable, which one partition owns outright. */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
-        requires inner_matches_equals_k
+        requires offers_equal_range<inner_store_t>
     {
         std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
@@ -2990,7 +2800,7 @@ class partitioned_store {
 
     /** @brief How many versions every partition holds together, published and staged alike. */
     [[nodiscard]] std::size_t versions_count() const noexcept
-        requires inner_counts_versions_k
+        requires offers_versions_count<inner_store_t>
     {
         std::size_t counted = 0;
         every_part_lock<shared_lock_t> _ {mutexes_};
@@ -3001,7 +2811,7 @@ class partitioned_store {
     /** @brief How many versions of @p comparable are still held, by the one partition that owns it. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t versions_count(comparable_type_ const &comparable) const noexcept
-        requires inner_counts_versions_k
+        requires offers_versions_count<inner_store_t>
     {
         std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
@@ -3014,7 +2824,7 @@ class partitioned_store {
      *    counts - which for partitions sharing one clock is the single answer all of them give.
      */
     [[nodiscard]] generation_t low_water_mark() const noexcept
-        requires inner_marks_low_water_k
+        requires offers_low_water_mark<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
         generation_t oldest = partitions_[0].low_water_mark();
@@ -3025,7 +2835,7 @@ class partitioned_store {
 
     /** @brief Writes @p element whether or not its key is taken, spelled as a partition spells it. */
     [[nodiscard]] status_t insert_or_assign(value_t &&element) noexcept
-        requires inner_assigns_over_key_k
+        requires offers_insert_or_assign<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};

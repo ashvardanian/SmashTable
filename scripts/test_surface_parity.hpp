@@ -414,23 +414,6 @@ constexpr bool transaction_moves_as_a_value =
     std::is_move_assignable_v<typename store_type_::transaction_t> &&
     !std::is_copy_constructible_v<typename store_type_::transaction_t>;
 
-/**
- *  @brief The composite surfaces the older assertions name, spelled from the atoms above rather than
- *    beside them - a second definition of "ordered" is a second thing to keep in step.
- */
-template <typename store_type_>
-constexpr bool offers_ordered_surface =
-    lower_bound_surface_t::offered<store_type_> && upper_bound_surface_t::offered<store_type_> &&
-    range_surface_t::offered<store_type_> && erase_range_surface_t::offered<store_type_>;
-
-/** @brief The ordinal surface, which only a core summing subtree counts can answer. */
-template <typename store_type_>
-constexpr bool offers_order_statistics = select_surface_t::offered<store_type_> && rank_surface_t::offered<store_type_>;
-
-/** @brief The one walk an unordered core can offer. */
-template <typename store_type_>
-constexpr bool offers_enumeration = for_each_surface_t::offered<store_type_>;
-
 #pragma endregion Parity Fold
 
 #pragma region Level Pairs

@@ -169,14 +169,6 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
 
 #pragma endregion Iterators
 
-/** @brief What the callback tells the probe walk to do next, returned from each visit. */
-enum class probe_control_t : std::uint8_t {
-    /** @brief The callback wants the remaining matches of the same probe run. */
-    resume_k,
-    /** @brief The callback is done, and the walk stops before the next slot. */
-    halt_k,
-};
-
 /**
  *  @brief Growable hash table with linear probing and Structure-of-Arrays layout.
  *    Compatible with @c std::unordered_set interface. See file header for detailed design rationale.

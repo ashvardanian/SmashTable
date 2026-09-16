@@ -137,16 +137,16 @@ static_assert(!offers_order_statistics<partitioned_store<tree_trivial_set_t>>,
 static_assert(!offers_order_statistics<locked_store<hash_store_t>>, "an unordered core has no ordinals at all");
 static_assert(!offers_order_statistics<partitioned_store<hash_store_t>>, "an unordered core has no ordinals at all");
 
-static_assert(offers_enumeration<enumerable_set_t>, "the fixture store enumerates");
-static_assert(offers_enumeration<locked_store<enumerable_set_t>>,
+static_assert(offers_for_each<enumerable_set_t>, "the fixture store enumerates");
+static_assert(offers_for_each<locked_store<enumerable_set_t>>,
               "wrapping an enumerable store must keep the enumeration");
-static_assert(offers_enumeration<partitioned_store<enumerable_set_t>>,
+static_assert(offers_for_each<partitioned_store<enumerable_set_t>>,
               "sharding an enumerable store must keep the enumeration");
 
-static_assert(offers_enumeration<tree_trivial_set_t>, "a transactional store walks its own members");
-static_assert(offers_enumeration<locked_store<tree_trivial_set_t>>,
+static_assert(offers_for_each<tree_trivial_set_t>, "a transactional store walks its own members");
+static_assert(offers_for_each<locked_store<tree_trivial_set_t>>,
               "the lock wrapper forwards the enumeration its inner store offers");
-static_assert(offers_enumeration<partitioned_store<tree_trivial_set_t>>,
+static_assert(offers_for_each<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper forwards the enumeration its inner store offers");
 
 /** Both wrappers over the enumerable fixture, which is what the enumeration suites walk. */

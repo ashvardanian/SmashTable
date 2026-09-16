@@ -805,6 +805,19 @@ enum class isolation_t : std::uint8_t {
 enum class walk_control_t : bool { resume_k, halt_k };
 
 /**
+ *  @brief What a step tells the walk that handed it a member to do next, inside the library.
+ *
+ *  The counterpart of @c walk_control_t on the other side of the boundary: a caller's callback answers
+ *  @c walk_control_t, and @c hand_over turns that into this for the walk that is running.
+ */
+enum class probe_control_t : std::uint8_t {
+    /** @brief The step wants whatever the walk has next - the same probe run, or the merged order. */
+    resume_k,
+    /** @brief The step has what it came for, and the walk stops here. */
+    halt_k,
+};
+
+/**
  *  @brief Whether @p callback_type_ can stop a walk, rather than taking every element it is offered.
  *
  *  A callback answering @c walk_control_t is asked whether to carry on; one answering @c void is
@@ -1291,6 +1304,13 @@ struct per_version_equals {
     }
 };
 
+/**
+ *  @brief Whether a store validates what a transaction read, so a commit over it can be refused.
+ *    Below @c serializable_k a read is answered and forgotten, and there is nothing to record.
+ */
+template <typename store_type_>
+concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::serializable_k);
+
 #pragma endregion Optimistic Concurrency
 
 #pragma region Device Portability
@@ -1595,6 +1615,278 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 
 #pragma endregion Store Tiers
 
+#pragma region Store Surfaces
+
+// One concept per method, so a store offering only some of a group keeps those through every wrapper.
+// Two methods behind one gate means the store offering only the second loses it everywhere, which is
+// the defect `scripts/test_surface_parity.hpp` exists to catch. Composites are spelled from the atoms.
+
+/** @brief Whether the store writes over an occupied key through @c insert_or_assign. */
+template <typename store_type_>
+concept offers_insert_or_assign = requires(store_type_ &store, typename store_type_::value_t &&element) {
+    store.insert_or_assign(std::move(element));
+};
+
+/** @brief Whether the store counts the versions it keeps, in total and for one key. */
+template <typename store_type_>
+concept offers_versions_count = requires(store_type_ const &store, typename store_type_::identifier_t const &key) {
+    store.versions_count();
+    store.versions_count(key);
+};
+
+/** @brief Whether the store visits every member, in whatever order it holds them. */
+template <typename store_type_>
+concept offers_for_each = requires(store_type_ const &store, no_op_t callback) { store.for_each(callback); };
+
+/** @brief Whether the store erases every key at or after a bound. */
+template <typename store_type_>
+concept offers_erase_from = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                     no_op_t callback) { store.erase_from(key, callback); };
+
+/** @brief Whether the store erases every key before a bound. */
+template <typename store_type_>
+concept offers_erase_up_to = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                      no_op_t callback) { store.erase_up_to(key, callback); };
+
+/** @brief Whether the store answers the first member at or after a key. */
+template <typename store_type_>
+concept offers_lower_bound = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                      no_op_t callback) { store.lower_bound(key, callback, callback); };
+
+/** @brief Whether the store answers the first member strictly after a key. */
+template <typename store_type_>
+concept offers_upper_bound = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                      no_op_t callback) { store.upper_bound(key, callback, callback); };
+
+/** @brief Whether the store walks a half-open window of the keyspace. */
+template <typename store_type_>
+concept offers_range = requires(store_type_ &store, typename store_type_::identifier_t const &key, no_op_t callback) {
+    store.range(key, key, callback);
+};
+
+/** @brief Whether the store erases a half-open window of the keyspace. */
+template <typename store_type_>
+concept offers_erase_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                      no_op_t callback) { store.erase_range(key, key, callback); };
+
+/** @brief Whether the store answers the member at an ordinal. */
+template <typename store_type_>
+concept offers_select = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                 std::size_t ordinal, no_op_t callback) { store.select(ordinal, callback, callback); };
+
+/** @brief Whether the store answers how many members precede a key. */
+template <typename store_type_>
+concept offers_rank = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                               std::size_t ordinal, no_op_t callback) { store.rank(key, callback, callback); };
+
+/** @brief Whether the store names the snapshot no open reader sits below. */
+template <typename store_type_>
+concept offers_low_water_mark = requires(store_type_ const &store) { store.low_water_mark(); };
+
+/** @brief Whether the store hands over every member equal to a key, not only the first. */
+template <typename store_type_>
+concept offers_equal_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                      no_op_t callback) { store.equal_range(key, callback); };
+
+/** @brief Whether the store names its smallest member without being given a bound to beat. */
+template <typename store_type_>
+concept offers_smallest = requires(store_type_ const &store, no_op_t callback) { store.smallest(callback, callback); };
+
+/** @brief Whether the store removes its smallest member as one operation. */
+template <typename store_type_>
+concept offers_pop_smallest =
+    requires(store_type_ &store, no_op_t callback) { store.pop_smallest(callback, callback); };
+
+/** @brief Whether the store reclaims superseded versions on demand. */
+template <typename store_type_>
+concept offers_vacuum = requires(store_type_ &store) { store.vacuum(); };
+
+/** @brief Whether the store reclaims a window of the keyspace rather than all of it. */
+template <typename store_type_>
+concept offers_vacuum_window =
+    requires(store_type_ &store, typename store_type_::identifier_t const &key) { store.vacuum(key, key); };
+
+/** @brief Whether the store carries @c update, whose contract is to refuse an absent key. */
+template <typename store_type_>
+concept offers_update =
+    requires(store_type_ &store, typename store_type_::value_t &&element) { store.update(std::move(element)); };
+
+/** @brief Whether the store carries @c insert, whose contract is to refuse an occupied key. */
+template <typename store_type_>
+concept offers_insert =
+    requires(store_type_ &store, typename store_type_::value_t &&element) { store.insert(std::move(element)); };
+
+/** @brief Whether that refusal also hands over the element already holding the key. */
+template <typename store_type_>
+concept offers_insert_naming_occupant =
+    requires(store_type_ &store, typename store_type_::value_t &&element, no_op_t callback) {
+        store.insert(std::move(element), callback, callback);
+    };
+
+/** @brief Whether the store rewrites the mapped side of a window in place. */
+template <typename store_type_>
+concept offers_update_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+                                       no_op_t callback) { store.update_range(key, key, callback); };
+
+/** @brief Whether the store draws one member of a window at random. */
+template <typename store_type_>
+concept offers_sample_one = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                     no_op_t callback) { store.sample_one(key, key, callback, callback); };
+
+/** @brief Whether the store fills a reservoir from a window. */
+template <typename store_type_>
+concept offers_sample_reservoir =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &key, no_op_t callback,
+             std::size_t seen) { store.sample_reservoir(key, key, callback, seen, seen, callback); };
+
+/** @brief Whether an open transaction stages a tombstone for every member it reads. */
+template <typename store_type_>
+concept transaction_offers_clear = requires(typename store_type_::transaction_t &transaction) { transaction.clear(); };
+
+/** @brief Whether an open transaction counts the members matching a key. */
+template <typename store_type_>
+concept transaction_offers_count = requires(typename store_type_::transaction_t const &transaction,
+                                            typename store_type_::identifier_t const &key) { transaction.count(key); };
+
+/** @brief Whether an open transaction visits what its snapshot and its own writes show. */
+template <typename store_type_>
+concept transaction_offers_for_each = requires(typename store_type_::transaction_t const &transaction,
+                                               no_op_t callback) { transaction.for_each(callback); };
+
+/** @brief Whether an open transaction erases a half-open window of its own keys. */
+template <typename store_type_>
+concept transaction_offers_erase_range =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.erase_range(key, key, callback); };
+
+/** @brief Whether an open transaction erases every key at or after a bound. */
+template <typename store_type_>
+concept transaction_offers_erase_from =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.erase_from(key, callback); };
+
+/** @brief Whether an open transaction erases every key before a bound. */
+template <typename store_type_>
+concept transaction_offers_erase_up_to =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.erase_up_to(key, callback); };
+
+/** @brief Whether an open transaction answers the first member strictly after a key. */
+template <typename store_type_>
+concept transaction_offers_upper_bound =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.upper_bound(key, callback, callback); };
+
+/** @brief Whether an open transaction answers an inclusive bound, which a merged scan seeds from. */
+template <typename store_type_>
+concept transaction_offers_lower_bound =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.lower_bound(key, callback, callback); };
+
+/** @brief Whether an open transaction hands over every member equal to a key. */
+template <typename store_type_>
+concept transaction_offers_equal_range =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.equal_range(key, callback); };
+
+/** @brief Whether an open transaction carries @c update, whose contract is to refuse an absent key. */
+template <typename store_type_>
+concept transaction_offers_update =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
+        transaction.update(std::move(element));
+    };
+
+/** @brief Whether an open transaction carries @c insert, whose contract is to refuse an occupied key. */
+template <typename store_type_>
+concept transaction_offers_insert =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
+        transaction.insert(std::move(element));
+    };
+
+/** @brief Whether an open transaction says if anything is staged. */
+template <typename store_type_>
+concept transaction_offers_has_changes =
+    requires(typename store_type_::transaction_t const &transaction) { transaction.has_changes(); };
+
+/** @brief Whether an open transaction says how much is staged. */
+template <typename store_type_>
+concept transaction_offers_changes_count =
+    requires(typename store_type_::transaction_t const &transaction) { transaction.changes_count(); };
+
+/** @brief Whether that refusal, inside a transaction, also hands over the element holding the key. */
+template <typename store_type_>
+concept transaction_offers_insert_naming_occupant =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element,
+             no_op_t callback) { transaction.insert(std::move(element), callback, callback); };
+
+/** @brief Whether an open transaction rewrites the mapped side of a window in place. */
+template <typename store_type_>
+concept transaction_offers_update_range =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.update_range(key, key, callback); };
+
+/** @brief Whether an open transaction leaves an occupied key alone rather than refusing. */
+template <typename store_type_>
+concept transaction_offers_insert_if_missing =
+    requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
+        transaction.insert_if_missing(std::move(element));
+    };
+
+/** @brief Whether an open transaction walks a half-open window of the keyspace. */
+template <typename store_type_>
+concept transaction_offers_range =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.range(key, key, callback); };
+
+/** @brief Whether an open transaction answers the member at an ordinal. */
+template <typename store_type_>
+concept transaction_offers_select =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.select(std::size_t {0}, callback, callback); };
+
+/** @brief Whether an open transaction answers how many members precede a key. */
+template <typename store_type_>
+concept transaction_offers_rank =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.rank(key, callback, callback); };
+
+/** @brief Whether an open transaction names its smallest member without a bound to beat. */
+template <typename store_type_>
+concept transaction_offers_smallest = requires(typename store_type_::transaction_t const &transaction,
+                                               no_op_t callback) { transaction.smallest(callback, callback); };
+
+/** @brief The ordered surface, spelled from its atoms so a second definition of "ordered" cannot drift from this one.
+ */
+template <typename store_type_>
+concept offers_ordered_surface = offers_lower_bound<store_type_> && offers_upper_bound<store_type_> &&
+                                 offers_range<store_type_> && offers_erase_range<store_type_>;
+
+/** @brief The ordinal surface, which only a core summing subtree counts can answer. */
+template <typename store_type_>
+concept offers_order_statistics = offers_select<store_type_> && offers_rank<store_type_>;
+
+/** @brief Erasure of a window with one end left open, at both ends. */
+template <typename store_type_>
+concept offers_open_range_erasure = offers_erase_from<store_type_> && offers_erase_up_to<store_type_>;
+
+/** @brief Every window erase an open transaction stages, bounded and open-ended alike. */
+template <typename store_type_>
+concept transaction_offers_range_erasure =
+    transaction_offers_erase_range<store_type_> && transaction_offers_erase_from<store_type_> &&
+    transaction_offers_erase_up_to<store_type_>;
+
+/** @brief The ordinal surface of an open transaction. */
+template <typename store_type_>
+concept transaction_offers_order_statistics =
+    transaction_offers_select<store_type_> && transaction_offers_rank<store_type_>;
+
+/** @brief What an open transaction says about its own staging, whether and how much. */
+template <typename store_type_>
+concept transaction_offers_change_report =
+    transaction_offers_has_changes<store_type_> && transaction_offers_changes_count<store_type_>;
+
+#pragma endregion Store Surfaces
+
 #pragma region Shared Clock
 
 /**
@@ -1617,6 +1909,19 @@ template <typename store_type_>
 struct shared_clock_of<store_type_, std::void_t<typename store_type_::clock_t>> {
     using type = typename store_type_::clock_t;
 };
+
+/** @brief Whether the store takes a clock from outside, so a shard set can stamp every part alike. */
+template <typename store_type_, typename clock_type_>
+concept offers_attach_clock = requires(store_type_ &store, clock_type_ &clock) { store.attach_clock(clock); };
+
+/** @brief Whether the store opens a transaction at a stamp somebody else drew. */
+template <typename store_type_>
+concept offers_transaction_at =
+    requires(store_type_ &store, typename store_type_::generation_t stamp) { store.transaction_at(stamp, stamp); };
+
+/** @brief Both halves of sharing a clock: taking one, and opening at a stamp drawn from it. */
+template <typename store_type_, typename clock_type_>
+concept offers_shared_clock = offers_attach_clock<store_type_, clock_type_> && offers_transaction_at<store_type_>;
 
 #pragma endregion Shared Clock
 
