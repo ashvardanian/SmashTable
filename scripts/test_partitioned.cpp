@@ -86,6 +86,50 @@ static_assert(!offers_ordered_surface<locked_store<hash_store_t>>,
 static_assert(!offers_ordered_surface<partitioned_store<hash_store_t>>,
               "the partitioned wrapper must not claim an ordering its inner store denies");
 
+/**
+ *  @brief An ordered store that erases no window, which is what tells a per-method gate from a composite.
+ *
+ *  Every ordered forward once asked for the whole composite, so a store missing any one of its four
+ *  methods lost the other three through every wrapper. Reading a bound and stepping a cursor ask for
+ *  nothing that erases, and this fixture is the store that says so.
+ */
+struct unerasable_ordered_set_t : tree_trivial_set_t {
+    using base_t = tree_trivial_set_t;
+
+    unerasable_ordered_set_t() noexcept = default;
+    unerasable_ordered_set_t(base_t &&other) noexcept : base_t(std::move(other)) {}
+    unerasable_ordered_set_t(unerasable_ordered_set_t &&) noexcept = default;
+    unerasable_ordered_set_t &operator=(unerasable_ordered_set_t &&) noexcept = default;
+
+    [[nodiscard]] static expected<unerasable_ordered_set_t> make() noexcept {
+        expected<base_t> built = base_t::make();
+        if (!built) return built.status();
+        return unerasable_ordered_set_t {std::move(*built)};
+    }
+
+    /** @brief Hides the inherited window erase, so the composite is false while the bounds stay true. */
+    template <typename... arguments_types_>
+    void erase_range(arguments_types_ &&...) = delete;
+};
+
+static_assert(!offers_erase_range<unerasable_ordered_set_t>, "the fixture erases no window");
+static_assert(!offers_ordered_surface<unerasable_ordered_set_t>, "so the composite every forward once asked is false");
+static_assert(offers_lower_bound<unerasable_ordered_set_t> && offers_upper_bound<unerasable_ordered_set_t> &&
+                  offers_range<unerasable_ordered_set_t>,
+              "while the three surfaces it does offer are there to keep");
+
+static_assert(offers_lower_bound<locked_store<unerasable_ordered_set_t>> &&
+                  offers_upper_bound<locked_store<unerasable_ordered_set_t>> &&
+                  offers_range<locked_store<unerasable_ordered_set_t>>,
+              "a lock wrapper keeps the bounds of a store that erases no window");
+static_assert(offers_lower_bound<partitioned_store<unerasable_ordered_set_t>> &&
+                  offers_upper_bound<partitioned_store<unerasable_ordered_set_t>> &&
+                  offers_range<partitioned_store<unerasable_ordered_set_t>>,
+              "and so does a shard set over it");
+static_assert(
+    requires(locked_store<unerasable_ordered_set_t> const &store) { store.cursor_from(trivial_key_t {}); },
+    "a cursor steps with the bounds, so erasing no window costs it nothing");
+
 /** Backed by a weight-balanced core, the only one that sums the subtree counts @c select descends on. */
 using ranked_set_t = snapshot_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 using monotonic_ranked_set_t = monotonic_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;

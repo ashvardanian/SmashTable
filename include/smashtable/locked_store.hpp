@@ -263,7 +263,7 @@ class locked_store {
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
                                       callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires transaction_offers_order_statistics<inner_store_t>
+            requires transaction_offers_select<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.select(ordinal, std::forward<callback_found_type_>(callback_found),
@@ -278,7 +278,7 @@ class locked_store {
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                     callback_missing_type_ &&callback_missing = {}) const noexcept
-            requires transaction_offers_order_statistics<inner_store_t>
+            requires transaction_offers_rank<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.rank(std::forward<comparable_type_>(comparable),
@@ -405,7 +405,7 @@ class locked_store {
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires transaction_offers_range_erasure<inner_store_t>
+            requires transaction_offers_erase_range<inner_store_t>
         {
             unique_lock _ {store_->mutex_};
             return inner_transaction_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -415,7 +415,7 @@ class locked_store {
         /** @brief Stages a tombstone for every member at or after @p lower. */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
-            requires transaction_offers_range_erasure<inner_store_t>
+            requires transaction_offers_erase_from<inner_store_t>
         {
             unique_lock _ {store_->mutex_};
             return inner_transaction_.erase_from(std::forward<lower_type_>(lower),
@@ -425,7 +425,7 @@ class locked_store {
         /** @brief Stages a tombstone for every member before @p upper. */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
-            requires transaction_offers_range_erasure<inner_store_t>
+            requires transaction_offers_erase_up_to<inner_store_t>
         {
             unique_lock _ {store_->mutex_};
             return inner_transaction_.erase_up_to(std::forward<upper_type_>(upper),
@@ -484,14 +484,14 @@ class locked_store {
 
         /** @brief Whether anything is staged, which is transaction-local and needs no lock. */
         [[nodiscard]] bool has_changes() const noexcept
-            requires transaction_offers_change_report<inner_store_t>
+            requires transaction_offers_has_changes<inner_store_t>
         {
             return inner_transaction_.has_changes();
         }
 
         /** @brief How many writes are staged, which is transaction-local and needs no lock. */
         [[nodiscard]] std::size_t changes_count() const noexcept
-            requires transaction_offers_change_report<inner_store_t>
+            requires transaction_offers_changes_count<inner_store_t>
         {
             return inner_transaction_.changes_count();
         }
@@ -721,7 +721,7 @@ class locked_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                        callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_lower_bound<inner_store_t>
     {
         shared_lock _ {mutex_};
         return inner_store_.lower_bound(std::forward<comparable_type_>(comparable),
@@ -795,14 +795,15 @@ class locked_store {
 
     /** @brief A walk of every member in ascending order, resumable and holding no lock between steps. */
     [[nodiscard]] ordered_cursor_t cursor() const noexcept
-        requires offers_ordered_surface<inner_store_t> && offers_smallest<inner_store_t>
+        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
+                 offers_smallest<inner_store_t>
     {
         return ordered_cursor_t {*this, cursor_seed_t::the_smallest_k, cursor_limit_t::the_whole_keyspace_k};
     }
 
     /** @brief The same walk, begun at the first member ordered at or after @p from. */
     [[nodiscard]] ordered_cursor_t cursor_from(identifier_t from) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t>
     {
         ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k, cursor_limit_t::the_whole_keyspace_k};
         walking.position_ = std::move(from);
@@ -811,7 +812,8 @@ class locked_store {
 
     /** @brief The same walk, stopping before @p upper. */
     [[nodiscard]] ordered_cursor_t cursor_up_to(identifier_t upper) const noexcept
-        requires offers_ordered_surface<inner_store_t> && offers_smallest<inner_store_t>
+        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
+                 offers_smallest<inner_store_t>
     {
         ordered_cursor_t walking {*this, cursor_seed_t::the_smallest_k, cursor_limit_t::up_to_the_bound_k};
         walking.bound_ = std::move(upper);
@@ -820,7 +822,7 @@ class locked_store {
 
     /** @brief The same walk over [ @p from, @p upper ). */
     [[nodiscard]] ordered_cursor_t cursor_range(identifier_t from, identifier_t upper) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t>
     {
         ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k, cursor_limit_t::up_to_the_bound_k};
         walking.position_ = std::move(from);
@@ -890,7 +892,7 @@ class locked_store {
     /** @brief Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_lower_bound<inner_store_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = lower_bound(
@@ -903,7 +905,7 @@ class locked_store {
     /** @brief Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_upper_bound<inner_store_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = upper_bound(
@@ -917,7 +919,7 @@ class locked_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                        callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_upper_bound<inner_store_t>
     {
         shared_lock _ {mutex_};
         return inner_store_.upper_bound(std::forward<comparable_type_>(comparable),
@@ -932,7 +934,7 @@ class locked_store {
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_range<inner_store_t>
     {
         shared_lock _ {mutex_};
         return inner_store_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -943,7 +945,7 @@ class locked_store {
               typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
                                        callback_type_ &&callback = {}) noexcept
-        requires offers_ordered_surface<inner_store_t>
+        requires offers_erase_range<inner_store_t>
     {
         unique_lock _ {mutex_};
         return inner_store_.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -953,7 +955,7 @@ class locked_store {
     /** @brief Erases every element at or after @p lower, reporting each to @p callback. */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
-        requires offers_open_range_erasure<inner_store_t>
+        requires offers_erase_from<inner_store_t>
     {
         unique_lock _ {mutex_};
         return inner_store_.erase_from(std::forward<lower_type_>(lower), std::forward<callback_type_>(callback));
@@ -962,7 +964,7 @@ class locked_store {
     /** @brief Erases every element before @p upper, reporting each to @p callback. */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
-        requires offers_open_range_erasure<inner_store_t>
+        requires offers_erase_up_to<inner_store_t>
     {
         unique_lock _ {mutex_};
         return inner_store_.erase_up_to(std::forward<upper_type_>(upper), std::forward<callback_type_>(callback));
@@ -1033,7 +1035,7 @@ class locked_store {
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
                                   callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires offers_order_statistics<inner_store_t>
+        requires offers_select<inner_store_t>
     {
         shared_lock _ {mutex_};
         return inner_store_.select(ordinal, std::forward<callback_found_type_>(callback_found),
@@ -1048,7 +1050,7 @@ class locked_store {
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
                                 callback_missing_type_ &&callback_missing = {}) const noexcept
-        requires offers_order_statistics<inner_store_t>
+        requires offers_rank<inner_store_t>
     {
         shared_lock _ {mutex_};
         return inner_store_.rank(std::forward<comparable_type_>(comparable),
