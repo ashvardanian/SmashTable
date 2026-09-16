@@ -92,6 +92,7 @@ enum class status_t : int {
     operation_not_permitted_k = EPERM,
     operation_would_block_k = EWOULDBLOCK, // For a bounded retry that gives up
     capacity_exhausted_k = ENOSPC,         // Probe sequence with no slot left; a rehash, not more memory
+    input_output_k = EIO,                  // A device or file refused a read or write, which no retry in memory mends
 
     key_already_exists_k = EEXIST, // For a strict `insert` onto an occupied key
     key_not_found_k = ENOENT,      // For `update` operations on missing keys
@@ -150,10 +151,17 @@ constexpr char const *name_of(status_t status) noexcept {
     case status_t::operation_not_permitted_k: return "operation_not_permitted_k";
     case status_t::operation_would_block_k: return "operation_would_block_k";
     case status_t::capacity_exhausted_k: return "capacity_exhausted_k";
+    case status_t::input_output_k: return "input_output_k";
     case status_t::key_already_exists_k: return "key_already_exists_k";
     case status_t::key_not_found_k: return "key_not_found_k";
     }
     return "unrecognized";
+}
+
+/** @brief Whether @p status turned a transaction away over what another one published, which a retry can overcome. */
+constexpr bool conflicted(status_t status) noexcept {
+    return status == status_t::write_conflict_k || status == status_t::read_conflict_k ||
+           status == status_t::phantom_conflict_k;
 }
 
 /**
@@ -842,6 +850,19 @@ enum class cursor_seed_t : std::uint8_t {
  *  a caller comparing a delivered key against a bound would be ordering keys the store owns.
  */
 enum class cursor_limit_t : bool { the_whole_keyspace_k, up_to_the_bound_k };
+
+/**
+ *  @brief Whether an ordered cursor can still hand something over, once a step has found that it cannot.
+ *
+ *  A step that runs out latches this rather than re-probing, because nothing can put a key back below
+ *  where the walk stopped: the store is held for the walk, and a cursor never steps backwards.
+ */
+enum class cursor_reach_t : bool {
+    /** @brief A step may still find a key. */
+    walking_k,
+    /** @brief A step found the store spent or the bound reached, and every later step would too. */
+    spent_k,
+};
 
 /**
  *  @brief Whether a transaction's writes are sitting in the store, invisible, or not there yet.
@@ -1839,6 +1860,35 @@ concept optimistically_concurrent_store =
         { transaction.rollback() } noexcept -> std::same_as<status_t>;
         { transaction.reset() } noexcept -> std::same_as<status_t>;
     };
+
+/**
+ *  @brief Stages @p stage_changes into @p transaction and commits it, trying at most @p attempts times.
+ *  @param[in] stage_changes Invoked as @c stage_changes(transaction) on every attempt. Must be @c noexcept.
+ *  @return Success; the first failure that is not a conflict; or @c operation_would_block_k once every
+ *    attempt met a conflict.
+ *
+ *  Every failed attempt is reset before the next is made or the failure is returned, so nothing it
+ *  staged stays behind and a retry recomputes from the newest snapshot. What a conflict means and when
+ *  one is raised is the store's isolation level, which this neither weakens nor strengthens.
+ *
+ *  @warning A transaction opened at an older snapshot, such as one adopting a reader's, reads at the
+ *    newest one from its second attempt on.
+ */
+template <typename transaction_type_, typename stage_changes_type_>
+[[nodiscard]] status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempts,
+                                           stage_changes_type_ &&stage_changes) noexcept {
+    for (std::size_t attempt = 0; attempt != attempts; ++attempt) {
+        status_t status = stage_changes(transaction);
+        if (succeeded(status)) status = transaction.stage();
+        if (succeeded(status)) status = transaction.commit();
+        if (succeeded(status)) return status;
+
+        status_t const discarded = transaction.reset();
+        if (!conflicted(status)) return status;
+        if (failed(discarded)) return discarded;
+    }
+    return status_t::operation_would_block_k;
+}
 
 /**
  *  @brief Whether an open transaction can be asked to commit in two steps rather than one.

@@ -306,6 +306,27 @@ class snapshot_clock_t {
         return snapshot;
     }
 
+    /**
+     *  @brief Points @p lease at the snapshot @p held reads, giving back whatever @p lease held first.
+     *  @return The snapshot the lease now reads at.
+     *
+     *  The new claim is linked straight after @p held, whose snapshot it shares, so the census stays
+     *  ordered and either claim retiring leaves the other pinning retention on its own.
+     */
+    generation_t share_snapshot(snapshot_lease_t &held, snapshot_lease_t &lease) noexcept {
+        unique_lock<spin_shared_mutex_t> _ {mutex_};
+        assert(held.clock_ == this && &held != &lease && "a shared snapshot is copied from another live claim");
+        if (lease.clock_) unlink_(lease);
+        lease.clock_ = this;
+        lease.snapshot_ = held.snapshot_;
+        lease.older_ = &held;
+        lease.newer_ = held.newer_;
+        (held.newer_ ? held.newer_->older_ : newest_lease_) = &lease;
+        held.newer_ = &lease;
+        republish_mark_();
+        return lease.snapshot_;
+    }
+
     /** @brief Draws the stamp @p node publishes under, and records that it has not landed yet. */
     void begin_commit(commit_in_flight_t &node) noexcept {
         unique_lock<spin_shared_mutex_t> _ {mutex_};
@@ -547,8 +568,8 @@ class snapshot_store {
 
         friend store_t;
 
-        /** @brief The store whose entries this walk steps through. */
-        store_t const &store_;
+        /** @brief The store whose entries this walk steps through, null only before a walk is settled onto one. */
+        store_t const *store_ {nullptr};
         /** @brief First entry of the run the cursor stands on, @c end() once the walk is over. */
         entry_iterator_t position_;
         /** @brief One past the last entry of that run. */
@@ -558,21 +579,24 @@ class snapshot_store {
         /** @brief The stamp every key this cursor reports is resolved at. */
         generation_t snapshot_ {0};
 
+        /** @brief Stands nowhere, for a merged cursor that settles its committed side later. */
+        visible_cursor_t() noexcept = default;
+
         visible_cursor_t(store_t const &store, entry_iterator_t position, generation_t snapshot) noexcept
-            : store_(store), position_(position), run_end_(position), snapshot_(snapshot) {
+            : store_(&store), position_(position), run_end_(position), snapshot_(snapshot) {
             settle_();
         }
 
         /** @brief Delimits the run @c position_ opens and picks the version @c snapshot_ reads in it. */
         void settle_() noexcept {
-            auto const finish = store_.entries_.end();
+            auto const finish = store_->entries_.end();
             standing_ = nullptr;
             run_end_ = position_;
             if (position_ == finish) return;
 
             versioned_t const &head = *position_;
             versioned_t const *newest = nullptr;
-            while (run_end_ != finish && store_.same_key_(*run_end_, head)) {
+            while (run_end_ != finish && store_->same_key_(*run_end_, head)) {
                 versioned_t const &version = *run_end_;
                 if (visible_at(version.committed, snapshot_) &&
                     (!newest || stamp_of(newest->committed) < stamp_of(version.committed)))
@@ -598,7 +622,10 @@ class snapshot_store {
         [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
 
         /** @brief Whether the walk is over, which is when nothing more is readable. */
-        [[nodiscard]] bool exhausted() const noexcept { return position_ == store_.entries_.end(); }
+        [[nodiscard]] bool exhausted() const noexcept {
+            assert(store_ && "a cursor standing on no store was never settled onto one");
+            return position_ == store_->entries_.end();
+        }
 
         /**
          *  @brief Hands @p callback_found the key the cursor stands on, or reports the walk is over.
@@ -630,6 +657,129 @@ class snapshot_store {
     };
 
 #pragma endregion Visible Cursor
+
+#pragma region Pinned Reader
+
+    /**
+     *  @brief A read-only view pinned at one stamp, which records nothing and settles nothing.
+     *
+     *  Every read answers at the stamp the reader opened on, whatever commits after it, and no read
+     *  writes to the reader - so any number of threads may read through one reader at once without a
+     *  lock of their own. They still need the store not to be written while they read, which a bare
+     *  store leaves to its caller and @c partitioned_store provides with its partition locks.
+     *
+     *  @section snapshot_store_reader_costs Costs
+     *
+     *  Opening and closing a reader take the clock's mutex once each, to link and unlink its claim on the
+     *  census. A read takes no lock and touches no atomic of its own; a point read costs a descent plus a
+     *  step over every version its key still holds, and a range read a step over every version inside
+     *  the window.
+     *
+     *  The claim holds the low-water mark at or below the reader's stamp, so every version published
+     *  after that stamp survives pruning for as long as the reader is open - one entry per commit to a
+     *  key rather than one per key, since a version is freed only once it is visible at the mark. Commits
+     *  keep publishing and validating as usual, and pay for the retention in longer version runs. Closing
+     *  the reader frees nothing by itself: a key's tail goes on the next commit touching that key, or on
+     *  @c vacuum.
+     */
+    class reader_t {
+        friend store_t;
+
+        /** @brief The store every read is answered from, null in a moved-from reader. */
+        store_t const *store_ {nullptr};
+        /** @brief The claim pinning the stamp, empty for one partition of a sharded reader. */
+        mutable snapshot_clock_t::snapshot_lease_t lease_ {};
+        /** @brief The stamp every read is answered at. */
+        generation_t snapshot_ {0};
+
+        /** @brief Pins the newest published stamp with a claim of this reader's own. */
+        explicit reader_t(store_t const &store) noexcept
+            : store_(&store), snapshot_(store.clock_->take_snapshot(lease_)) {}
+
+        /** @brief Reads at @p snapshot, which somebody else's claim pins. */
+        reader_t(store_t const &store, generation_t snapshot) noexcept : store_(&store), snapshot_(snapshot) {}
+
+      public:
+        reader_t(reader_t &&other) noexcept
+            : store_(std::exchange(other.store_, nullptr)), lease_(std::move(other.lease_)),
+              snapshot_(other.snapshot_) {}
+
+        reader_t &operator=(reader_t &&other) noexcept {
+            if (this == &other) return *this;
+            store_ = std::exchange(other.store_, nullptr);
+            lease_ = std::move(other.lease_);
+            snapshot_ = other.snapshot_;
+            return *this;
+        }
+
+        reader_t(reader_t const &) = delete;
+        reader_t &operator=(reader_t const &) = delete;
+
+        /** @brief The stamp every read through this reader is answered at. */
+        [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
+
+        /**
+         *  @brief Finds a member @b equal to @p comparable at this reader's stamp.
+         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
+         */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+            store_->find_at_(std::forward<comparable_type_>(comparable), snapshot_,
+                             std::forward<callback_found_type_>(callback_found),
+                             std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
+        }
+
+        /** @brief Finds the first member @b greater or equal to @p comparable at this reader's stamp. */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires ordered_core_k
+        {
+            store_->visible_at_(std::forward<comparable_type_>(comparable), snapshot_)
+                .peek(std::forward<callback_found_type_>(callback_found),
+                      std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
+        }
+
+        /** @brief Finds the first member @b strictly greater than @p comparable at this reader's stamp. */
+        template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
+                  typename callback_missing_type_ = no_op_t>
+        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                           callback_missing_type_ &&callback_missing = {}) const noexcept
+            requires ordered_core_k
+        {
+            store_->visible_from_(store_->entries_.upper_bound(std::forward<comparable_type_>(comparable)), snapshot_)
+                .peek(std::forward<callback_found_type_>(callback_found),
+                      std::forward<callback_missing_type_>(callback_missing));
+            return success_k;
+        }
+
+        /**
+         *  @brief Hands @p callback every member in [ @p lower, @p upper ) at this reader's stamp.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
+                                     callback_type_ &&callback = {}) const noexcept
+            requires ordered_core_k
+        {
+            store_->range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), snapshot_,
+                              [&](value_t const &value) noexcept {
+                                  if (hand_over(callback, value) == walk_control_t::halt_k)
+                                      return probe_control_t::halt_k;
+                                  return probe_control_t::resume_k;
+                              });
+            return success_k;
+        }
+    };
+
+#pragma endregion Pinned Reader
 
     class transaction_t {
         friend store_t;
@@ -663,6 +813,15 @@ class snapshot_store {
         /** @brief The stamp every read of this transaction is answered at. */
         generation_t snapshot_ {0};
         staging_t staging_ {staging_t::pending_k};
+        /** @brief The stamp this transaction's last publication went out under, zero before its first. */
+        generation_t committed_stamp_ {0};
+
+        /** @brief Opens on a snapshot adopted from @p reader, with a claim of its own beside the reader's. */
+        transaction_t(store_t &store, reader_t const &reader) noexcept
+            : store_(&store), changes_(store_t::build_changes_(store.entries_)),
+              accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
+              generation_(store.next_generation_()), snapshot_(store.clock_->share_snapshot(reader.lease_, lease_)) {}
 
         transaction_t(store_t &store) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
@@ -728,33 +887,49 @@ class snapshot_store {
         [[nodiscard]] status_t record_window_read_(lower_type_ const &lower, upper_type_ const &upper,
                                                    access_t ends) const noexcept {
             if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return success_k;
-            else {
-                auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
-                if (!lower_copy) {
-                    read_set_ = read_set_t::unrecorded_k;
-                    return lower_copy.status();
-                }
-                auto upper_copy = copy_safely<identifier_t>(identifier_t {upper});
-                if (!upper_copy) {
-                    read_set_ = read_set_t::unrecorded_k;
-                    return upper_copy.status();
-                }
-                if (status_t const reserved = accesses_.reserve(accesses_.size() + 2); failed(reserved)) {
-                    read_set_ = read_set_t::unrecorded_k;
-                    return reserved;
-                }
-                access_t const opens = holds(ends, access_t::from_the_lowest_k)
-                                           ? access_t::opens_k | access_t::from_the_lowest_k
-                                           : access_t::opens_k;
-                access_t const closes = holds(ends, access_t::to_the_highest_k)
-                                            ? access_t::closes_k | access_t::to_the_highest_k
-                                            : access_t::closes_k;
-                [[maybe_unused]] status_t const opened =
-                    accesses_.push_back(assume_reserved, {std::move(*lower_copy), opens});
-                [[maybe_unused]] status_t const closed =
-                    accesses_.push_back(assume_reserved, {std::move(*upper_copy), closes});
-                return success_k;
+            else return record_window_(lower, upper, ends);
+        }
+
+        /** @brief Records the window between @p lower and @p upper at every level, which a watch asks for. */
+        template <typename lower_type_, typename upper_type_>
+        [[nodiscard]] status_t record_window_(lower_type_ const &lower, upper_type_ const &upper,
+                                              access_t ends) const noexcept {
+            auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
+            if (!lower_copy) {
+                read_set_ = read_set_t::unrecorded_k;
+                return lower_copy.status();
             }
+            auto upper_copy = copy_safely<identifier_t>(identifier_t {upper});
+            if (!upper_copy) {
+                read_set_ = read_set_t::unrecorded_k;
+                return upper_copy.status();
+            }
+            if (status_t const reserved = accesses_.reserve(accesses_.size() + 2); failed(reserved)) {
+                read_set_ = read_set_t::unrecorded_k;
+                return reserved;
+            }
+            access_t const opens = holds(ends, access_t::from_the_lowest_k)
+                                       ? access_t::opens_k | access_t::from_the_lowest_k
+                                       : access_t::opens_k;
+            access_t const closes = holds(ends, access_t::to_the_highest_k)
+                                        ? access_t::closes_k | access_t::to_the_highest_k
+                                        : access_t::closes_k;
+            [[maybe_unused]] status_t const opened =
+                accesses_.push_back(assume_reserved, {std::move(*lower_copy), opens});
+            [[maybe_unused]] status_t const closed =
+                accesses_.push_back(assume_reserved, {std::move(*upper_copy), closes});
+            return success_k;
+        }
+
+        /**
+         *  @brief Records what an ordered walk depended on: the window from @p lower up to @p stopped under
+         *    @p ends, and @p stopped itself. The walk stopped there, so no key past it changed its answer.
+         */
+        template <typename lower_type_>
+        [[nodiscard]] status_t record_stopped_walk_(lower_type_ const &lower, value_t const &stopped,
+                                                    access_t ends) const noexcept {
+            identifier_t const &key = mapping_key_or_itself<value_t>(stopped);
+            return first_failure(record_window_read_(lower, key, ends), record_read_(key));
         }
 
         /**
@@ -866,7 +1041,7 @@ class snapshot_store {
               accesses_(std::move(other.accesses_)), read_set_(other.read_set_),
               changed_identifiers_(std::move(other.changed_identifiers_)), generation_(other.generation_),
               lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
-              staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
+              staging_(std::exchange(other.staging_, staging_t::pending_k)), committed_stamp_(other.committed_stamp_) {}
 
         transaction_t &operator=(transaction_t &&other) noexcept {
             if (this == &other) return *this;
@@ -880,6 +1055,7 @@ class snapshot_store {
             lease_ = std::move(other.lease_);
             snapshot_ = other.snapshot_;
             staging_ = std::exchange(other.staging_, staging_t::pending_k);
+            committed_stamp_ = other.committed_stamp_;
             return *this;
         }
 
@@ -893,6 +1069,12 @@ class snapshot_store {
 
         /** @brief The commit stamp every read of this transaction is answered at. */
         [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
+
+        /**
+         *  @brief The stamp this transaction's last commit published under, zero before its first.
+         *    Stamps are drawn after validation, so they follow the order the store's commits went out in.
+         */
+        [[nodiscard]] generation_t commit_stamp() const noexcept { return committed_stamp_; }
 
         /** @brief Whether anything is pending, which after @c stage means nothing rather than nothing written. */
         [[nodiscard]] bool has_changes() const noexcept { return changes_.size() != 0; }
@@ -998,6 +1180,155 @@ class snapshot_store {
 #pragma endregion Transaction Modifiers
 
 #pragma region Transaction Lookup
+
+        /**
+         *  @brief A resumable walk over what this transaction reads - its snapshot merged with its own
+         *    staged writes - which records nothing.
+         *
+         *  A merged walk over several transactions has to look past where it stops in each of them to learn
+         *  which key comes first, and a read recorded on the way would validate keys it never handed over.
+         *  So this reads unrecorded, and the caller records the window it did depend on through
+         *  @c watch_range and its siblings. Every ordered walk of this transaction steps through one.
+         *
+         *  @warning Nothing read through a cursor is validated until its window is watched, and any write
+         *    to the transaction or its store abandons the cursor.
+         */
+        class merged_cursor_t {
+            friend transaction_t;
+
+            using staged_iterator_t = decltype(std::declval<changes_t const &>().begin());
+
+            /** @brief Which side the cursor stands on, which is the side a step moves. */
+            enum class side_t : std::uint8_t {
+                /** @brief Neither side has a readable key left. */
+                exhausted_k,
+                /** @brief On a staged write, which masks any committed version of its key. */
+                staged_k,
+                /** @brief On the committed version the snapshot reads, no staged write speaking for it. */
+                committed_k,
+            };
+
+            /** @brief The transaction whose staged writes are merged in, null in a cursor built empty. */
+            transaction_t const *transaction_ {nullptr};
+            /** @brief The first staged write the cursor has not passed. */
+            staged_iterator_t staged_ {};
+            /** @brief The first committed key the snapshot reads that the cursor has not passed. */
+            visible_cursor_t committed_ {};
+            /** @brief Where the cursor stands. */
+            side_t side_ {side_t::exhausted_k};
+
+            merged_cursor_t(transaction_t const &transaction, staged_iterator_t staged,
+                            visible_cursor_t committed) noexcept
+                : transaction_(&transaction), staged_(staged), committed_(committed) {
+                settle_();
+            }
+
+            /** @brief Stops on the smaller readable key of the two sides, passing staged tombstones and what they mask.
+             */
+            void settle_() noexcept {
+                auto const ordering = transaction_->changes_.key_comp();
+                auto const staged_end = transaction_->changes_.end();
+                while (true) {
+                    bool const staged_left = staged_ != staged_end;
+                    if (committed_.exhausted() && !staged_left) {
+                        side_ = side_t::exhausted_k;
+                        return;
+                    }
+                    if (!committed_.exhausted() &&
+                        (!staged_left || ordering.per_key_compare(*committed_.standing_, *staged_))) {
+                        side_ = side_t::committed_k;
+                        return;
+                    }
+                    // A staged write speaks for its key, tombstone or not, so the committed version is passed.
+                    if (!committed_.exhausted() && !ordering.per_key_compare(*staged_, *committed_.standing_))
+                        committed_.advance();
+                    if ((*staged_).presence == presence_t::present_k) {
+                        side_ = side_t::staged_k;
+                        return;
+                    }
+                    ++staged_;
+                }
+            }
+
+            /** @brief The version the cursor stands on, which only a cursor that is not exhausted has. */
+            [[nodiscard]] versioned_t const &standing_() const noexcept {
+                return side_ == side_t::staged_k ? *staged_ : *committed_.standing_;
+            }
+
+          public:
+            merged_cursor_t() noexcept = default;
+
+            /** @brief Whether neither side has a readable key left. */
+            [[nodiscard]] bool exhausted() const noexcept { return side_ == side_t::exhausted_k; }
+
+            /**
+             *  @brief Hands @p callback_found the member the cursor stands on, or reports the walk is over.
+             *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+             *  @param[in] callback_missing Callback triggered once nothing is left. Must be @c noexcept.
+             */
+            template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
+            void peek(callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept {
+                if (exhausted()) callback_missing();
+                else callback_found(standing_().payload);
+            }
+
+            /** @brief Steps to the next member this transaction reads, strictly greater than the current one. */
+            void advance() noexcept {
+                if (side_ == side_t::staged_k) ++staged_;
+                else if (side_ == side_t::committed_k) committed_.advance();
+                else return;
+                settle_();
+            }
+        };
+
+        /** @brief A cursor over everything this transaction reads, from its smallest key, recording nothing. */
+        [[nodiscard]] merged_cursor_t cursor() const noexcept
+            requires ordered_core_k
+        {
+            return merged_cursor_t {*this, changes_.begin(),
+                                    store_ref().visible_from_(store_ref().entries_.begin(), snapshot_)};
+        }
+
+        /** @brief The same cursor, from the first key at or after @p comparable. */
+        template <typename comparable_type_ = identifier_t>
+        [[nodiscard]] merged_cursor_t cursor_from(comparable_type_ const &comparable) const noexcept
+            requires ordered_core_k
+        {
+            return merged_cursor_t {*this, changes_.lower_bound(comparable),
+                                    store_ref().visible_at_(comparable, snapshot_)};
+        }
+
+        /**
+         *  @brief Records that this transaction depends on [ @p lower, @p upper ), so a commit publishing a
+         *    version into the window refuses it with @c phantom_conflict_k.
+         *  @return Success unless the read set could not grow, which latches a refusal as well.
+         *
+         *  Recorded at every level, as @c watch is: from @c serializable_k up an ordered read records its
+         *  own window already, and at @c snapshot_k this is how a walk asks for one.
+         */
+        template <typename lower_type_, typename upper_type_>
+        [[nodiscard]] status_t watch_range(lower_type_ const &lower, upper_type_ const &upper) const noexcept
+            requires ordered_core_k
+        {
+            return record_window_(lower, upper, access_t::none_k);
+        }
+
+        /** @brief Records that this transaction depends on every key at or after @p lower. */
+        template <typename lower_type_>
+        [[nodiscard]] status_t watch_range_from(lower_type_ const &lower) const noexcept
+            requires ordered_core_k
+        {
+            return record_window_(lower, lower, access_t::to_the_highest_k);
+        }
+
+        /** @brief Records that this transaction depends on every key before @p upper. */
+        template <typename upper_type_>
+        [[nodiscard]] status_t watch_range_up_to(upper_type_ const &upper) const noexcept
+            requires ordered_core_k
+        {
+            return record_window_(upper, upper, access_t::from_the_lowest_k);
+        }
 
         /**
          *  @brief Records what this transaction's snapshot resolves @p identifier to, so a later commit can
@@ -1196,62 +1527,62 @@ class snapshot_store {
          *  staged key falls between two committed ones, and a staged key masks the committed version
          *  of itself.
          *
-         *  @note A callback answering @c walk_control_t stops the walk where it says to, though the
-         *    window it recorded is the one it asked for rather than the prefix it took.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to. From
+         *    @c serializable_k up the walk then records only what it handed over - the window from
+         *    @p lower to the key it stopped on, and that key - so a commit past it refuses nothing.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
-            status_t const recorded = record_window_read_(lower, upper, access_t::none_k);
             auto const ordering = changes_.key_comp();
-            merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
-                if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
-                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
-                return probe_control_t::resume_k;
-            });
-            return recorded;
+            for (merged_cursor_t walking = cursor_from(lower); !walking.exhausted(); walking.advance()) {
+                versioned_t const &version = walking.standing_();
+                if (!ordering.per_key_compare(version, upper)) break;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k)
+                    return record_stopped_walk_(lower, version.payload, access_t::none_k);
+            }
+            return record_window_read_(lower, upper, access_t::none_k);
         }
 
         /**
          *  @brief Hands @p callback every member at or after @p lower, with no upper end.
          *    Records a window running to the highest key, so a commit into it is a phantom.
-         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to, and from
+         *    @c serializable_k up the window recorded then ends at the key it stopped on.
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
-            status_t const recorded = record_window_read_(lower, lower, access_t::to_the_highest_k);
-            merge_from_(std::forward<lower_type_>(lower), [&](versioned_t const &version) noexcept {
-                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
-                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
-                return probe_control_t::resume_k;
-            });
-            return recorded;
+            for (merged_cursor_t walking = cursor_from(lower); !walking.exhausted(); walking.advance()) {
+                versioned_t const &version = walking.standing_();
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k)
+                    return record_stopped_walk_(lower, version.payload, access_t::none_k);
+            }
+            return record_window_read_(lower, lower, access_t::to_the_highest_k);
         }
 
         /**
          *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
          *    Records a window running from the lowest key, so a caller never has to name a layout's floor
          *    to say "everything below this".
-         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to, and from
+         *    @c serializable_k up the window recorded then ends at the key it stopped on.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
-            status_t const recorded = record_window_read_(upper, upper, access_t::from_the_lowest_k);
             auto const ordering = changes_.key_comp();
-            merge_all_([&](versioned_t const &version) noexcept {
-                if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
-                if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
-                return probe_control_t::resume_k;
-            });
-            return recorded;
+            for (merged_cursor_t walking = cursor(); !walking.exhausted(); walking.advance()) {
+                versioned_t const &version = walking.standing_();
+                if (!ordering.per_key_compare(version, upper)) break;
+                if (hand_over(callback, version.payload) == walk_control_t::halt_k)
+                    return record_stopped_walk_(upper, version.payload, access_t::from_the_lowest_k);
+            }
+            return record_window_read_(upper, upper, access_t::from_the_lowest_k);
         }
 
         /**
@@ -1273,7 +1604,6 @@ class snapshot_store {
             status_t const recorded = record_whole_keyspace_read_();
             if constexpr (ordered_core_k) {
                 merge_all_([&](versioned_t const &version) noexcept {
-                    if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
                     if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
                     return probe_control_t::resume_k;
                 });
@@ -1326,7 +1656,6 @@ class snapshot_store {
             bool found = false;
             status_t recorded = success_k;
             merge_all_([&](versioned_t const &version) noexcept {
-                if (version.presence != presence_t::present_k) return probe_control_t::resume_k;
                 if (ordinal != 0) {
                     --ordinal;
                     return probe_control_t::resume_k;
@@ -1376,7 +1705,7 @@ class snapshot_store {
             std::size_t counted = 0;
             merge_all_([&](versioned_t const &version) noexcept {
                 if (!ordering.per_key_compare(version, comparable)) return probe_control_t::halt_k;
-                if (version.presence == presence_t::present_k) ++counted;
+                ++counted;
                 return probe_control_t::resume_k;
             });
             callback_found(counted);
@@ -1442,16 +1771,8 @@ class snapshot_store {
         [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires ordered_core_k
         {
-            return erase_walked_(
-                [&](auto &&step) noexcept {
-                    status_t const recorded = record_window_read_(lower, lower, access_t::to_the_highest_k);
-                    merge_from_(lower, [&](versioned_t const &version) noexcept {
-                        if (version.presence == presence_t::present_k) step(version.payload);
-                        return probe_control_t::resume_k;
-                    });
-                    return recorded;
-                },
-                std::forward<callback_type_>(callback));
+            return erase_walked_([&](auto &&step) noexcept { return range_from(lower, step); },
+                                 std::forward<callback_type_>(callback));
         }
 
         /** @brief Stages a tombstone for every member before @p upper, @p upper excluded. */
@@ -1459,18 +1780,8 @@ class snapshot_store {
         [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires ordered_core_k
         {
-            return erase_walked_(
-                [&](auto &&step) noexcept {
-                    status_t const recorded = record_window_read_(upper, upper, access_t::from_the_lowest_k);
-                    auto const ordering = changes_.key_comp();
-                    merge_all_([&](versioned_t const &version) noexcept {
-                        if (!ordering.per_key_compare(version, upper)) return probe_control_t::halt_k;
-                        if (version.presence == presence_t::present_k) step(version.payload);
-                        return probe_control_t::resume_k;
-                    });
-                    return recorded;
-                },
-                std::forward<callback_type_>(callback));
+            return erase_walked_([&](auto &&step) noexcept { return range_up_to(upper, step); },
+                                 std::forward<callback_type_>(callback));
         }
 
         /**
@@ -1565,44 +1876,6 @@ class snapshot_store {
 #pragma endregion Transaction Range Operations
       private:
         /**
-         *  @brief Hands @p callback every version this transaction reads, in key order, from the two
-         *    positions onward, a staged write masking the committed version of its own key.
-         *
-         *  Tombstones are handed over too: where a walk stops is a question about keys, so the caller
-         *  filters on presence after it has decided whether the key is still in its window.
-         */
-        template <typename staged_iterator_type_, typename callback_type_>
-        void merge_(staged_iterator_type_ staged, visible_cursor_t committed, callback_type_ &&callback) const noexcept
-            requires ordered_core_k
-        {
-            auto const ordering = changes_.key_comp();
-            while (staged != changes_.end() || !committed.exhausted()) {
-                if (committed.exhausted()) {
-                    if (callback(*staged) == probe_control_t::halt_k) return;
-                    ++staged;
-                    continue;
-                }
-                versioned_t const &visible = *committed.standing_;
-                if (staged == changes_.end()) {
-                    if (callback(visible) == probe_control_t::halt_k) return;
-                    committed.advance();
-                    continue;
-                }
-                versioned_t const &pending = *staged;
-                if (ordering.per_key_compare(visible, pending)) {
-                    if (callback(visible) == probe_control_t::halt_k) return;
-                    committed.advance();
-                    continue;
-                }
-                // A staged write speaks for its key, so the committed version of it is dropped rather
-                // than reported alongside - including when the staging is a tombstone.
-                if (!ordering.per_key_compare(pending, visible)) committed.advance();
-                if (callback(pending) == probe_control_t::halt_k) return;
-                ++staged;
-            }
-        }
-
-        /**
          *  @brief Walks a window, hands every member to @p callback, and stages a tombstone for each.
          *
          *  The walk finishes before the first tombstone is staged, because a staged write changes what
@@ -1631,23 +1904,17 @@ class snapshot_store {
             return success_k;
         }
 
-        /** @brief Merges both sides from the first key not less than @p comparable. */
-        template <typename comparable_type_, typename callback_type_>
-        void merge_from_(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
-            requires ordered_core_k
-        {
-            merge_(changes_.lower_bound(comparable),
-                   store_ref().visible_at_(std::forward<comparable_type_>(comparable), snapshot_),
-                   std::forward<callback_type_>(callback));
-        }
-
-        /** @brief Merges both sides from the smallest key either of them holds. */
+        /**
+         *  @brief Hands @p callback every version this transaction reads, in key order from its smallest
+         *    key, a staged write masking the committed version of its own key. Tombstones are passed over
+         *    by the cursor, so every version handed over is present.
+         */
         template <typename callback_type_>
         void merge_all_(callback_type_ &&callback) const noexcept
             requires ordered_core_k
         {
-            merge_(changes_.begin(), store_ref().visible_from_(store_ref().entries_.begin(), snapshot_),
-                   std::forward<callback_type_>(callback));
+            for (merged_cursor_t walking = cursor(); !walking.exhausted(); walking.advance())
+                if (callback(walking.standing_()) == probe_control_t::halt_k) return;
         }
 
         /** @brief Reports whichever of the staged and the committed candidate comes first. */
@@ -1790,6 +2057,7 @@ class snapshot_store {
             assert(staging_ == staging_t::staged_k && "publishing what was never staged");
             store_ref().stamp_under_(changed_identifiers_.data(), changed_identifiers_.size(), generation_, stamp);
             staging_ = staging_t::pending_k;
+            committed_stamp_ = stamp_of(stamp);
         }
 
         /** @brief Answers every later read at @p snapshot, which a sharded transaction drew for all its parts. */
@@ -1894,6 +2162,48 @@ class snapshot_store {
             return success_k;
         }
 
+        /**
+         *  @brief Copies what @p copy_one keeps of every value @p walk offers into @p collected, handing each
+         *    kept value to @p on_kept, then reserves room to file all of it. The walk reads the very index the
+         *    writes land in, so it finishes first.
+         */
+        template <typename walk_type_, typename collected_type_, typename copy_type_, typename kept_type_ = no_op_t>
+        [[nodiscard]] status_t collect_published_(walk_type_ &&walk, collected_type_ &collected, copy_type_ &&copy_one,
+                                                  kept_type_ &&on_kept = {}) noexcept {
+            status_t collecting = success_k;
+            walk([&](value_t const &value) noexcept {
+                auto duplicate = copy_one(value);
+                if (duplicate) collecting = collected.push_back(std::move(*duplicate));
+                else collecting = duplicate.status();
+                if (failed(collecting)) return probe_control_t::halt_k;
+                on_kept(value);
+                return probe_control_t::resume_k;
+            });
+            if (failed(collecting)) return collecting;
+            return reserve(staged_identifiers_.size() + collected.size());
+        }
+
+        /** @brief Files a tombstone over every key @p walk offers, all of them copied out before any is filed. */
+        template <typename walk_type_, typename callback_type_>
+        [[nodiscard]] status_t tombstone_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            if (!store_) return operation_not_permitted_k;
+            changed_identifiers_vector_t doomed(
+                changed_identifiers_allocator_t(storage_shape_t::allocator_of(store_->entries_)));
+            if (status_t const collected = collect_published_(
+                    std::forward<walk_type_>(walk), doomed,
+                    [](value_t const &value) noexcept {
+                        return copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
+                    },
+                    std::forward<callback_type_>(callback));
+                failed(collected))
+                return collected;
+            for (identifier_t const &identifier : doomed)
+                if (status_t const staged = erase(identifier); failed(staged)) return staged;
+            return success_k;
+        }
+
       public:
         publication_t(publication_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), staged_identifiers_(std::move(other.staged_identifiers_)),
@@ -1953,6 +2263,77 @@ class snapshot_store {
         }
 
         /**
+         *  @brief Files a tombstone over every key the newest published commit shows in [ @p lower, @p upper ).
+         *  @param[in] callback Callback handed each element about to be tombstoned. Must be @c noexcept.
+         *  @return Success, or an allocation failure leaving what was filed for @c rollback to drop.
+         */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            return tombstone_walked_(
+                [&](auto &&collect) noexcept {
+                    store_->range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                      store_->published_stamp_(), collect);
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Files a tombstone over every key the newest published commit shows at or after @p lower. */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            return tombstone_walked_(
+                [&](auto &&collect) noexcept {
+                    store_->range_from_at_(std::forward<lower_type_>(lower), store_->published_stamp_(), collect);
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /** @brief Files a tombstone over every key the newest published commit shows before @p upper. */
+        template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
+            requires ordered_core_k
+        {
+            return tombstone_walked_(
+                [&](auto &&collect) noexcept {
+                    store_->range_up_to_at_(std::forward<upper_type_>(upper), store_->published_stamp_(), collect);
+                },
+                std::forward<callback_type_>(callback));
+        }
+
+        /**
+         *  @brief Files a revised copy of every value the newest published commit shows in [ @p lower, @p upper ).
+         *  @param[in] callback Callback invoked with (key const &, mapped &) per element. Must be @c noexcept.
+         *  @return Success, or an allocation failure leaving what was filed for @c rollback to drop.
+         */
+        template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
+                                            callback_type_ &&callback) noexcept
+            requires is_mapping<value_t> && ordered_core_k
+        {
+            if (!store_) return operation_not_permitted_k;
+            values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(store_->entries_)));
+            if (status_t const collected = collect_published_(
+                    [&](auto &&keep) noexcept {
+                        store_->range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                          store_->published_stamp_(), keep);
+                    },
+                    revised, [](value_t const &value) noexcept { return copy_safely(value); });
+                failed(collected))
+                return collected;
+            for (std::size_t index = 0; index != revised.size(); ++index) {
+                value_t &revision = revised[index];
+                callback(revision.key, revision.mapped);
+                if (status_t const staged = upsert(std::move(revision)); failed(staged)) return staged;
+            }
+            return success_k;
+        }
+
+        /**
          *  @brief Makes every staged version visible under one stamp, then prunes what the group masked.
          *    The publication stays usable afterwards and starts a fresh group on the next write.
          */
@@ -1961,10 +2342,32 @@ class snapshot_store {
             if (staged_identifiers_.size() == 0) return success_k;
 
             store_->stamp_as_one_commit_(staged_identifiers_.data(), staged_identifiers_.size(), generation_);
+            generation_ = store_->next_generation_();
+            prune_published();
+            return success_k;
+        }
+
+        /**
+         *  @brief Stamps every staged version under @p stamp, which a shard set drew for all its partitions,
+         *    drawing, awaiting and pruning nothing.
+         *
+         *  The generation moves on, putting the versions just stamped out of reach of a rollback, so the
+         *  group is committed from here. @c prune_published is what closes it.
+         *
+         *  @warning Only ever called while @c begin_commit holds @p stamp in flight, and followed by
+         *    @c prune_published before this publication files anything else.
+         */
+        void publish_under(commit_stamp_t stamp) noexcept {
+            if (!store_) return;
+            store_->stamp_under_(staged_identifiers_.data(), staged_identifiers_.size(), generation_, stamp);
+            generation_ = store_->next_generation_();
+        }
+
+        /** @brief Frees what the last publication masked, as far as the low-water mark allows, and forgets its keys. */
+        void prune_published() noexcept {
+            if (!store_) return;
             store_->prune_each_(staged_identifiers_.data(), staged_identifiers_.size());
             staged_identifiers_.clear();
-            generation_ = store_->next_generation_();
-            return success_k;
         }
 
         /** @brief Drops every version staged and not yet published, leaving the store as it was. */
@@ -2476,43 +2879,15 @@ class snapshot_store {
     }
 
     /**
-     *  @brief Publishes a tombstone over every key @p walk offers, all under one stamp.
-     *
-     *  @param[in] walk Invoked with a collector that takes one @c value_t const & per key to erase.
-     *  @param[in] callback Callback handed each element about to be tombstoned. Must be @c noexcept.
-     *  @return Success, or an allocation failure that leaves the store exactly as it was.
-     *
-     *  The keys are copied out before anything is staged: the walk that produces them reads the very
-     *  index the tombstones are about to be staged into.
+     *  @brief Stages @p stage into a publication of its own and publishes it under one stamp.
+     *  @return Success, or the refusal @p stage met, after which the publication drops everything it
+     *    filed and the store is exactly as it was.
      */
-    template <typename walk_type_, typename callback_type_>
-    [[nodiscard]] status_t tombstone_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept
-        requires ordered_core_k
-    {
-        changed_identifiers_vector_t doomed(changed_identifiers_allocator_t(storage_shape_t::allocator_of(entries_)));
-        status_t collecting = success_k;
-        walk([&](value_t const &value) noexcept {
-            if (failed(collecting)) return probe_control_t::halt_k;
-            auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
-            if (!maybe_identifier) {
-                collecting = out_of_memory_heap_k;
-                return probe_control_t::halt_k;
-            }
-            if (status_t const kept = doomed.push_back(std::move(*maybe_identifier)); failed(kept)) {
-                collecting = kept;
-                return probe_control_t::halt_k;
-            }
-            callback(value);
-            return probe_control_t::resume_k;
-        });
-        if (failed(collecting)) return collecting;
-        if (doomed.size() == 0) return success_k;
-
+    template <typename stage_type_>
+    [[nodiscard]] status_t publish_group_(stage_type_ &&stage) noexcept {
         auto opened = publication();
         if (!opened) return out_of_memory_heap_k;
-        if (status_t const reserved = opened->reserve(doomed.size()); failed(reserved)) return reserved;
-        for (identifier_t const &identifier : doomed)
-            if (status_t const staged = opened->erase(identifier); failed(staged)) return staged;
+        if (status_t const staged = stage(*opened); failed(staged)) return staged;
         return opened->publish();
     }
 
@@ -2627,6 +3002,28 @@ class snapshot_store {
     [[nodiscard]] expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept {
         return transaction_t {*this, snapshot, generation};
     }
+
+    /**
+     *  @brief Opens a transaction reading at @p reader's stamp rather than at the newest one.
+     *
+     *  The transaction takes a claim of its own beside the reader's, so either may close first. What it
+     *  reads and writes is validated at commit exactly as any transaction's is, against everything
+     *  published after that stamp: an older stamp meets more refusals, from @c serializable_k up for
+     *  every read and at @c snapshot_k for what it watched and wrote.
+     */
+    [[nodiscard]] expected<transaction_t> transaction(reader_t const &reader) noexcept {
+        assert(reader.store_ == this && "a transaction adopts the stamp of a reader of its own store");
+        return transaction_t {*this, reader};
+    }
+
+    /** @brief Opens a reader pinned at the newest published stamp, which records and settles nothing. */
+    [[nodiscard]] reader_t reader() const noexcept { return reader_t {*this}; }
+
+    /**
+     *  @brief A reader at a @p stamp somebody else pinned, for one partition of a sharded reader.
+     *    Registers nothing, so it must not outlive the claim that holds @p stamp.
+     */
+    [[nodiscard]] reader_t reader_at(generation_t stamp) const noexcept { return reader_t {*this, stamp}; }
 
     /**
      *  @brief Draws every stamp and every snapshot from @p clock rather than from this store's own.
@@ -3149,12 +3546,10 @@ class snapshot_store {
                                        callback_type_ &&callback = {}) noexcept
         requires ordered_core_k
     {
-        return tombstone_walked_(
-            [&](auto &&collect) noexcept {
-                range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
-                          collect);
-            },
-            std::forward<callback_type_>(callback));
+        return publish_group_([&](publication_t &group) noexcept {
+            return group.erase_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                     std::forward<callback_type_>(callback));
+        });
     }
 
     /**
@@ -3170,11 +3565,9 @@ class snapshot_store {
     [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
         requires ordered_core_k
     {
-        return tombstone_walked_(
-            [&](auto &&collect) noexcept {
-                range_from_at_(std::forward<lower_type_>(lower), published_stamp_(), collect);
-            },
-            std::forward<callback_type_>(callback));
+        return publish_group_([&](publication_t &group) noexcept {
+            return group.erase_from(std::forward<lower_type_>(lower), std::forward<callback_type_>(callback));
+        });
     }
 
     /**
@@ -3190,11 +3583,9 @@ class snapshot_store {
     [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
         requires ordered_core_k
     {
-        return tombstone_walked_(
-            [&](auto &&collect) noexcept {
-                range_up_to_at_(std::forward<upper_type_>(upper), published_stamp_(), collect);
-            },
-            std::forward<callback_type_>(callback));
+        return publish_group_([&](publication_t &group) noexcept {
+            return group.erase_up_to(std::forward<upper_type_>(upper), std::forward<callback_type_>(callback));
+        });
     }
 
     /**
@@ -3214,30 +3605,10 @@ class snapshot_store {
     [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_mapping<value_t> && ordered_core_k
     {
-        values_vector_t revised(values_allocator_t(storage_shape_t::allocator_of(entries_)));
-        status_t collecting = success_k;
-        [[maybe_unused]] status_t const walked = range(
-            std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), [&](value_t const &value) noexcept {
-                if (failed(collecting)) return;
-                auto duplicate = copy_safely(value);
-                if (!duplicate) {
-                    collecting = duplicate.status();
-                    return;
-                }
-                if (status_t const kept = revised.push_back(std::move(*duplicate)); failed(kept)) collecting = kept;
-            });
-        if (failed(collecting)) return collecting;
-        if (revised.size() == 0) return success_k;
-
-        auto opened = publication();
-        if (!opened) return out_of_memory_heap_k;
-        if (status_t const reserved = opened->reserve(revised.size()); failed(reserved)) return reserved;
-        for (std::size_t index = 0; index != revised.size(); ++index) {
-            value_t &revision = revised[index];
-            callback(revision.key, revision.mapped);
-            if (status_t const staged = opened->upsert(std::move(revision)); failed(staged)) return staged;
-        }
-        return opened->publish();
+        return publish_group_([&](publication_t &group) noexcept {
+            return group.update_range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
+                                      std::forward<callback_type_>(callback));
+        });
     }
 
 #pragma endregion Range Operations

@@ -317,6 +317,13 @@ class locked_store {
         transaction_t &operator=(transaction_t &&) noexcept = default;
         generation_t generation() const noexcept { return inner_transaction_.generation(); }
 
+        /** @brief The stamp the wrapped transaction's last commit published under, which is transaction-local. */
+        [[nodiscard]] generation_t commit_stamp() const noexcept
+            requires requires(inner_transaction_t const &transaction) { transaction.commit_stamp(); }
+        {
+            return inner_transaction_.commit_stamp();
+        }
+
         [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.watch(id);
@@ -946,7 +953,8 @@ class locked_store {
         identifier_t bound_;
         cursor_seed_t seed_ {cursor_seed_t::the_smallest_k};
         cursor_limit_t limit_ {cursor_limit_t::the_whole_keyspace_k};
-        bool drained_ {false};
+        /** @brief Latched by the step that runs out, so @c exhausted answers without probing again. */
+        cursor_reach_t reach_ {cursor_reach_t::walking_k};
 
         explicit ordered_cursor_t(locked_store const &store, cursor_seed_t seed, cursor_limit_t limit) noexcept
             : store_(&store), seed_(seed), limit_(limit) {}
@@ -955,7 +963,7 @@ class locked_store {
         ordered_cursor_t() noexcept = default;
 
         /** @brief Whether the walk is over, which includes having passed the bound it was given. */
-        [[nodiscard]] bool exhausted() const noexcept { return !store_ || drained_; }
+        [[nodiscard]] bool exhausted() const noexcept { return !store_ || reach_ == cursor_reach_t::spent_k; }
 
         /**
          *  @brief Hands @p callback_found the next member, or reports the walk is over.
@@ -984,7 +992,7 @@ class locked_store {
                            : store_->inner_store_.smallest(take, no_op_t {}));
 
             if (!handed) {
-                drained_ = true;
+                reach_ = cursor_reach_t::spent_k;
                 callback_missing();
                 return;
             }

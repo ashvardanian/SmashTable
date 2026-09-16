@@ -10,13 +10,18 @@
 #define ST_STRICT_CALLBACK_CHECKS_ 1
 
 #include <cstddef> // `std::size_t`
+#include <cstdint> // `std::uint8_t`
 
-#include <algorithm> // `std::find`, `std::sort`, `std::next_permutation`
+#include <algorithm> // `std::find`, `std::max_element`, `std::sort`, `std::next_permutation`
+#include <atomic>    // `std::atomic`
+#include <chrono>    // `std::chrono::steady_clock`
 #include <numeric>   // `std::iota`
 #include <optional>  // `std::optional`
 #include <random>    // `std::mt19937`
+#include <thread>    // `std::thread`
 #include <vector>    // `std::vector`
 
+#include <smashtable/locked_store.hpp>
 #include <smashtable/snapshot_store.hpp>
 #include <smashtable/monotonic_store.hpp>
 #include <smashtable/partitioned_store.hpp>
@@ -2532,6 +2537,518 @@ static void transaction_range_surface_sees_its_own_writes() {
     st_verify_eq_(store.count(trivial_id_to_key<member_t>(100)), std::size_t {1});
 }
 
+#pragma region Pinned Reader Tests
+
+/** @brief Sixteen strictly serializable partitions over one clock, which is what the in-memory engine instantiates. */
+using sharded_strict_map_t = partitioned_store<strict_serializable_avl_map_t>;
+
+/** @brief How long a threaded suite below may run before its writer stops early, so the binary fits a CI budget. */
+inline constexpr std::chrono::milliseconds threaded_budget_k {1500};
+
+/** @brief Rounds a threaded suite runs before the budget may cut it short, so a slow build still races. */
+inline constexpr std::size_t least_rounds_k = 8;
+
+static_assert(
+    requires(locked_store<snapshot_avl_map_t>::transaction_t const &transaction) { transaction.commit_stamp(); },
+    "the lock wrapper forwards the stamp its store's transaction reports");
+
+/** @brief Stages and commits @p transaction, answering the first refusal either step met. */
+template <typename transaction_type_>
+[[nodiscard]] static status_t stage_and_commit(transaction_type_ &transaction) noexcept {
+    status_t const staged = transaction.stage();
+    return failed(staged) ? staged : transaction.commit();
+}
+
+/**
+ *  @brief Tests that a transaction's commit stamp follows the order commits went out in, whichever transaction
+ *    opened first.
+ */
+template <typename store_type_>
+static void test_commit_stamp_follows_commit_order() {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+
+    auto first = store.transaction();
+    auto second = store.transaction();
+    st_verify_(first.has_value() && second.has_value());
+    st_verify_eq_(first->commit_stamp(), 0, "no commit has gone out yet");
+
+    st_verify_(second->upsert(trivial_id_to_member<member_t>(2, 20)));
+    st_verify_(stage_and_commit(*second));
+    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, 10)));
+    st_verify_(stage_and_commit(*first));
+    st_verify_gt_(second->commit_stamp(), 0);
+    st_verify_gt_(first->commit_stamp(), second->commit_stamp(), "the later commit carries the larger stamp");
+
+    // A reader opened after both reads at or above the newer stamp.
+    auto const pinned = store.reader();
+    st_verify_ge_(pinned.snapshot(), first->commit_stamp());
+
+    // A refused commit leaves the stamp where the last successful one put it.
+    generation_t const kept = first->commit_stamp();
+    st_verify_(first->upsert(trivial_id_to_member<member_t>(7, 70)));
+    commit_write(store, 7, 71);
+    st_verify_eq_(stage_and_commit(*first), status_t::write_conflict_k);
+    st_verify_eq_(first->commit_stamp(), kept);
+
+    // The same transaction committing again moves past every stamp before it.
+    st_verify_(first->reset());
+    st_verify_(first->upsert(trivial_id_to_member<member_t>(1, 11)));
+    st_verify_(stage_and_commit(*first));
+    st_verify_gt_(first->commit_stamp(), kept);
+}
+
+/**
+ *  @brief Tests that a store-level window write over every partition goes out under one stamp, which is the
+ *    behaviour @c erase_range_policy_k names where the parts share a clock.
+ */
+template <typename store_type_>
+static void test_window_writes_publish_under_one_stamp() {
+    static_assert(store_type_::erase_range_policy_k == store_type_::refusal_policy_t::all_or_nothing_k,
+                  "this suite is for the sharded stores whose parts share a clock");
+    store_type_ store;
+    auto const identifiers = one_identifier_per_partition<store_type_>();
+    trivial_id_t const upper = *std::max_element(identifiers.begin(), identifiers.end()) + 1;
+    commit_write_many(store, identifiers, 1);
+
+    generation_t const before_erase = store.reader().snapshot();
+    st_verify_(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}));
+    st_verify_eq_(store.reader().snapshot() - before_erase, generation_t {1},
+                  "every partition's tombstones publish under the one stamp the window drew");
+    for (trivial_id_t identifier : identifiers)
+        st_verify_eq_(mapped_or_absent(store, identifier).status(), status_t::key_not_found_k);
+
+    commit_write_many(store, identifiers, 2);
+    generation_t const before_update = store.reader().snapshot();
+    st_verify_(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
+                                  [](trivial_key_t const &, int &mapped) noexcept { mapped += 10; }));
+    st_verify_eq_(store.reader().snapshot() - before_update, generation_t {1}, "and so does a window update");
+    for (trivial_id_t identifier : identifiers) st_verify_eq_(mapped_or_absent(store, identifier), 12);
+}
+
+/** @brief Tests that a reader answers every read at its stamp through commits, erasures and reclamation */
+template <typename store_type_>
+static void test_reader_holds_its_stamp() {
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t keys_k = 32;
+    store_type_ store;
+    for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 100);
+
+    {
+        auto const pinned = store.reader();
+        for (int round = 1; round != 5; ++round)
+            for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
+                commit_write(store, identifier, 100 + round);
+        commit_erase(store, 3);
+        [[maybe_unused]] std::size_t const swept = vacuumed(store);
+        st_verify_le_(store.low_water_mark(), pinned.snapshot(), "the reader's claim holds the mark at its stamp");
+
+        for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
+            st_verify_eq_(mapped_or_absent(pinned, identifier), 100, "a pinned read ignores every later commit");
+
+        trivial_id_t expected = 0;
+        std::size_t mismatched = 0;
+        st_verify_(pinned.range(trivial_key_t {0}, trivial_key_t {keys_k}, [&](member_t const &member) noexcept {
+            if (member.key.unique_id != expected++ || member.mapped != 100) ++mismatched;
+        }));
+        st_verify_eq_(expected, keys_k, "a pinned walk hands over every key its stamp reads, the erased one included");
+        st_verify_eq_(mismatched, 0u, "in order, at the values the stamp reads");
+
+        std::size_t handed = 0;
+        st_verify_(pinned.range(trivial_key_t {0}, trivial_key_t {keys_k}, [&](member_t const &) noexcept {
+            return ++handed == 5 ? walk_control_t::halt_k : walk_control_t::resume_k;
+        }));
+        st_verify_eq_(handed, 5u, "a pinned walk stops where its callback says");
+
+        st_verify_eq_(mapped_or_absent(store, 0), 104, "the store itself reads the newest commit");
+        st_verify_eq_(mapped_or_absent(store, 3).status(), status_t::key_not_found_k);
+        st_verify_gt_(store.versions_count(), keys_k, "every version the stamp still names is retained");
+    }
+
+    // Nothing is pinned once the reader closes, so a sweep collapses every key to the one it reads.
+    [[maybe_unused]] std::size_t const reclaimed = vacuumed(store);
+    st_verify_eq_(store.versions_count(), keys_k - 1, "one version per live key, and none for the erased one");
+}
+
+/**
+ *  @brief Tests that one reader serves several threads with no lock of their own while writers commit, erase
+ *    windows and reclaim.
+ */
+template <typename store_type_>
+static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t keys_k = 64;
+    constexpr std::size_t readers_k = 3;
+    store_type_ store;
+    for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 1);
+
+    auto const deadline = std::chrono::steady_clock::now() + threaded_budget_k;
+    std::atomic<std::size_t> rounds_run {0};
+    auto const pinned = store.reader();
+    std::atomic<bool> readers_inside {false};
+    std::atomic<bool> writing_done {false};
+    std::atomic<std::size_t> passes {0}, adoptions {0}, wrong {0};
+    std::vector<std::thread> threads;
+
+    threads.emplace_back([&]() noexcept {
+        while (!readers_inside.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (std::size_t round = 0; round != rounds; ++round) {
+            if (round >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
+            auto writer = store.transaction();
+            st_verify_(writer.has_value());
+            for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
+                st_verify_(writer->upsert(trivial_id_to_member<member_t>(identifier, int(round) + 2)));
+            st_verify_(stage_and_commit(*writer));
+            st_verify_(store.erase_range(trivial_key_t {10}, trivial_key_t {20}));
+            [[maybe_unused]] auto const reclaimed = store.vacuum();
+            rounds_run.fetch_add(1, std::memory_order_relaxed);
+        }
+        writing_done.store(true, std::memory_order_release);
+    });
+
+    for (std::size_t reader_index = 0; reader_index != readers_k; ++reader_index)
+        threads.emplace_back([&]() noexcept {
+            do {
+                for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) {
+                    int observed = -1;
+                    [[maybe_unused]] status_t const found = pinned.find(
+                        trivial_key_t {identifier}, [&](member_t const &member) noexcept { observed = member.mapped; },
+                        no_op_t {});
+                    if (observed != 1) wrong.fetch_add(1, std::memory_order_relaxed);
+                }
+                std::size_t walked = 0;
+                [[maybe_unused]] status_t const ranged =
+                    pinned.range(trivial_key_t {0}, trivial_key_t {keys_k}, [&](member_t const &member) noexcept {
+                        if (member.key.unique_id != walked++ || member.mapped != 1)
+                            wrong.fetch_add(1, std::memory_order_relaxed);
+                    });
+                if (walked != keys_k) wrong.fetch_add(1, std::memory_order_relaxed);
+                passes.fetch_add(1, std::memory_order_relaxed);
+                readers_inside.store(true, std::memory_order_release);
+            } while (!writing_done.load(std::memory_order_acquire));
+        });
+
+    // A transaction adopting the stamp over and over joins and leaves the census beside the reader's claim.
+    threads.emplace_back([&]() noexcept {
+        do {
+            auto adopted = store.transaction(pinned);
+            st_verify_(adopted.has_value());
+            for (trivial_id_t identifier = 0; identifier < keys_k; identifier += 7) {
+                expected<int> const observed = mapped_or_absent(*adopted, identifier);
+                if (!observed || *observed != 1) wrong.fetch_add(1, std::memory_order_relaxed);
+            }
+            adoptions.fetch_add(1, std::memory_order_relaxed);
+        } while (!writing_done.load(std::memory_order_acquire));
+    });
+
+    for (std::thread &thread : threads) thread.join();
+    st_verify_eq_(wrong.load(), 0u,
+                  "no read through the reader or an adoption may see a later commit or a freed version");
+    st_verify_ge_(rounds_run.load(), least_rounds_k, "the budget may shorten the run, never skip the race");
+    st_verify_gt_(passes.load(), 0u);
+    st_verify_gt_(adoptions.load(), 0u);
+}
+
+/**
+ *  @brief Tests that a transaction adopting a reader's stamp reads what the reader reads and is validated against
+ *    every later commit.
+ */
+template <typename store_type_>
+static void test_adopted_stamp_is_validated() {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+    commit_write(store, 1, 10);
+    commit_write(store, 2, 20);
+    auto const pinned = store.reader();
+    commit_write(store, 1, 11);
+
+    {
+        auto adopted = store.transaction(pinned);
+        st_verify_(adopted.has_value());
+        st_verify_eq_(mapped_or_absent(*adopted, 1), 10, "an adoption reads at the stamp, not at the newest commit");
+        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(1, 12)));
+        st_verify_eq_(stage_and_commit(*adopted), status_t::write_conflict_k,
+                      "writing a key published over since the stamp is a lost update at every level");
+    }
+    {
+        auto adopted = store.transaction(pinned);
+        st_verify_(adopted.has_value());
+        st_verify_eq_(mapped_or_absent(*adopted, 1), 10);
+        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(3, 30)));
+        if constexpr (at_least(store_type_::isolation_k, isolation_t::serializable_k))
+            st_verify_eq_(stage_and_commit(*adopted), status_t::read_conflict_k,
+                          "a read of a key published over since the stamp is refused from serializable up");
+        else st_verify_(stage_and_commit(*adopted));
+    }
+    if constexpr (!at_least(store_type_::isolation_k, isolation_t::serializable_k)) {
+        auto adopted = store.transaction(pinned);
+        st_verify_(adopted.has_value());
+        st_verify_(adopted->watch(trivial_key_t {1}));
+        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(4, 40)));
+        st_verify_eq_(stage_and_commit(*adopted), status_t::read_conflict_k,
+                      "a watched key published over since the stamp is refused at snapshot isolation too");
+    }
+    {
+        auto adopted = store.transaction(pinned);
+        st_verify_(adopted.has_value());
+        st_verify_eq_(mapped_or_absent(*adopted, 2), 20);
+        st_verify_(adopted->upsert(trivial_id_to_member<member_t>(2, 21)));
+        st_verify_(stage_and_commit(*adopted));
+        st_verify_gt_(adopted->commit_stamp(), pinned.snapshot());
+        st_verify_eq_(mapped_or_absent(store, 2), 21);
+    }
+}
+
+/** @brief Tests that an adopting transaction keeps the stamp pinned after the reader it adopted from closes */
+template <typename store_type_>
+static void test_adoption_outlives_the_reader() {
+    constexpr trivial_id_t keys_k = 8;
+    store_type_ store;
+    for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 1);
+
+    auto adopted = [&]() {
+        auto const pinned = store.reader();
+        return store.transaction(pinned);
+    }();
+    st_verify_(adopted.has_value());
+
+    for (int round = 2; round != 6; ++round) {
+        for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, round);
+        [[maybe_unused]] std::size_t const swept = vacuumed(store);
+    }
+    for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
+        st_verify_eq_(mapped_or_absent(*adopted, identifier), 1, "the adoption's own claim keeps its versions");
+}
+
+/** @brief The three ordered walks a page can be read through. */
+enum class page_walk_t : std::uint8_t { range_k, range_from_k, range_up_to_k };
+
+/** @brief Reads @p page_size members from the smallest key through @p walk, answering the last key handed over. */
+template <typename transaction_type_>
+static trivial_id_t read_a_page(transaction_type_ const &transaction, page_walk_t walk, std::size_t page_size,
+                                trivial_id_t upper) {
+    std::size_t handed = 0;
+    trivial_id_t last = 0;
+    auto const step = [&](auto const &member) noexcept {
+        last = member.key.unique_id;
+        return ++handed == page_size ? walk_control_t::halt_k : walk_control_t::resume_k;
+    };
+    switch (walk) {
+    case page_walk_t::range_k: st_verify_(transaction.range(trivial_key_t {0}, trivial_key_t {upper}, step)); break;
+    case page_walk_t::range_from_k: st_verify_(transaction.range_from(trivial_key_t {0}, step)); break;
+    case page_walk_t::range_up_to_k: st_verify_(transaction.range_up_to(trivial_key_t {upper}, step)); break;
+    }
+    st_verify_eq_(handed, page_size, "the page must be full, or it records the whole window");
+    return last;
+}
+
+/**
+ *  @brief Tests that a page read through any ordered walk records only what it handed over, so commits past it
+ *    refuse nothing.
+ */
+template <typename store_type_>
+static void test_page_ignores_commits_past_its_last_key() {
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t keys_k = 100, spacing_k = 10, page_k = 10;
+    constexpr trivial_id_t upper_k = keys_k * spacing_k;
+    constexpr trivial_id_t last_on_page_k = (page_k - 1) * spacing_k;
+    constexpr bool validated_k = at_least(store_type_::isolation_k, isolation_t::serializable_k);
+    trivial_id_t next_outside = upper_k * 2;
+
+    for (page_walk_t const walk : {page_walk_t::range_k, page_walk_t::range_from_k, page_walk_t::range_up_to_k}) {
+        store_type_ store;
+        for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
+
+        {
+            auto paging = store.transaction();
+            st_verify_(paging.has_value());
+            st_verify_eq_(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
+            // Past the page: an insert beside its last key, an update, an erase, and an insert past the window.
+            commit_write(store, last_on_page_k + 5, 1);
+            commit_write(store, 50 * spacing_k, 1);
+            commit_erase(store, 70 * spacing_k);
+            commit_write(store, upper_k + 5, 1);
+            st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+            st_verify_((succeeded(stage_and_commit(*paging))) &&
+                       "a commit past the page's last key must not refuse it");
+        }
+        {
+            auto paging = store.transaction();
+            st_verify_(paging.has_value());
+            st_verify_eq_(read_a_page(*paging, walk, page_k, upper_k), last_on_page_k);
+            commit_write(store, 4 * spacing_k + 5, 1);
+            st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+            if constexpr (validated_k)
+                st_verify_eq_(stage_and_commit(*paging), status_t::phantom_conflict_k,
+                              "an insert inside the page is still a phantom from serializable up");
+            else st_verify_(stage_and_commit(*paging));
+        }
+        {
+            auto paging = store.transaction();
+            st_verify_(paging.has_value());
+            trivial_id_t const stopped = read_a_page(*paging, walk, page_k, upper_k);
+            commit_write(store, stopped, -1);
+            st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+            if constexpr (validated_k)
+                st_verify_eq_(stage_and_commit(*paging), status_t::read_conflict_k,
+                              "the key a page stopped on is a key it read");
+            else st_verify_(stage_and_commit(*paging));
+        }
+    }
+}
+
+/** @brief Tests that no reader ever sees a store-level window write spanning partitions half applied */
+template <typename store_type_>
+static void test_window_writes_are_never_seen_half_applied(std::size_t rounds = 200) {
+    using member_t = typename store_type_::value_type;
+    constexpr std::size_t readers_k = 3;
+    store_type_ store;
+    auto const identifiers = one_identifier_per_partition<store_type_>();
+    trivial_id_t const upper = *std::max_element(identifiers.begin(), identifiers.end()) + 1;
+    commit_write_many(store, identifiers, 1);
+
+    auto const deadline = std::chrono::steady_clock::now() + threaded_budget_k;
+    std::atomic<bool> readers_inside {false};
+    std::atomic<bool> writing_done {false};
+    std::atomic<std::size_t> rounds_run {0}, observations {0}, torn {0}, saw_empty {0}, saw_filled {0};
+    std::vector<std::thread> threads;
+
+    threads.emplace_back([&]() noexcept {
+        while (!readers_inside.load(std::memory_order_acquire)) std::this_thread::yield();
+        for (std::size_t round = 0; round != rounds; ++round) {
+            if (round >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
+            st_verify_(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}));
+            commit_write_many(store, identifiers, int(round) + 2);
+            st_verify_(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
+                                          [](trivial_key_t const &, int &mapped) noexcept { mapped += 1000; }));
+            rounds_run.fetch_add(1, std::memory_order_relaxed);
+        }
+        writing_done.store(true, std::memory_order_release);
+    });
+
+    // Every partition holds one key, so a window write lands in all of them or, seen whole, in none.
+    auto const tally = [&](auto const &readable) noexcept {
+        std::size_t present = 0;
+        std::size_t distinct = 0;
+        int first_value = 0;
+        for (trivial_id_t identifier : identifiers) {
+            [[maybe_unused]] status_t const found = readable.find(
+                trivial_key_t {identifier},
+                [&](member_t const &member) noexcept {
+                    if (present++ == 0) first_value = member.mapped;
+                    else if (member.mapped != first_value) ++distinct;
+                },
+                no_op_t {});
+        }
+        if ((present != 0 && present != identifiers.size()) || distinct != 0)
+            torn.fetch_add(1, std::memory_order_relaxed);
+        (present == 0 ? saw_empty : saw_filled).fetch_add(1, std::memory_order_relaxed);
+        observations.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    for (std::size_t reader_index = 0; reader_index != readers_k; ++reader_index)
+        threads.emplace_back([&]() noexcept {
+            do {
+                tally(store.reader());
+                auto opened = store.transaction();
+                st_verify_(opened.has_value());
+                tally(*opened);
+                readers_inside.store(true, std::memory_order_release);
+            } while (!writing_done.load(std::memory_order_acquire));
+        });
+
+    for (std::thread &thread : threads) thread.join();
+    st_verify_eq_(torn.load(), 0u, "a snapshot names a window write's one stamp or does not");
+    st_verify_ge_(rounds_run.load(), least_rounds_k, "the budget may shorten the run, never skip the race");
+    st_verify_gt_(observations.load(), 0u);
+    st_verify_gt_(saw_filled.load(), 0u, "and the readers met the window both erased and filled");
+    st_verify_gt_(saw_empty.load(), 0u);
+}
+
+/**
+ *  @brief Tests that a staged sharded transaction destroyed, reset or assigned over takes its versions back under
+ *    the partition locks.
+ */
+template <typename store_type_>
+static void test_staged_transaction_unwinds_under_partition_locks(std::size_t rounds = 150) {
+    using member_t = typename store_type_::value_type;
+    store_type_ store;
+    auto const identifiers = one_identifier_per_partition<store_type_>();
+    commit_write_many(store, identifiers, 1);
+    [[maybe_unused]] std::size_t const swept = vacuumed(store);
+    std::size_t const settled = store.versions_count();
+
+    auto const stage_everything = [&](auto &transaction) {
+        for (trivial_id_t identifier : identifiers)
+            st_verify_(transaction.upsert(trivial_id_to_member<member_t>(identifier, 2)));
+        st_verify_(transaction.stage());
+        st_verify_eq_(store.versions_count(), settled + identifiers.size(),
+                      "staging files one invisible version per key");
+    };
+
+    {
+        auto staged = store.transaction();
+        st_verify_(staged.has_value());
+        stage_everything(*staged);
+    }
+    st_verify_eq_(store.versions_count(), settled, "a staged transaction going away takes its versions back");
+
+    {
+        auto staged = store.transaction();
+        st_verify_(staged.has_value());
+        stage_everything(*staged);
+        st_verify_(staged->reset());
+        st_verify_eq_(store.versions_count(), settled, "a reset takes them back too");
+    }
+
+    {
+        auto staged = store.transaction();
+        auto fresh = store.transaction();
+        st_verify_(staged.has_value() && fresh.has_value());
+        stage_everything(*staged);
+        *staged = std::move(*fresh);
+        st_verify_eq_(store.versions_count(), settled,
+                      "a staged transaction assigned over unwinds before it is replaced");
+        st_verify_(staged->upsert(trivial_id_to_member<member_t>(identifiers.front(), 3)));
+        st_verify_(stage_and_commit(*staged));
+    }
+    st_verify_eq_(mapped_or_absent(store, identifiers.front()), 3);
+    for (std::size_t index = 1; index != identifiers.size(); ++index)
+        st_verify_eq_(mapped_or_absent(store, identifiers[index]), 1,
+                      "nothing an unwound transaction staged was published");
+
+    // Walkers crossing the partitions while staged transactions are abandoned under them.
+    std::atomic<bool> walking_done {false};
+    std::atomic<std::size_t> walks {0}, wrong {0};
+    auto const deadline = std::chrono::steady_clock::now() + threaded_budget_k;
+    std::size_t rounds_run = 0;
+    std::thread walker([&]() noexcept {
+        do {
+            std::size_t present = 0;
+            [[maybe_unused]] status_t const ranged =
+                store.range(trivial_key_t {0}, trivial_key_t {4096}, [&](member_t const &) noexcept { ++present; });
+            if (present != identifiers.size()) wrong.fetch_add(1, std::memory_order_relaxed);
+            walks.fetch_add(1, std::memory_order_relaxed);
+        } while (!walking_done.load(std::memory_order_acquire));
+    });
+    for (; rounds_run != rounds; ++rounds_run) {
+        if (rounds_run >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
+        auto abandoned = store.transaction();
+        st_verify_(abandoned.has_value());
+        for (trivial_id_t identifier : identifiers)
+            st_verify_(abandoned->upsert(trivial_id_to_member<member_t>(identifier + 5000, 9)));
+        st_verify_(abandoned->stage());
+    }
+    walking_done.store(true, std::memory_order_release);
+    walker.join();
+    st_verify_eq_(wrong.load(), 0u, "no walk may meet a staged version or a half-removed node");
+    st_verify_ge_(rounds_run, least_rounds_k, "the budget may shorten the run, never skip the race");
+    st_verify_gt_(walks.load(), 0u);
+    st_verify_eq_(store.versions_count(), settled, "every abandoned stage was taken back");
+}
+
+#pragma endregion Pinned Reader Tests
+
 } // namespace
 
 int main(int, char **) {
@@ -2847,6 +3364,72 @@ int main(int, char **) {
     failures += run_test(filter, "fuzz.accepted_group_publishes_everything", []() {
         test_an_accepted_group_publishes_everything<snapshot_avl_map_t, serializable_avl_map_t>();
     });
+
+    failures += run_test(filter, "commit_stamp.follows_commit_order.snapshot",
+                         test_commit_stamp_follows_commit_order<snapshot_avl_map_t>);
+    failures += run_test(filter, "commit_stamp.follows_commit_order.strict",
+                         test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>);
+    failures += run_test(filter, "commit_stamp.follows_commit_order.sharded_snapshot",
+                         test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>);
+    failures += run_test(filter, "commit_stamp.follows_commit_order.sharded_strict",
+                         test_commit_stamp_follows_commit_order<sharded_strict_map_t>);
+
+    failures += run_test(filter, "reader.holds_its_stamp.snapshot", test_reader_holds_its_stamp<snapshot_avl_map_t>);
+    failures += run_test(filter, "reader.holds_its_stamp.sharded_snapshot",
+                         test_reader_holds_its_stamp<sharded_snapshot_map_t>);
+    failures +=
+        run_test(filter, "reader.holds_its_stamp.strict", test_reader_holds_its_stamp<strict_serializable_avl_map_t>);
+    failures +=
+        run_test(filter, "reader.holds_its_stamp.sharded_strict", test_reader_holds_its_stamp<sharded_strict_map_t>);
+    failures += run_test(filter, "reader.serves_threads_without_a_lock.sharded_snapshot",
+                         []() { test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>(); });
+    failures += run_test(filter, "reader.serves_threads_without_a_lock.sharded_strict",
+                         []() { test_reader_serves_threads_without_a_lock<sharded_strict_map_t>(); });
+
+    failures += run_test(filter, "adoption.is_validated.snapshot", test_adopted_stamp_is_validated<snapshot_avl_map_t>);
+    failures +=
+        run_test(filter, "adoption.is_validated.serializable", test_adopted_stamp_is_validated<serializable_avl_map_t>);
+    failures += run_test(filter, "adoption.is_validated.strict",
+                         test_adopted_stamp_is_validated<strict_serializable_avl_map_t>);
+    failures += run_test(filter, "adoption.is_validated.sharded_snapshot",
+                         test_adopted_stamp_is_validated<sharded_snapshot_map_t>);
+    failures +=
+        run_test(filter, "adoption.is_validated.sharded_strict", test_adopted_stamp_is_validated<sharded_strict_map_t>);
+    failures += run_test(filter, "adoption.outlives_the_reader.snapshot",
+                         test_adoption_outlives_the_reader<snapshot_avl_map_t>);
+    failures += run_test(filter, "adoption.outlives_the_reader.serializable",
+                         test_adoption_outlives_the_reader<serializable_avl_map_t>);
+    failures += run_test(filter, "adoption.outlives_the_reader.strict",
+                         test_adoption_outlives_the_reader<strict_serializable_avl_map_t>);
+    failures += run_test(filter, "adoption.outlives_the_reader.sharded_snapshot",
+                         test_adoption_outlives_the_reader<sharded_snapshot_map_t>);
+    failures += run_test(filter, "adoption.outlives_the_reader.sharded_strict",
+                         test_adoption_outlives_the_reader<sharded_strict_map_t>);
+
+    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.snapshot",
+                         test_page_ignores_commits_past_its_last_key<snapshot_avl_map_t>);
+    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.serializable",
+                         test_page_ignores_commits_past_its_last_key<serializable_avl_map_t>);
+    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.strict",
+                         test_page_ignores_commits_past_its_last_key<strict_serializable_avl_map_t>);
+    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.sharded_snapshot",
+                         test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>);
+    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.sharded_strict",
+                         test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>);
+
+    failures += run_test(filter, "window_writes.publish_under_one_stamp.sharded_snapshot",
+                         test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>);
+    failures += run_test(filter, "window_writes.publish_under_one_stamp.sharded_strict",
+                         test_window_writes_publish_under_one_stamp<sharded_strict_map_t>);
+    failures += run_test(filter, "window_writes.never_seen_half_applied.sharded_snapshot",
+                         []() { test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>(); });
+    failures += run_test(filter, "window_writes.never_seen_half_applied.sharded_strict",
+                         []() { test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>(); });
+
+    failures += run_test(filter, "unwind.staged_transaction_under_partition_locks.sharded_snapshot",
+                         []() { test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>(); });
+    failures += run_test(filter, "unwind.staged_transaction_under_partition_locks.sharded_strict",
+                         []() { test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>(); });
 
     return report_test_failures(failures);
 }

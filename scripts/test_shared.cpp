@@ -7,17 +7,19 @@
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 
+#include <cerrno>  // `EIO`
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`, `SIZE_MAX`
 
-#include <array>      // `std::array`
-#include <atomic>     // `std::atomic`
-#include <functional> // `std::equal_to`, `std::hash`, `std::less`
-#include <limits>     // `std::numeric_limits`
-#include <memory>     // `std::allocator`
-#include <thread>     // `std::thread`
-#include <utility>    // `std::pair`
-#include <vector>     // `std::vector`
+#include <array>       // `std::array`
+#include <atomic>      // `std::atomic`
+#include <functional>  // `std::equal_to`, `std::hash`, `std::less`
+#include <limits>      // `std::numeric_limits`
+#include <memory>      // `std::allocator`
+#include <string_view> // `std::string_view`
+#include <thread>      // `std::thread`
+#include <utility>     // `std::pair`
+#include <vector>      // `std::vector`
 
 #include <smashtable/reference_store.hpp>
 #include <smashtable/shared.hpp>
@@ -854,6 +856,133 @@ static_assert(optimistically_concurrent_store<std_store_t>, "and so does the `st
 static_assert(!optimistically_concurrent_store<counted_t>, "a plain value is not a store");
 static_assert(at_least(avl_store_t::isolation_k, isolation_t::read_committed_k), "the floor the concept states");
 
+/** @brief A transaction whose commit refuses with a planned status a set number of times, counting every call. */
+struct conflicting_transaction_t {
+    /** @brief How many more commits refuse. */
+    std::size_t refusals_left = 0;
+    /** @brief What a refusing commit answers. */
+    status_t refusal = status_t::write_conflict_k;
+    /** @brief How many more resets refuse, which is the fault a retry cannot unwind. */
+    std::size_t reset_refusals_left = 0;
+    /** @brief How many times @c stage ran. */
+    std::size_t stages = 0;
+    /** @brief How many times @c commit ran. */
+    std::size_t commits = 0;
+    /** @brief How many times @c reset ran. */
+    std::size_t resets = 0;
+
+    [[nodiscard]] status_t stage() noexcept {
+        ++stages;
+        return success_k;
+    }
+    [[nodiscard]] status_t commit() noexcept {
+        ++commits;
+        if (refusals_left == 0) return success_k;
+        --refusals_left;
+        return refusal;
+    }
+    [[nodiscard]] status_t reset() noexcept {
+        ++resets;
+        if (reset_refusals_left == 0) return success_k;
+        --reset_refusals_left;
+        return status_t::operation_not_permitted_k;
+    }
+};
+
+/**
+ *  @brief Tests that a bounded retry restages after every conflict, gives up once its attempts run out, and
+ *    returns any other failure at once.
+ */
+static void commit_with_retries_is_bounded() {
+    std::size_t restaged = 0;
+    auto const stage_changes = [&](conflicting_transaction_t &) noexcept {
+        ++restaged;
+        return status_t::success_k;
+    };
+
+    // Two conflicts and then a commit: three attempts, each restaging, with a reset between them.
+    conflicting_transaction_t recovering;
+    recovering.refusals_left = 2;
+    st_verify_(commit_with_retries(recovering, 3, stage_changes));
+    st_verify_eq_(restaged, 3u, "every attempt recomputes what it stages");
+    st_verify_eq_(recovering.resets, 2u, "and a refused attempt is reset before the next one");
+
+    // Every attempt conflicting is a retry that gave up, which is what the vocabulary names for it.
+    conflicting_transaction_t hopeless;
+    hopeless.refusals_left = 10;
+    hopeless.refusal = status_t::phantom_conflict_k;
+    restaged = 0;
+    st_verify_eq_(commit_with_retries(hopeless, 4, stage_changes), status_t::operation_would_block_k);
+    st_verify_eq_(hopeless.commits, 4u, "the bound is the number of attempts, not one more");
+    st_verify_eq_(hopeless.resets, 4u, "and the last refused attempt is reset too, leaving nothing staged");
+    st_verify_eq_(restaged, 4u, "every one of those attempts recomputed what it staged");
+
+    // A failure that is not a conflict is not retried, and still leaves the transaction reset.
+    conflicting_transaction_t refusing;
+    std::size_t attempted = 0;
+    status_t const answered = commit_with_retries(refusing, 5, [&](conflicting_transaction_t &) noexcept {
+        ++attempted;
+        return status_t::out_of_memory_heap_k;
+    });
+    st_verify_eq_(answered, status_t::out_of_memory_heap_k);
+    st_verify_eq_(attempted, 1u, "retrying cannot mend a failure no other transaction caused");
+    st_verify_eq_(refusing.stages, 0u, "a transaction whose changes would not stage never reaches its own stage");
+    st_verify_eq_(refusing.resets, 1u);
+
+    // A conflict the unwind cannot clear is answered with the unwind's own failure, not the conflict.
+    conflicting_transaction_t unwinding;
+    unwinding.refusals_left = 1;
+    unwinding.reset_refusals_left = 1;
+    st_verify_eq_(commit_with_retries(unwinding, 3, stage_changes), status_t::operation_not_permitted_k);
+    st_verify_eq_(unwinding.commits, 1u, "a transaction that would not unwind is not retried over");
+
+    // A failure of its own outranks the unwind's, because it is the one a caller can act on.
+    conflicting_transaction_t faulted;
+    faulted.reset_refusals_left = 1;
+    st_verify_eq_(commit_with_retries(
+                      faulted, 3, [&](conflicting_transaction_t &) noexcept { return status_t::invalid_argument_k; }),
+                  status_t::invalid_argument_k);
+    st_verify_eq_(faulted.resets, 1u, "and the attempt is still unwound before the failure goes back");
+
+    // No attempts make no calls at all.
+    conflicting_transaction_t untouched;
+    st_verify_eq_(commit_with_retries(untouched, 0, stage_changes), status_t::operation_would_block_k);
+    st_verify_eq_(untouched.stages + untouched.commits + untouched.resets, 0u);
+}
+
+/** @brief Every status the vocabulary names, so a new one has to be classified here rather than fall through. */
+constexpr status_t every_status_k[] = {
+    status_t::success_k,
+    status_t::unknown_k,
+    status_t::consistency_k,
+    status_t::write_conflict_k,
+    status_t::read_conflict_k,
+    status_t::phantom_conflict_k,
+    status_t::out_of_memory_heap_k,
+    status_t::invalid_argument_k,
+    status_t::operation_not_permitted_k,
+    status_t::operation_would_block_k,
+    status_t::capacity_exhausted_k,
+    status_t::input_output_k,
+    status_t::key_already_exists_k,
+    status_t::key_not_found_k,
+};
+
+/**
+ *  @brief Tests that the conflict statuses are exactly the three a retry can overcome, over the whole
+ *    vocabulary, and that the I/O status names and numbers itself.
+ */
+static void status_vocabulary_names_conflicts_and_input_output() {
+    for (status_t const status : every_status_k) {
+        bool const retryable = status == status_t::write_conflict_k || status == status_t::read_conflict_k ||
+                               status == status_t::phantom_conflict_k;
+        st_verify_eq_(conflicted(status), retryable, name_of(status));
+        st_verify_(std::string_view {name_of(status)} != std::string_view {"unrecognized"});
+    }
+    st_verify_eq_(static_cast<int>(status_t::input_output_k), EIO, "the status follows errno where one fits");
+    st_verify_eq_(std::string_view {name_of(status_t::input_output_k)}, std::string_view {"input_output_k"});
+}
+
 #pragma endregion Optimistic Concurrency Tests
 
 } // namespace
@@ -891,6 +1020,9 @@ int main() {
     failures += run_test(filter, "occ.isolation_strength", isolation_levels_compare_by_strength);
     failures += run_test(filter, "occ.validate_watches", validate_watches_catches_drift);
     failures += run_test(filter, "occ.per_version_equals", per_version_equals_separates_versions);
+    failures += run_test(filter, "occ.commit_with_retries_is_bounded", commit_with_retries_is_bounded);
+    failures +=
+        run_test(filter, "status.names_conflicts_and_input_output", status_vocabulary_names_conflicts_and_input_output);
 
     return report_test_failures(failures);
 }
