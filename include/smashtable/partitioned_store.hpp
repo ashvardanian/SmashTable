@@ -121,22 +121,12 @@ class partitioned_store {
                                                    ? inner_store_t::isolation_k
                                                    : isolation_t::read_committed_k;
 
-    /**
-     *  @brief Whether a plain read on a part files something a commit-time check has to validate.
-     *    Below @c serializable_k a read files nothing, so marking its partition would buy a lock for
-     *    no check.
-     */
-
     using comparator_t = typename inner_store_t::comparator_t;
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
 
     /** @brief Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
-
-    /** @brief Whether an open transaction sizes its watch list ahead of the writes that fill it. */
-    static constexpr bool inner_transaction_reserves_k =
-        requires(inner_transaction_t &transaction, std::size_t size) { transaction.reserve(size); };
 
     /** @brief Whether a partition answers reads at a stamp somebody else pinned, registering nothing itself. */
     static constexpr bool inner_reads_at_a_stamp_k =
@@ -157,6 +147,9 @@ class partitioned_store {
     /**
      *  @brief Whether an open transaction walks what it reads without recording it, and records a window
      *    on demand, which is what lets a merged walk record only the prefix it handed over.
+     *
+     *  One gate over several methods, unlike the surfaces in @c shared.hpp: a cursor without the watches
+     *  records nothing a commit can validate, so the pair is the capability rather than either half.
      */
     static constexpr bool inner_transaction_walks_unrecorded_k =
         requires(inner_transaction_t const &transaction, identifier_t const &key) {
@@ -1983,7 +1976,7 @@ class partitioned_store {
 
         /** @brief Sizes every part's watch list, splitting @p size the way the store splits a reserve. */
         [[nodiscard]] status_t reserve(std::size_t size) noexcept
-            requires inner_transaction_reserves_k
+            requires transaction_offers_reserve<inner_store_t>
         {
             status_t status = success_k;
             for (inner_transaction_t &part : partitions_)

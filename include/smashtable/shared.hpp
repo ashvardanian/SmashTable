@@ -1306,7 +1306,9 @@ struct per_version_equals {
 
 /**
  *  @brief Whether a store validates what a transaction read, so a commit over it can be refused.
- *    Below @c serializable_k a read is answered and forgotten, and there is nothing to record.
+ *
+ *  Below @c serializable_k a read files nothing and is answered and forgotten, so a wrapper marking
+ *  the partition a read touched would buy a lock for a check nobody makes.
  */
 template <typename store_type_>
 concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::serializable_k);
@@ -1620,8 +1622,11 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 // One concept per method, so a store offering only some of a group keeps those through every wrapper.
 // Two methods behind one gate means the store offering only the second loses it everywhere, which is
 // the defect `scripts/test_surface_parity.hpp` exists to catch. Composites are spelled from the atoms.
+//
+// Each of these detects a method, never what the method promises: a docblock naming a contract names
+// the method's, and a store whose `update` creates an absent key satisfies `offers_update` anyway.
 
-/** @brief Whether the store writes over an occupied key through @c insert_or_assign. */
+/** @brief Whether the store carries @c insert_or_assign, whose contract is to write over an occupied key. */
 template <typename store_type_>
 concept offers_insert_or_assign = requires(store_type_ &store, typename store_type_::value_t &&element) {
     store.insert_or_assign(std::move(element));
@@ -1716,7 +1721,7 @@ template <typename store_type_>
 concept offers_insert =
     requires(store_type_ &store, typename store_type_::value_t &&element) { store.insert(std::move(element)); };
 
-/** @brief Whether that refusal also hands over the element already holding the key. */
+/** @brief Whether the three-argument @c insert also hands over the element already holding the key. */
 template <typename store_type_>
 concept offers_insert_naming_occupant =
     requires(store_type_ &store, typename store_type_::value_t &&element, no_op_t callback) {
@@ -1813,7 +1818,7 @@ template <typename store_type_>
 concept transaction_offers_changes_count =
     requires(typename store_type_::transaction_t const &transaction) { transaction.changes_count(); };
 
-/** @brief Whether that refusal, inside a transaction, also hands over the element holding the key. */
+/** @brief Whether a transaction's three-argument @c insert also hands over the element holding the key. */
 template <typename store_type_>
 concept transaction_offers_insert_naming_occupant =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element,
@@ -1825,7 +1830,7 @@ concept transaction_offers_update_range =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.update_range(key, key, callback); };
 
-/** @brief Whether an open transaction leaves an occupied key alone rather than refusing. */
+/** @brief Whether a transaction carries @c insert_if_missing, whose contract is to leave an occupied key. */
 template <typename store_type_>
 concept transaction_offers_insert_if_missing =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
@@ -1884,6 +1889,53 @@ concept transaction_offers_order_statistics =
 template <typename store_type_>
 concept transaction_offers_change_report =
     transaction_offers_has_changes<store_type_> && transaction_offers_changes_count<store_type_>;
+
+/** @brief Whether an open transaction walks every key at or after a bound. */
+template <typename store_type_>
+concept transaction_offers_range_from =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.range_from(key, callback); };
+
+/** @brief Whether an open transaction walks every key before a bound. */
+template <typename store_type_>
+concept transaction_offers_range_up_to =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.range_up_to(key, callback); };
+
+/** @brief Whether an open transaction copies out the first member at or after a key. */
+template <typename store_type_>
+concept transaction_offers_lower_bound_copy =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
+        transaction.lower_bound_copy(key);
+    };
+
+/** @brief Whether an open transaction copies out the first member after a key. */
+template <typename store_type_>
+concept transaction_offers_upper_bound_copy =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
+        transaction.upper_bound_copy(key);
+    };
+
+/** @brief Whether an open transaction draws one member of a window at random. */
+template <typename store_type_>
+concept transaction_offers_sample_one =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.sample_one(key, key, callback, callback); };
+
+/** @brief Whether an open transaction fills a reservoir from a window. */
+template <typename store_type_>
+concept transaction_offers_sample_reservoir = requires(
+    typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+    no_op_t callback, std::size_t seen) { transaction.sample_reservoir(key, key, callback, seen, seen, callback); };
+
+/** @brief Whether the store says how many keys its ordinal surface indexes. */
+template <typename store_type_>
+concept offers_ranked_size = requires(store_type_ const &store) { store.ranked_size(); };
+
+/** @brief Whether an open transaction sizes its watch list ahead of the writes that fill it. */
+template <typename store_type_>
+concept transaction_offers_reserve =
+    requires(typename store_type_::transaction_t &transaction, std::size_t size) { transaction.reserve(size); };
 
 #pragma endregion Store Surfaces
 

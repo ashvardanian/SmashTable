@@ -412,6 +412,7 @@ int raise_for(module_state_t *state, status_t status, PyObject *key) noexcept {
     case status_t::operation_would_block_k:
         PyErr_SetString(state->error, "the operation gave up rather than block");
         break;
+    case status_t::input_output_k: PyErr_SetString(PyExc_OSError, "a device or file refused a read or write"); break;
     // Anything the vocabulary names but this mapping has not claimed, spelled rather than numbered:
     // a reader tracing an unexpected failure gets the enumerator, not a number to go look up.
     default: PyErr_Format(state->error, "operation failed with status %s", name_of(status)); break;

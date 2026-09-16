@@ -64,32 +64,12 @@ class locked_store {
      */
     using clock_t = typename shared_clock_of<inner_store_t>::type;
 
-    /** @brief Whether an open transaction walks a window with one end left open. */
-    static constexpr bool inner_transaction_walks_open_range_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback) {
-            transaction.range_from(key, callback);
-            transaction.range_up_to(key, callback);
-        };
-
-    /** @brief Whether the wrapped store says how many keys its ordinal surface indexes. */
-    static constexpr bool inner_counts_ranked_k = requires(inner_store_t const &store) { store.ranked_size(); };
-
-    /** @brief Whether the wrapped transaction copies out the member at a bound. */
-    static constexpr bool inner_transaction_copies_bounds_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key) {
-            transaction.lower_bound_copy(key);
-            transaction.upper_bound_copy(key);
-        };
-    /** @brief Whether the wrapped transaction draws members from a window. */
-    static constexpr bool inner_transaction_samples_k =
-        requires(inner_transaction_t const &transaction, identifier_t const &key, no_op_t callback, std::size_t seen) {
-            transaction.sample_one(key, key, callback, callback);
-            transaction.sample_reservoir(key, key, callback, seen, seen, callback);
-        };
-
     /**
      *  @brief Whether an open transaction can be driven as one part of a sharded commit, which asks
      *    every part whether it may proceed before any of them publishes.
+     *
+     *  One gate over several methods, unlike the surfaces in @c shared.hpp: half a commit protocol is
+     *  not a weaker protocol, it is an unusable one, so there is nothing to keep by asking separately.
      */
     static constexpr bool inner_transaction_shards_k = requires(inner_transaction_t &transaction, generation_t stamp) {
         transaction.validate_for_commit();
@@ -352,7 +332,7 @@ class locked_store {
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
-            requires inner_transaction_walks_open_range_k
+            requires transaction_offers_range_from<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.range_from(std::forward<lower_type_>(lower),
@@ -365,7 +345,7 @@ class locked_store {
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
-            requires inner_transaction_walks_open_range_k
+            requires transaction_offers_range_up_to<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.range_up_to(std::forward<upper_type_>(upper),
@@ -406,7 +386,7 @@ class locked_store {
         /** @brief Copies out the first member at or after @p comparable. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
-            requires inner_transaction_copies_bounds_k
+            requires transaction_offers_lower_bound_copy<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.lower_bound_copy(std::forward<comparable_type_>(comparable));
@@ -415,7 +395,7 @@ class locked_store {
         /** @brief Copies out the first member after @p comparable. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
-            requires inner_transaction_copies_bounds_k
+            requires transaction_offers_upper_bound_copy<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.upper_bound_copy(std::forward<comparable_type_>(comparable));
@@ -477,7 +457,7 @@ class locked_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                           callback_type_ &&callback) const noexcept
-            requires inner_transaction_samples_k
+            requires transaction_offers_sample_one<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -491,7 +471,7 @@ class locked_store {
         [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                                 std::size_t &seen, std::size_t capacity,
                                                 output_iterator_type_ &&reservoir) const noexcept
-            requires inner_transaction_samples_k
+            requires transaction_offers_sample_reservoir<inner_store_t>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.sample_reservoir(std::forward<lower_type_>(lower),
@@ -1124,7 +1104,7 @@ class locked_store {
 
     /** @brief How many keys the ordinal surface indexes, which is what @c select counts against. */
     [[nodiscard]] std::size_t ranked_size() const noexcept
-        requires inner_counts_ranked_k
+        requires offers_ranked_size<inner_store_t>
     {
         shared_lock _ {mutex_};
         return inner_store_.ranked_size();
