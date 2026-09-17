@@ -30,30 +30,33 @@ enum class ring_eviction_t : bool {
     evicted_oldest_k,
 };
 
-/** A first-in first-out ring of at most @c capacity elements of @p element_type_, which a failed push reports. */
-template <typename element_type_, typename allocator_type_ = default_allocator<element_type_>>
+/** A first-in first-out ring of at most @c capacity elements of @p value_type_, which a failed push reports. */
+template <typename value_type_, typename allocator_type_ = default_allocator<value_type_>>
 class basic_ring {
   public:
-    using element_t = element_type_;
+    using value_t = value_type_;
+    using value_type = value_t; // ? STL compatibility
+
     using allocator_t = allocator_type_;
+    using allocator_type = allocator_t; // ? STL compatibility
 
     /** The largest capacity, so a size always fits the 32-bit counters. */
     static constexpr std::size_t capacity_limit_k = std::size_t {1} << 31;
 
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "basic_ring requires allocators that propagate on move assignment");
-    static_assert(std::is_nothrow_move_constructible_v<element_t> && std::is_nothrow_move_assignable_v<element_t>,
+    static_assert(std::is_nothrow_move_constructible_v<value_t> && std::is_nothrow_move_assignable_v<value_t>,
                   "basic_ring moves elements in noexcept code, so they must move without throwing");
 
   private:
-    element_t *slots_ {nullptr};
+    value_t *slots_ {nullptr};
     std::uint32_t capacity_ {0};
     std::uint32_t pushed_ {0};
     std::uint32_t popped_ {0};
     ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
 
-    [[nodiscard]] element_t &slot_(std::uint32_t counter) noexcept { return slots_[counter & (capacity_ - 1)]; }
-    [[nodiscard]] element_t const &slot_(std::uint32_t counter) const noexcept {
+    [[nodiscard]] value_t &slot_(std::uint32_t counter) noexcept { return slots_[counter & (capacity_ - 1)]; }
+    [[nodiscard]] value_t const &slot_(std::uint32_t counter) const noexcept {
         return slots_[counter & (capacity_ - 1)];
     }
 
@@ -115,59 +118,59 @@ class basic_ring {
     [[nodiscard]] std::size_t free_space() const noexcept { return capacity_ - size(); }
 
     /** The element the next pop removes; the ring must not be empty. */
-    [[nodiscard]] element_t &oldest() noexcept {
+    [[nodiscard]] value_t &oldest() noexcept {
         assert(!empty() && "oldest requires a non-empty ring");
         return slot_(popped_);
     }
-    [[nodiscard]] element_t const &oldest() const noexcept {
+    [[nodiscard]] value_t const &oldest() const noexcept {
         assert(!empty() && "oldest requires a non-empty ring");
         return slot_(popped_);
     }
 
     /** The element the last push added; the ring must not be empty. */
-    [[nodiscard]] element_t &newest() noexcept {
+    [[nodiscard]] value_t &newest() noexcept {
         assert(!empty() && "newest requires a non-empty ring");
         return slot_(pushed_ - 1);
     }
-    [[nodiscard]] element_t const &newest() const noexcept {
+    [[nodiscard]] value_t const &newest() const noexcept {
         assert(!empty() && "newest requires a non-empty ring");
         return slot_(pushed_ - 1);
     }
 
     /** The element @p index places after the oldest, without bounds checking. */
-    [[nodiscard]] element_t &operator[](std::size_t index) noexcept {
+    [[nodiscard]] value_t &operator[](std::size_t index) noexcept {
         assert(index < size() && "index out of bounds");
         return slot_(popped_ + static_cast<std::uint32_t>(index));
     }
-    [[nodiscard]] element_t const &operator[](std::size_t index) const noexcept {
+    [[nodiscard]] value_t const &operator[](std::size_t index) const noexcept {
         assert(index < size() && "index out of bounds");
         return slot_(popped_ + static_cast<std::uint32_t>(index));
     }
 
     /** The element @p index places after the oldest, or null past the newest. */
-    [[nodiscard]] element_t *at(std::size_t index) noexcept {
+    [[nodiscard]] value_t *at(std::size_t index) noexcept {
         return index < size() ? &slot_(popped_ + static_cast<std::uint32_t>(index)) : nullptr;
     }
-    [[nodiscard]] element_t const *at(std::size_t index) const noexcept {
+    [[nodiscard]] value_t const *at(std::size_t index) const noexcept {
         return index < size() ? &slot_(popped_ + static_cast<std::uint32_t>(index)) : nullptr;
     }
 
     /** Appends @p element to a ring known not to be full. */
-    [[nodiscard]] status_t push(assume_reserved_t, element_t &&element) noexcept {
+    [[nodiscard]] status_t push(assume_reserved_t, value_t &&element) noexcept {
         assert(!full() && "push with assume_reserved requires a free slot");
-        new (&slot_(pushed_)) element_t(std::move(element));
+        new (&slot_(pushed_)) value_t(std::move(element));
         ++pushed_;
         return success_k;
     }
 
     /** Appends @p element, or answers @c capacity_exhausted_k and leaves the ring alone. */
-    [[nodiscard]] status_t push(element_t &&element) noexcept {
+    [[nodiscard]] status_t push(value_t &&element) noexcept {
         if (full()) return capacity_exhausted_k;
         return push(assume_reserved, std::move(element));
     }
 
     /** Appends @p element, first moving the oldest into @p evicted when the ring is full. Capacity must be nonzero. */
-    [[nodiscard]] ring_eviction_t push_evicting(element_t &&element, element_t &evicted) noexcept {
+    [[nodiscard]] ring_eviction_t push_evicting(value_t &&element, value_t &evicted) noexcept {
         assert(capacity_ != 0 && "a ring without slots cannot hold the newest element");
         ring_eviction_t eviction = ring_eviction_t::kept_every_element_k;
         if (full()) {
@@ -182,12 +185,12 @@ class basic_ring {
     /** Destroys the oldest element; the ring must not be empty. */
     void pop() noexcept {
         assert(!empty() && "pop requires a non-empty ring");
-        slot_(popped_).~element_t();
+        slot_(popped_).~value_t();
         ++popped_;
     }
 
     /** Moves the oldest element into @p destination and removes it, or answers @c operation_would_block_k. */
-    [[nodiscard]] status_t pop_into(element_t &destination) noexcept {
+    [[nodiscard]] status_t pop_into(value_t &destination) noexcept {
         if (empty()) return operation_would_block_k;
         destination = std::move(slot_(popped_));
         pop();
@@ -195,19 +198,19 @@ class basic_ring {
     }
 
     /** Copies as many of @p elements as fit, oldest first, and returns how many. */
-    std::size_t push_many(std::span<element_t const> elements) noexcept
-        requires std::is_nothrow_copy_constructible_v<element_t>
+    std::size_t push_many(std::span<value_t const> elements) noexcept
+        requires std::is_nothrow_copy_constructible_v<value_t>
     {
         std::size_t const accepted = smaller_of(elements.size(), free_space());
         for (std::size_t index = 0; index < accepted; ++index) {
-            new (&slot_(pushed_)) element_t(elements[index]);
+            new (&slot_(pushed_)) value_t(elements[index]);
             ++pushed_;
         }
         return accepted;
     }
 
     /** Moves as many elements as @p destination holds out of the ring, oldest first, and returns how many. */
-    std::size_t pop_many(std::span<element_t> destination) noexcept {
+    std::size_t pop_many(std::span<value_t> destination) noexcept {
         std::size_t const delivered = smaller_of(destination.size(), size());
         for (std::size_t index = 0; index < delivered; ++index) {
             destination[index] = std::move(slot_(popped_));

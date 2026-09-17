@@ -601,7 +601,7 @@ static void weight_balance_insert_rebalances() {
     auto const duplicate = tree.insert(7);
     st_verify_(duplicate.placement == placement_t::matched_k);
     st_verify_ne_(duplicate.node, nullptr);
-    st_verify_eq_(duplicate.node->fruit, 7);
+    st_verify_eq_(duplicate.node->payload, 7);
     st_verify_eq_(tree.size(), 1u);
 }
 
@@ -759,7 +759,7 @@ using plain_map_t = wb_map<int, int, std::less<int>, std::allocator<mapping<int,
 
 /** The layout an unaugmented node must match byte for byte, whatever the default policy costs. */
 struct unaugmented_reference_layout_t {
-    int fruit;
+    int payload;
     void *left;
     void *right;
     std::size_t size;
@@ -780,7 +780,7 @@ static_assert(alignof(ordered_node_t) == alignof(unaugmented_reference_layout_t)
  *  the set's is 16 while the map's is 20.
  */
 struct unaugmented_map_reference_layout_t {
-    mapping<int, int> fruit;
+    mapping<int, int> payload;
     void *left;
     void *right;
     std::size_t size;
@@ -812,7 +812,7 @@ static void verify_augmented_against_oracle(augmented_map_t &tree, std::map<int,
     for (std::size_t index = 0; index < live.size(); ++index) {
         augmented_node_t const *selected = tree.select_augmented(index);
         st_verify_ne_(selected, nullptr);
-        st_verify_eq_(selected->fruit.key, live[index]);
+        st_verify_eq_(selected->payload.key, live[index]);
         st_verify_eq_(tree.rank_augmented(live[index]), index);
     }
     st_verify_eq_(tree.select_augmented(live.size()), nullptr);
@@ -895,8 +895,8 @@ using counted_map_t = wb_map<int, int, counting_comparator_t, std::allocator<map
 static std::size_t depth_of(counted_map_t const &tree, int wanted) noexcept {
     std::size_t depth = 0;
     for (auto const *node = tree.root(); node; ++depth) {
-        if (wanted < node->fruit.key) node = node->left;
-        else if (node->fruit.key < wanted) node = node->right;
+        if (wanted < node->payload.key) node = node->left;
+        else if (node->payload.key < wanted) node = node->right;
         else return depth;
     }
     st_verify_(false && "The selected key must be reachable from the root");
@@ -937,7 +937,7 @@ static void augmented_select_is_logarithmic() {
         for (std::size_t index = 0; index < live.size(); ++index) {
             auto const *selected = tree.select_augmented(index);
             st_verify_ne_(selected, nullptr);
-            st_verify_eq_(selected->fruit.key, live[index]);
+            st_verify_eq_(selected->payload.key, live[index]);
             // The node's own depth, measured by an independent descent - `select_augmented` navigates on
             // subtree sizes and calls no comparator, so nothing can count its steps from the inside.
             std::size_t const steps = depth_of(tree, live[index]) + 1;

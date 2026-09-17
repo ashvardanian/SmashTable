@@ -50,29 +50,32 @@ namespace ashvardanian::smashtable {
  *
  *  @section basic_vector_template_requirements Template Requirements
  *
- *  - @p element_type_ must be nothrow move-constructible, and nothrow default-constructible to
+ *  - @p value_type_ must be nothrow move-constructible, and nothrow default-constructible to
  *    be resized.
  *  - For types with potentially throwing constructors, provide a static @c .make() method returning
- *    @c expected<element_type_> to enable exception-free construction via @c emplace_back().
+ *    @c expected<value_type_> to enable exception-free construction via @c emplace_back().
  *
  *  @see https://en.cppreference.com/w/cpp/container/vector
  */
-template <typename element_type_, typename allocator_type_ = default_allocator<element_type_>>
+template <typename value_type_, typename allocator_type_ = default_allocator<value_type_>>
 class basic_vector {
   public:
-    using element_t = element_type_;
+    using value_t = value_type_;
+    using value_type = value_t; // ? STL compatibility
+
     using allocator_t = allocator_type_;
+    using allocator_type = allocator_t; // ? STL compatibility
 
     // Allocator propagation requirement for exception-free move assignment
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
                   "basic_vector requires allocators that propagate on move assignment");
 
     // Reallocation moves every element inside a `noexcept` function, so a throwing move terminates
-    static_assert(std::is_nothrow_move_constructible_v<element_t>,
+    static_assert(std::is_nothrow_move_constructible_v<value_t>,
                   "basic_vector relocates elements in noexcept code, so the element must move without throwing");
 
   private:
-    element_t *data_ {nullptr};
+    value_t *data_ {nullptr};
     std::size_t size_ {0};
     std::size_t capacity_ {0};
     ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
@@ -90,7 +93,7 @@ class basic_vector {
     /** Destructor deallocates memory and destroys all elements. */
     ~basic_vector() noexcept {
         // Destroy all constructed elements
-        for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
+        for (std::size_t index = 0; index < size_; ++index) data_[index].~value_t();
         // Deallocate memory
         if (data_) allocator_.deallocate(data_, capacity_);
     }
@@ -104,7 +107,7 @@ class basic_vector {
     basic_vector &operator=(basic_vector &&other) noexcept {
         if (this != &other) {
             // Destroy current elements
-            for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
+            for (std::size_t index = 0; index < size_; ++index) data_[index].~value_t();
             // Deallocate current memory
             if (data_) allocator_.deallocate(data_, capacity_);
             // Transfer ownership
@@ -161,11 +164,11 @@ class basic_vector {
             auto copy_result = copy_safely(data_[index]);
             if (!copy_result) {
                 // Clean up partially constructed elements
-                for (std::size_t built = 0; built < result.size_; ++built) result.data_[built].~element_t();
+                for (std::size_t built = 0; built < result.size_; ++built) result.data_[built].~value_t();
                 result.size_ = 0;
                 return expected<basic_vector>(basic_vector(allocator_), copy_result.status());
             }
-            new (&result.data_[result.size_++]) element_t(std::move(*copy_result));
+            new (&result.data_[result.size_++]) value_t(std::move(*copy_result));
         }
         return expected<basic_vector>(std::move(result), success_k);
     }
@@ -184,7 +187,7 @@ class basic_vector {
         // A capacity whose byte count does not fit an address is refused here rather than passed on:
         // an allocator that multiplies without checking would answer it with a small block, and the
         // recorded capacity would then invite every later write past the end of it.
-        constexpr std::size_t max_capacity = static_cast<std::size_t>(-1) / sizeof(element_t);
+        constexpr std::size_t max_capacity = static_cast<std::size_t>(-1) / sizeof(value_t);
         if (new_capacity > max_capacity) return out_of_memory_heap_k;
 
         std::size_t const doubled_capacity = capacity_ > max_capacity / 2 ? max_capacity : capacity_ * 2;
@@ -195,10 +198,10 @@ class basic_vector {
         if (!new_data) return out_of_memory_heap_k;
 
         // Move existing elements to new storage
-        for (std::size_t index = 0; index < size_; ++index) new (&new_data[index]) element_t(std::move(data_[index]));
+        for (std::size_t index = 0; index < size_; ++index) new (&new_data[index]) value_t(std::move(data_[index]));
 
         // Destroy moved-from elements in old storage
-        for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
+        for (std::size_t index = 0; index < size_; ++index) data_[index].~value_t();
 
         if (data_) allocator_.deallocate(data_, capacity_);
         data_ = new_data;
@@ -214,9 +217,9 @@ class basic_vector {
      *  @param[in] value Element to append (moved into the vector).
      *  @return Always returns success for noexcept move construction.
      */
-    [[nodiscard]] status_t push_back(assume_reserved_t, element_t &&value) noexcept {
+    [[nodiscard]] status_t push_back(assume_reserved_t, value_t &&value) noexcept {
         assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
-        new (&data_[size_++]) element_t(std::move(value));
+        new (&data_[size_++]) value_t(std::move(value));
         return success_k;
     }
 
@@ -227,7 +230,7 @@ class basic_vector {
      *  @param[in] value Element to append (moved into the vector).
      *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      */
-    [[nodiscard]] status_t push_back(element_t &&value) noexcept {
+    [[nodiscard]] status_t push_back(value_t &&value) noexcept {
         if (size_ >= capacity_) {
             auto status = reserve(size_ + 1);
             if (failed(status)) return status;
@@ -238,7 +241,7 @@ class basic_vector {
     /** Removes the last element from the vector. Precondition: Vector must not be empty. */
     void pop_back() noexcept {
         assert(size_ > 0 && "pop_back requires non-empty vector");
-        data_[--size_].~element_t();
+        data_[--size_].~value_t();
     }
 
     /**
@@ -255,21 +258,21 @@ class basic_vector {
         assert(size_ < capacity_ && "emplace_back with assume_reserved requires pre-reserved capacity");
 
         // Fast path: noexcept constructor - construct directly in place
-        if constexpr (std::is_nothrow_constructible_v<element_t, args_types_...>) {
-            new (&data_[size_++]) element_t(std::forward<args_types_>(args)...);
+        if constexpr (std::is_nothrow_constructible_v<value_t, args_types_...>) {
+            new (&data_[size_++]) value_t(std::forward<args_types_>(args)...);
             return success_k;
         }
         // Slow path: potentially throwing constructor - use .make() method
-        else if constexpr (has_make_method<element_t, args_types_...>) {
-            auto result = element_t::make(std::forward<args_types_>(args)...);
+        else if constexpr (has_make_method<value_t, args_types_...>) {
+            auto result = value_t::make(std::forward<args_types_>(args)...);
             if (!result) return result.status();
-            new (&data_[size_++]) element_t(std::move(*result));
+            new (&data_[size_++]) value_t(std::move(*result));
             return success_k;
         }
         else {
-            static_assert(std::is_nothrow_constructible_v<element_t, args_types_...> ||
-                              has_make_method<element_t, args_types_...>,
-                          "Type must be nothrow constructible or provide a static .make(...)");
+            static_assert(
+                std::is_nothrow_constructible_v<value_t, args_types_...> || has_make_method<value_t, args_types_...>,
+                "Type must be nothrow constructible or provide a static .make(...)");
             return status_t::unknown_k;
         }
     }
@@ -283,7 +286,7 @@ class basic_vector {
      *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      *
      *  @note For types with potentially throwing constructors, provide a static @c .make() method
-     *      returning @c expected<element_t> to enable exception-free construction.
+     *      returning @c expected<value_t> to enable exception-free construction.
      */
     template <typename... args_types_>
     [[nodiscard]] status_t emplace_back(args_types_ &&...args) noexcept {
@@ -307,12 +310,12 @@ class basic_vector {
      *      capacity may already have grown.
      */
     [[nodiscard]] status_t resize(std::size_t new_size) noexcept {
-        static_assert(std::is_nothrow_default_constructible_v<element_t>,
+        static_assert(std::is_nothrow_default_constructible_v<value_t>,
                       "resize default-constructs in noexcept code, so the element must construct without throwing");
 
         // Shrink: destroy excess elements
         if (new_size < size_) {
-            for (std::size_t index = new_size; index < size_; ++index) data_[index].~element_t();
+            for (std::size_t index = new_size; index < size_; ++index) data_[index].~value_t();
             size_ = new_size;
             return success_k;
         }
@@ -323,7 +326,7 @@ class basic_vector {
                 if (failed(status)) return status;
             }
             // Default-construct new elements
-            for (std::size_t index = size_; index < new_size; ++index) new (&data_[index]) element_t();
+            for (std::size_t index = size_; index < new_size; ++index) new (&data_[index]) value_t();
             size_ = new_size;
         }
         return success_k;
@@ -338,10 +341,10 @@ class basic_vector {
      *  @return Success, or error code on failure. On failure the elements are unchanged, though the
      *      capacity may already have grown.
      */
-    [[nodiscard]] status_t resize(std::size_t new_size, element_t const &value) noexcept {
+    [[nodiscard]] status_t resize(std::size_t new_size, value_t const &value) noexcept {
         // Shrink: destroy excess elements
         if (new_size < size_) {
-            for (std::size_t index = new_size; index < size_; ++index) data_[index].~element_t();
+            for (std::size_t index = new_size; index < size_; ++index) data_[index].~value_t();
             size_ = new_size;
             return success_k;
         }
@@ -357,10 +360,10 @@ class basic_vector {
                 auto copy_result = copy_safely(value);
                 // Rollback: destroy partially constructed elements
                 if (!copy_result) {
-                    for (std::size_t built = old_size; built < index; ++built) data_[built].~element_t();
+                    for (std::size_t built = old_size; built < index; ++built) data_[built].~value_t();
                     return copy_result.status();
                 }
-                new (&data_[index]) element_t(std::move(*copy_result));
+                new (&data_[index]) value_t(std::move(*copy_result));
             }
             size_ = new_size;
         }
@@ -370,7 +373,7 @@ class basic_vector {
     /** Destroys all elements but keeps allocated capacity. */
     void clear() noexcept {
         // Destroy all elements
-        for (std::size_t index = 0; index < size_; ++index) data_[index].~element_t();
+        for (std::size_t index = 0; index < size_; ++index) data_[index].~value_t();
         size_ = 0;
     }
 
@@ -406,7 +409,7 @@ class basic_vector {
      *  @param[in] index The element index.
      *  @return Reference to the element.
      */
-    element_t &operator[](std::size_t index) noexcept {
+    value_t &operator[](std::size_t index) noexcept {
         assert(index < size_ && "Index out of bounds");
         return data_[index];
     }
@@ -416,7 +419,7 @@ class basic_vector {
      *  @param[in] index The element index.
      *  @return Const reference to the element.
      */
-    element_t const &operator[](std::size_t index) const noexcept {
+    value_t const &operator[](std::size_t index) const noexcept {
         assert(index < size_ && "Index out of bounds");
         return data_[index];
     }
@@ -426,20 +429,20 @@ class basic_vector {
      *  @param[in] index The element index.
      *  @return Pointer to the element, or @c nullptr if out of bounds.
      */
-    element_t *at(std::size_t index) noexcept { return index < size_ ? &data_[index] : nullptr; }
+    value_t *at(std::size_t index) noexcept { return index < size_ ? &data_[index] : nullptr; }
 
     /**
      *  @brief Accesses element at @p index with bounds checking (const version).
      *  @param[in] index The element index.
      *  @return Const pointer to the element, or @c nullptr if out of bounds.
      */
-    element_t const *at(std::size_t index) const noexcept { return index < size_ ? &data_[index] : nullptr; }
+    value_t const *at(std::size_t index) const noexcept { return index < size_ ? &data_[index] : nullptr; }
 
     /**
      *  @brief Accesses the first element.
      *  @return Reference to the first element.
      */
-    element_t &front() noexcept {
+    value_t &front() noexcept {
         assert(size_ > 0 && "front() requires non-empty vector");
         return data_[0];
     }
@@ -448,7 +451,7 @@ class basic_vector {
      *  @brief Accesses the first element (const version).
      *  @return Const reference to the first element.
      */
-    element_t const &front() const noexcept {
+    value_t const &front() const noexcept {
         assert(size_ > 0 && "front() requires non-empty vector");
         return data_[0];
     }
@@ -457,7 +460,7 @@ class basic_vector {
      *  @brief Accesses the last element.
      *  @return Reference to the last element.
      */
-    element_t &back() noexcept {
+    value_t &back() noexcept {
         assert(size_ > 0 && "back() requires non-empty vector");
         return data_[size_ - 1];
     }
@@ -466,7 +469,7 @@ class basic_vector {
      *  @brief Accesses the last element (const version).
      *  @return Const reference to the last element.
      */
-    element_t const &back() const noexcept {
+    value_t const &back() const noexcept {
         assert(size_ > 0 && "back() requires non-empty vector");
         return data_[size_ - 1];
     }
@@ -475,13 +478,13 @@ class basic_vector {
      *  @brief Returns pointer to underlying array.
      *  @return Pointer to the underlying element storage.
      */
-    element_t *data() noexcept { return data_; }
+    value_t *data() noexcept { return data_; }
 
     /**
      *  @brief Returns pointer to underlying array (const version).
      *  @return Const pointer to the underlying element storage.
      */
-    element_t const *data() const noexcept { return data_; }
+    value_t const *data() const noexcept { return data_; }
 
 #pragma endregion Element Access
 
@@ -510,16 +513,16 @@ class basic_vector {
 #pragma region Iterators
 
     /** Returns an iterator to the beginning. */
-    element_t *begin() noexcept { return data_; }
+    value_t *begin() noexcept { return data_; }
 
     /** Returns an iterator to the end. */
-    element_t *end() noexcept { return data_ + size_; }
+    value_t *end() noexcept { return data_ + size_; }
 
     /** Returns a const iterator to the beginning. */
-    element_t const *begin() const noexcept { return data_; }
+    value_t const *begin() const noexcept { return data_; }
 
     /** Returns a const iterator to the end. */
-    element_t const *end() const noexcept { return data_ + size_; }
+    value_t const *end() const noexcept { return data_ + size_; }
 
 #pragma endregion Iterators
 };

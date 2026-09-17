@@ -59,11 +59,11 @@ key_type_ unordered_key_from(std::size_t identifier) noexcept {
     else return key_type_(identifier);
 }
 
-/** Builds a mapped value of the container's value type from an integer identifier. */
-template <typename value_type_>
-value_type_ unordered_value_from(std::size_t identifier) noexcept {
-    if constexpr (std::is_same_v<value_type_, std::string>) return std::string("value-") + std::to_string(identifier);
-    else return value_type_(identifier);
+/** Builds a mapped value of the container's mapped type from an integer identifier. */
+template <typename mapped_type_>
+mapped_type_ unordered_value_from(std::size_t identifier) noexcept {
+    if constexpr (std::is_same_v<mapped_type_, std::string>) return std::string("value-") + std::to_string(identifier);
+    else return mapped_type_(identifier);
 }
 
 /** Inserts the element for @p identifier, choosing the set or map arity of @c emplace. */
@@ -852,9 +852,9 @@ inline constexpr std::size_t unordered_threads_count_k = 4;
 template <typename container_type_>
 struct unordered_pinned_of;
 
-template <typename element_type_, typename hasher_type_, typename equals_type_, typename allocator_type_>
-struct unordered_pinned_of<basic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>> {
-    using type = atomic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>;
+template <typename value_type_, typename hasher_type_, typename equals_type_, typename allocator_type_>
+struct unordered_pinned_of<basic_hash_table<value_type_, hasher_type_, equals_type_, allocator_type_>> {
+    using type = atomic_hash_table<value_type_, hasher_type_, equals_type_, allocator_type_>;
 };
 
 /** The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */

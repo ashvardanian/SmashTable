@@ -117,17 +117,17 @@ constexpr bool is_iterator() {
  *  to the next populated slot and must not run at the end, while @c skip_non_populated walks past
  *  free, deleted and locked slots until a populated one or the end is reached.
  */
-template <typename element_type_, typename hasher_type_>
-struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
+template <typename value_type_, typename hasher_type_>
+struct hash_table_iterator : public hash_slot_ref<value_type_, hasher_type_> {
 
-    using base_t = hash_slot_ref<element_type_, hasher_type_>;
-    using element_t = typename base_t::element_t;
+    using base_t = hash_slot_ref<value_type_, hasher_type_>;
+    using value_t = typename base_t::value_t;
     using offset_t = typename base_t::offset_t;
     using base_t::keys_;
     using base_t::slot_;
 
     using difference_type = std::ptrdiff_t;
-    using value_type = element_t;
+    using value_type = value_t;
     using reference = typename base_t::dereference_t;
     using pointer = void;
 
@@ -177,7 +177,7 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
  *  @brief Growable hash table with linear probing and Structure-of-Arrays layout. Compatible with
  *      @c std::unordered_set interface. See file header for detailed design rationale.
  *
- *  @tparam element_type_ Hashable and equality-comparable key type, or @c mapping<K,V> for maps.
+ *  @tparam value_type_ Hashable and equality-comparable key type, or @c mapping<K,V> for maps.
  *  @tparam hasher_type_ Hash function type. Must be copy-constructible. Defaults to a @c
  *      std::hash wrapper.
  *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be
@@ -188,15 +188,24 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
  *  @see https://en.cppreference.com/w/cpp/container/unordered_set
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
  */
-template <typename element_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
+template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator<std::byte>>
 class basic_hash_table {
 
-    using layout_t = hash_layout_for<element_type_, hasher_type_>;
-    using key_t = typename layout_t::key_t;
+    using layout_t = hash_layout_for<value_type_, hasher_type_>;
+
+  public:
+    /** The whole stored element: the key itself for a set, a @c mapping view of both halves for a map. */
     using value_t = typename layout_t::value_t;
-    using value_storage_t = typename layout_t::value_storage_t;
-    using element_t = typename layout_t::element_t;
+
+    /** The key half, which is the whole element for a set. */
+    using key_t = typename layout_t::key_t;
+
+    /** The mapped half, @c void for a set. */
+    using mapped_t = typename layout_t::mapped_t;
+
+  private:
+    using mapped_storage_t = typename layout_t::mapped_storage_t;
     using offset_t = typename layout_t::offset_t;
 
     /** Whether the element carries a mapped value, making this table a map rather than a set. */
@@ -214,14 +223,14 @@ class basic_hash_table {
     using hasher_t = hasher_type_;
     using equals_t = equals_type_;
     using allocator_t = allocator_type_;
-    using storage_t = hash_storage<element_type_, hasher_type_, allocator_type_>;
-    using iterator_t = hash_table_iterator<element_type_, hasher_t>;
-    using const_iterator_t = hash_table_iterator<element_type_ const, hasher_t>;
-    using slot_ref_t = hash_slot_ref<element_type_, hasher_t>;
-    using const_slot_ref_t = hash_slot_ref<element_type_ const, hasher_t>;
+    using storage_t = hash_storage<value_type_, hasher_type_, allocator_type_>;
+    using iterator_t = hash_table_iterator<value_type_, hasher_t>;
+    using const_iterator_t = hash_table_iterator<value_type_ const, hasher_t>;
+    using slot_ref_t = hash_slot_ref<value_type_, hasher_t>;
+    using const_slot_ref_t = hash_slot_ref<value_type_ const, hasher_t>;
 
     static_assert(!std::is_reference<key_t>(), "Keys can't be references!");
-    static_assert(!std::is_reference<value_t>(), "Values can't be references!");
+    static_assert(!std::is_reference<mapped_t>(), "Values can't be references!");
     static_assert(std::is_unsigned<offset_t>(),
                   "Hash value must be an unsigned integer, like std::uint32_t or std::uint64_t!");
 
@@ -229,7 +238,8 @@ class basic_hash_table {
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
 
     /** Whether erasure and teardown must run a value destructor. */
-    inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
+    inline static constexpr bool destruct_values_k =
+        has_values_k && !std::is_trivially_destructible<mapped_storage_t>();
 
   public:
     /** What a probe that may store an element managed to do. */
@@ -283,18 +293,18 @@ class basic_hash_table {
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map
      */
     using key_type = key_t;
-    using mapped_type = value_t;
+    using mapped_type = mapped_t;
     using result_type = insert_result_t;
-    using value_type = element_t;
+    using value_type = value_t;
 
     /** The element as an owned pair, which @c value_type cannot be: it views two regions. */
-    using owned_value_type = typename layout_t::element_copy_t;
+    using owned_value_type = typename layout_t::value_copy_t;
     using size_type = offset_t;
     using difference_type = std::ptrdiff_t;
     using key_compare = equals_t;
     using allocator_type = allocator_t;
-    using reference = element_t;
-    using const_reference = element_t;
+    using reference = value_t;
+    using const_reference = value_t;
     using iterator = iterator_t;
     using const_iterator = const_iterator_t;
     using hasher = hasher_t;
@@ -804,7 +814,7 @@ class basic_hash_table {
      *      aborts rather than hand back a reference one past the values region.
      */
     template <typename comparable_key_type_ = key_t const &>
-    value_storage_t &at(comparable_key_type_ &&key) noexcept {
+    mapped_storage_t &at(comparable_key_type_ &&key) noexcept {
         static_assert(has_values_k, "at() is only available for maps, not sets");
         slot_ref_t result;
         unsafe_retarget(result, 0);
@@ -825,7 +835,7 @@ class basic_hash_table {
      *      aborts rather than hand back a reference one past the values region.
      */
     template <typename comparable_key_type_ = key_t const &>
-    value_storage_t const &at(comparable_key_type_ &&key) const noexcept {
+    mapped_storage_t const &at(comparable_key_type_ &&key) const noexcept {
         static_assert(has_values_k, "at() is only available for maps, not sets");
         const_slot_ref_t result;
         unsafe_retarget(result, 0);
@@ -923,10 +933,10 @@ class basic_hash_table {
 
 #pragma region Insertions
 
-    template <typename convertible_key_type_, typename convertible_value_type_>
+    template <typename convertible_key_type_, typename convertible_mapped_type_>
     static constexpr bool can_use_map_emplace() {
         return has_values_k && std::is_constructible<key_t, convertible_key_type_ &&>() &&
-               std::is_constructible<value_storage_t, convertible_value_type_ &&>();
+               std::is_constructible<mapped_storage_t, convertible_mapped_type_ &&>();
     }
 
     template <typename convertible_key_type_>
@@ -960,10 +970,10 @@ class basic_hash_table {
      */
     template <
         emplace_report_t report_ = emplace_report_t::no_result_k, typename convertible_key_type_,
-        typename convertible_value_type_, typename... tags_types_,
-        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_value_type_>(), int>::type = 0>
+        typename convertible_mapped_type_, typename... tags_types_,
+        typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_mapped_type_>(), int>::type = 0>
     std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> emplace(
-        convertible_key_type_ &&key, convertible_value_type_ &&value, tags_types_... tags) noexcept {
+        convertible_key_type_ &&key, convertible_mapped_type_ &&value, tags_types_... tags) noexcept {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
         // fills it to the last slot and then has nowhere left to go. A key already present takes no
@@ -986,7 +996,7 @@ class basic_hash_table {
 
         auto callback_unused = [&](slot_ref_t &unused_slot) noexcept {
             new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
-            new (&unused_slot.value_ref()) value_storage_t(std::forward<convertible_value_type_>(value));
+            new (&unused_slot.value_ref()) mapped_storage_t(std::forward<convertible_mapped_type_>(value));
             if constexpr (return_k) result.position.slot_ = unused_slot.slot_;
         };
 
@@ -997,7 +1007,7 @@ class basic_hash_table {
             stored = probe_to_upsert(
                 key, callback_unused,
                 [&](slot_ref_t &equal_slot) noexcept {
-                    equal_slot.value_ref() = std::forward<convertible_value_type_>(value);
+                    equal_slot.value_ref() = std::forward<convertible_mapped_type_>(value);
                     if constexpr (return_k) result.position.slot_ = equal_slot.slot_;
                 },
                 assume_reserved_t {}, tags...);
@@ -1116,7 +1126,7 @@ class basic_hash_table {
                 element.key,
                 [&](slot_ref_t &unused_slot) noexcept {
                     new (&unused_slot.key_ref()) key_t(std::move(element.key));
-                    new (&unused_slot.value_ref()) value_storage_t(std::move(element.mapped));
+                    new (&unused_slot.value_ref()) mapped_storage_t(std::move(element.mapped));
                 },
                 [&](slot_ref_t &equal_slot) noexcept { equal_slot.value_ref() = std::move(element.mapped); },
                 assume_reserved_t {});
@@ -1148,7 +1158,7 @@ class basic_hash_table {
      */
     void erase(slot_ref_t slot) noexcept {
         if constexpr (destruct_keys_k) slot.key_ref().~key_t();
-        if constexpr (destruct_values_k) slot.value_ref().~value_storage_t();
+        if constexpr (destruct_values_k) slot.value_ref().~mapped_storage_t();
         slot.mark_deleted();
         ++storage_.deleted_count;
         --storage_.populated_count;
@@ -1177,7 +1187,7 @@ class basic_hash_table {
             std::forward<comparable_key_type_>(key),
             [&](slot_ref_t const &slot) noexcept {
                 if constexpr (destruct_keys_k) slot.key_ref().~key_t();
-                if constexpr (destruct_values_k) slot.value_ref().~value_storage_t();
+                if constexpr (destruct_values_k) slot.value_ref().~mapped_storage_t();
                 slot.mark_deleted();
                 ++storage_.deleted_count;
                 --storage_.populated_count;
@@ -1308,7 +1318,7 @@ class basic_hash_table {
                                assume_reserved_t {}, assume_unique_t {});
             else target.emplace(std::move(source_slot.key_ref()), assume_reserved_t {}, assume_unique_t {});
             if constexpr (destruct_keys_k) source_slot.key_ref().~key_t();
-            if constexpr (destruct_values_k) source_slot.value_ref().~value_storage_t();
+            if constexpr (destruct_values_k) source_slot.value_ref().~mapped_storage_t();
         });
 
         assert(target.size() == size() && "Element counts must match!");
@@ -1354,15 +1364,20 @@ class basic_hash_table {
 
 #pragma region Aliases
 
-template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
-using hash_map = basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>;
+using hash_map = basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>;
 
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator<std::byte>>
 using hash_set = basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
 
 static_assert(sizeof(hash_set<int>) >= 3 * sizeof(void *), "Hash-Table is too small!");
+static_assert(key_addressable_collection<hash_set<std::uint64_t>> &&
+                  key_addressable_collection<hash_map<std::uint64_t, double>>,
+              "a hash table answers a key the way every addressable collection does");
+static_assert(set_shaped_store<hash_set<std::uint64_t>> && map_shaped_store<hash_map<std::uint64_t, double>>,
+              "the set and map aliases of one table must not resolve to the same shape");
 
 #pragma endregion Aliases
 

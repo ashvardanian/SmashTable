@@ -79,6 +79,7 @@
  */
 #pragma once
 #include <cassert> // `assert`
+#include <cstdint> // `std::uint64_t`
 
 #include <limits>  // `std::numeric_limits`
 #include <memory>  // `std::allocator`
@@ -106,7 +107,7 @@ namespace ashvardanian::smashtable {
  *  - Supports random sampling within ranges for statistical operations
  *  - All methods are static and work on raw node pointers for flexibility
  *
- *  Layout: @c fruit is the stored entry, @c left, @c right and @c parent the links, and @c height
+ *  Layout: @c payload is the stored entry, @c left, @c right and @c parent the links, and @c height
  *  the longest downward path to a leaf. The root carries the biggest @c height in the tree, a
  *  non-NULL node has at least one, and zero occurs only in the uninitialized detached state - which
  *  makes @c 1 << height an upper bound on the branch size.
@@ -126,7 +127,7 @@ class basic_avl_node {
     using height_t = std::ptrdiff_t;
     using node_t = basic_avl_node;
 
-    value_t fruit;
+    value_t payload;
     node_t *left = nullptr;
     node_t *right = nullptr;
     node_t *parent = nullptr;
@@ -228,8 +229,8 @@ class basic_avl_node {
     template <typename comparable_type_>
     static node_t *find(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
         while (node) {
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) node = node->left;
-            else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable)))
+            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) node = node->left;
+            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable)))
                 node = node->right;
             else break;
         }
@@ -249,14 +250,14 @@ class basic_avl_node {
         while (node) {
             // If the given key is less than the root node, visit the left
             // subtree, taking current node as potential successor.
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) {
+            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
                 successor = node;
                 node = node->left;
             }
 
             // Of the given key is more than the root node, visit the right
             // subtree.
-            else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable))) {
+            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) {
                 node = node->right;
             }
 
@@ -283,7 +284,7 @@ class basic_avl_node {
         while (node) {
             // If the given key is less than the root node, visit the left
             // subtree, taking current node as potential successor.
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) {
+            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
                 successor = node;
                 node = node->left;
             }
@@ -307,11 +308,11 @@ class basic_avl_node {
     static node_t *lowest_common_ancestor(node_t *node, comparable_a_type_ &&a, comparable_b_type_ &&b,
                                           comparator_t const &comparator) noexcept {
         while (node) {
-            if (comparator(mapping_key_or_itself(a), mapping_key_or_itself(node->fruit)) &&
-                comparator(mapping_key_or_itself(b), mapping_key_or_itself(node->fruit)))
+            if (comparator(mapping_key_or_itself(a), mapping_key_or_itself(node->payload)) &&
+                comparator(mapping_key_or_itself(b), mapping_key_or_itself(node->payload)))
                 node = node->left;
-            else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(a)) &&
-                     comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(b)))
+            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(a)) &&
+                     comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(b)))
                 node = node->right;
             else return node;
         }
@@ -337,7 +338,7 @@ class basic_avl_node {
     static walk_control_t range(node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
                                 callback_type_ &&callback) noexcept {
         node_t *current = lower_bound(node, low, comparator);
-        while (current && comparator(mapping_key_or_itself(current->fruit), mapping_key_or_itself(high))) {
+        while (current && comparator(mapping_key_or_itself(current->payload), mapping_key_or_itself(high))) {
             if (hand_over(callback, current) == walk_control_t::halt_k) return walk_control_t::halt_k;
             current = find_successor(current);
         }
@@ -520,23 +521,23 @@ class basic_avl_node {
         auto balance = get_balance(node);
 
         // Left Left Case
-        if (balance > 1 && comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->left->fruit)))
+        if (balance > 1 && comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->left->payload)))
             return rotate_right(node);
 
         // Right Right Case
         else if (balance < -1 &&
-                 comparator(mapping_key_or_itself(node->right->fruit), mapping_key_or_itself(comparable)))
+                 comparator(mapping_key_or_itself(node->right->payload), mapping_key_or_itself(comparable)))
             return rotate_left(node);
 
         // Left Right Case
         else if (balance > 1 &&
-                 comparator(mapping_key_or_itself(node->left->fruit), mapping_key_or_itself(comparable))) {
+                 comparator(mapping_key_or_itself(node->left->payload), mapping_key_or_itself(comparable))) {
             node->left = rotate_left(node->left);
             return rotate_right(node);
         }
         // Right Left Case
         else if (balance < -1 &&
-                 comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->right->fruit))) {
+                 comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->right->payload))) {
             node->right = rotate_right(node->right);
             return rotate_left(node);
         }
@@ -557,20 +558,20 @@ class basic_avl_node {
             return {new_node, new_node, new_node ? node_placement_t::made_k : node_placement_t::refused_k};
         }
 
-        if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) {
+        if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
             auto subtree_result = find_or_make(node->left, comparable, comparator, callback_found, new_node);
             node->left = subtree_result.root;
             if (subtree_result.root) subtree_result.root->parent = node;
             if (subtree_result.placement == node_placement_t::made_k)
-                node = rebalance_on_insert(node, subtree_result.match->fruit, comparator);
+                node = rebalance_on_insert(node, subtree_result.match->payload, comparator);
             return {node, subtree_result.match, subtree_result.placement};
         }
-        else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable))) {
+        else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) {
             auto subtree_result = find_or_make(node->right, comparable, comparator, callback_found, new_node);
             node->right = subtree_result.root;
             if (subtree_result.root) subtree_result.root->parent = node;
             if (subtree_result.placement == node_placement_t::made_k)
-                node = rebalance_on_insert(node, subtree_result.match->fruit, comparator);
+                node = rebalance_on_insert(node, subtree_result.match->payload, comparator);
             return {node, subtree_result.match, subtree_result.placement};
         }
         else {
@@ -581,7 +582,7 @@ class basic_avl_node {
     }
 
     static find_or_make_result_t insert(node_t *node, node_t *new_child, comparator_t const &comparator) noexcept {
-        return find_or_make(node, new_child->fruit, comparator, [](node_t *) noexcept {}, new_child);
+        return find_or_make(node, new_child->payload, comparator, [](node_t *) noexcept {}, new_child);
     }
 
     /**
@@ -611,7 +612,7 @@ class basic_avl_node {
         // Allocate root node
         node_t *root = allocate_node();
         if (!root) return nullptr;
-        new (&root->fruit) value_t(*mid_iter);
+        new (&root->payload) value_t(*mid_iter);
         // Raw memory, so the link to the parent is only correct once the caller overwrites it.
         root->parent = nullptr;
 
@@ -679,7 +680,7 @@ class basic_avl_node {
         // smallest entry in the right branch.
         if (node->left && node->right) {
             node_t *successor = find_min(node->right);
-            auto subtree_result = extract(node->right, successor->fruit, comparator);
+            auto subtree_result = extract(node->right, successor->payload, comparator);
             successor = subtree_result.extracted.release();
             successor->left = node->left;
             if (successor->left) successor->left->parent = successor;
@@ -721,7 +722,7 @@ class basic_avl_node {
                                     comparator_t const &comparator) noexcept {
         if (!node) return {node, {}};
 
-        if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->fruit))) {
+        if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
             auto subtree_result = extract(node->left, comparable, comparator);
             node->left = subtree_result.root;
             if (subtree_result.root) subtree_result.root->parent = node;
@@ -729,7 +730,7 @@ class basic_avl_node {
             return {node, std::move(subtree_result.extracted)};
         }
 
-        else if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable))) {
+        else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) {
             auto subtree_result = extract(node->right, comparable, comparator);
             node->right = subtree_result.root;
             if (subtree_result.root) subtree_result.root->parent = node;
@@ -763,7 +764,7 @@ class basic_avl_node {
 
         std::size_t count = left_result.count + right_result.count;
 
-        if (predicate(node->fruit)) {
+        if (predicate(node->payload)) {
             auto extract_result = extract(node, comparator);
             node_deallocator(extract_result.extracted.release());
             return {extract_result.root, count};
@@ -868,7 +869,7 @@ class basic_avl_node {
         // Heights are balanced, extract min from right and use as root
         else {
             node_t *min_right = find_min(right);
-            auto extract_result = extract(right, min_right->fruit, comparator);
+            auto extract_result = extract(right, min_right->payload, comparator);
             node_t *new_root = extract_result.release();
             return join_with_root(left, new_root, extract_result.root, comparator);
         }
@@ -888,7 +889,7 @@ class basic_avl_node {
         if (!node) return {nullptr, nullptr};
 
         // If node < key, put node in left tree and split right subtree
-        if (comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(comparable))) {
+        if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) {
             auto subtree_result = split(node->right, comparable, comparator);
             if (subtree_result.right) subtree_result.right->parent = nullptr;
             auto new_left = join_with_root(node->left, node, subtree_result.left, comparator);
@@ -932,7 +933,7 @@ class basic_avl_node {
         node_t *small_right = pivot->right;
 
         // Split larger tree around pivot's key: O(log n)
-        auto split_result = split(large, pivot->fruit, comparator);
+        auto split_result = split(large, pivot->payload, comparator);
 
         // Recursively merge subtrees
         node_t *merged_left = merge_split_based(small_left, split_result.left, comparator);
@@ -1005,7 +1006,7 @@ class basic_avl_node {
 
         while (first_spine && second_spine) {
             node_t *next_node;
-            if (comparator(mapping_key_or_itself(first_spine->fruit), mapping_key_or_itself(second_spine->fruit))) {
+            if (comparator(mapping_key_or_itself(first_spine->payload), mapping_key_or_itself(second_spine->payload))) {
                 next_node = first_spine;
                 first_spine = first_spine->right;
             }
@@ -1227,8 +1228,8 @@ class basic_avl_tree {
       public:
         iterator() noexcept : tree_(nullptr), node_(nullptr) {}
 
-        reference operator*() const noexcept { return node_->fruit; }
-        pointer operator->() const noexcept { return &node_->fruit; }
+        reference operator*() const noexcept { return node_->payload; }
+        pointer operator->() const noexcept { return &node_->payload; }
 
         iterator &operator++() noexcept {
             node_ = node_t::find_successor(node_);
@@ -1278,8 +1279,8 @@ class basic_avl_tree {
         const_iterator() noexcept : tree_(nullptr), node_(nullptr) {}
         const_iterator(iterator const &it) noexcept : tree_(it.tree_), node_(it.node_) {}
 
-        reference operator*() const noexcept { return node_->fruit; }
-        pointer operator->() const noexcept { return &node_->fruit; }
+        reference operator*() const noexcept { return node_->payload; }
+        pointer operator->() const noexcept { return &node_->payload; }
 
         const_iterator &operator++() noexcept {
             node_ = node_t::find_successor(const_cast<node_t *>(node_));
@@ -1395,8 +1396,8 @@ class basic_avl_tree {
             size_ += result.placement == node_t::node_placement_t::made_k;
             // A key already here keeps its own node and takes the entry, so the traveller goes back.
             if (result.placement == node_t::node_placement_t::matched_k) {
-                result.match->fruit = std::move(node->fruit);
-                node->fruit.~value_t();
+                result.match->payload = std::move(node->payload);
+                node->payload.~value_t();
                 other.allocator_.deallocate(node, 1);
             }
         });
@@ -1421,7 +1422,7 @@ class basic_avl_tree {
 
         void cleanup_() noexcept {
             node_t::for_each_bottom_up(node_, [&](node_t *n) noexcept {
-                n->fruit.~value_t();
+                n->payload.~value_t();
                 allocator_->deallocate(n, 1);
             });
         }
@@ -1435,9 +1436,9 @@ class basic_avl_tree {
      *  @return @c success_k when the copy completed, an error code otherwise.
      */
     static status_t copy_entry_into_(node_t *source, node_t *destination) noexcept {
-        auto entry_copy = copy_safely(source->fruit);
+        auto entry_copy = copy_safely(source->payload);
         if (!entry_copy) return entry_copy.status();
-        new (&destination->fruit) value_t(std::move(*entry_copy));
+        new (&destination->payload) value_t(std::move(*entry_copy));
         return success_k;
     }
 
@@ -1866,7 +1867,7 @@ class basic_avl_tree {
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
-                      [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
+                      [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
     }
 
@@ -1884,7 +1885,7 @@ class basic_avl_tree {
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
-                      [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
+                      [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
     }
 
@@ -1897,7 +1898,7 @@ class basic_avl_tree {
         auto result = node_t::erase_if(
             root_, std::forward<predicate_type_>(predicate),
             [&](node_t *node) noexcept {
-                node->fruit.~value_t();
+                node->payload.~value_t();
                 allocator_.deallocate(node, 1);
             },
             comparator_);
@@ -1925,8 +1926,8 @@ class basic_avl_tree {
 
         std::size_t deleted_count = 0;
         node_t::for_each_bottom_up(split2.left, [&](node_t *n) noexcept {
-            callback(n->fruit);
-            n->fruit.~value_t();
+            callback(n->payload);
+            n->payload.~value_t();
             allocator_.deallocate(n, 1);
             deleted_count++;
         });
@@ -1946,8 +1947,8 @@ class basic_avl_tree {
         /** Whether nothing was stored, which is the only way an upsert fails. */
         bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
         explicit operator bool() const noexcept { return !failed(); }
-        upserted_node_t &operator=(value_t &&fruit) noexcept {
-            node->fruit = std::move(fruit);
+        upserted_node_t &operator=(value_t &&payload) noexcept {
+            node->payload = std::move(payload);
             return *this;
         }
     };
@@ -1985,7 +1986,7 @@ class basic_avl_tree {
         node_t *new_node = allocator_.allocate(1);
         if (!new_node) return {end(), node_t::node_placement_t::refused_k};
 
-        new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
+        new (&new_node->payload) value_t(std::forward<comparable_type_>(comparable));
         auto result = node_t::insert(root_, new_node, comparator_);
         root_ = result.root;
         if (root_) root_->parent = nullptr;
@@ -1993,7 +1994,7 @@ class basic_avl_tree {
 
         if (result.failed()) {
             // Insertion failed, deallocate the node.
-            new_node->fruit.~value_t();
+            new_node->payload.~value_t();
             allocator_.deallocate(new_node, 1);
             return {end(), node_t::node_placement_t::refused_k};
         }
@@ -2021,7 +2022,7 @@ class basic_avl_tree {
         node_t *new_node = allocator_.allocate(1);
         if (!new_node) return status_t::out_of_memory_heap_k;
 
-        new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
+        new (&new_node->payload) value_t(std::forward<comparable_type_>(comparable));
 
         auto result = node_t::insert(root_, new_node, comparator_);
 
@@ -2030,7 +2031,7 @@ class basic_avl_tree {
         size_ += result.placement == node_t::node_placement_t::made_k;
 
         if (result.failed()) {
-            new_node->fruit.~value_t();
+            new_node->payload.~value_t();
             allocator_.deallocate(new_node, 1);
             return status_t::out_of_memory_heap_k;
         }
@@ -2038,7 +2039,7 @@ class basic_avl_tree {
         // Only an inconsistent comparator can disagree with the probe above, and the node it
         // refused to take still has to be given back.
         if (result.placement == node_t::node_placement_t::matched_k) {
-            new_node->fruit.~value_t();
+            new_node->payload.~value_t();
             allocator_.deallocate(new_node, 1);
             return status_t::key_already_exists_k;
         }
@@ -2064,14 +2065,14 @@ class basic_avl_tree {
         node_t *new_node = allocator_.allocate(1);
         if (!new_node) return {nullptr, node_t::node_placement_t::refused_k};
 
-        new (&new_node->fruit) value_t(std::forward<comparable_type_>(comparable));
+        new (&new_node->payload) value_t(std::forward<comparable_type_>(comparable));
         auto result = node_t::insert(root_, new_node, comparator_);
         root_ = result.root;
         if (root_) root_->parent = nullptr;
         size_ += result.placement == node_t::node_placement_t::made_k;
 
         if (result.failed()) {
-            new_node->fruit.~value_t();
+            new_node->payload.~value_t();
             allocator_.deallocate(new_node, 1);
             return {nullptr, node_t::node_placement_t::refused_k};
         }
@@ -2389,7 +2390,7 @@ class basic_avl_tree {
         /** Destroys the entry before releasing its node, as every other free site here does. */
         void discard_() noexcept {
             if (!node_ptr_) return;
-            node_ptr_->fruit.~value_t();
+            node_ptr_->payload.~value_t();
             tree_->allocator_.deallocate(node_ptr_, 1);
             node_ptr_ = nullptr;
         }
@@ -2533,7 +2534,7 @@ class basic_avl_tree {
      */
     void clear() noexcept {
         node_t::for_each_bottom_up(root_, [&](node_t *node) noexcept {
-            node->fruit.~value_t();
+            node->payload.~value_t();
             allocator_.deallocate(node, 1);
         });
         root_ = nullptr;
@@ -2543,7 +2544,7 @@ class basic_avl_tree {
     /** Visits every element in sorted order; a callback answering @c walk_control_t stops it early. */
     template <typename callback_type_>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
-        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return hand_over(callback, node->fruit); });
+        node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
     }
 
@@ -2569,7 +2570,7 @@ class basic_avl_tree {
             size_ += result.placement == node_t::node_placement_t::made_k;
             // Key conflict - node wasn't inserted, so release the entry it carried
             if (result.placement == node_t::node_placement_t::matched_k) {
-                node->fruit.~value_t();
+                node->payload.~value_t();
                 allocator_.deallocate(node, 1);
             }
         });
@@ -2609,7 +2610,7 @@ class basic_avl_tree {
         auto other_min = node_t::find_min(other.root_);
 
         // Fast path: all(this) < all(other), use join: O(log n)
-        if (comparator_(mapping_key_or_itself(this_max->fruit), mapping_key_or_itself(other_min->fruit))) {
+        if (comparator_(mapping_key_or_itself(this_max->payload), mapping_key_or_itself(other_min->payload))) {
             root_ = node_t::join(root_, other.root_, comparator_);
             size_ += other.size_;
             other.root_ = nullptr;
@@ -2618,7 +2619,7 @@ class basic_avl_tree {
         }
 
         // Fast path: all(other) < all(this), use join: O(log n)
-        if (comparator_(mapping_key_or_itself(other_max->fruit), mapping_key_or_itself(this_min->fruit))) {
+        if (comparator_(mapping_key_or_itself(other_max->payload), mapping_key_or_itself(this_min->payload))) {
             root_ = node_t::join(other.root_, root_, comparator_);
             size_ += other.size_;
             other.root_ = nullptr;
@@ -2669,7 +2670,7 @@ class basic_avl_tree {
         size_ += result.placement == node_t::node_placement_t::made_k;
         // Key conflict - node wasn't inserted, so release the entry it carried
         if (result.placement == node_t::node_placement_t::matched_k) {
-            node_to_insert->fruit.~value_t();
+            node_to_insert->payload.~value_t();
             allocator_.deallocate(node_to_insert, 1);
         }
     }
@@ -2744,9 +2745,14 @@ class basic_avl_tree {
 template <typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<void>>
 using avl_set = basic_avl_tree<value_type_, comparator_type_, allocator_type_>;
 
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<void>>
-using avl_map = basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>;
+using avl_map = basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>;
+
+static_assert(ordered_collection<avl_set<std::uint64_t>> && ordered_collection<avl_map<std::uint64_t, double>>,
+              "an AVL tree answers a key, a bound and a range the way every ordered collection does");
+static_assert(set_shaped_store<avl_set<std::uint64_t>> && map_shaped_store<avl_map<std::uint64_t, double>>,
+              "the set and map aliases of one tree must not resolve to the same shape");
 
 #pragma endregion Split and Join
 

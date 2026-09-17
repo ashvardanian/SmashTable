@@ -19,7 +19,7 @@
  *  @code{.cpp}
  *  // Layout: [keys_region | values_region | headers_region]
  *  key_t *keys = (key_t *)memory;                          // Direct indexing: keys[slot]
- *  value_t *values = (value_t *)(memory + keys_bytes);     // Direct indexing: values[slot]
+ *  mapped_t *values = (mapped_t *)(memory + keys_bytes);     // Direct indexing: values[slot]
  *  hash_bucket_head_t *headers = ...;                      // Bucket indexing: headers[slot / 32]
  *  @endcode
  *
@@ -201,24 +201,24 @@ struct hash_slots_count_t {
  *  Computes element types, sizes and alignment requirements from the element and hasher parameters,
  *  and takes the hasher's return type as the @c offset_t that indexes slots.
  *
- *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
+ *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, must be callable with the key type.
  *
- *  @note Provides three element views:
- *    - @c element_t: Mutable reference pair @code mapping<key const&, value&> @endcode for iteration
- *    - @c element_const_t: Immutable reference pair @code mapping<key const&, value const&> @endcode for lookups
- *    - @c element_copy_t: Owned value pair @code mapping<key, value> @endcode for extraction operations
+ *  @note Provides three views of a stored element:
+ *    - @c value_t: Mutable reference pair @code mapping<key const&, mapped&> @endcode for iteration
+ *    - @c value_const_t: Immutable reference pair @code mapping<key const&, mapped const&> @endcode for lookups
+ *    - @c value_copy_t: Owned pair @code mapping<key, mapped> @endcode for extraction operations
  *
  *  @see https://en.cppreference.com/w/cpp/utility/hash
  */
-template <typename element_type_, typename hasher_type_>
+template <typename value_type_, typename hasher_type_>
 struct hash_layout_for {
-    using key_t = std::remove_reference_t<element_type_>;
-    using value_t = void;
-    using value_storage_t = placeholder_t;
-    using element_t = key_t;
-    using element_const_t = key_t;
-    using element_copy_t = key_t;
+    using key_t = std::remove_reference_t<value_type_>;
+    using mapped_t = void;
+    using mapped_storage_t = placeholder_t;
+    using value_t = key_t;
+    using value_const_t = key_t;
+    using value_copy_t = key_t;
     using hasher_t = hasher_type_;
     using offset_t = decltype(hasher_type_ {}(std::declval<key_t>()));
 
@@ -238,15 +238,15 @@ struct hash_layout_for {
     static constexpr bool will_memcpy_vals() noexcept { return false; }
 };
 
-template <typename key_type_, typename value_type_, typename hasher_type_>
-struct hash_layout_for<mapping<key_type_, value_type_>, hasher_type_> {
+template <typename key_type_, typename mapped_type_, typename hasher_type_>
+struct hash_layout_for<mapping<key_type_, mapped_type_>, hasher_type_> {
 
     using key_t = std::remove_reference_t<key_type_>;
-    using value_t = std::remove_reference_t<value_type_>;
-    using value_storage_t = value_t;
-    using element_t = mapping<key_t const &, value_t &>;
-    using element_const_t = mapping<key_t const &, value_t const &>;
-    using element_copy_t = mapping<key_t, value_t>;
+    using mapped_t = std::remove_reference_t<mapped_type_>;
+    using mapped_storage_t = mapped_t;
+    using value_t = mapping<key_t const &, mapped_t &>;
+    using value_const_t = mapping<key_t const &, mapped_t const &>;
+    using value_copy_t = mapping<key_t, mapped_t>;
     using hasher_t = hasher_type_;
     using offset_t = decltype(hasher_type_ {}(std::declval<key_t>()));
 
@@ -254,32 +254,32 @@ struct hash_layout_for<mapping<key_type_, value_type_>, hasher_type_> {
     // makes it, so anything over-aligned would land off its own boundary.
     static_assert(alignof(key_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
                   "An over-aligned key is not accommodated by the single default-aligned allocation");
-    static_assert(alignof(value_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
+    static_assert(alignof(mapped_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
                   "An over-aligned value is not accommodated by the single default-aligned allocation");
 
     inline static constexpr bool has_values_k = true;
     inline static constexpr std::size_t bytes_for_keys_k =
         roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(key_t) * hash_bucket_capacity_k);
     inline static constexpr std::size_t bytes_for_values_k =
-        roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(value_t) * hash_bucket_capacity_k);
+        roundup_to_multiple<std::size_t, cache_line_bytes_k>(sizeof(mapped_t) * hash_bucket_capacity_k);
     inline static constexpr std::size_t bytes_in_bucket_k =
         bytes_for_keys_k + bytes_for_values_k + sizeof(hash_bucket_head_t);
 
     static constexpr bool will_memcpy_keys() noexcept { return std::is_trivially_copy_constructible<key_t>(); }
-    static constexpr bool will_memcpy_vals() noexcept { return std::is_trivially_copy_constructible<value_t>(); }
+    static constexpr bool will_memcpy_vals() noexcept { return std::is_trivially_copy_constructible<mapped_t>(); }
 };
 
 /** Const-qualified elements reuse the unqualified layout, adding @c const to every view. */
-template <typename element_type_, typename hasher_type_>
-struct hash_layout_for<element_type_ const, hasher_type_> {
+template <typename value_type_, typename hasher_type_>
+struct hash_layout_for<value_type_ const, hasher_type_> {
 
-    using unqualified_t = hash_layout_for<element_type_, hasher_type_>;
+    using unqualified_t = hash_layout_for<value_type_, hasher_type_>;
     using key_t = typename unqualified_t::key_t const;
-    using value_t = typename unqualified_t::value_t const;
-    using value_storage_t = typename unqualified_t::value_storage_t const;
-    using element_t = typename unqualified_t::element_const_t;
-    using element_const_t = typename unqualified_t::element_const_t;
-    using element_copy_t = typename unqualified_t::element_copy_t;
+    using mapped_t = typename unqualified_t::mapped_t const;
+    using mapped_storage_t = typename unqualified_t::mapped_storage_t const;
+    using value_t = typename unqualified_t::value_const_t;
+    using value_const_t = typename unqualified_t::value_const_t;
+    using value_copy_t = typename unqualified_t::value_copy_t;
     using hasher_t = hasher_type_;
     using offset_t = typename unqualified_t::offset_t;
 
@@ -310,7 +310,7 @@ struct default_hash_t {
 
 /**
  *  @brief Smart reference to a hash table slot, addressing it as base pointers plus a slot index.
- *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
+ *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *
  *  Probing advances @c slot_ by one, so a step costs a single integer increment rather than three
@@ -326,21 +326,21 @@ struct default_hash_t {
  *  @c mark_ families read and write the slot's two bits. Locking is what a threaded reference
  *  overrides, so here @c lock, @c unlock and @c try_lock collapse to nothing.
  */
-template <typename element_type_, typename hasher_type_>
+template <typename value_type_, typename hasher_type_>
 struct hash_slot_ref {
 
-    using layout_t = hash_layout_for<element_type_, hasher_type_>;
+    using layout_t = hash_layout_for<value_type_, hasher_type_>;
     using key_t = typename layout_t::key_t;
+    using mapped_t = typename layout_t::mapped_t;
+    using mapped_storage_t = typename layout_t::mapped_storage_t;
     using value_t = typename layout_t::value_t;
-    using value_storage_t = typename layout_t::value_storage_t;
-    using element_t = typename layout_t::element_t;
     using offset_t = typename layout_t::offset_t;
 
     inline static constexpr bool has_values_k = layout_t::has_values_k;
-    using dereference_t = std::conditional_t<has_values_k, element_t, key_t const &>;
+    using dereference_t = std::conditional_t<has_values_k, value_t, key_t const &>;
 
     key_t *keys_ {};
-    value_storage_t *values_ {};
+    mapped_storage_t *values_ {};
     hash_bucket_head_t *headers_ {};
     offset_t slot_ {};
 
@@ -352,8 +352,8 @@ struct hash_slot_ref {
 
     constexpr key_t &key_ref() const noexcept { return keys_[slot_]; }
     constexpr key_t const &key() const noexcept { return keys_[slot_]; }
-    constexpr value_storage_t &value_ref() const noexcept { return values_[slot_]; }
-    constexpr value_storage_t const &value() const noexcept { return values_[slot_]; }
+    constexpr mapped_storage_t &value_ref() const noexcept { return values_[slot_]; }
+    constexpr mapped_storage_t const &value() const noexcept { return values_[slot_]; }
 
     constexpr bool is_free() const noexcept {
         return hash_slot_state_of(header_ref(), mask_in_bucket()) == hash_slot_state_t::free_k;
@@ -376,14 +376,14 @@ struct hash_slot_ref {
     constexpr void unlock() const noexcept {}
 
     constexpr dereference_t operator*() const noexcept {
-        if constexpr (has_values_k) return element_t {key(), value_ref()};
+        if constexpr (has_values_k) return value_t {key(), value_ref()};
         else return key();
     }
 };
 
 /**
  *  @brief Thread-safe smart reference to a hash table slot with metadata accessors.
- *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
+ *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *
  *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots. On
@@ -410,10 +410,10 @@ struct hash_slot_ref {
  *  results in very low contention if the duration of atomic operations under the lock is comparable
  *  to CPU's memory latency.
  */
-template <typename element_type_, typename hasher_type_>
-class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
+template <typename value_type_, typename hasher_type_>
+class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
 
-    using base_t = hash_slot_ref<element_type_, hasher_type_>;
+    using base_t = hash_slot_ref<value_type_, hasher_type_>;
 
     /** State the slot will be driven into once @c unlock() lands. */
     hash_bucket_head_t mutable future_header_ {};
@@ -518,11 +518,11 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
  *  @param[in] callback Functor invoked for each populated slot, receiving @c hash_slot_ref.
  *  @return Whether the bucket ran out or a halting callback stopped the walk first.
  */
-template <typename element_type_, typename hasher_type_, typename callback_type_>
-walk_control_t for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_> &slot,
+template <typename value_type_, typename hasher_type_, typename callback_type_>
+walk_control_t for_each_in_hash_bucket(hash_slot_ref<value_type_, hasher_type_> &slot,
                                        callback_type_ &&callback) noexcept {
 
-    using offset_t = typename hash_slot_ref<element_type_, hasher_type_>::offset_t;
+    using offset_t = typename hash_slot_ref<value_type_, hasher_type_>::offset_t;
     offset_t const bucket_start = (slot.slot_ / hash_bucket_capacity_k) * hash_bucket_capacity_k;
 
     hash_bucket_head_t const &head = slot.header_ref();
@@ -550,19 +550,19 @@ walk_control_t for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_
  *  pinned one, which is what lets that hand-off be a move of a value rather than one type reaching
  *  into the other.
  *
- *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps.
+ *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *  @tparam allocator_type_ Supplies and reclaims the single byte buffer.
  */
-template <typename element_type_, typename hasher_type_, typename allocator_type_>
+template <typename value_type_, typename hasher_type_, typename allocator_type_>
 struct hash_storage {
 
-    using layout_t = hash_layout_for<element_type_, hasher_type_>;
+    using layout_t = hash_layout_for<value_type_, hasher_type_>;
     using key_t = typename layout_t::key_t;
-    using value_storage_t = typename layout_t::value_storage_t;
+    using mapped_storage_t = typename layout_t::mapped_storage_t;
     using offset_t = typename layout_t::offset_t;
     using allocator_t = allocator_type_;
-    using slot_ref_t = hash_slot_ref<element_type_, hasher_type_>;
+    using slot_ref_t = hash_slot_ref<value_type_, hasher_type_>;
 
     /** Whether the element carries a mapped value, making the table a map rather than a set. */
     inline static constexpr bool has_values_k = layout_t::has_values_k;
@@ -574,7 +574,8 @@ struct hash_storage {
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
 
     /** Whether teardown must run a value destructor. */
-    inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
+    inline static constexpr bool destruct_values_k =
+        has_values_k && !std::is_trivially_destructible<mapped_storage_t>();
 
     /** Base of the single allocation the three regions are carved from. */
     std::byte *memory {};
@@ -583,7 +584,7 @@ struct hash_storage {
     key_t *keys {};
 
     /** Values region, indexed by slot, null for sets. */
-    value_storage_t *values {};
+    mapped_storage_t *values {};
 
     /** Headers region, indexed by bucket. */
     hash_bucket_head_t *headers {};
@@ -664,7 +665,7 @@ struct hash_storage {
         std::size_t const buckets = static_cast<std::size_t>(slots_count) / hash_bucket_capacity_k;
         keys = reinterpret_cast<key_t *>(memory);
         if constexpr (has_values_k) {
-            values = reinterpret_cast<value_storage_t *>(memory + layout_t::bytes_for_keys_k * buckets);
+            values = reinterpret_cast<mapped_storage_t *>(memory + layout_t::bytes_for_keys_k * buckets);
             headers = reinterpret_cast<hash_bucket_head_t *>(
                 memory + (layout_t::bytes_for_keys_k + layout_t::bytes_for_values_k) * buckets);
         }
@@ -694,7 +695,7 @@ struct hash_storage {
                 slot.slot_ = bucket_index * hash_bucket_capacity_k;
                 for_each_in_hash_bucket(slot, [](slot_ref_t const &live) noexcept {
                     if constexpr (destruct_keys_k) live.key_ref().~key_t();
-                    if constexpr (destruct_values_k) live.value_ref().~value_storage_t();
+                    if constexpr (destruct_values_k) live.value_ref().~mapped_storage_t();
                 });
             }
         }

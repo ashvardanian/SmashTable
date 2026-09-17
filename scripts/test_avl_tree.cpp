@@ -555,10 +555,10 @@ static subtree_shape_t verify_subtree(typename tree_type_::node_t const *node,
     st_verify_le_(balance, 1, "AVL balance never exceeds one");
 
     if (node->left)
-        st_verify_(comparator(mapping_key_or_itself(node->left->fruit), mapping_key_or_itself(node->fruit)) &&
+        st_verify_(comparator(mapping_key_or_itself(node->left->payload), mapping_key_or_itself(node->payload)) &&
                    "the left child sorts before its parent");
     if (node->right)
-        st_verify_(comparator(mapping_key_or_itself(node->fruit), mapping_key_or_itself(node->right->fruit)) &&
+        st_verify_(comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(node->right->payload)) &&
                    "the right child sorts after its parent");
 
     return {left.count + right.count + 1, height};
@@ -748,10 +748,10 @@ static void test_node_equal_range() {
 
     typename tree_type_::comparator_t const comparator = tree.key_comp();
     auto const present = node_t::equal_range(tree.root(), trivial_id_to_key<member_t>(3), comparator);
-    st_verify_(present.lower_bound && mapping_key_or_itself(present.lower_bound->fruit).unique_id == 3);
-    st_verify_(present.upper_bound && mapping_key_or_itself(present.upper_bound->fruit).unique_id == 4);
+    st_verify_(present.lower_bound && mapping_key_or_itself(present.lower_bound->payload).unique_id == 3);
+    st_verify_(present.upper_bound && mapping_key_or_itself(present.upper_bound->payload).unique_id == 4);
     st_verify_(present.lowest_common_ancestor &&
-               mapping_key_or_itself(present.lowest_common_ancestor->fruit).unique_id == 3);
+               mapping_key_or_itself(present.lowest_common_ancestor->payload).unique_id == 3);
 
     auto const absent = node_t::equal_range(tree.root(), trivial_id_to_key<member_t>(9), comparator);
     st_verify_(!absent.lower_bound && !absent.upper_bound);

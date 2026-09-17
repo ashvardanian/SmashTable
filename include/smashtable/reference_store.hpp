@@ -2295,8 +2295,8 @@ template < //
 using reference_set = reference_store<value_type_, comparator_type_, allocator_type_>;
 
 template < //
-    typename key_type_, typename value_type_, typename comparator_type_ = less_t,
+    typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
     typename allocator_type_ = std::allocator<std::uint8_t>>
-using reference_map = reference_store<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>;
+using reference_map = reference_store<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>;
 
 } // namespace ashvardanian::smashtable

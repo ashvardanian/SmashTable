@@ -60,10 +60,10 @@ struct live_tagged : versioned_type_ {
 /** Counts one entry per key the newest published stamp reads, for the tree to sum per subtree. Answers zero for an
  *  undecorated element, which is what the bare core the store rebinds from holds. */
 struct liveness_augmentation_t {
-    template <typename fruit_type_>
-    static std::size_t augmented_count(fruit_type_ const &fruit) noexcept {
-        if constexpr (requires { fruit.liveness; })
-            return fruit.liveness == liveness_t::survivor_k ? std::size_t {1} : std::size_t {0};
+    template <typename value_type_>
+    static std::size_t augmented_count(value_type_ const &payload) noexcept {
+        if constexpr (requires { payload.liveness; })
+            return payload.liveness == liveness_t::survivor_k ? std::size_t {1} : std::size_t {0};
         else return std::size_t {0};
     }
 };
@@ -2775,7 +2775,7 @@ class snapshot_store {
         if constexpr (ordered_core_k) {
             auto extracted = entries_.extract(dated);
             if (!extracted.node_ptr_) return false;
-            destination = std::move(extracted.node_ptr_->fruit);
+            destination = std::move(extracted.node_ptr_->payload);
             return true;
         }
         else {
@@ -3349,7 +3349,7 @@ class snapshot_store {
         static_assert(is_safe_callback<callback_missing_type_>, "callback_missing must be noexcept invocable");
 
         auto const *node = entries_.select_augmented(ordinal);
-        if (node) callback_found(node->fruit.payload);
+        if (node) callback_found(node->payload.payload);
         else callback_missing();
         return success_k;
     }
@@ -3920,15 +3920,15 @@ using snapshot_avl_set = snapshot_store<basic_avl_tree<value_type_, comparator_t
  *  @brief Snapshot-isolated transactional map backed by an AVL tree.
  *
  *  @tparam key_type_ Type of keys stored in the map.
- *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam mapped_type_ Type of the value mapped to each key.
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using snapshot_avl_map =
-    snapshot_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    snapshot_store<basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief Snapshot-isolated transactional set backed by a weight-balanced tree. The only alias
@@ -3949,15 +3949,15 @@ using snapshot_wb_set =
  *      carrying @c select and @c rank, since only this core sums a second per-subtree count.
  *
  *  @tparam key_type_ Type of keys stored in the map.
- *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam mapped_type_ Type of the value mapped to each key.
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using snapshot_wb_map = snapshot_store<
-    basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+    basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /**
  *  @brief Snapshot-isolated transactional set backed by an open-addressed hash table. Point access
@@ -3979,17 +3979,17 @@ using snapshot_hash_set = snapshot_store<basic_hash_table<key_type_, hasher_type
  *      only - no bounds or ranges, as the core supplies no ordering.
  *
  *  @tparam key_type_ Type of keys stored in the map.
- *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam mapped_type_ Type of the value mapped to each key.
  *  @tparam hasher_type_ Hasher for placing keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using snapshot_hash_map =
-    snapshot_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+    snapshot_store<basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 /**
  *  @brief Snapshot isolation with the read set validated at commit as well as the write set.
@@ -4007,10 +4007,10 @@ template <typename value_type_, typename comparator_type_ = less_t,
 using serializable_avl_set = serializable_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /** Serializable transactional map backed by an AVL tree. */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using serializable_avl_map =
-    serializable_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    serializable_store<basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
 
 /** Serializable transactional set backed by a weight-balanced tree, so it answers ordinals too. */
 template <typename value_type_, typename comparator_type_ = less_t,
@@ -4019,10 +4019,10 @@ using serializable_wb_set =
     serializable_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /** Serializable transactional map backed by a weight-balanced tree, so it answers ordinals too. */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using serializable_wb_map = serializable_store<
-    basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+    basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /** Serializable transactional set backed by an open-addressed table, so it keeps no ordering. */
 template <typename value_type_, typename hasher_type_ = hash<value_type_>, typename equals_type_ = equal_to_t,
@@ -4031,10 +4031,10 @@ using serializable_hash_set =
     serializable_store<basic_hash_table<value_type_, hasher_type_, equals_type_, allocator_type_>>;
 
 /** Serializable transactional map backed by an open-addressed table, so it keeps no ordering. */
-template <typename key_type_, typename value_type_, typename hasher_type_ = hash<key_type_>,
+template <typename key_type_, typename mapped_type_, typename hasher_type_ = hash<key_type_>,
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using serializable_hash_map =
-    serializable_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+    serializable_store<basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 /**
  *  @brief Serializable, and ordered in real time as well: a transaction opening after a commit
@@ -4055,10 +4055,10 @@ using strict_serializable_avl_set =
     strict_serializable_store<basic_avl_tree<value_type_, comparator_type_, allocator_type_>>;
 
 /** Strictly serializable transactional map backed by an AVL tree. */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using strict_serializable_avl_map =
-    strict_serializable_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    strict_serializable_store<basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
 
 /** Strictly serializable transactional set backed by a weight-balanced tree, so it answers ordinals. */
 template <typename value_type_, typename comparator_type_ = less_t,
@@ -4067,10 +4067,10 @@ using strict_serializable_wb_set =
     strict_serializable_store<basic_wb_tree<value_type_, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /** Strictly serializable transactional map backed by a weight-balanced tree, so it answers ordinals. */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using strict_serializable_wb_map = strict_serializable_store<
-    basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
+    basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_, liveness_augmentation_t>>;
 
 /** Strictly serializable transactional set backed by an open-addressed table, so it keeps no ordering. */
 template <typename value_type_, typename hasher_type_ = hash<value_type_>, typename equals_type_ = equal_to_t,
@@ -4079,10 +4079,10 @@ using strict_serializable_hash_set =
     strict_serializable_store<basic_hash_table<value_type_, hasher_type_, equals_type_, allocator_type_>>;
 
 /** Strictly serializable transactional map backed by an open-addressed table, so it keeps no ordering. */
-template <typename key_type_, typename value_type_, typename hasher_type_ = hash<key_type_>,
+template <typename key_type_, typename mapped_type_, typename hasher_type_ = hash<key_type_>,
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using strict_serializable_hash_map = strict_serializable_store<
-    basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+    basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 #pragma endregion Aliases
 

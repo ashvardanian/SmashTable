@@ -56,6 +56,7 @@
  */
 #pragma once
 #include <cstddef> // `std::byte`, `std::size_t`
+#include <cstdint> // `std::uint64_t`
 
 #include <type_traits> // `std::is_trivially_destructible`
 #include <utility>     // `std::move`, `std::forward`
@@ -76,20 +77,29 @@ namespace ashvardanian::smashtable {
  *  @warning Not lock-free. A slot is held between @c lock and @c unlock, so a thread stopped in
  *      between blocks every other prober that reaches that slot; see the file header.
  *
- *  @tparam element_type_ Stored element - a bare key for a set, a @c mapping for a map.
+ *  @tparam value_type_ Stored element - a bare key for a set, a @c mapping for a map.
  *  @tparam hasher_type_ Hashes a key to a slot index.
  *  @tparam equals_type_ Compares two keys for equality.
  *  @tparam allocator_type_ Supplies the single byte buffer the table is carved from.
  */
-template <typename element_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
+template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator<std::byte>>
 class atomic_hash_table {
 
-    using layout_t = hash_layout_for<element_type_, hasher_type_>;
-    using key_t = typename layout_t::key_t;
+    using layout_t = hash_layout_for<value_type_, hasher_type_>;
+
+  public:
+    /** The whole stored element: the key itself for a set, a @c mapping view of both halves for a map. */
     using value_t = typename layout_t::value_t;
-    using value_storage_t = typename layout_t::value_storage_t;
-    using element_t = typename layout_t::element_t;
+
+    /** The key half, which is the whole element for a set. */
+    using key_t = typename layout_t::key_t;
+
+    /** The mapped half, @c void for a set. */
+    using mapped_t = typename layout_t::mapped_t;
+
+  private:
+    using mapped_storage_t = typename layout_t::mapped_storage_t;
     using offset_t = typename layout_t::offset_t;
 
     /** Whether the element carries a mapped value, making this table a map rather than a set. */
@@ -99,14 +109,15 @@ class atomic_hash_table {
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
 
     /** Whether erasure and teardown must run a value destructor. */
-    inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
+    inline static constexpr bool destruct_values_k =
+        has_values_k && !std::is_trivially_destructible<mapped_storage_t>();
 
     using hasher_t = hasher_type_;
     using equals_t = equals_type_;
     using allocator_t = allocator_type_;
-    using storage_t = hash_storage<element_type_, hasher_type_, allocator_type_>;
-    using slot_ref_t = hash_atomic_slot_ref<element_type_, hasher_t>;
-    using const_slot_ref_t = hash_atomic_slot_ref<element_type_ const, hasher_t>;
+    using storage_t = hash_storage<value_type_, hasher_type_, allocator_type_>;
+    using slot_ref_t = hash_atomic_slot_ref<value_type_, hasher_t>;
+    using const_slot_ref_t = hash_atomic_slot_ref<value_type_ const, hasher_t>;
 
     static_assert(std::is_unsigned<offset_t>(),
                   "Hash value must be an unsigned integer, like std::uint32_t or std::uint64_t!");
@@ -114,9 +125,9 @@ class atomic_hash_table {
   public:
     // STL-compatibility definitions, narrowed to what a pinned table can honestly provide.
     using key_type = key_t;
-    using mapped_type = value_t;
-    using value_type = element_t;
-    using owned_value_type = typename layout_t::element_copy_t;
+    using mapped_type = mapped_t;
+    using value_type = value_t;
+    using owned_value_type = typename layout_t::value_copy_t;
     using size_type = offset_t;
     using hasher = hasher_t;
     using key_equal = equals_t;
@@ -229,17 +240,17 @@ class atomic_hash_table {
      *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence was
      *      free. A pinned table can genuinely fill up, so this reports rather than asserts.
      */
-    template <typename convertible_key_type_, typename convertible_value_type_>
-    [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
+    template <typename convertible_key_type_, typename convertible_mapped_type_>
+    [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_mapped_type_ &&value) noexcept {
         static_assert(has_values_k, "A two-argument emplace is only available for maps");
         return probe_to_upsert_(
             key,
             [&](slot_ref_t &unused_slot) noexcept {
                 new (&unused_slot.key_ref()) key_t(std::forward<convertible_key_type_>(key));
-                new (&unused_slot.value_ref()) value_storage_t(std::forward<convertible_value_type_>(value));
+                new (&unused_slot.value_ref()) mapped_storage_t(std::forward<convertible_mapped_type_>(value));
             },
             [&](slot_ref_t &equal_slot) noexcept {
-                equal_slot.value_ref() = std::forward<convertible_value_type_>(value);
+                equal_slot.value_ref() = std::forward<convertible_mapped_type_>(value);
             });
     }
 
@@ -264,12 +275,12 @@ class atomic_hash_table {
      *  @return @c success_k, or @c key_not_found_k when no equal key was there.
      *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
      */
-    template <typename comparable_key_type_, typename convertible_value_type_>
-    [[nodiscard]] constexpr status_t update(comparable_key_type_ &&key, convertible_value_type_ &&new_value) noexcept {
+    template <typename comparable_key_type_, typename convertible_mapped_type_>
+    [[nodiscard]] constexpr status_t update(comparable_key_type_ &&key, convertible_mapped_type_ &&new_value) noexcept {
         static_assert(has_values_k, "update() is only available for maps, not sets");
         bool const found =
             probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
-                slot.value_ref() = std::forward<convertible_value_type_>(new_value);
+                slot.value_ref() = std::forward<convertible_mapped_type_>(new_value);
             });
         return found ? success_k : key_not_found_k;
     }
@@ -284,7 +295,7 @@ class atomic_hash_table {
         bool const found =
             probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
                 if constexpr (destruct_keys_k) slot.key_ref().~key_t();
-                if constexpr (destruct_values_k) slot.value_ref().~value_storage_t();
+                if constexpr (destruct_values_k) slot.value_ref().~mapped_storage_t();
                 slot.mark_deleted();
                 atomic_add_fetch<offset_t>(storage_.deleted_count, 1);
                 atomic_sub_fetch<offset_t>(storage_.populated_count, 1);
@@ -409,13 +420,21 @@ class atomic_hash_table {
 
 #pragma region Aliases
 
-template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
-using atomic_hash_map = atomic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>;
+using atomic_hash_map =
+    atomic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>;
 
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
           typename allocator_type_ = default_allocator<std::byte>>
 using atomic_hash_set = atomic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
+
+static_assert(tagged_collection<atomic_hash_set<std::uint64_t>> &&
+                  tagged_collection<atomic_hash_map<std::uint64_t, double>>,
+              "a pinned table names its element, its key and its shape like every other container");
+static_assert(set_shaped_store<atomic_hash_set<std::uint64_t>> &&
+                  map_shaped_store<atomic_hash_map<std::uint64_t, double>>,
+              "the set and map aliases of one table must not resolve to the same shape");
 
 #pragma endregion Aliases
 

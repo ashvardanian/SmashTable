@@ -329,20 +329,20 @@ constexpr bool failed(result_type_ const &result) noexcept {
     return result.failed();
 }
 
-/**
- *  @brief Simple key-value mapping type, cleaner & lighter than @c std::pair used by @c std::map.
- *  @see https://en.cppreference.com/w/cpp/utility/pair.html
- */
 template <typename value_type_>
 class expected;
 
 template <typename object_type_>
 [[nodiscard]] expected<object_type_> copy_safely(object_type_ const &object) noexcept;
 
-template <typename key_type_, typename value_type_>
+/**
+ *  @brief Simple key-value mapping type, cleaner & lighter than @c std::pair used by @c std::map.
+ *  @see https://en.cppreference.com/w/cpp/utility/pair.html
+ */
+template <typename key_type_, typename mapped_type_>
 struct mapping {
     using key_type = key_type_;
-    using mapped_type = value_type_;
+    using mapped_type = mapped_type_;
 
     key_type key {};
     mapped_type mapped {};
@@ -1311,7 +1311,7 @@ struct versioning_for {
         versioned_t &operator=(versioned_t &&) noexcept = default;
         versioned_t(versioned_t const &) noexcept = delete;
         versioned_t &operator=(versioned_t const &) noexcept = delete;
-        versioned_t(value_t &&payload) noexcept : payload(std::move(payload)) {}
+        versioned_t(value_t &&value) noexcept : payload(std::move(value)) {}
 
         bool operator==(watch_t const &watch) const noexcept {
             return generation == watch.generation && presence == watch.presence;
@@ -2207,7 +2207,7 @@ struct versioned_storage_for {
                                 payload_type_ &destination) noexcept {
         auto extracted = storage.extract(identifier);
         if (!extracted.node_ptr_) return false;
-        destination = std::move(extracted.node_ptr_->fruit.head);
+        destination = std::move(extracted.node_ptr_->payload.head);
         return true;
     }
 };
@@ -2287,8 +2287,8 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
                                 payload_type_ &destination) noexcept {
         auto found = storage.find(identifier);
         if (found == storage.end()) return false;
-        using element_t = std::remove_const_t<std::remove_reference_t<decltype(*found)>>;
-        destination = std::move(const_cast<element_t &>(*found).head);
+        using value_t = std::remove_const_t<std::remove_reference_t<decltype(*found)>>;
+        destination = std::move(const_cast<value_t &>(*found).head);
         storage.erase(found);
         return true;
     }

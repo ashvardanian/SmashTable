@@ -2196,8 +2196,8 @@ class monotonic_store {
         // yet committed, so a cursor walk sees every key exactly once and never skips the smallest.
         chain_node_t *cursor = chain_node_t::lower_bound(entries_.root(), comparable, entries_.key_comp());
         versioned_t const *visible = nullptr;
-        while (cursor && !(visible = readable_version_(cursor->fruit)))
-            cursor = chain_node_t::upper_bound(entries_.root(), cursor->fruit, entries_.key_comp());
+        while (cursor && !(visible = readable_version_(cursor->payload)))
+            cursor = chain_node_t::upper_bound(entries_.root(), cursor->payload, entries_.key_comp());
 
         if (visible) callback_found(visible->payload);
         else callback_missing();
@@ -2231,8 +2231,8 @@ class monotonic_store {
         // version of the one the caller just held, so a cursor walk cannot repeat itself.
         chain_node_t *cursor = chain_node_t::upper_bound(entries_.root(), comparable, entries_.key_comp());
         versioned_t const *visible = nullptr;
-        while (cursor && !(visible = readable_version_(cursor->fruit)))
-            cursor = chain_node_t::upper_bound(entries_.root(), cursor->fruit, entries_.key_comp());
+        while (cursor && !(visible = readable_version_(cursor->payload)))
+            cursor = chain_node_t::upper_bound(entries_.root(), cursor->payload, entries_.key_comp());
 
         if (visible) callback_found(visible->payload);
         else callback_missing();
@@ -2281,7 +2281,7 @@ class monotonic_store {
     {
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             entries_.key_comp(), [&](chain_node_t *node) noexcept {
-                                versioned_t const *readable = readable_version_(node->fruit);
+                                versioned_t const *readable = readable_version_(node->payload);
                                 if (!readable) return walk_control_t::resume_k;
                                 return hand_over(callback, readable->payload);
                             });
@@ -2306,7 +2306,7 @@ class monotonic_store {
         generation_t generation = next_generation_();
         chain_node_t::range(entries_.root(), std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                             entries_.key_comp(), [&](chain_node_t *node) noexcept {
-                                auto &chain = node->fruit;
+                                auto &chain = node->payload;
                                 versioned_t const *readable = readable_version_(chain);
                                 if (!readable) return;
                                 versioned_t &mutable_version = mutable_ref_(*readable);
@@ -2433,9 +2433,9 @@ class monotonic_store {
 
         auto node = chain_node_t::sample_range( //
             entries_.root(), lower, upper, entries_.key_comp(), std::forward<generator_type_>(generator),
-            [](chain_node_t *candidate) noexcept { return readable_version_(candidate->fruit) != nullptr; });
+            [](chain_node_t *candidate) noexcept { return readable_version_(candidate->payload) != nullptr; });
         // Callers see the stored value; the version metadata never leaves this class.
-        if (node) callback(readable_version_(node->fruit)->payload);
+        if (node) callback(readable_version_(node->payload)->payload);
         return success_k;
     }
 
@@ -2492,7 +2492,7 @@ class monotonic_store {
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
             // The walk has no early exit, so the answer has to guard itself against every entry after it.
             if (found) return;
-            versioned_t const *readable = readable_version_(node->fruit);
+            versioned_t const *readable = readable_version_(node->payload);
             if (!readable) return;
             if (visible_index == ordinal) {
                 callback_found(readable->payload);
@@ -2526,7 +2526,7 @@ class monotonic_store {
         auto const less = entries_.key_comp();
 
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) noexcept {
-            versioned_t const *readable = readable_version_(node->fruit);
+            versioned_t const *readable = readable_version_(node->payload);
             if (!readable) return;
 
             if (less.same(readable->payload, comparable)) {
@@ -2634,8 +2634,8 @@ class monotonic_store {
             stream << marker << " ";
         };
         chain_node_t::for_each_left_right(entries_.root(), [&](chain_node_t *node) {
-            show(node->fruit.head);
-            for (version_node_t const *other = node->fruit.others; other; other = other->next) show(other->entry);
+            show(node->payload.head);
+            for (version_node_t const *other = node->payload.others; other; other = other->next) show(other->entry);
         });
         stream << "\n";
     }
@@ -2661,15 +2661,15 @@ using monotonic_avl_set = monotonic_store<basic_avl_tree<value_type_, comparator
  *      all-or-nothing commits at Monotonic Atomic View.
  *
  *  @tparam key_type_ Type of keys stored in the map.
- *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam mapped_type_ Type of the value mapped to each key.
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using monotonic_avl_map =
-    monotonic_store<basic_avl_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    monotonic_store<basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional set using a weight-balanced tree, so it answers @c rank and
@@ -2697,15 +2697,15 @@ using monotonic_wb_set = monotonic_store<basic_wb_tree<value_type_, comparator_t
  *  monotonic_wb_set names.
  *
  *  @tparam key_type_ Type of keys stored in the map.
- *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam mapped_type_ Type of the value mapped to each key.
  *  @tparam comparator_type_ Comparator for ordering keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for tree nodes, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename comparator_type_ = less_t,
-          typename allocator_type_ = std::allocator<mapping<key_type_, value_type_>>>
+template <typename key_type_, typename mapped_type_, typename comparator_type_ = less_t,
+          typename allocator_type_ = std::allocator<mapping<key_type_, mapped_type_>>>
 using monotonic_wb_map =
-    monotonic_store<basic_wb_tree<mapping<key_type_, value_type_>, comparator_type_, allocator_type_>>;
+    monotonic_store<basic_wb_tree<mapping<key_type_, mapped_type_>, comparator_type_, allocator_type_>>;
 
 /**
  *  @brief STL-style transactional set using an open-addressed hash table. Point access only - no
@@ -2727,16 +2727,16 @@ using monotonic_hash_set = monotonic_store<basic_hash_table<key_type_, hasher_ty
  *      bounds, ranges, or order statistics, as the core supplies no ordering.
  *
  *  @tparam key_type_ Type of keys stored in the map.
- *  @tparam value_type_ Type of values stored in the map.
+ *  @tparam mapped_type_ Type of the value mapped to each key.
  *  @tparam hasher_type_ Hasher for placing keys. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
  */
-template <typename key_type_, typename value_type_, typename hasher_type_ = default_hash_t,
+template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
           typename equals_type_ = equal_to_t, typename allocator_type_ = std::allocator<std::byte>>
 using monotonic_hash_map =
-    monotonic_store<basic_hash_table<mapping<key_type_, value_type_>, hasher_type_, equals_type_, allocator_type_>>;
+    monotonic_store<basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 } // namespace ashvardanian::smashtable
