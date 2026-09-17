@@ -19,51 +19,12 @@
 #include <smashtable/basic_ring.hpp>
 
 #include "test.hpp"
+#include "test_sequence.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
 
 namespace {
-
-#pragma region Element Types
-
-/** An element that counts its live instances, so a leaked or doubly destroyed slot shows up as a nonzero balance. */
-struct counted_element_t {
-    static inline long live_count = 0;
-
-    std::uint64_t value {0};
-
-    counted_element_t() noexcept { ++live_count; }
-    explicit counted_element_t(std::uint64_t initial) noexcept : value(initial) { ++live_count; }
-    counted_element_t(counted_element_t &&other) noexcept : value(other.value) { ++live_count; }
-    counted_element_t(counted_element_t const &other) noexcept : value(other.value) { ++live_count; }
-    counted_element_t &operator=(counted_element_t &&) noexcept = default;
-    counted_element_t &operator=(counted_element_t const &) noexcept = default;
-    ~counted_element_t() noexcept { --live_count; }
-};
-
-/** An allocator that refuses every request. */
-template <typename value_type_>
-struct refusing_allocator {
-    using value_type = value_type_;
-    using propagate_on_container_move_assignment = std::true_type;
-    using propagate_on_container_swap = std::true_type;
-    using is_always_equal = std::true_type;
-
-    constexpr refusing_allocator() noexcept = default;
-    template <typename other_type_>
-    constexpr refusing_allocator(refusing_allocator<other_type_> const &) noexcept {}
-
-    [[nodiscard]] value_type_ *allocate(std::size_t) noexcept { return nullptr; }
-    void deallocate(value_type_ *, std::size_t) noexcept {}
-
-    template <typename other_type_>
-    constexpr bool operator==(refusing_allocator<other_type_> const &) const noexcept {
-        return true;
-    }
-};
-
-#pragma endregion Element Types
 
 #pragma region Tests
 
@@ -170,32 +131,41 @@ void ring_bulk_push_and_pop() {
 /** Every element constructed into a slot is destroyed exactly once, whether popped, cleared or dropped with the ring.
  */
 void ring_element_lifetimes() {
-    counted_element_t::live_count = 0;
+    counted_key_t::reset();
     {
-        auto ring = basic_ring<counted_element_t>::make(8);
+        expected<basic_ring<counted_key_t>> ring = basic_ring<counted_key_t>::make(8);
         st_verify_(ring);
-        for (std::uint64_t value = 0; value < 6; ++value) st_verify_(ring->push(counted_element_t {value}));
-        st_verify_eq_(counted_element_t::live_count, 6);
+        for (trivial_id_t value = 0; value < 6; ++value) st_verify_(ring->push(counted_key_t {value}));
+        st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {6});
         ring->pop();
-        counted_element_t destination;
+        counted_key_t destination;
         st_verify_(ring->pop_into(destination));
-        st_verify_eq_(destination.value, 1u);
-        st_verify_eq_(counted_element_t::live_count, 5);
+        st_verify_eq_(destination.unique_id, trivial_id_t {1});
+        st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {5});
         ring->clear();
-        st_verify_eq_(counted_element_t::live_count, 1);
-        for (std::uint64_t value = 0; value < 8; ++value) st_verify_(ring->push(counted_element_t {value}));
+        st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {1});
+        for (trivial_id_t value = 0; value < 8; ++value) st_verify_(ring->push(counted_key_t {value}));
 
-        basic_ring<counted_element_t> moved = std::move(*ring);
+        basic_ring<counted_key_t> moved = std::move(*ring);
         st_verify_eq_(moved.size(), 8u);
         st_verify_eq_(ring->size(), 0u);
         st_verify_eq_(ring->capacity(), 0u);
-        basic_ring<counted_element_t> swapped;
+        basic_ring<counted_key_t> swapped;
         std::swap(moved, swapped);
-        st_verify_eq_(swapped.oldest().value, 0u);
-        st_verify_eq_(swapped.newest().value, 7u);
-        st_verify_eq_(counted_element_t::live_count, 9);
+        st_verify_eq_(swapped.oldest().unique_id, trivial_id_t {0});
+        st_verify_eq_(swapped.newest().unique_id, trivial_id_t {7});
+        st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {9});
     }
-    st_verify_eq_(counted_element_t::live_count, 0);
+    counted_key_t::verify_balanced();
+}
+
+/** The suite every sequence answers, over a ring of counted elements and one of tracked allocations. */
+void ring_sequence_suite() {
+    test_sequence_tags<basic_ring<counted_key_t>>();
+    test_sequence_order<basic_ring<counted_key_t>>();
+    test_sequence_element_lifetimes<basic_ring<counted_key_t>>();
+    test_sequence_move_semantics<basic_ring<counted_key_t>>();
+    test_sequence_allocator_ledger<basic_ring<counted_key_t, stateful_allocator<counted_key_t>>>();
 }
 
 #pragma endregion Tests
@@ -212,6 +182,7 @@ int main() {
     failures += run_test(filter, "ring.push_evicting", ring_push_evicting);
     failures += run_test(filter, "ring.bulk_push_and_pop", ring_bulk_push_and_pop);
     failures += run_test(filter, "ring.element_lifetimes", ring_element_lifetimes);
+    failures += run_test(filter, "ring.sequence_suite", ring_sequence_suite);
 
     return report_test_failures(failures);
 }

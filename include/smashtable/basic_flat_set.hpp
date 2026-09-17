@@ -11,10 +11,13 @@
 #pragma once
 #include <cassert> // `assert`
 #include <cstddef> // `std::size_t`
+#include <cstdint> // `std::uint64_t`
 
 #include <concepts>    // `std::same_as`
+#include <iterator>    // `std::distance`, `std::forward_iterator`
+#include <memory>      // `std::allocator_traits`
 #include <span>        // `std::span`
-#include <type_traits> // `std::is_nothrow_move_assignable_v`
+#include <type_traits> // `std::false_type`, `std::is_nothrow_move_assignable_v`
 #include <utility>     // `std::move`
 
 #include "basic_vector.hpp"
@@ -22,35 +25,56 @@
 
 namespace ashvardanian::smashtable {
 
-/** A sorted set of unique @p element_type_ ordered by @p comparator_type_. The rank search goes
+/** A sorted set of unique @p value_type_ ordered by @p comparator_type_. The rank search goes
  *  through @p row_kit_type_ when the element is a @c row_searchable_key ordered by @c less_t, and
  *  through a binary search with the comparator otherwise. */
-template <typename element_type_, typename comparator_type_ = less_t, row_kit row_kit_type_ = native_row_kit_t,
-          typename allocator_type_ = default_allocator<element_type_>>
+template <typename value_type_, typename comparator_type_ = less_t, row_kit row_kit_type_ = native_row_kit_t,
+          typename allocator_type_ = default_allocator<value_type_>>
 class basic_flat_set {
   public:
-    using element_t = element_type_;
-    using comparator_t = comparator_type_;
-    using kit_t = row_kit_type_;
-    using allocator_t = allocator_type_;
+    using value_t = value_type_;
+    using value_type = value_t; // ? STL compatibility
 
-    static_assert(std::is_nothrow_move_assignable_v<element_t>,
+    /** The key half, which for a set is the whole element. */
+    using key_t = value_t;
+    using key_type = key_t; // ? STL compatibility
+
+    /** The mapped half, which a set never has. */
+    using mapped_t = void;
+    using mapped_type = mapped_t; // ? STL compatibility
+
+    using comparator_t = comparator_type_;
+    using comparator_type = comparator_t; // ? STL compatibility
+
+    using kit_t = row_kit_type_;
+
+    using allocator_t = allocator_type_;
+    using allocator_type = allocator_t; // ? STL compatibility
+
+    using is_associative = std::false_type;
+
+    static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
+                  "basic_flat_set requires allocators that propagate on move assignment");
+    static_assert(std::is_nothrow_move_assignable_v<value_t>,
                   "shifting the tail moves elements inside noexcept code, so they must move-assign without throwing");
 
   private:
-    static constexpr bool searches_through_kit_k = row_searchable_key<element_t> && std::same_as<comparator_t, less_t>;
+    static constexpr bool searches_through_kit_k = row_searchable_key<value_t> && std::same_as<comparator_t, less_t>;
 
-    basic_vector<element_t, allocator_t> elements_;
+    using elements_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<value_t>;
+    using elements_t = basic_vector<value_t, elements_allocator_t>;
+
+    elements_t elements_;
     ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
 
-    basic_flat_set(basic_vector<element_t, allocator_t> &&elements, comparator_t comparator) noexcept
+    basic_flat_set(elements_t &&elements, comparator_t comparator) noexcept
         : elements_(std::move(elements)), comparator_(std::move(comparator)) {}
 
   public:
     basic_flat_set() noexcept = default;
 
     explicit basic_flat_set(comparator_t comparator, allocator_t allocator = {}) noexcept
-        : elements_(std::move(allocator)), comparator_(std::move(comparator)) {}
+        : elements_(elements_allocator_t(allocator)), comparator_(std::move(comparator)) {}
 
     basic_flat_set(basic_flat_set &&) noexcept = default;
     basic_flat_set &operator=(basic_flat_set &&) noexcept = default;
@@ -60,7 +84,7 @@ class basic_flat_set {
     /** An empty set with room for @p capacity elements, or @c out_of_memory_heap_k. */
     [[nodiscard]] static expected<basic_flat_set> make(std::size_t capacity, comparator_t comparator = {},
                                                        allocator_t allocator = {}) noexcept {
-        auto made = basic_vector<element_t, allocator_t>::make(capacity, std::move(allocator));
+        expected<elements_t> made = elements_t::make(capacity, elements_allocator_t(allocator));
         if (!made) return made.status();
         return expected<basic_flat_set>(basic_flat_set(std::move(*made), std::move(comparator)), success_k);
     }
@@ -79,20 +103,20 @@ class basic_flat_set {
     [[nodiscard]] std::size_t capacity() const noexcept { return elements_.capacity(); }
     [[nodiscard]] bool empty() const noexcept { return elements_.empty(); }
 
-    [[nodiscard]] element_t const *data() const noexcept { return elements_.data(); }
-    [[nodiscard]] element_t const *begin() const noexcept { return elements_.begin(); }
-    [[nodiscard]] element_t const *end() const noexcept { return elements_.end(); }
+    [[nodiscard]] value_t const *data() const noexcept { return elements_.data(); }
+    [[nodiscard]] value_t const *begin() const noexcept { return elements_.begin(); }
+    [[nodiscard]] value_t const *end() const noexcept { return elements_.end(); }
 
     /** The element at position @p ordinal in sorted order. */
-    [[nodiscard]] element_t const &operator[](std::size_t ordinal) const noexcept { return elements_[ordinal]; }
+    [[nodiscard]] value_t const &operator[](std::size_t ordinal) const noexcept { return elements_[ordinal]; }
 
     /** How many elements order below @p wanted, which is also where it is or would be inserted. */
     template <typename comparable_type_>
     [[nodiscard]] std::size_t rank(comparable_type_ const &wanted) const noexcept {
-        if constexpr (searches_through_kit_k && std::same_as<comparable_type_, element_t>)
-            return count_below_sorted<kit_t>(std::span<element_t const>(elements_.data(), elements_.size()), wanted);
+        if constexpr (searches_through_kit_k && std::same_as<comparable_type_, value_t>)
+            return count_below_sorted<kit_t>(std::span<value_t const>(elements_.data(), elements_.size()), wanted);
         else {
-            element_t const *const elements = elements_.data();
+            value_t const *const elements = elements_.data();
             std::size_t low = 0;
             std::size_t length = elements_.size();
             while (length > 0) {
@@ -109,26 +133,76 @@ class basic_flat_set {
 
     /** The element equivalent to @p wanted, or null. */
     template <typename comparable_type_>
-    [[nodiscard]] element_t const *find(comparable_type_ const &wanted) const noexcept {
+    [[nodiscard]] value_t const *find(comparable_type_ const &wanted) const noexcept {
         std::size_t const offset = rank(wanted);
         if (offset == elements_.size() || comparator_(wanted, elements_.data()[offset])) return nullptr;
         return elements_.data() + offset;
     }
 
+    /** Whether an element equivalent to @p wanted is here. Always success; a sorted array cannot refuse a read. */
     template <typename comparable_type_>
-    [[nodiscard]] bool contains(comparable_type_ const &wanted) const noexcept {
+    [[nodiscard]] expected<bool> contains(comparable_type_ const &wanted) const noexcept {
         return find(wanted) != nullptr;
     }
 
+    /** The first element not below @p wanted, or @c end. */
+    template <typename comparable_type_>
+    [[nodiscard]] value_t const *lower_bound(comparable_type_ const &wanted) const noexcept {
+        return elements_.data() + rank(wanted);
+    }
+
+    /** The first element above @p wanted, or @c end. */
+    template <typename comparable_type_>
+    [[nodiscard]] value_t const *upper_bound(comparable_type_ const &wanted) const noexcept {
+        std::size_t offset = rank(wanted);
+        if (offset < elements_.size() && !comparator_(wanted, elements_.data()[offset])) ++offset;
+        return elements_.data() + offset;
+    }
+
+    /** Copies out the element equivalent to @p wanted, or reports @c key_not_found_k. */
+    template <typename comparable_type_>
+    [[nodiscard]] expected<value_t> find_copy(comparable_type_ const &wanted) const noexcept {
+        value_t const *const found = find(wanted);
+        if (!found) return key_not_found_k;
+        return copy_safely(*found);
+    }
+
+    /** Copies out the first element not below @p wanted, or reports @c key_not_found_k. */
+    template <typename comparable_type_>
+    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ const &wanted) const noexcept {
+        value_t const *const found = lower_bound(wanted);
+        if (found == elements_.end()) return key_not_found_k;
+        return copy_safely(*found);
+    }
+
+    /** Copies out the first element above @p wanted, or reports @c key_not_found_k. */
+    template <typename comparable_type_>
+    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ const &wanted) const noexcept {
+        value_t const *const found = upper_bound(wanted);
+        if (found == elements_.end()) return key_not_found_k;
+        return copy_safely(*found);
+    }
+
+    /** Visits every element in [lower, upper) in sorted order, or fewer if the callback halts. */
+    template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
+    [[nodiscard]] status_t range(lower_type_ const &lower, upper_type_ const &upper,
+                                 callback_type_ &&callback) const noexcept {
+        std::size_t const last = rank(upper);
+        value_t const *const elements = elements_.data();
+        for (std::size_t index = rank(lower); index < last; ++index)
+            if (hand_over(callback, elements[index]) == walk_control_t::halt_k) break;
+        return success_k;
+    }
+
     /** Adds @p element, or answers @c key_already_exists_k and leaves the set alone. */
-    [[nodiscard]] status_t insert(element_t element) noexcept {
+    [[nodiscard]] status_t insert(value_t element) noexcept {
         std::size_t const offset = rank(element);
         if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) return key_already_exists_k;
         return insert_at_(offset, std::move(element));
     }
 
     /** Adds @p element, replacing an equivalent one if the set holds it. */
-    [[nodiscard]] status_t upsert(element_t element) noexcept {
+    [[nodiscard]] status_t upsert(value_t element) noexcept {
         std::size_t const offset = rank(element);
         if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) {
             elements_.data()[offset] = std::move(element);
@@ -137,17 +211,29 @@ class basic_flat_set {
         return insert_at_(offset, std::move(element));
     }
 
-    /** Adds every element of @p incoming the set lacks, reserving once, so only the reservation can fail. */
-    [[nodiscard]] status_t insert_missing(std::span<element_t const> incoming) noexcept
-        requires std::is_nothrow_copy_constructible_v<element_t>
-    {
-        status_t const status = elements_.reserve(elements_.size() + incoming.size());
-        if (failed(status)) return status;
-        for (element_t const &element : incoming) {
+    /** Adds every element of [first, last) the set lacks, reserving once when the range knows its length. */
+    template <typename input_iterator_type_>
+    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+        status_t const reserved = reserve_for_range_(first, last);
+        if (failed(reserved)) return reserved;
+        for (; first != last; ++first) {
+            value_t element(*first);
             std::size_t const offset = rank(element);
             if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) continue;
-            [[maybe_unused]] status_t const inserted = insert_at_(offset, element_t {element});
-            assert(succeeded(inserted) && "the reservation covers every insertion");
+            status_t const inserted = insert_at_(offset, std::move(element));
+            if (failed(inserted)) return inserted;
+        }
+        return success_k;
+    }
+
+    /** Adds every element of [first, last), replacing the equivalent ones the set already holds. */
+    template <typename input_iterator_type_>
+    [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+        status_t const reserved = reserve_for_range_(first, last);
+        if (failed(reserved)) return reserved;
+        for (; first != last; ++first) {
+            status_t const written = upsert(value_t(*first));
+            if (failed(written)) return written;
         }
         return success_k;
     }
@@ -156,7 +242,7 @@ class basic_flat_set {
     template <typename comparable_type_>
     [[nodiscard]] status_t erase(comparable_type_ const &wanted) noexcept {
         std::size_t const offset = rank(wanted);
-        element_t *const elements = elements_.data();
+        value_t *const elements = elements_.data();
         if (offset == elements_.size() || comparator_(wanted, elements[offset])) return key_not_found_k;
         for (std::size_t index = offset; index + 1 < elements_.size(); ++index)
             elements[index] = std::move(elements[index + 1]);
@@ -164,18 +250,43 @@ class basic_flat_set {
         return success_k;
     }
 
+    /** Erases the half-open range [lower, upper), handing each removed element to @p callback first. */
+    template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
+    void erase_range(lower_type_ const &lower, upper_type_ const &upper, callback_type_ &&callback = {}) noexcept {
+        std::size_t const first = rank(lower);
+        std::size_t const last = rank(upper);
+        if (first >= last) return;
+        value_t *const elements = elements_.data();
+        for (std::size_t index = first; index < last; ++index) callback(elements[index]);
+        for (std::size_t index = last; index < elements_.size(); ++index)
+            elements[index - (last - first)] = std::move(elements[index]);
+        for (std::size_t removed = last - first; removed > 0; --removed) elements_.pop_back();
+    }
+
   private:
-    [[nodiscard]] status_t insert_at_(std::size_t offset, element_t &&element) noexcept {
+    /** Reserves room for a whole range up front, so only sized ranges pay one growth rather than several. */
+    template <typename input_iterator_type_>
+    [[nodiscard]] status_t reserve_for_range_(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+        if constexpr (std::forward_iterator<input_iterator_type_>)
+            return elements_.reserve(elements_.size() + static_cast<std::size_t>(std::distance(first, last)));
+        else return success_k;
+    }
+
+    [[nodiscard]] status_t insert_at_(std::size_t offset, value_t &&element) noexcept {
         status_t const status = elements_.push_back(std::move(element));
         if (failed(status)) return status;
-        element_t *const elements = elements_.data();
+        value_t *const elements = elements_.data();
         std::size_t index = elements_.size() - 1;
         if (index == offset) return success_k;
-        element_t appended = std::move(elements[index]);
+        value_t appended = std::move(elements[index]);
         for (; index > offset; --index) elements[index] = std::move(elements[index - 1]);
         elements[offset] = std::move(appended);
         return success_k;
     }
 };
+
+static_assert(ordered_collection<basic_flat_set<std::uint64_t>>,
+              "a flat set answers a key, a bound and a range the way every ordered collection does");
+static_assert(!basic_flat_set<std::uint64_t>::is_associative::value, "a flat set stores bare keys");
 
 } // namespace ashvardanian::smashtable

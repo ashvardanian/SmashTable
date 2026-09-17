@@ -18,6 +18,7 @@
 #include <smashtable/basic_vector.hpp>
 
 #include "test.hpp"
+#include "test_sequence.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -266,6 +267,15 @@ static void vector_move_semantics() {
     st_verify_eq_(assigned.at(16), nullptr);
 }
 
+/** The suite every sequence answers, over a vector of counted elements and one of tracked allocations. */
+void vector_sequence_suite() {
+    test_sequence_tags<basic_vector<counted_key_t>>();
+    test_sequence_order<basic_vector<counted_key_t>>();
+    test_sequence_element_lifetimes<basic_vector<counted_key_t>>();
+    test_sequence_move_semantics<basic_vector<counted_key_t>>();
+    test_sequence_allocator_ledger<basic_vector<counted_key_t, stateful_allocator<counted_key_t>>>();
+}
+
 #pragma endregion Tests
 
 } // namespace
@@ -281,6 +291,7 @@ int main() {
     failures += run_test(filter, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
     failures += run_test(filter, "vector.copy_and_swap", vector_copy_and_swap);
     failures += run_test(filter, "vector.move_semantics", vector_move_semantics);
+    failures += run_test(filter, "vector.sequence_suite", vector_sequence_suite);
 
     return report_test_failures(failures);
 }

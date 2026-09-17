@@ -36,6 +36,13 @@ using parity_serializable_map_t = serializable_avl_map<std::uint64_t, std::uint6
 using parity_snapshot_ranked_map_t = snapshot_wb_map<std::uint64_t, std::uint64_t>;
 using parity_monotonic_ranked_map_t = monotonic_wb_map<std::uint64_t, std::uint64_t>;
 
+/** The same engines over bare keys, since a fold that only ever saw mappings never asked about the other shape. */
+using parity_snapshot_set_t = snapshot_avl_set<std::uint64_t>;
+using parity_monotonic_set_t = monotonic_avl_set<std::uint64_t>;
+using parity_serializable_set_t = serializable_avl_set<std::uint64_t>;
+using parity_snapshot_ranked_set_t = snapshot_wb_set<std::uint64_t>;
+using parity_monotonic_ranked_set_t = monotonic_wb_set<std::uint64_t>;
+
 static_assert(transaction_mirrors_the_store<parity_snapshot_map_t>,
               "a snapshot store's transaction must mirror the store it opens on");
 static_assert(transaction_mirrors_the_store<parity_monotonic_map_t>,
@@ -47,8 +54,26 @@ static_assert(transaction_mirrors_the_store<parity_snapshot_ranked_map_t>,
 static_assert(transaction_mirrors_the_store<parity_monotonic_ranked_map_t>,
               "a ranked store's transaction must mirror the store it opens on");
 
+static_assert(transaction_mirrors_the_store<parity_snapshot_set_t>,
+              "a set-shaped snapshot store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_monotonic_set_t>,
+              "a set-shaped monotonic store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_serializable_set_t>,
+              "a set-shaped serializable store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_snapshot_ranked_set_t>,
+              "a set-shaped ranked store's transaction must mirror the store it opens on");
+static_assert(transaction_mirrors_the_store<parity_monotonic_ranked_set_t>,
+              "a set-shaped ranked store's transaction must mirror the store it opens on");
+
+static_assert(set_shaped_store<parity_snapshot_set_t> && map_shaped_store<parity_snapshot_map_t>,
+              "the set and map aliases of one engine must not resolve to the same shape");
+static_assert(set_shaped_store<parity_monotonic_ranked_set_t> && map_shaped_store<parity_monotonic_ranked_map_t>,
+              "the set and map aliases of one engine must not resolve to the same shape");
+
 static_assert(wrappers_honour_the_level<parity_serializable_map_t>,
               "a wrapper reporting a level must forward the surface that level is defined by");
+static_assert(wrappers_honour_the_level<parity_serializable_set_t>,
+              "a set-shaped wrapper reporting a level must forward the same surface");
 
 #pragma endregion Level Parity
 

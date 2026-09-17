@@ -764,8 +764,8 @@ auto trivial_id_to_member(trivial_id_t value) {
 }
 
 /** Helper to construct a new @c member_type_ from an integer value */
-template <typename member_type_, typename value_type_>
-member_type_ trivial_id_to_member(trivial_id_t identifier, value_type_ value) {
+template <typename member_type_, typename mapped_type_>
+member_type_ trivial_id_to_member(trivial_id_t identifier, mapped_type_ value) {
     if constexpr (is_mapping<member_type_>)
         return {trivial_id_to_key<member_type_>(identifier), typename member_type_::mapped_type(value)};
     else return trivial_id_to_key<member_type_>(identifier);
@@ -854,14 +854,14 @@ struct allocation_ledger_t {
  *  Refuses with @c nullptr rather than an exception, since the containers it feeds promise to throw
  *  none; an allocator with no ledger allocates freely and records nothing.
  */
-template <typename element_type_>
+template <typename value_type_>
 struct stateful_allocator {
-    using value_type = element_type_;
+    using value_type = value_type_;
     using propagate_on_container_move_assignment = std::true_type; // Required for AVL trees
 
     /** The byte width one element occupies, standing in for a @c void element with one byte. */
     static constexpr std::size_t element_size_k =
-        sizeof(std::conditional_t<std::is_void_v<element_type_>, std::byte, element_type_>);
+        sizeof(std::conditional_t<std::is_void_v<value_type_>, std::byte, value_type_>);
 
     int allocator_id {0};
     allocation_ledger_t *ledger {nullptr};
@@ -876,13 +876,12 @@ struct stateful_allocator {
     stateful_allocator(stateful_allocator<other_type_> const &other) noexcept
         : allocator_id(other.allocator_id), ledger(other.ledger) {}
 
-    [[nodiscard]] element_type_ *allocate(std::size_t count) noexcept {
+    [[nodiscard]] value_type_ *allocate(std::size_t count) noexcept {
         if (ledger && ledger->note_request(count, element_size_k) == budget_outcome_t::refused_k) return nullptr;
-        return static_cast<element_type_ *>(
-            ::operator new(count * element_size_k, std::nothrow)); // allocator primitive
+        return static_cast<value_type_ *>(::operator new(count * element_size_k, std::nothrow)); // allocator primitive
     }
 
-    void deallocate(element_type_ *pointer, std::size_t) noexcept {
+    void deallocate(value_type_ *pointer, std::size_t) noexcept {
         if (ledger) ledger->note_deallocation();
         ::operator delete(pointer, std::nothrow); // allocator primitive
     }
@@ -899,6 +898,27 @@ struct stateful_allocator {
 };
 
 using stateful_allocator_t = stateful_allocator<std::byte>;
+
+/** An allocator that refuses every request, so a container's out-of-memory path is the only one left. */
+template <typename value_type_>
+struct refusing_allocator {
+    using value_type = value_type_;
+    using propagate_on_container_move_assignment = std::true_type;
+    using propagate_on_container_swap = std::true_type;
+    using is_always_equal = std::true_type;
+
+    constexpr refusing_allocator() noexcept = default;
+    template <typename other_type_>
+    constexpr refusing_allocator(refusing_allocator<other_type_> const &) noexcept {}
+
+    [[nodiscard]] value_type_ *allocate(std::size_t) noexcept { return nullptr; }
+    void deallocate(value_type_ *, std::size_t) noexcept {}
+
+    template <typename other_type_>
+    constexpr bool operator==(refusing_allocator<other_type_> const &) const noexcept {
+        return true;
+    }
+};
 
 #pragma endregion Stateful Allocator
 
