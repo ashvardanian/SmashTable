@@ -204,8 +204,8 @@ class atomic_hash_table {
     /** Invokes one of the two callbacks, the found one under the matching slot's lock. Reads arrive through a
      *  callback rather than a reference, since a concurrent erase would invalidate anything handed back. */
     template <typename comparable_key_type_, typename callback_found_type_, typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] constexpr status_t find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
-                                          callback_missing_type_ &&callback_missing = {}) const noexcept {
+    constexpr status_t find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
+                            callback_missing_type_ &&callback_missing = {}) const noexcept {
         if (!probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted),
                                               std::forward<callback_found_type_>(callback_found)))
             callback_missing();
@@ -219,7 +219,7 @@ class atomic_hash_table {
      *      so it never refuses.
      */
     template <typename comparable_key_type_>
-    [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted) const noexcept {
+    expected<bool> contains(comparable_key_type_ &&wanted) const noexcept {
         return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted), no_op_t {});
     }
 
@@ -241,7 +241,7 @@ class atomic_hash_table {
      *      free. A pinned table can genuinely fill up, so this reports rather than asserts.
      */
     template <typename convertible_key_type_, typename convertible_mapped_type_>
-    [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_mapped_type_ &&value) noexcept {
+    constexpr status_t emplace(convertible_key_type_ &&key, convertible_mapped_type_ &&value) noexcept {
         static_assert(has_values_k, "A two-argument emplace is only available for maps");
         return probe_to_upsert_(
             key,
@@ -260,7 +260,7 @@ class atomic_hash_table {
      *      was free.
      */
     template <typename convertible_key_type_>
-    [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
+    constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
         static_assert(!has_values_k, "A one-argument emplace is only available for sets");
         return probe_to_upsert_(
             key,
@@ -276,7 +276,7 @@ class atomic_hash_table {
      *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
      */
     template <typename comparable_key_type_, typename convertible_mapped_type_>
-    [[nodiscard]] constexpr status_t update(comparable_key_type_ &&key, convertible_mapped_type_ &&new_value) noexcept {
+    constexpr status_t update(comparable_key_type_ &&key, convertible_mapped_type_ &&new_value) noexcept {
         static_assert(has_values_k, "update() is only available for maps, not sets");
         bool const found =
             probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
@@ -291,7 +291,7 @@ class atomic_hash_table {
      *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
      */
     template <typename comparable_key_type_>
-    [[nodiscard]] constexpr status_t erase(comparable_key_type_ &&key) noexcept {
+    constexpr status_t erase(comparable_key_type_ &&key) noexcept {
         bool const found =
             probe_to_find_<slot_ref_t>(std::forward<comparable_key_type_>(key), [&](slot_ref_t const &slot) noexcept {
                 if constexpr (destruct_keys_k) slot.key_ref().~key_t();

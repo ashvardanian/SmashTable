@@ -159,8 +159,7 @@ class immutable_splus_tree {
      *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or
      *      @c out_of_memory_heap_k.
      */
-    [[nodiscard]] static expected<immutable_splus_tree> make(std::span<value_t const> sorted,
-                                                             allocator_t allocator = {}) noexcept {
+    static expected<immutable_splus_tree> make(std::span<value_t const> sorted, allocator_t allocator = {}) noexcept {
         for (std::size_t index = 1; index < sorted.size(); ++index)
             if (mapping_key_or_itself(sorted[index]) < mapping_key_or_itself(sorted[index - 1]))
                 return invalid_argument_k;
@@ -244,7 +243,7 @@ class immutable_splus_tree {
     }
 
     /** The position of @p wanted, or @c key_not_found_k. Where keys repeat, the first of them. */
-    [[nodiscard]] expected<std::size_t> find(key_t wanted) const noexcept {
+    expected<std::size_t> find(key_t wanted) const noexcept {
         std::size_t const position = rank(wanted);
         if (position == size_ || !(select(position) == wanted)) return key_not_found_k;
         return expected<std::size_t>(position, success_k);

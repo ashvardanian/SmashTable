@@ -100,7 +100,7 @@ class basic_ring {
      *  @return The ring, @c invalid_argument_k for a capacity that is not a power of two up to
      *      @c capacity_limit_k, or @c out_of_memory_heap_k.
      */
-    [[nodiscard]] static expected<basic_ring> make(std::size_t capacity, allocator_t allocator = {}) noexcept {
+    static expected<basic_ring> make(std::size_t capacity, allocator_t allocator = {}) noexcept {
         if (capacity > capacity_limit_k || (capacity & (capacity - 1)) != 0) return invalid_argument_k;
         basic_ring ring(std::move(allocator));
         if (capacity != 0) {
@@ -156,7 +156,7 @@ class basic_ring {
     }
 
     /** Appends @p element to a ring known not to be full. */
-    [[nodiscard]] status_t push(assume_reserved_t, value_t &&element) noexcept {
+    status_t push(assume_reserved_t, value_t &&element) noexcept {
         assert(!full() && "push with assume_reserved requires a free slot");
         new (&slot_(pushed_)) value_t(std::move(element));
         ++pushed_;
@@ -164,7 +164,7 @@ class basic_ring {
     }
 
     /** Appends @p element, or answers @c capacity_exhausted_k and leaves the ring alone. */
-    [[nodiscard]] status_t push(value_t &&element) noexcept {
+    status_t push(value_t &&element) noexcept {
         if (full()) return capacity_exhausted_k;
         return push(assume_reserved, std::move(element));
     }
@@ -190,7 +190,7 @@ class basic_ring {
     }
 
     /** Moves the oldest element into @p destination and removes it, or answers @c operation_would_block_k. */
-    [[nodiscard]] status_t pop_into(value_t &destination) noexcept {
+    status_t pop_into(value_t &destination) noexcept {
         if (empty()) return operation_would_block_k;
         destination = std::move(slot_(popped_));
         pop();

@@ -25,7 +25,7 @@
 namespace ashvardanian::smashtable {
 
 template <typename callable_type_>
-[[nodiscard]] status_t invoke_safely(callable_type_ &&callable) noexcept {
+status_t invoke_safely(callable_type_ &&callable) noexcept {
     if constexpr (noexcept(callable())) {
         callable();
         return success_k;
@@ -200,8 +200,8 @@ class reference_store {
          *      so a caller can report what it wrote without copying it. Must be @c noexcept.
          */
         template <typename callback_staged_type_ = no_op_t>
-        [[nodiscard]] status_t stage_(value_t &&element, presence_t presence, identifier_t &&identifier,
-                                      callback_staged_type_ &&callback_staged = {}) noexcept {
+        status_t stage_(value_t &&element, presence_t presence, identifier_t &&identifier,
+                        callback_staged_type_ &&callback_staged = {}) noexcept {
             // Refused once staged: staging reserved and validated exactly the changes it found, so a
             // later write would publish behind that check or be dropped by `commit`.
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -298,7 +298,7 @@ class reference_store {
         /** Whether every watched key still carries the version this transaction read. Asked twice - once when
          *  staging, once when publishing - because a commit landing in between is the only thing that can invalidate
          *  a read after it was validated. */
-        [[nodiscard]] status_t validate_watches_() const noexcept {
+        status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
             return validate_watches(watches_, [&](auto const &identifier, auto &&on_found, auto &&on_missing) noexcept {
                 store.find_committed_entry_(identifier, on_found, on_missing);
@@ -422,8 +422,8 @@ class reference_store {
          *      allocation failure.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-        [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                      callback_existing_type_ &&callback_existing = {}) noexcept {
+        status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                        callback_existing_type_ &&callback_existing = {}) noexcept {
 
             static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                           "callback_existing must be noexcept invocable with value_t const &");
@@ -446,8 +446,8 @@ class reference_store {
          *  @return Success even when nothing was staged, or an allocation failure.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-        [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                                 callback_existing_type_ &&callback_existing = {}) noexcept {
+        status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                                   callback_existing_type_ &&callback_existing = {}) noexcept {
 
             static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                           "callback_existing must be noexcept invocable with value_t const &");
@@ -471,8 +471,8 @@ class reference_store {
          *  @return Success or an allocation failure.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-        [[nodiscard]] status_t insert_or_assign_(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                                 callback_existing_type_ &&callback_existing = {}) noexcept {
+        status_t insert_or_assign_(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                                   callback_existing_type_ &&callback_existing = {}) noexcept {
 
             static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                           "callback_existing must be noexcept invocable with value_t const &");
@@ -495,7 +495,7 @@ class reference_store {
          *  @param[in] element Element to insert or assign (moved into the transaction).
          *  @return Success or error code (e.g., out of memory).
          */
-        [[nodiscard]] status_t upsert(value_t &&element) noexcept { return insert_or_assign_(std::move(element)); }
+        status_t upsert(value_t &&element) noexcept { return insert_or_assign_(std::move(element)); }
 
         /**
          *  @brief Stages a write that refuses a key this transaction cannot already see. The strict
@@ -504,7 +504,7 @@ class reference_store {
          *  @param[in] element Element to write (moved into the transaction when the key is there).
          *  @return Success, @c key_not_found_k when the key is absent, or an allocation failure.
          */
-        [[nodiscard]] status_t update(value_t &&element) noexcept {
+        status_t update(value_t &&element) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself(element));
             if (!key_is_present) return key_is_present.status();
             if (!*key_is_present) return key_not_found_k;
@@ -523,8 +523,8 @@ class reference_store {
          *  @return Success, or @c key_not_found_k when this transaction reads no such key.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
-                                     callback_missing_type_ &&callback_missing = {}) noexcept {
+        status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
+                       callback_missing_type_ &&callback_missing = {}) noexcept {
             bool present = false;
             status_t const looked_up = find(
                 identifier,
@@ -555,7 +555,7 @@ class reference_store {
          *  @param[in] size Expected number of watches.
          *  @return Success or error code (e.g., out of memory).
          */
-        [[nodiscard]] status_t reserve(std::size_t size) noexcept {
+        status_t reserve(std::size_t size) noexcept {
             return invoke_safely([&]() { watches_.reserve(size); });
         }
 
@@ -567,7 +567,7 @@ class reference_store {
          *  @param[in] identifier Identifier of the element to watch.
          *  @return Success or error code (e.g., out of memory).
          */
-        [[nodiscard]] status_t watch(identifier_t const &identifier) noexcept {
+        status_t watch(identifier_t const &identifier) noexcept {
             status_t status = success_k;
             // A watch outlives the entry it refers to, so the identifier must be owned, not referenced.
             auto remember = [&](identifier_t &&owned, watch_t watch) noexcept {
@@ -597,7 +597,7 @@ class reference_store {
          *  @param[in] entry Entry to watch (typically from a previous find/lookup).
          *  @return Success or error code (e.g., out of memory).
          */
-        [[nodiscard]] status_t watch(versioned_entry_t const &entry) noexcept {
+        status_t watch(versioned_entry_t const &entry) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
             if (!maybe_identifier) return maybe_identifier.status();
             return invoke_safely([&] { watches_.push_back({std::move(*maybe_identifier), watch_shape_of(&entry)}); });
@@ -617,8 +617,8 @@ class reference_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                           "callback_found must be noexcept invocable with value_t const &");
@@ -639,8 +639,8 @@ class reference_store {
          *  to @c find: this one can fail, because a read set is memory. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                              callback_missing_type_ &&callback_missing = {}) noexcept {
+        status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(comparable);
             if (!maybe_identifier) return maybe_identifier.status();
             status_t const recorded = watch(*maybe_identifier);
@@ -658,7 +658,7 @@ class reference_store {
          *  @return The copied element, or @c key_not_found_k when absent.
          */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
             status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
@@ -676,7 +676,7 @@ class reference_store {
          *  @return True if the element exists, false otherwise.
          */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+        expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             bool present = false;
             status_t const answered = find(
                 std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { present = true; },
@@ -695,7 +695,7 @@ class reference_store {
          *      @c noexcept.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+        status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
             return find(std::forward<comparable_type_>(comparable), std::forward<callback_type_>(callback), no_op_t {});
         }
 
@@ -713,8 +713,8 @@ class reference_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                             callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                           "callback_found must be noexcept invocable with value_t const &");
@@ -747,8 +747,8 @@ class reference_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                             callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                           "callback_found must be noexcept invocable with value_t const &");
@@ -779,8 +779,7 @@ class reference_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
-                                     callback_type_ &&callback = {}) const noexcept {
+        status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept {
             // First, iterate over local changes
             auto lower_internal = changes_.lower_bound(std::forward<lower_type_>(lower));
             auto upper_internal = changes_.lower_bound(std::forward<upper_type_>(upper));
@@ -811,8 +810,8 @@ class reference_store {
          *      @c noexcept.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                                      callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                        callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                           "callback_found must be noexcept invocable with value_t const &");
@@ -846,8 +845,8 @@ class reference_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept {
 
             static_assert(is_safe_callback_for<callback_found_type_, std::size_t>,
                           "callback_found must be noexcept invocable with std::size_t");
@@ -880,7 +879,7 @@ class reference_store {
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
+        status_t for_each(callback_type_ &&callback) const noexcept {
             static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                           "callback must be noexcept invocable with value_t const &");
 
@@ -908,7 +907,7 @@ class reference_store {
          *  to be obviously right rather than fast.
          */
         template <typename accepts_type_, typename callback_type_>
-        [[nodiscard]] status_t erase_accepted_(accepts_type_ &&accepts, callback_type_ &&callback) noexcept {
+        status_t erase_accepted_(accepts_type_ &&accepts, callback_type_ &&callback) noexcept {
             std::vector<identifier_t, changed_identifiers_allocator_t> doomed;
             status_t collecting = success_k;
             if (status_t const visited = for_each([&](value_t const &member) noexcept {
@@ -930,7 +929,7 @@ class reference_store {
 
         /** How many members equal @p comparable, which for a unique key is nought or one. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+        expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
             expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
             if (!present) return present.status();
             return *present ? std::size_t {1} : std::size_t {0};
@@ -938,7 +937,7 @@ class reference_store {
 
         /** Copies out the first member at or after @p comparable, this transaction's writes included. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
             if (status_t const bounded = lower_bound(
                     std::forward<comparable_type_>(comparable),
@@ -950,7 +949,7 @@ class reference_store {
 
         /** Copies out the first member after @p comparable, this transaction's writes included. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
             if (status_t const bounded = upper_bound(
                     std::forward<comparable_type_>(comparable),
@@ -970,8 +969,7 @@ class reference_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
-                                           callback_type_ &&callback) noexcept {
+        status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
             return erase_accepted_(
                 [&](value_t const &member) noexcept {
                     auto const &ordering = changes_.key_comp();
@@ -982,29 +980,28 @@ class reference_store {
 
         /** Stages a tombstone for every member at or after @p lower, @p lower included. */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept {
+        status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept {
             return erase_accepted_([&](value_t const &member) noexcept { return !changes_.key_comp()(member, lower); },
                                    std::forward<callback_type_>(callback));
         }
 
         /** Stages a tombstone for every member before @p upper, @p upper excluded. */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept {
+        status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept {
             return erase_accepted_([&](value_t const &member) noexcept { return changes_.key_comp()(member, upper); },
                                    std::forward<callback_type_>(callback));
         }
 
         /** Stages a tombstone for every member this transaction reads, so a commit empties the store. Unlike the
          *  bounded erases it names no key at all, so it serves an unordered core too. */
-        [[nodiscard]] status_t clear() noexcept {
+        status_t clear() noexcept {
             return erase_accepted_([](value_t const &) noexcept { return true; }, no_op_t {});
         }
 
         /** Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
-                                            callback_type_ &&callback) noexcept
+        status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires is_mapping<value_t>
         {
             values_array_t revised;
@@ -1028,8 +1025,8 @@ class reference_store {
         /** Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes included. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                          callback_type_ &&callback) const noexcept {
+        status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                            callback_type_ &&callback) const noexcept {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
                 failed(measured))
@@ -1051,9 +1048,9 @@ class reference_store {
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
-        [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                                std::size_t &seen, std::size_t capacity,
-                                                output_iterator_type_ &&reservoir) const noexcept {
+        status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                  std::size_t &seen, std::size_t capacity,
+                                  output_iterator_type_ &&reservoir) const noexcept {
             return range(lower, upper, [&](value_t const &value) noexcept {
                 if (seen < capacity) reservoir[seen] = value;
                 else if (std::size_t const slot = draw_below(generator, seen + 1); slot < capacity)
@@ -1070,7 +1067,7 @@ class reference_store {
          *  @return Success, @c operation_not_permitted_k when already staged, or @c read_conflict_k
          *      when a watched key moved under this transaction.
          */
-        [[nodiscard]] status_t stage() noexcept {
+        status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
 
             // First, check if we have any collisions by validating watches.
@@ -1091,7 +1088,7 @@ class reference_store {
          *
          *  @return Always succeeds.
          */
-        [[nodiscard]] status_t reset() noexcept {
+        status_t reset() noexcept {
             // If the transaction was "staged",
             // we must delete all the entries.
             auto &store = store_ref();
@@ -1115,7 +1112,7 @@ class reference_store {
          *  @return Success, @c operation_not_permitted_k if transaction is not staged, or
          *      @c consistency_k if a staged version was destroyed before the rollback reached it.
          */
-        [[nodiscard]] status_t rollback() noexcept {
+        status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
 
             // Transaction was staged, we must extract all the entries back
@@ -1164,7 +1161,7 @@ class reference_store {
          *  @return Success, @c read_conflict_k when a watched key moved under this transaction, or
          *      @c operation_not_permitted_k when nothing was staged.
          */
-        [[nodiscard]] status_t validate_for_commit() const noexcept {
+        status_t validate_for_commit() const noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
             return validate_watches_();
         }
@@ -1205,7 +1202,7 @@ class reference_store {
         }
 
         /** Validates and then publishes, which is the whole commit for a caller spanning one store. */
-        [[nodiscard]] status_t commit() noexcept {
+        status_t commit() noexcept {
             if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
             publish_under();
             return success_k;
@@ -1409,8 +1406,8 @@ class reference_store {
      *  @return Success, or an allocation failure that left the store untouched.
      */
     template <typename callback_stored_type_ = no_op_t, typename callback_replaced_type_ = no_op_t>
-    [[nodiscard]] status_t publish_alone_(value_t &&element, callback_stored_type_ &&callback_stored = {},
-                                          callback_replaced_type_ &&callback_replaced = {}) noexcept {
+    status_t publish_alone_(value_t &&element, callback_stored_type_ &&callback_stored = {},
+                            callback_replaced_type_ &&callback_replaced = {}) noexcept {
         generation_t const generation = next_generation_();
         commit_stamp_t const stamp = next_commit_stamp_();
         return invoke_safely([&]() {
@@ -1496,7 +1493,7 @@ class reference_store {
      *  @return Number of elements with key equal to @p comparable (0 or 1).
      */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+    expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
         while (range.first != range.second && !visible_now(range.first->committed)) ++range.first;
         bool const present = range.first != range.second && range.first->presence == presence_t::present_k;
@@ -1508,9 +1505,7 @@ class reference_store {
 #pragma region Observers
 
     /** Builds a store around a specific comparator, for comparators that carry state. */
-    [[nodiscard]] static expected<store_t> make(comparator_t const &comparator) noexcept {
-        return store_t {comparator};
-    }
+    static expected<store_t> make(comparator_t const &comparator) noexcept { return store_t {comparator}; }
 
     /**
      *  @brief Factory method to create a new transactional set without throwing exceptions. Returns
@@ -1518,7 +1513,7 @@ class reference_store {
      *
      *  @return Container instance, or empty on allocation failure.
      */
-    [[nodiscard]] static expected<store_t> make() noexcept {
+    static expected<store_t> make() noexcept {
         expected<store_t> opt_store;
         auto status = invoke_safely([&]() { opt_store = store_t {}; });
         if (failed(status)) return status;
@@ -1536,7 +1531,7 @@ class reference_store {
      *
      *  @return Transaction instance, or empty on allocation failure.
      */
-    [[nodiscard]] expected<transaction_t> transaction() noexcept {
+    expected<transaction_t> transaction() noexcept {
         expected<transaction_t> opt_txn;
         // The constructor is private, so `emplace` cannot reach it; build here, where we are a friend.
         auto status = invoke_safely([&]() { opt_txn = transaction_t {*this}; });
@@ -1558,8 +1553,8 @@ class reference_store {
      *  @return Success, @c key_already_exists_k when the key is taken, or an allocation failure.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-    [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                  callback_existing_type_ &&callback_existing = {}) noexcept {
+    status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                    callback_existing_type_ &&callback_existing = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                       "callback_existing must be noexcept invocable with value_t const &");
@@ -1583,8 +1578,8 @@ class reference_store {
      *  @return Success even when nothing was stored, or an allocation failure.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-    [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                             callback_existing_type_ &&callback_existing = {}) noexcept {
+    status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                               callback_existing_type_ &&callback_existing = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                       "callback_existing must be noexcept invocable with value_t const &");
@@ -1609,8 +1604,8 @@ class reference_store {
      *  @return Success or an allocation failure.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
-    [[nodiscard]] status_t insert_or_assign(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
-                                            callback_existing_type_ &&callback_existing = {}) noexcept {
+    status_t insert_or_assign(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
+                              callback_existing_type_ &&callback_existing = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_existing_type_, value_t const &>,
                       "callback_existing must be noexcept invocable with value_t const &");
@@ -1636,7 +1631,7 @@ class reference_store {
      *  @param[in] element Element to insert or assign (moved into the container).
      *  @return Success or error code (e.g., out of memory).
      */
-    [[nodiscard]] status_t upsert(value_t &&element) noexcept { return insert_or_assign(std::move(element)); }
+    status_t upsert(value_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
     /**
      *  @brief Atomically writes an element, refusing a key that is not already there. The strict
@@ -1646,7 +1641,7 @@ class reference_store {
      *  @return Success, @c key_not_found_k when no visible element carries the key, or an
      *      allocation failure.
      */
-    [[nodiscard]] status_t update(value_t &&element) noexcept {
+    status_t update(value_t &&element) noexcept {
         if (find_visible_present_(mapping_key_or_itself(element)) == entries_.end()) return key_not_found_k;
         return insert_or_assign(std::move(element));
     }
@@ -1668,7 +1663,7 @@ class reference_store {
      *  @return Success or error code (e.g., out of memory).
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
-    [[nodiscard]] status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+    status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         generation_t const generation = next_generation_();
         commit_stamp_t const stamp = next_commit_stamp_();
 
@@ -1695,7 +1690,7 @@ class reference_store {
      *  @return Success or error code (e.g., out of memory).
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
-    [[nodiscard]] status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+    status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         return insert_or_assign(begin, end);
     }
 
@@ -1706,7 +1701,7 @@ class reference_store {
      *  @return Success or error code (e.g., out of memory).
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
-    [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+    status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
         auto &transaction = *maybe_txn;
@@ -1724,7 +1719,7 @@ class reference_store {
      *      is written unless all of it is.
      */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
-    [[nodiscard]] status_t update(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+    status_t update(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
         auto &transaction = *maybe_txn;
@@ -1750,8 +1745,8 @@ class reference_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+    status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                       "callback_found must be noexcept invocable with value_t const &");
@@ -1771,7 +1766,7 @@ class reference_store {
      *  @return The copied element, or @c key_not_found_k when absent.
      */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
@@ -1788,7 +1783,7 @@ class reference_store {
      *  @return True if the element exists, false otherwise.
      */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+    expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         bool present = false;
         status_t const answered = find(
             std::forward<comparable_type_>(comparable), [&](value_t const &) noexcept { present = true; }, no_op_t {});
@@ -1805,8 +1800,8 @@ class reference_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
+    status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                       "callback_found must be noexcept invocable with value_t const &");
@@ -1832,8 +1827,8 @@ class reference_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept {
+    status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                       "callback_found must be noexcept invocable with value_t const &");
@@ -1852,7 +1847,7 @@ class reference_store {
 
     /** Copies out the first visible element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = lower_bound(
             std::forward<comparable_type_>(comparable),
@@ -1863,7 +1858,7 @@ class reference_store {
 
     /** Copies out the first visible element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const bounded = upper_bound(
             std::forward<comparable_type_>(comparable),
@@ -1881,7 +1876,7 @@ class reference_store {
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+    status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
         // Iterate through all entries with this key (should be at most one visible)
@@ -1911,8 +1906,8 @@ class reference_store {
      *      @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                                  callback_missing_type_ &&callback_missing = {}) const noexcept {
+    status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                    callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         static_assert(is_safe_callback_for<callback_found_type_, value_t const &>,
                       "callback_found must be noexcept invocable with value_t const &");
@@ -1942,8 +1937,8 @@ class reference_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+    status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
 
         static_assert(is_safe_callback_for<callback_found_type_, std::size_t>,
                       "callback_found must be noexcept invocable with std::size_t");
@@ -1982,7 +1977,7 @@ class reference_store {
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
+    status_t for_each(callback_type_ &&callback) const noexcept {
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
 
@@ -2008,8 +2003,7 @@ class reference_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper,
-                                 callback_type_ &&callback = {}) const noexcept {
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) const noexcept {
         auto lower_iterator = entries_.lower_bound(std::forward<lower_type_>(lower));
         auto const upper_iterator = entries_.lower_bound(std::forward<upper_type_>(upper));
         for (; lower_iterator != upper_iterator; ++lower_iterator) {
@@ -2032,7 +2026,7 @@ class reference_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+    status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires is_mapping<value_t>
     {
         generation_t generation = next_generation_();
@@ -2072,8 +2066,8 @@ class reference_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                                 callback_missing_type_ &&callback_missing = {}) noexcept {
+    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
+                   callback_missing_type_ &&callback_missing = {}) noexcept {
 
         auto range = entries_.equal_range(std::forward<comparable_type_>(comparable));
 
@@ -2111,8 +2105,7 @@ class reference_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
-                                       callback_type_ &&callback = {}) noexcept {
+    status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
@@ -2132,7 +2125,7 @@ class reference_store {
      *  @return Always succeeds.
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept {
+    status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
@@ -2151,7 +2144,7 @@ class reference_store {
      *  @return Always succeeds.
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
+    status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
 
         static_assert(is_safe_callback_for<callback_type_, value_t const &>,
                       "callback must be noexcept invocable with value_t const &");
@@ -2169,7 +2162,7 @@ class reference_store {
      *  @note The generation and stamp counters keep running. Rewinding either would hand a future
      *      transaction a number an open one already carries, and both are compared by value.
      */
-    [[nodiscard]] status_t clear() noexcept {
+    status_t clear() noexcept {
         // Refused while anything is staged, because dropping a version an open transaction is about to
         // publish would make that publication fail - and the second half of a commit is the one step a
         // caller spanning several stores is promised cannot turn back.
@@ -2194,14 +2187,14 @@ class reference_store {
      *  Suggested capacity, ignored.
      *  @return Always succeeds.
      */
-    [[nodiscard]] status_t reserve(std::size_t) noexcept { return {}; }
+    status_t reserve(std::size_t) noexcept { return {}; }
 
 #pragma endregion Range Operations
 
 #pragma region Vacuuming
 
     /** Frees every entry no reader can reach. Returns how many were reclaimed. */
-    [[nodiscard]] expected<std::size_t> vacuum() noexcept { return vacuum_between_(entries_.begin(), entries_.end()); }
+    expected<std::size_t> vacuum() noexcept { return vacuum_between_(entries_.begin(), entries_.end()); }
 
     /**
      *  @brief Frees the unreachable entries ordered in [ @p lower, @p upper), so a caller can step
@@ -2209,7 +2202,7 @@ class reference_store {
      *  @return How many entries were reclaimed.
      */
     template <typename lower_type_, typename upper_type_>
-    [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept {
+    expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept {
         return vacuum_between_(entries_.lower_bound(std::forward<lower_type_>(lower)),
                                entries_.lower_bound(std::forward<upper_type_>(upper)));
     }
@@ -2230,8 +2223,8 @@ class reference_store {
      *      most once, and never when the window shows nothing.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                      callback_type_ &&callback) const noexcept {
+    status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                        callback_type_ &&callback) const noexcept {
 
         std::size_t count = 0;
         [[maybe_unused]] status_t const walked = range(lower, upper, [&](value_t const &) noexcept { ++count; });
@@ -2264,9 +2257,8 @@ class reference_store {
      *  @param[out] reservoir Random access iterator to output buffer.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                            std::size_t &seen, std::size_t reservoir_capacity,
-                                            output_iterator_type_ &&reservoir) const noexcept {
+    status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                              std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
 

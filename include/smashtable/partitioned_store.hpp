@@ -473,7 +473,7 @@ class partitioned_store {
      *  its own publication after releasing the partitions, as a sharded commit does.
      */
     template <typename stage_type_>
-    [[nodiscard]] status_t publish_every_part_(stage_type_ &&stage) noexcept
+    status_t publish_every_part_(stage_type_ &&stage) noexcept
         requires inner_publishes_under_a_stamp_k
     {
         using publication_t = typename inner_store_t::publication_t;
@@ -927,8 +927,8 @@ class partitioned_store {
         /** Finds the member equal to @p comparable at this reader's stamp, under its partition's shared lock. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept {
             std::size_t const partition_index = store_->bucket_(comparable);
             shared_lock_t _ {store_->mutexes_[partition_index]};
             return store_->partitions_[partition_index].reader_at(snapshot_).find(
@@ -945,7 +945,7 @@ class partitioned_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+        status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires offers_range<inner_store_t>
         {
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
@@ -1082,9 +1082,8 @@ class partitioned_store {
          *      of them.
          */
         template <typename seed_type_, typename within_type_, typename record_type_, typename callback_type_>
-        [[nodiscard]] status_t walk_window_(seed_type_ &&seed, within_type_ &&within,
-                                            [[maybe_unused]] record_type_ &&record,
-                                            callback_type_ &&callback) const noexcept
+        status_t walk_window_(seed_type_ &&seed, within_type_ &&within, [[maybe_unused]] record_type_ &&record,
+                              callback_type_ &&callback) const noexcept
             requires inner_transaction_walks_unrecorded_k
         {
             using cursor_t = decltype(std::declval<inner_transaction_t const &>().cursor());
@@ -1310,7 +1309,7 @@ class partitioned_store {
             return committed_stamp_;
         }
 
-        [[nodiscard]] status_t reset() noexcept {
+        status_t reset() noexcept {
             settle_snapshot_();
             // A reset discards the staged writes along with everything else, so the guard on them goes too.
             staging_ = staging_t::pending_k;
@@ -1340,7 +1339,7 @@ class partitioned_store {
          *  clearing the marks would leave the next @c stage and @c commit walking nothing and
          *  reporting success.
          */
-        [[nodiscard]] status_t rollback() noexcept {
+        status_t rollback() noexcept {
             settle_snapshot_();
             // `std::mem_fn(&inner_transaction_t::rollback)` is cute... but we don't like heavy includes.
             status_t const unwound =
@@ -1358,7 +1357,7 @@ class partitioned_store {
          *  and rolls it back rather than resetting it, which leaves the caller's writes intact for
          *  a retry.
          */
-        [[nodiscard]] status_t stage() noexcept {
+        status_t stage() noexcept {
             settle_snapshot_();
             touched_partitions_t staged;
             status_t status = success_k;
@@ -1390,7 +1389,7 @@ class partitioned_store {
          *  They differ only in where the stamp comes from: one clock shared across the partitions,
          *  or each engine stamping its own versions.
          */
-        [[nodiscard]] status_t commit() noexcept {
+        status_t commit() noexcept {
             settle_snapshot_();
             status_t published = success_k;
             if constexpr (offers_shared_clock<inner_store_t, clock_t>) published = commit_under_one_stamp_();
@@ -1399,7 +1398,7 @@ class partitioned_store {
             return published;
         }
 
-        [[nodiscard]] status_t watch(identifier_t const &id) noexcept {
+        status_t watch(identifier_t const &id) noexcept {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(id);
@@ -1410,8 +1409,8 @@ class partitioned_store {
 
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept {
+        status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
             if constexpr (records_what_it_reads<inner_store_t>) touched_.mark(partition_index);
@@ -1423,7 +1422,7 @@ class partitioned_store {
 
         /** Copies out the member equal to @p comparable, including this transaction's writes. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+        expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
             status_t const looked_up = find(
                 std::forward<comparable_type_>(comparable),
@@ -1434,7 +1433,7 @@ class partitioned_store {
 
         /** Whether @p comparable is there, including this transaction's own writes. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+        expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
             if constexpr (records_what_it_reads<inner_store_t>) touched_.mark(partition_index);
@@ -1446,8 +1445,8 @@ class partitioned_store {
          *  counterpart to @c find, and the one that can fail, because a read set is memory. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                              callback_missing_type_ &&callback_missing = {}) noexcept {
+        status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                                callback_missing_type_ &&callback_missing = {}) noexcept {
             settle_snapshot_();
             std::size_t partition_index = store_->bucket_(comparable);
             touched_.mark(partition_index);
@@ -1460,8 +1459,8 @@ class partitioned_store {
         /** The first member this transaction reads at or after @p comparable, from any partition. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept
+        status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                             callback_missing_type_ &&callback_missing = {}) const noexcept
             requires transaction_offers_lower_bound<inner_store_t>
         {
             settle_snapshot_();
@@ -1481,8 +1480,8 @@ class partitioned_store {
         /** The first member this transaction reads strictly after @p comparable, from any partition. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                           callback_missing_type_ &&callback_missing = {}) const noexcept
+        status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                             callback_missing_type_ &&callback_missing = {}) const noexcept
             requires transaction_offers_upper_bound<inner_store_t>
         {
             settle_snapshot_();
@@ -1505,7 +1504,7 @@ class partitioned_store {
          *  @warning Every partition is held shared for the walk, as @c range holds them.
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
+        status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             if constexpr (inner_transaction_walks_unrecorded_k)
@@ -1545,7 +1544,7 @@ class partitioned_store {
          *  @warning Every partition is held shared for the walk, as @c range holds them.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
+        status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires transaction_offers_smallest<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             if constexpr (inner_transaction_walks_unrecorded_k)
@@ -1604,8 +1603,8 @@ class partitioned_store {
          *  happen at the same moment rather than in two probes a writer can slip between.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
-                                        callback_missing_type_ &&callback_missing = {}) const noexcept
+        status_t smallest(callback_found_type_ &&callback_found,
+                          callback_missing_type_ &&callback_missing = {}) const noexcept
             requires transaction_offers_upper_bound<inner_store_t> &&
                      (transaction_offers_smallest<inner_store_t> || transaction_offers_select<inner_store_t>)
         {
@@ -1633,8 +1632,8 @@ class partitioned_store {
          *  than by descending a subtree count - linear in @p ordinal, not logarithmic in the size.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                                      callback_missing_type_ &&callback_missing = {}) const noexcept
+        status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                        callback_missing_type_ &&callback_missing = {}) const noexcept
             requires transaction_offers_select<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             settle_snapshot_();
@@ -1664,8 +1663,8 @@ class partitioned_store {
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+        status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept
             requires transaction_offers_rank<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             settle_snapshot_();
@@ -1699,7 +1698,7 @@ class partitioned_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+        status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             if constexpr (inner_transaction_walks_unrecorded_k)
@@ -1732,7 +1731,7 @@ class partitioned_store {
             return first_failure(reached, walked);
         }
 
-        [[nodiscard]] status_t upsert(value_t &&element) noexcept {
+        status_t upsert(value_t &&element) noexcept {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(element);
@@ -1743,8 +1742,8 @@ class partitioned_store {
         /** Stages an erase, reporting @c key_not_found_k when this transaction reads no such key. The owning
          *  partition is held shared, because the staging now reads before it writes. */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-        [[nodiscard]] status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
-                                     callback_missing_type_ &&callback_missing = {}) noexcept {
+        status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
+                       callback_missing_type_ &&callback_missing = {}) noexcept {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             std::size_t partition_index = store_->bucket_(id);
@@ -1762,7 +1761,7 @@ class partitioned_store {
          *  lock is taken, unlike @c upsert: a strict insert reads its partition to learn whether
          *  the key is already there.
          */
-        [[nodiscard]] status_t insert(value_t &&element) noexcept
+        status_t insert(value_t &&element) noexcept
             requires transaction_offers_insert<inner_store_t>
         {
             settle_snapshot_();
@@ -1780,8 +1779,8 @@ class partitioned_store {
          *      the insert.
          */
         template <typename callback_inserted_type_, typename callback_existing_type_>
-        [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
-                                      callback_existing_type_ &&callback_existing) noexcept
+        status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
+                        callback_existing_type_ &&callback_existing) noexcept
             requires transaction_offers_insert_naming_occupant<inner_store_t>
         {
             settle_snapshot_();
@@ -1795,7 +1794,7 @@ class partitioned_store {
         }
 
         /** Stages @p element only if its key is already taken, refusing to create one. */
-        [[nodiscard]] status_t update(value_t &&element) noexcept
+        status_t update(value_t &&element) noexcept
             requires transaction_offers_update<inner_store_t>
         {
             settle_snapshot_();
@@ -1807,7 +1806,7 @@ class partitioned_store {
         }
 
         /** Stages @p element only if its key is free, leaving an incumbent untouched. */
-        [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept
+        status_t insert_if_missing(value_t &&element) noexcept
             requires transaction_offers_insert_if_missing<inner_store_t>
         {
             settle_snapshot_();
@@ -1820,7 +1819,7 @@ class partitioned_store {
 
         /** Hands @p callback every member equal to @p comparable, which one partition owns outright. */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
+        status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
             requires transaction_offers_equal_range<inner_store_t>
         {
             settle_snapshot_();
@@ -1835,7 +1834,7 @@ class partitioned_store {
 
         /** How many members equal @p comparable, which one partition alone can answer. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept
+        expected<std::size_t> count(comparable_type_ &&comparable) const noexcept
             requires transaction_offers_count<inner_store_t>
         {
             settle_snapshot_();
@@ -1852,7 +1851,7 @@ class partitioned_store {
          *  smallest successor may live in any of them.
          */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
+        expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
@@ -1865,7 +1864,7 @@ class partitioned_store {
 
         /** Copies out the first member after @p comparable in the merged order. */
         template <typename comparable_type_ = identifier_t>
-        [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
+        expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             expected<value_t> result {status_t::key_not_found_k};
@@ -1885,7 +1884,7 @@ class partitioned_store {
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+        status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires transaction_offers_erase_range<inner_store_t>
         {
             settle_snapshot_();
@@ -1896,7 +1895,7 @@ class partitioned_store {
 
         /** Stages a tombstone for every member at or after @p lower, in every partition. */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
+        status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires transaction_offers_erase_from<inner_store_t>
         {
             settle_snapshot_();
@@ -1906,7 +1905,7 @@ class partitioned_store {
 
         /** Stages a tombstone for every member before @p upper, in every partition. */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
+        status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires transaction_offers_erase_up_to<inner_store_t>
         {
             settle_snapshot_();
@@ -1917,7 +1916,7 @@ class partitioned_store {
         /** Stages a tombstone for every member this transaction reads, in every partition. Every partition is
          *  attempted whatever its neighbours answered, and the last refusal is reported - the same as the bounded
          *  erases beside it, and unlike the store's own @c clear. */
-        [[nodiscard]] status_t clear() noexcept
+        status_t clear() noexcept
             requires transaction_offers_clear<inner_store_t>
         {
             settle_snapshot_();
@@ -1928,8 +1927,7 @@ class partitioned_store {
         /** Hands @p callback each member in [ @p lower, @p upper ) to revise, in every partition. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
-                                            callback_type_ &&callback) noexcept
+        status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires transaction_offers_update_range<inner_store_t>
         {
             settle_snapshot_();
@@ -1941,8 +1939,8 @@ class partitioned_store {
         /** Draws one member uniformly from [ @p lower, @p upper ) of the merged order. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                          callback_type_ &&callback) const noexcept
+        status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                            callback_type_ &&callback) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             std::size_t counted = 0;
@@ -1966,9 +1964,9 @@ class partitioned_store {
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
-        [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                                std::size_t &seen, std::size_t capacity,
-                                                output_iterator_type_ &&reservoir) const noexcept
+        status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                                  std::size_t &seen, std::size_t capacity,
+                                  output_iterator_type_ &&reservoir) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
         {
             static_assert(std::is_nothrow_copy_assignable_v<value_t>,
@@ -1989,7 +1987,7 @@ class partitioned_store {
          *      the partitions above the one it stopped in unvisited.
          */
         template <typename callback_type_ = no_op_t>
-        [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
+        status_t for_each(callback_type_ &&callback) const noexcept
             requires transaction_offers_for_each<inner_store_t>
         {
             settle_snapshot_();
@@ -2017,7 +2015,7 @@ class partitioned_store {
         [[nodiscard]] generation_t generation() const noexcept { return partitions_[0].generation(); }
 
         /** Sizes every part's watch list, splitting @p size the way the store splits a reserve. */
-        [[nodiscard]] status_t reserve(std::size_t size) noexcept
+        status_t reserve(std::size_t size) noexcept
             requires transaction_offers_reserve<inner_store_t>
         {
             status_t status = success_k;
@@ -2099,8 +2097,8 @@ class partitioned_store {
      *  partitions at two stamps is what would make the snapshot a lie, and a commit landing between
      *  two of these locks is exactly how that would happen.
      */
-    [[nodiscard]] expected<transaction_t> open_transaction_(typename clock_t::snapshot_lease_t &&lease,
-                                                            [[maybe_unused]] generation_t snapshot) noexcept {
+    expected<transaction_t> open_transaction_(typename clock_t::snapshot_lease_t &&lease,
+                                              [[maybe_unused]] generation_t snapshot) noexcept {
         [[maybe_unused]] generation_t generation = 0;
         if constexpr (offers_shared_clock<inner_store_t, clock_t>) generation = clock_.next_generation();
 
@@ -2148,7 +2146,7 @@ class partitioned_store {
 
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
-    [[nodiscard]] static expected<partitioned_store> make() noexcept {
+    static expected<partitioned_store> make() noexcept {
         expected<partitions_t> parts = new_parts();
         if (!parts) return parts.status();
         return partitioned_store {std::move(*parts)};
@@ -2161,8 +2159,7 @@ class partitioned_store {
      *  @param[in] hasher The instance that maps an identifier to its partition.
      *  @return The store, or the status that refused to build one of its partitions.
      */
-    [[nodiscard]] static expected<partitioned_store> make(comparator_t const &comparator,
-                                                          hash_t const &hasher) noexcept {
+    static expected<partitioned_store> make(comparator_t const &comparator, hash_t const &hasher) noexcept {
         expected<partitions_t> parts = new_parts(comparator);
         if (!parts) return parts.status();
         return partitioned_store {std::move(*parts), hasher, comparator};
@@ -2170,7 +2167,7 @@ class partitioned_store {
 
     /** Opens one transaction per partition, or none at all. Each partition is taken exclusively while its
      *  transaction is built, since opening one reads the live container and draws a fresh generation from it. */
-    [[nodiscard]] expected<transaction_t> transaction() noexcept {
+    expected<transaction_t> transaction() noexcept {
         typename clock_t::snapshot_lease_t lease;
         [[maybe_unused]] generation_t snapshot = 0;
         if constexpr (offers_shared_clock<inner_store_t, clock_t>) snapshot = clock_.take_snapshot(lease);
@@ -2186,7 +2183,7 @@ class partitioned_store {
      *  exactly as a fresh transaction's are against its own: from @c serializable_k up every read,
      *  at @c snapshot_k what it watched and wrote.
      */
-    [[nodiscard]] expected<transaction_t> transaction(reader_t const &reader) noexcept
+    expected<transaction_t> transaction(reader_t const &reader) noexcept
         requires inner_reads_at_a_stamp_k
     {
         assert(reader.store_ == this && "a transaction adopts the stamp of a reader of its own store");
@@ -2202,7 +2199,7 @@ class partitioned_store {
         return reader_t {*this};
     }
 
-    [[nodiscard]] status_t upsert(value_t &&element) noexcept {
+    status_t upsert(value_t &&element) noexcept {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].upsert(std::move(element));
@@ -2219,8 +2216,8 @@ class partitioned_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
-                                 callback_missing_type_ &&callback_missing = {}) noexcept {
+    status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
+                   callback_missing_type_ &&callback_missing = {}) noexcept {
         std::size_t partition_index = bucket_(comparable);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].erase(std::forward<comparable_type_>(comparable),
@@ -2229,7 +2226,7 @@ class partitioned_store {
     }
 
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
-    [[nodiscard]] status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+    status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         // This might be implemented more efficiently, but using
         // a transaction beneath looks like the most straightforward approach.
         auto opened = transaction();
@@ -2244,8 +2241,8 @@ class partitioned_store {
 
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept {
+    status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept {
         std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
         return partitions_[partition_index].find(std::forward<comparable_type_>(comparable),
@@ -2255,7 +2252,7 @@ class partitioned_store {
 
     /** Whether @p comparable is there, asking only the partition that owns it. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+    expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         std::size_t partition_index = bucket_(comparable);
         shared_lock_t _ {mutexes_[partition_index]};
         return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
@@ -2263,14 +2260,14 @@ class partitioned_store {
 
     /** Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+    expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
         expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
         if (!present) return present.status();
         return *present ? std::size_t {1} : std::size_t {0};
     }
 
     /** Inserts one element only if its key is absent, leaving an incumbent untouched. */
-    [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept {
+    status_t insert_if_missing(value_t &&element) noexcept {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert_if_missing(std::move(element));
@@ -2285,8 +2282,8 @@ class partitioned_store {
      *      the insert.
      */
     template <typename callback_inserted_type_, typename callback_existing_type_>
-    [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
-                                             callback_existing_type_ &&callback_existing) noexcept {
+    status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
+                               callback_existing_type_ &&callback_existing) noexcept {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
         return partitions_[partition_index].insert_if_missing(std::move(element),
@@ -2296,7 +2293,7 @@ class partitioned_store {
 
     /** Inserts one element, refusing with the inner store's own status when the key is taken. One key lives in one
      *  partition, so the refusal is decided under a single lock and carries the inner store's promise whole. */
-    [[nodiscard]] status_t insert(value_t &&element) noexcept
+    status_t insert(value_t &&element) noexcept
         requires offers_insert<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
@@ -2313,8 +2310,8 @@ class partitioned_store {
      *      the insert.
      */
     template <typename callback_inserted_type_, typename callback_existing_type_>
-    [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
-                                  callback_existing_type_ &&callback_existing) noexcept
+    status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
+                    callback_existing_type_ &&callback_existing) noexcept
         requires offers_insert_naming_occupant<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
@@ -2325,7 +2322,7 @@ class partitioned_store {
     }
 
     /** Writes one element only if its key is already taken, refusing to create one. */
-    [[nodiscard]] status_t update(value_t &&element) noexcept
+    status_t update(value_t &&element) noexcept
         requires offers_update<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
@@ -2335,7 +2332,7 @@ class partitioned_store {
 
     /** Inserts a batch, leaving already-present keys untouched. */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
-    [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
+    status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         for (; begin != end; ++begin) {
             value_t element(*begin);
             std::size_t partition_index = bucket_(element);
@@ -2349,8 +2346,8 @@ class partitioned_store {
     /** The first element ordered strictly after @p comparable, which may live in any partition. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept
+    status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept
         requires offers_upper_bound<inner_store_t>
     {
         status_t seeded = success_k;
@@ -2370,8 +2367,8 @@ class partitioned_store {
      *  at the same moment rather than in two probes a writer can slip between.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
-                                    callback_missing_type_ &&callback_missing = {}) const noexcept
+    status_t smallest(callback_found_type_ &&callback_found,
+                      callback_missing_type_ &&callback_missing = {}) const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
     {
@@ -2389,8 +2386,8 @@ class partitioned_store {
      *      here that sharding cannot make cheaper.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
-                                        callback_missing_type_ &&callback_missing = {}) noexcept
+    status_t pop_smallest(callback_found_type_ &&callback_found = {},
+                          callback_missing_type_ &&callback_missing = {}) noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  offers_pop_smallest<inner_store_t> && (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
     {
@@ -2412,7 +2409,7 @@ class partitioned_store {
     }
 
     /** Copies out the smallest member and removes it, or reports @c key_not_found_k. */
-    [[nodiscard]] expected<value_t> pop_smallest_copy() noexcept
+    expected<value_t> pop_smallest_copy() noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  offers_pop_smallest<inner_store_t> && (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
     {
@@ -2424,7 +2421,7 @@ class partitioned_store {
     }
 
     /** Copies out the smallest member, or reports @c key_not_found_k. */
-    [[nodiscard]] expected<value_t> smallest_copy() const noexcept
+    expected<value_t> smallest_copy() const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
     {
@@ -2444,8 +2441,8 @@ class partitioned_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                       callback_missing_type_ &&callback_missing = {}) const noexcept
+    status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                         callback_missing_type_ &&callback_missing = {}) const noexcept
         requires offers_lower_bound<inner_store_t>
     {
         status_t seeded = success_k;
@@ -2460,7 +2457,7 @@ class partitioned_store {
 
     /** Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
         status_t const looked_up = find(
             std::forward<comparable_type_>(comparable),
@@ -2471,7 +2468,7 @@ class partitioned_store {
 
     /** Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
+    expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
         requires offers_lower_bound<inner_store_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
@@ -2484,7 +2481,7 @@ class partitioned_store {
 
     /** Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
-    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
+    expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
         requires offers_upper_bound<inner_store_t>
     {
         expected<value_t> result {status_t::key_not_found_k};
@@ -2510,11 +2507,11 @@ class partitioned_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
         requires offers_range<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
-        walk_merged_(
+        return walk_merged_(
             comparator_, partitions_,
             [&](std::size_t partition_index, auto &&fill) noexcept {
                 [[maybe_unused]] status_t const seeded =
@@ -2527,7 +2524,6 @@ class partitioned_store {
                     key, [&](value_t const &element) noexcept { control = hand_over(callback, element); }, no_op_t {});
                 return control == walk_control_t::halt_k ? probe_control_t::halt_k : probe_control_t::resume_k;
             });
-        return success_k;
     }
 
     /**
@@ -2541,8 +2537,7 @@ class partitioned_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_range(lower_type_ &&lower, upper_type_ &&upper,
-                                       callback_type_ &&callback = {}) noexcept
+    status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
         requires offers_erase_range<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
@@ -2561,7 +2556,7 @@ class partitioned_store {
      *      scopes its own.
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
+    status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
         requires offers_erase_from<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
@@ -2578,7 +2573,7 @@ class partitioned_store {
      *      scopes its own.
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
+    status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
         requires offers_erase_up_to<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
@@ -2604,7 +2599,7 @@ class partitioned_store {
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
+    status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
         requires offers_update_range<inner_store_t>
     {
         if constexpr (inner_publishes_under_a_stamp_k)
@@ -2636,7 +2631,7 @@ class partitioned_store {
      *      partitions above the one it stopped in unvisited.
      */
     template <typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
+    status_t for_each(callback_type_ &&callback) const noexcept
         requires offers_for_each<inner_store_t>
     {
         // One snapshot, then one partition lock at a time against it: a commit spanning the partitions
@@ -2668,7 +2663,7 @@ class partitioned_store {
      *  @return How many versions were reclaimed across all partitions, or why one of them refused.
      *      A partition whose sweep cannot refuse always answers with a count.
      */
-    [[nodiscard]] expected<std::size_t> vacuum() noexcept
+    expected<std::size_t> vacuum() noexcept
         requires offers_vacuum<inner_store_t>
     {
         std::size_t reclaimed = 0;
@@ -2691,7 +2686,7 @@ class partitioned_store {
      *  @return How many versions were reclaimed across all partitions, or why one of them refused.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t>
-    [[nodiscard]] expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
+    expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
         requires offers_vacuum_window<inner_store_t>
     {
         std::size_t reclaimed = 0;
@@ -2719,21 +2714,22 @@ class partitioned_store {
      *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
-                                  callback_missing_type_ &&callback_missing = {}) const noexcept
+    status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
+                    callback_missing_type_ &&callback_missing = {}) const noexcept
         requires offers_select<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
         std::size_t position = 0;
         bool delivered = false;
-        walk_merged_(comparator_, partitions_, seed_from_the_start_(),
-                     [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                         if (position++ != ordinal) return probe_control_t::resume_k;
-                         [[maybe_unused]] status_t const answered =
-                             partitions_[partition_index].find(key, callback_found, no_op_t {});
-                         delivered = true;
-                         return probe_control_t::halt_k;
-                     });
+        status_t const walked = walk_merged_(comparator_, partitions_, seed_from_the_start_(),
+                                             [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                                                 if (position++ != ordinal) return probe_control_t::resume_k;
+                                                 [[maybe_unused]] status_t const answered =
+                                                     partitions_[partition_index].find(key, callback_found, no_op_t {});
+                                                 delivered = true;
+                                                 return probe_control_t::halt_k;
+                                             });
+        if (failed(walked)) return walked;
         if (!delivered) callback_missing();
         return success_k;
     }
@@ -2746,22 +2742,23 @@ class partitioned_store {
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
-    [[nodiscard]] status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
-                                callback_missing_type_ &&callback_missing = {}) const noexcept
+    status_t rank(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
+                  callback_missing_type_ &&callback_missing = {}) const noexcept
         requires offers_rank<inner_store_t>
     {
         every_part_lock<shared_lock_t> _ {mutexes_};
         std::size_t position = 0;
         bool found = false;
-        walk_merged_(comparator_, partitions_, seed_from_the_start_(),
-                     [&](std::size_t, identifier_t const &key) noexcept {
-                         if (comparator_(key, comparable)) {
-                             ++position;
-                             return probe_control_t::resume_k;
-                         }
-                         found = !comparator_(comparable, key);
-                         return probe_control_t::halt_k;
-                     });
+        status_t const walked = walk_merged_(comparator_, partitions_, seed_from_the_start_(),
+                                             [&](std::size_t, identifier_t const &key) noexcept {
+                                                 if (comparator_(key, comparable)) {
+                                                     ++position;
+                                                     return probe_control_t::resume_k;
+                                                 }
+                                                 found = !comparator_(comparable, key);
+                                                 return probe_control_t::halt_k;
+                                             });
+        if (failed(walked)) return walked;
         if (found) callback_found(position);
         else callback_missing();
         return success_k;
@@ -2775,8 +2772,8 @@ class partitioned_store {
      *      so a call site that needs the whole range weighted correctly wants that one.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                      callback_type_ &&callback) const noexcept
+    status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
+                        callback_type_ &&callback) const noexcept
         requires offers_sample_one<inner_store_t>
     {
         std::size_t partition_index = generator() % partitions_k;
@@ -2794,18 +2791,19 @@ class partitioned_store {
      *      entry between partitions can have it sampled twice or not at all.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
-    [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
-                                            std::size_t &seen, std::size_t reservoir_capacity,
-                                            output_iterator_type_ &&reservoir) const noexcept
+    status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
+                              std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires offers_sample_reservoir<inner_store_t>
     {
         // Ascending order, blocking, like every other all-partition walk here.
+        status_t sampled = success_k;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
             shared_lock_t lock {mutexes_[partition_index]};
-            [[maybe_unused]] status_t const answered = partitions_[partition_index].sample_reservoir(
-                lower, upper, generator, seen, reservoir_capacity, reservoir);
+            // A partition that refuses leaves the reservoir short, so its cause outlives the loop.
+            sampled = first_failure(sampled, partitions_[partition_index].sample_reservoir(
+                                                 lower, upper, generator, seen, reservoir_capacity, reservoir));
         }
-        return success_k;
+        return sampled;
     }
 
     /**
@@ -2818,7 +2816,7 @@ class partitioned_store {
      *  @return Success, or the refusal that stopped the walk - after which the partitions above the
      *      refusing one still hold everything they held.
      */
-    [[nodiscard]] status_t clear() noexcept {
+    status_t clear() noexcept {
         return for_all<unique_lock_t, locking_policy_t::one_at_a_time_k, refusal_policy_t::stop_at_first_k>(
             partitions_, mutexes_, [](inner_store_t &part) noexcept { return part.clear(); });
     }
@@ -2828,14 +2826,14 @@ class partitioned_store {
      *  @return Success, or the refusal that stopped the walk - after which the partitions above the
      *      refusing one are sized as they were.
      */
-    [[nodiscard]] status_t reserve(std::size_t size) noexcept {
+    status_t reserve(std::size_t size) noexcept {
         return for_all<unique_lock_t, locking_policy_t::one_at_a_time_k, refusal_policy_t::stop_at_first_k>(
             partitions_, mutexes_, [size](inner_store_t &part) noexcept { return part.reserve(size / partitions_k); });
     }
 
     /** Hands @p callback every member equal to @p comparable, which one partition owns outright. */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
+    status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
         requires offers_equal_range<inner_store_t>
     {
         std::size_t partition_index = bucket_(comparable);
@@ -2878,7 +2876,7 @@ class partitioned_store {
     }
 
     /** Writes @p element whether or not its key is taken, spelled as a partition spells it. */
-    [[nodiscard]] status_t insert_or_assign(value_t &&element) noexcept
+    status_t insert_or_assign(value_t &&element) noexcept
         requires offers_insert_or_assign<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);

@@ -461,7 +461,8 @@ void test_unordered_capacity_management(std::size_t size = 800) {
     // An explicit rehash moves every element into a differently sized table. The bucket count is
     // scaled by a power of two, because the probe mask assumes a power-of-two slot count and
     // @c rehash forwards its argument without rounding.
-    container.rehash(reserved_buckets * 4);
+    st_verify_eq_(container.rehash(reserved_buckets * 4), reserve_result_t::reallocated_k,
+                  "a rehash onto a different size moves every element, so it must report reallocating");
     st_verify_eq_(container.bucket_count(), reserved_buckets * 4);
     unordered_verify_against_oracle(container, oracle, size);
 

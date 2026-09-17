@@ -266,7 +266,7 @@ class basic_hash_table {
      *  slot left and an allocation the table could not make are all distinguishable from one
      *  another, without comparing the iterator against @c end().
      */
-    struct insert_result_t {
+    struct [[nodiscard]] insert_result_t {
         iterator_t position;
         upsert_result_t outcome = upsert_result_t::no_slot_k;
 
@@ -277,7 +277,7 @@ class basic_hash_table {
     };
 
     /** What a growth attempt did to the table. */
-    enum class reserve_result_t : std::uint8_t {
+    enum class [[nodiscard]] reserve_result_t : std::uint8_t {
 
         /** The capacity already covered the request, so every iterator stays valid. */
         unchanged_k,
@@ -397,8 +397,8 @@ class basic_hash_table {
      *      to store.
      *  @return An empty-status @c expected if the allocation has failed.
      */
-    [[nodiscard]] static expected<basic_hash_table> make(offset_t planned_elements, hasher_t hasher = {},
-                                                         equals_t equals = {}, allocator_t allocator = {}) noexcept {
+    static expected<basic_hash_table> make(offset_t planned_elements, hasher_t hasher = {}, equals_t equals = {},
+                                           allocator_t allocator = {}) noexcept {
         return make(hash_slots_count_t {planned_elements}, std::move(hasher), std::move(equals), std::move(allocator));
     }
 
@@ -406,8 +406,8 @@ class basic_hash_table {
      *  @brief Most commonly used @b constructor-like interface, sized by the exact slot count.
      *  @return An empty-status @c expected if the allocation has failed.
      */
-    [[nodiscard]] static expected<basic_hash_table> make(hash_slots_count_t slots, hasher_t hasher = {},
-                                                         equals_t equals = {}, allocator_t allocator = {}) noexcept {
+    static expected<basic_hash_table> make(hash_slots_count_t slots, hasher_t hasher = {}, equals_t equals = {},
+                                           allocator_t allocator = {}) noexcept {
         basic_hash_table table(slots, std::move(hasher), std::move(equals), std::move(allocator));
         if (slots.raw && !table.storage_.is_allocated()) return expected<basic_hash_table>(out_of_memory_heap_k);
         return expected<basic_hash_table>(std::move(table), success_k);
@@ -419,7 +419,7 @@ class basic_hash_table {
      */
     template <typename begin_iterator_type_, typename end_iterator_type_,
               typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
-    [[nodiscard]] static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end) noexcept {
+    static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end) noexcept {
         auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))});
         if (!table) return table;
         table->insert(begin, end, assume_reserved_t {});
@@ -770,7 +770,7 @@ class basic_hash_table {
      *      never refuses.
      */
     template <typename comparable_key_type_, typename... tags_types_>
-    [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
+    expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
         bool present = false;
         probe_to_find(
             std::forward<comparable_key_type_>(wanted), [&present](auto const &) noexcept { present = true; }, tags...);
@@ -861,7 +861,7 @@ class basic_hash_table {
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/count
      */
     template <typename comparable_key_type_ = key_t const &>
-    [[nodiscard]] expected<std::size_t> count(comparable_key_type_ &&key) const noexcept {
+    expected<std::size_t> count(comparable_key_type_ &&key) const noexcept {
         expected<bool> const present = contains(std::forward<comparable_key_type_>(key));
         if (!present) return present.status();
         return *present ? std::size_t {1} : std::size_t {0};
@@ -905,7 +905,7 @@ class basic_hash_table {
 
     /** Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<slot_ref_t>>
-    [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
+    status_t for_each(callback_type_ &&callback) noexcept {
         slot_ref_t slot;
         unsafe_retarget(slot, 0);
         offset_t const buckets = bucket_count();
@@ -918,7 +918,7 @@ class basic_hash_table {
 
     /** Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<const_slot_ref_t>>
-    [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
+    status_t for_each(callback_type_ &&callback) const noexcept {
         const_slot_ref_t slot;
         unsafe_retarget(slot, 0);
         offset_t const buckets = bucket_count();
@@ -1112,7 +1112,7 @@ class basic_hash_table {
      *      already stored, which needs no room and therefore never asks the allocator for any.
      */
     template <typename convertible_element_type_>
-    [[nodiscard]] status_t upsert(convertible_element_type_ &&element) noexcept {
+    status_t upsert(convertible_element_type_ &&element) noexcept {
         // The probe below overwrites an equal key in place, taking no slot of its own, so the
         // allocator is only consulted once the probe has shown this key is not already stored.
         reserve_result_t reserved = reserve_result_t::unchanged_k;

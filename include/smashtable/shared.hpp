@@ -204,7 +204,7 @@ namespace ashvardanian::smashtable {
  *  about a resource being held, while these are about what another transaction published. A retry
  *  loop reads them to decide whether retrying can help, which is what @c conflicted answers.
  */
-enum class status_t : int {
+enum class [[nodiscard]] status_t : int {
 
     /** The operation did what it was asked, and any result it carries is live. */
     success_k = 0,
@@ -333,7 +333,7 @@ template <typename value_type_>
 class expected;
 
 template <typename object_type_>
-[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &object) noexcept;
+expected<object_type_> copy_safely(object_type_ const &object) noexcept;
 
 /**
  *  @brief Simple key-value mapping type, cleaner & lighter than @c std::pair used by @c std::map.
@@ -622,7 +622,7 @@ consteval bool contains_type() {
  *  hand something back on the failure path; see @c get.
  */
 template <typename value_type_>
-class expected {
+class [[nodiscard]] expected {
   public:
     using value_t = value_type_;
     using value_type = value_t; // ? STL style
@@ -761,7 +761,7 @@ concept has_make_method = requires(args_types_ &&...args) {
  *  @return The copy on success, or the reason it could not be made.
  */
 template <typename object_type_>
-[[nodiscard]] expected<object_type_> copy_safely(object_type_ const &object) noexcept {
+expected<object_type_> copy_safely(object_type_ const &object) noexcept {
     if constexpr (std::is_nothrow_copy_constructible_v<object_type_>)
         return expected<object_type_>(object_type_ {object}, success_k);
     else if constexpr (has_copy_method<object_type_>) return object.copy();
@@ -1126,7 +1126,7 @@ template <typename versioned_type_>
  *  @return @c success_k, or @c read_conflict_k for the first watch that drifted.
  */
 template <typename watches_type_, typename resolver_type_>
-[[nodiscard]] status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
+status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
     for (auto const &identifier_and_watch : watches) {
         // An identifier nothing resolves to keeps the shape it was given here, which is the absent one.
         watch_t latest = missing_watch();
@@ -2377,8 +2377,8 @@ concept optimistically_concurrent_store =
  *      the newest one from its second attempt on.
  */
 template <typename transaction_type_, typename stage_changes_type_>
-[[nodiscard]] status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempts,
-                                           stage_changes_type_ &&stage_changes) noexcept {
+status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempts,
+                             stage_changes_type_ &&stage_changes) noexcept {
     for (std::size_t attempt = 0; attempt != attempts; ++attempt) {
         status_t status = stage_changes(transaction);
         if (succeeded(status)) status = transaction.stage();
@@ -2481,7 +2481,7 @@ class transaction_group {
      *  A store named twice would take two participants over one snapshot, neither seeing the
      *  other's writes, so the later commit overwrites the earlier one and no conflict is reported.
      */
-    [[nodiscard]] static expected<transaction_group> make(store_types_ &...stores) noexcept {
+    static expected<transaction_group> make(store_types_ &...stores) noexcept {
         std::array<void const *, participants_k> const addresses {static_cast<void const *>(&stores)...};
         // Quadratic over a handful of participants known at compile time, which beats a set here.
         for (std::size_t position = 1; position != participants_k; ++position)
@@ -2518,7 +2518,7 @@ class transaction_group {
      *  A partial stage is never observable. The undo rolls the staged prefix back rather than
      *  resetting it, so the caller's pending writes survive and the group can be retried.
      */
-    [[nodiscard]] status_t stage() noexcept {
+    status_t stage() noexcept {
         if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
 
         std::size_t staged_count = 0;
@@ -2570,7 +2570,7 @@ class transaction_group {
      *  not whether anything was published, since a torn commit cannot be told apart from an untorn
      *  one without asking every participant what it did. Only @c reset then clears the rest.
      */
-    [[nodiscard]] status_t commit() noexcept {
+    status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         if constexpr (asks_before_writing_k) {
             for (std::size_t position = 0; position != participants_k; ++position)
@@ -2611,7 +2611,7 @@ class transaction_group {
      *  refusal would advertise a group whose later participants are still staged, and the next
      *  @c stage would stage a second time over the first.
      */
-    [[nodiscard]] status_t rollback() noexcept {
+    status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         // Ascending store address, as every forward pass takes - only an unwind descends - so a
         // participant holding a lock across the phases cannot deadlock against another group.
@@ -2625,7 +2625,7 @@ class transaction_group {
     }
 
     /** Discards every participant's staged and pending changes. */
-    [[nodiscard]] status_t reset() noexcept {
+    status_t reset() noexcept {
         status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
             status_t const one =
@@ -2639,7 +2639,7 @@ class transaction_group {
 
 /** Deduces the store types, so a caller names the stores and not their spellings. */
 template <optimistically_concurrent_store... store_types_>
-[[nodiscard]] expected<transaction_group<store_types_...>> make_transaction_group(store_types_ &...stores) noexcept {
+expected<transaction_group<store_types_...>> make_transaction_group(store_types_ &...stores) noexcept {
     return transaction_group<store_types_...>::make(stores...);
 }
 
@@ -2879,8 +2879,7 @@ concept resumes_from_a_key = requires(side_type_ &side, typename side_type_::tra
  *      is recorded, so the probing side's read set grows with the walked side.
  */
 template <typename walked_type_, typename probing_type_, typename visitor_type_>
-[[nodiscard]] status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing,
-                                        visitor_type_ &&visitor) noexcept {
+status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_type_ &&visitor) noexcept {
 
     if constexpr (resumes_from_a_key<walked_type_> && resumes_from_a_key<probing_type_>) {
         using member_t = typename walked_type_::value_t;
@@ -2954,7 +2953,7 @@ template <typename walked_type_, typename probing_type_, typename visitor_type_>
  *      of the nested walk @c compare_crossed_ falls back to.
  */
 template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
-[[nodiscard]] status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &&callback) noexcept {
+status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &&callback) noexcept {
 
     auto sweep = [&](auto &side, auto &other, auto keeps) noexcept {
         return compare_crossed_(side, other, [&](auto const &member, membership_t membership) noexcept {
@@ -2984,7 +2983,7 @@ template <algebra_t algebra_, typename first_type_, typename second_type_, typen
  *  from another.
  */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_subset(first_type_ &first, second_type_ &second) noexcept {
+expected<bool> is_subset(first_type_ &first, second_type_ &second) noexcept {
     // One side contains itself, and the unordered walk below would probe the lock it already holds.
     if constexpr (std::is_same_v<first_type_, second_type_>)
         if (&first == &second) return true;
@@ -3000,7 +2999,7 @@ template <typename first_type_, typename second_type_>
 
 /** Walks @p first probing @p second, settling at the first member they share. */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_disjoint_walking_(first_type_ &first, second_type_ &second) noexcept {
+expected<bool> is_disjoint_walking_(first_type_ &first, second_type_ &second) noexcept {
     bool disjoint = true;
     status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
         disjoint = membership == membership_t::on_one_side_k;
@@ -3016,7 +3015,7 @@ template <typename first_type_, typename second_type_>
  *  Sharing is symmetric, so the walk takes the smaller side and probes the larger.
  */
 template <typename first_type_, typename second_type_>
-[[nodiscard]] expected<bool> is_disjoint(first_type_ &first, second_type_ &second) noexcept {
+expected<bool> is_disjoint(first_type_ &first, second_type_ &second) noexcept {
     if constexpr (std::is_same_v<first_type_, second_type_>) {
         // Self against self shares every member it has, and the unordered walk below would probe the
         // lock it already holds.

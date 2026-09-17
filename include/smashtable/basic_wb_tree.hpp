@@ -1058,7 +1058,7 @@ class basic_wb_tree {
 
     /** The node an upsert settled on, and how it got there. Assigning to the result overwrites that node's entry,
      *  which is what makes it usable as a handle rather than a report. */
-    struct upserted_node_t {
+    struct [[nodiscard]] upserted_node_t {
         node_t *node = nullptr;
         typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
 
@@ -1131,7 +1131,7 @@ class basic_wb_tree {
      *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_ = value_t>
-    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+    expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         return find(std::forward<comparable_type_>(comparable)) != end();
     }
 
@@ -1141,7 +1141,7 @@ class basic_wb_tree {
      *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_ = value_t>
-    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+    expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
         expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
         if (!present) return present.status();
         return *present ? std::size_t {1} : std::size_t {0};
@@ -1228,7 +1228,7 @@ class basic_wb_tree {
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_>
-    [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
+    status_t for_each(callback_type_ &&callback) noexcept {
         node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
     }
@@ -1498,7 +1498,7 @@ class basic_wb_tree {
 
     /** Visits every element in [lower, upper) in sorted order, or fewer if the callback halts. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
@@ -1506,7 +1506,7 @@ class basic_wb_tree {
 
     /** Same range walk, but the callback may modify each element in place. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
@@ -1514,7 +1514,7 @@ class basic_wb_tree {
 
     /** Copies out the element equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = find(std::forward<comparable_type_>(comparable));
         if (iterator == end()) return key_not_found_k;
         return copy_safely(*iterator);
@@ -1522,7 +1522,7 @@ class basic_wb_tree {
 
     /** Copies out the first element not less than @p comparable. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = lower_bound(std::forward<comparable_type_>(comparable));
         if (iterator == end()) return key_not_found_k;
         return copy_safely(*iterator);
@@ -1530,7 +1530,7 @@ class basic_wb_tree {
 
     /** Copies out the first element greater than @p comparable. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = upper_bound(std::forward<comparable_type_>(comparable));
         if (iterator == end()) return key_not_found_k;
         return copy_safely(*iterator);
@@ -1538,7 +1538,7 @@ class basic_wb_tree {
 
     /** Where an insertion settled, and how it got there. Names the same three outcomes as @c upserted_node_t, one
      *  level up from the nodes. */
-    struct inserted_iterator_t {
+    struct [[nodiscard]] inserted_iterator_t {
 
         /** The element's position, which is @c end() when nothing was stored. */
         iterator position;
@@ -1561,7 +1561,7 @@ class basic_wb_tree {
 
     /** Inserts a range, skipping keys that are already present. */
     template <typename input_iterator_type_>
-    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first) {
             value_t element(*first);
             if (find(element) != end()) continue;
@@ -1572,14 +1572,14 @@ class basic_wb_tree {
 
     /** Upserts a range, overwriting any key already present. */
     template <typename input_iterator_type_>
-    [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first)
             if (upsert(value_t(*first)).node == nullptr) return status_t::out_of_memory_heap_k;
         return success_k;
     }
 
     /** Result of an erase operation on an iterator. Combines iterator to next element with operation status. */
-    struct erase_result_t {
+    struct [[nodiscard]] erase_result_t {
 
         /** Iterator to the element following the erased one, or @c end(). */
         iterator next;

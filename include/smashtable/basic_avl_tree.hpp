@@ -1198,7 +1198,7 @@ class basic_avl_tree {
     class const_iterator;
 
     /** Result of an erase operation on an iterator. Combines iterator to next element with operation status. */
-    struct erase_result_t {
+    struct [[nodiscard]] erase_result_t {
 
         /** Iterator to the element following the erased one, or @c end(). */
         iterator next;
@@ -1695,7 +1695,7 @@ class basic_avl_tree {
      *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         auto it = find(std::forward<comparable_type_>(comparable));
         if (it == end()) return key_not_found_k;
         return copy_safely(*it);
@@ -1708,7 +1708,7 @@ class basic_avl_tree {
      *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto it = lower_bound(std::forward<comparable_type_>(comparable));
         if (it == end()) return key_not_found_k;
         return copy_safely(*it);
@@ -1721,7 +1721,7 @@ class basic_avl_tree {
      *  @return Result with copied element if found, or failure status.
      */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
+    expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto it = upper_bound(std::forward<comparable_type_>(comparable));
         if (it == end()) return key_not_found_k;
         return copy_safely(*it);
@@ -1735,7 +1735,7 @@ class basic_avl_tree {
      *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_>
-    [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
+    expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         return node_t::find(root_, std::forward<comparable_type_>(comparable), comparator_) != nullptr;
     }
 
@@ -1797,7 +1797,7 @@ class basic_avl_tree {
      *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_>
-    [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
+    expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
         return find(std::forward<comparable_type_>(comparable)) != end() ? std::size_t {1} : std::size_t {0};
     }
 
@@ -1849,7 +1849,7 @@ class basic_avl_tree {
      *  @param[in] callback Callback invoked for each element equal to the key. Must be @c noexcept.
      */
     template <typename comparable_type_ = value_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
+    status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
         auto it = find(std::forward<comparable_type_>(comparable));
         if (it != end()) { callback(*it); }
         return success_k;
@@ -1865,7 +1865,7 @@ class basic_avl_tree {
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
@@ -1883,7 +1883,7 @@ class basic_avl_tree {
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
+    status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
                       [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
@@ -1940,7 +1940,7 @@ class basic_avl_tree {
 
     /** The node an upsert settled on, and how it got there. Assigning to the result overwrites that node's entry,
      *  which is what makes it usable as a handle rather than a report. */
-    struct upserted_node_t {
+    struct [[nodiscard]] upserted_node_t {
         node_t *node = nullptr;
         typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
 
@@ -1955,7 +1955,7 @@ class basic_avl_tree {
 
     /** Where an insertion settled, and how it got there. Names the same three outcomes as @c upserted_node_t, one
      *  level up from the nodes. */
-    struct inserted_iterator_t {
+    struct [[nodiscard]] inserted_iterator_t {
 
         /** The element's position, which is @c end() when nothing was stored. */
         iterator position;
@@ -2132,8 +2132,7 @@ class basic_avl_tree {
      *      destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last,
-                                             tags_types_...) noexcept {
+    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
@@ -2178,7 +2177,7 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to insert.
      *  @return First error encountered, or success if all elements inserted.
      */
-    [[nodiscard]] status_t insert_if_missing(std::initializer_list<value_t> ilist) noexcept {
+    status_t insert_if_missing(std::initializer_list<value_t> ilist) noexcept {
         return insert_if_missing(ilist.begin(), ilist.end());
     }
 
@@ -2209,7 +2208,7 @@ class basic_avl_tree {
      *      keys are UPDATED during the merge, not skipped.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
@@ -2256,9 +2255,7 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to upsert.
      *  @return First error encountered, or success if all elements processed.
      */
-    [[nodiscard]] status_t upsert(std::initializer_list<value_t> ilist) noexcept {
-        return upsert(ilist.begin(), ilist.end());
-    }
+    status_t upsert(std::initializer_list<value_t> ilist) noexcept { return upsert(ilist.begin(), ilist.end()); }
 
     /**
      *  @brief Updates a range of existing entries, all-or-nothing on failure. Builds a temporary
@@ -2282,7 +2279,7 @@ class basic_avl_tree {
      *      destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    [[nodiscard]] status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
 
         auto count = std::distance(first, last);
         if (count == 0) return success_k;
@@ -2324,9 +2321,7 @@ class basic_avl_tree {
      *  @param[in] ilist Initializer list of entries to update.
      *  @return Success if all keys updated, or error if any key missing or OOM.
      */
-    [[nodiscard]] status_t update(std::initializer_list<value_t> ilist) noexcept {
-        return update(ilist.begin(), ilist.end());
-    }
+    status_t update(std::initializer_list<value_t> ilist) noexcept { return update(ilist.begin(), ilist.end()); }
 
 #pragma endregion Modifiers
 
@@ -2364,7 +2359,7 @@ class basic_avl_tree {
      *  @return @c success_k when the swap completed, or @c invalid_argument_k if allocators are
      *      incompatible and non-propagating.
      */
-    [[nodiscard]] status_t swap(basic_avl_tree &other) noexcept {
+    status_t swap(basic_avl_tree &other) noexcept {
         // For non-propagating allocators, they must be equal (C++ standard requirement)
         if constexpr (!std::allocator_traits<allocator_t>::propagate_on_container_swap::value)
             if (!(allocator_ == other.allocator_)) return invalid_argument_k;
@@ -2543,7 +2538,7 @@ class basic_avl_tree {
 
     /** Visits every element in sorted order; a callback answering @c walk_control_t stops it early. */
     template <typename callback_type_>
-    [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
+    status_t for_each(callback_type_ &&callback) noexcept {
         node_t::for_each_left_right(root_, [&](node_t *node) noexcept { return hand_over(callback, node->payload); });
         return success_k;
     }

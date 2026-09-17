@@ -82,21 +82,21 @@ class basic_flat_set {
     basic_flat_set &operator=(basic_flat_set const &) = delete;
 
     /** An empty set with room for @p capacity elements, or @c out_of_memory_heap_k. */
-    [[nodiscard]] static expected<basic_flat_set> make(std::size_t capacity, comparator_t comparator = {},
-                                                       allocator_t allocator = {}) noexcept {
+    static expected<basic_flat_set> make(std::size_t capacity, comparator_t comparator = {},
+                                         allocator_t allocator = {}) noexcept {
         expected<elements_t> made = elements_t::make(capacity, elements_allocator_t(allocator));
         if (!made) return made.status();
         return expected<basic_flat_set>(basic_flat_set(std::move(*made), std::move(comparator)), success_k);
     }
 
     /** A deep copy, or the reason one could not be made. */
-    [[nodiscard]] expected<basic_flat_set> copy() const noexcept {
+    expected<basic_flat_set> copy() const noexcept {
         auto copied = elements_.copy();
         if (!copied) return copied.status();
         return expected<basic_flat_set>(basic_flat_set(std::move(*copied), comparator_), success_k);
     }
 
-    [[nodiscard]] status_t reserve(std::size_t capacity) noexcept { return elements_.reserve(capacity); }
+    status_t reserve(std::size_t capacity) noexcept { return elements_.reserve(capacity); }
     void clear() noexcept { elements_.clear(); }
 
     [[nodiscard]] std::size_t size() const noexcept { return elements_.size(); }
@@ -141,7 +141,7 @@ class basic_flat_set {
 
     /** Whether an element equivalent to @p wanted is here. Always success; a sorted array cannot refuse a read. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<bool> contains(comparable_type_ const &wanted) const noexcept {
+    expected<bool> contains(comparable_type_ const &wanted) const noexcept {
         return find(wanted) != nullptr;
     }
 
@@ -161,7 +161,7 @@ class basic_flat_set {
 
     /** Copies out the element equivalent to @p wanted, or reports @c key_not_found_k. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> find_copy(comparable_type_ const &wanted) const noexcept {
+    expected<value_t> find_copy(comparable_type_ const &wanted) const noexcept {
         value_t const *const found = find(wanted);
         if (!found) return key_not_found_k;
         return copy_safely(*found);
@@ -169,7 +169,7 @@ class basic_flat_set {
 
     /** Copies out the first element not below @p wanted, or reports @c key_not_found_k. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ const &wanted) const noexcept {
+    expected<value_t> lower_bound_copy(comparable_type_ const &wanted) const noexcept {
         value_t const *const found = lower_bound(wanted);
         if (found == elements_.end()) return key_not_found_k;
         return copy_safely(*found);
@@ -177,7 +177,7 @@ class basic_flat_set {
 
     /** Copies out the first element above @p wanted, or reports @c key_not_found_k. */
     template <typename comparable_type_>
-    [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ const &wanted) const noexcept {
+    expected<value_t> upper_bound_copy(comparable_type_ const &wanted) const noexcept {
         value_t const *const found = upper_bound(wanted);
         if (found == elements_.end()) return key_not_found_k;
         return copy_safely(*found);
@@ -185,8 +185,7 @@ class basic_flat_set {
 
     /** Visits every element in [lower, upper) in sorted order, or fewer if the callback halts. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
-    [[nodiscard]] status_t range(lower_type_ const &lower, upper_type_ const &upper,
-                                 callback_type_ &&callback) const noexcept {
+    status_t range(lower_type_ const &lower, upper_type_ const &upper, callback_type_ &&callback) const noexcept {
         std::size_t const last = rank(upper);
         value_t const *const elements = elements_.data();
         for (std::size_t index = rank(lower); index < last; ++index)
@@ -195,14 +194,14 @@ class basic_flat_set {
     }
 
     /** Adds @p element, or answers @c key_already_exists_k and leaves the set alone. */
-    [[nodiscard]] status_t insert(value_t element) noexcept {
+    status_t insert(value_t element) noexcept {
         std::size_t const offset = rank(element);
         if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) return key_already_exists_k;
         return insert_at_(offset, std::move(element));
     }
 
     /** Adds @p element, replacing an equivalent one if the set holds it. */
-    [[nodiscard]] status_t upsert(value_t element) noexcept {
+    status_t upsert(value_t element) noexcept {
         std::size_t const offset = rank(element);
         if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) {
             elements_.data()[offset] = std::move(element);
@@ -213,7 +212,7 @@ class basic_flat_set {
 
     /** Adds every element of [first, last) the set lacks, reserving once when the range knows its length. */
     template <typename input_iterator_type_>
-    [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         status_t const reserved = reserve_for_range_(first, last);
         if (failed(reserved)) return reserved;
         for (; first != last; ++first) {
@@ -228,7 +227,7 @@ class basic_flat_set {
 
     /** Adds every element of [first, last), replacing the equivalent ones the set already holds. */
     template <typename input_iterator_type_>
-    [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         status_t const reserved = reserve_for_range_(first, last);
         if (failed(reserved)) return reserved;
         for (; first != last; ++first) {
@@ -240,7 +239,7 @@ class basic_flat_set {
 
     /** Removes the element equivalent to @p wanted, or answers @c key_not_found_k. */
     template <typename comparable_type_>
-    [[nodiscard]] status_t erase(comparable_type_ const &wanted) noexcept {
+    status_t erase(comparable_type_ const &wanted) noexcept {
         std::size_t const offset = rank(wanted);
         value_t *const elements = elements_.data();
         if (offset == elements_.size() || comparator_(wanted, elements[offset])) return key_not_found_k;
@@ -266,13 +265,13 @@ class basic_flat_set {
   private:
     /** Reserves room for a whole range up front, so only sized ranges pay one growth rather than several. */
     template <typename input_iterator_type_>
-    [[nodiscard]] status_t reserve_for_range_(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+    status_t reserve_for_range_(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if constexpr (std::forward_iterator<input_iterator_type_>)
             return elements_.reserve(elements_.size() + static_cast<std::size_t>(std::distance(first, last)));
         else return success_k;
     }
 
-    [[nodiscard]] status_t insert_at_(std::size_t offset, value_t &&element) noexcept {
+    status_t insert_at_(std::size_t offset, value_t &&element) noexcept {
         status_t const status = elements_.push_back(std::move(element));
         if (failed(status)) return status;
         value_t *const elements = elements_.data();

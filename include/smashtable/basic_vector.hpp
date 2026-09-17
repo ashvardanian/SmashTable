@@ -130,7 +130,7 @@ class basic_vector {
      *  @param[in] initial_capacity Initial capacity to allocate.
      *  @return @c expected<basic_vector> containing the new vector, or error status.
      */
-    [[nodiscard]] static expected<basic_vector> make(std::size_t initial_capacity) noexcept {
+    static expected<basic_vector> make(std::size_t initial_capacity) noexcept {
         return make(initial_capacity, allocator_t {});
     }
 
@@ -140,7 +140,7 @@ class basic_vector {
      *  @param[in] allocator The allocator instance to use.
      *  @return @c expected<basic_vector> containing the new vector, or error status.
      */
-    [[nodiscard]] static expected<basic_vector> make(std::size_t initial_capacity, allocator_t allocator) noexcept {
+    static expected<basic_vector> make(std::size_t initial_capacity, allocator_t allocator) noexcept {
         basic_vector vec(std::move(allocator));
         if (initial_capacity > 0) {
             auto status = vec.reserve(initial_capacity);
@@ -153,7 +153,7 @@ class basic_vector {
      *  @brief Creates a deep copy of this vector.
      *  @return @c expected<basic_vector> containing the copy, or error status.
      */
-    [[nodiscard]] expected<basic_vector> copy() const noexcept {
+    expected<basic_vector> copy() const noexcept {
         basic_vector result(allocator_);
         if (capacity_ > 0) {
             auto status = result.reserve(capacity_);
@@ -181,7 +181,7 @@ class basic_vector {
      *  @return Success, or @c out_of_memory_heap_k if allocation fails or the request cannot
      *      be addressed.
      */
-    [[nodiscard]] status_t reserve(std::size_t new_capacity) noexcept {
+    status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return success_k;
 
         // A capacity whose byte count does not fit an address is refused here rather than passed on:
@@ -217,7 +217,7 @@ class basic_vector {
      *  @param[in] value Element to append (moved into the vector).
      *  @return Always returns success for noexcept move construction.
      */
-    [[nodiscard]] status_t push_back(assume_reserved_t, value_t &&value) noexcept {
+    status_t push_back(assume_reserved_t, value_t &&value) noexcept {
         assert(size_ < capacity_ && "push_back with assume_reserved requires pre-reserved capacity");
         new (&data_[size_++]) value_t(std::move(value));
         return success_k;
@@ -230,7 +230,7 @@ class basic_vector {
      *  @param[in] value Element to append (moved into the vector).
      *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      */
-    [[nodiscard]] status_t push_back(value_t &&value) noexcept {
+    status_t push_back(value_t &&value) noexcept {
         if (size_ >= capacity_) {
             auto status = reserve(size_ + 1);
             if (failed(status)) return status;
@@ -254,7 +254,7 @@ class basic_vector {
      *  @return Success, or error from @c .make() method if construction can throw.
      */
     template <typename... args_types_>
-    [[nodiscard]] status_t emplace_back(assume_reserved_t, args_types_ &&...args) noexcept {
+    status_t emplace_back(assume_reserved_t, args_types_ &&...args) noexcept {
         assert(size_ < capacity_ && "emplace_back with assume_reserved requires pre-reserved capacity");
 
         // Fast path: noexcept constructor - construct directly in place
@@ -289,7 +289,7 @@ class basic_vector {
      *      returning @c expected<value_t> to enable exception-free construction.
      */
     template <typename... args_types_>
-    [[nodiscard]] status_t emplace_back(args_types_ &&...args) noexcept {
+    status_t emplace_back(args_types_ &&...args) noexcept {
         if (size_ >= capacity_) {
             auto status = reserve(size_ + 1);
             if (failed(status)) return status;
@@ -309,7 +309,7 @@ class basic_vector {
      *  @return Success, or error code on failure. On failure the elements are unchanged, though the
      *      capacity may already have grown.
      */
-    [[nodiscard]] status_t resize(std::size_t new_size) noexcept {
+    status_t resize(std::size_t new_size) noexcept {
         static_assert(std::is_nothrow_default_constructible_v<value_t>,
                       "resize default-constructs in noexcept code, so the element must construct without throwing");
 
@@ -341,7 +341,7 @@ class basic_vector {
      *  @return Success, or error code on failure. On failure the elements are unchanged, though the
      *      capacity may already have grown.
      */
-    [[nodiscard]] status_t resize(std::size_t new_size, value_t const &value) noexcept {
+    status_t resize(std::size_t new_size, value_t const &value) noexcept {
         // Shrink: destroy excess elements
         if (new_size < size_) {
             for (std::size_t index = new_size; index < size_; ++index) data_[index].~value_t();
@@ -386,7 +386,7 @@ class basic_vector {
      *      compare equal. Attempting to swap vectors with unequal non-propagating allocators
      *      returns @c invalid_argument_k and leaves both vectors unchanged.
      */
-    [[nodiscard]] status_t swap(basic_vector &other) noexcept {
+    status_t swap(basic_vector &other) noexcept {
         // For non-propagating allocators, they must be equal (C++ standard requirement)
         if constexpr (!std::allocator_traits<allocator_t>::propagate_on_container_swap::value)
             if (!(allocator_ == other.allocator_)) return invalid_argument_k;
