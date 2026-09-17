@@ -19,11 +19,12 @@
 #include <span>      // `std::span`
 
 #include <smashtable/basic_vector.hpp>
-#include <smashtable/row_search.hpp>
 #include <smashtable/immutable_b_tree.hpp>
 #include <smashtable/immutable_splus_tree.hpp>
+#include <smashtable/row_search.hpp>
 
 #include "test.hpp"
+#include "test_ordered_readonly.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -108,12 +109,6 @@ void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator,
     }
     for (std::size_t draw = 0; draw < 8; ++draw)
         st_verify_(wanted.push_back(key_from_words<key_type_>(generator(), generator())));
-}
-
-/** The standard bound over a sorted span, which is what every rank here must agree with. */
-template <typename key_type_>
-[[nodiscard]] std::size_t lower_bound_of(std::span<key_type_ const> sorted, key_type_ wanted) {
-    return static_cast<std::size_t>(std::lower_bound(sorted.begin(), sorted.end(), wanted) - sorted.begin());
 }
 
 #pragma endregion Key Generation
@@ -212,44 +207,12 @@ void verify_kit_rows(kit_type_) {
 
 #pragma region Layout Equivalence
 
-template <typename layout_type_>
-void verify_layout(layout_type_ const &layout, std::span<typename layout_type_::key_t const> sorted,
-                   std::span<typename layout_type_::key_t const> wanted) {
-    using key_t = typename layout_type_::key_t;
-    st_verify_eq_(layout.size(), sorted.size());
-    st_verify_eq_(layout.size_bytes(), layout_type_::size_bytes(sorted.size()));
-    st_verify_eq_(layout.size_bytes() % layout_type_::format_t::bytes_per_row_k, 0u);
-
-    for (key_t const key : wanted) {
-        std::size_t const expected_rank = lower_bound_of(sorted, key);
-        st_verify_eq_(layout.rank(key), expected_rank);
-        auto const found = layout.find(key);
-        if (expected_rank < sorted.size() && sorted[expected_rank] == key) st_verify_eq_(found, expected_rank);
-        else st_verify_eq_(found.status(), status_t::key_not_found_k);
-        // A range walk from the bound must continue in sorted order.
-        auto walk = layout.lower_bound(key);
-        for (std::size_t step = 0; step < 6 && expected_rank + step < sorted.size(); ++step, ++walk) {
-            st_verify_eq_(walk.rank(), expected_rank + step);
-            st_verify_(*walk == sorted[expected_rank + step]);
-        }
-    }
-
-    std::size_t const stride = sorted.size() / 3000 + 1;
-    for (std::size_t ordinal = 0; ordinal < sorted.size(); ordinal += stride) {
-        st_verify_(layout.select(ordinal) == sorted[ordinal]);
-        st_verify_(*layout.at_rank(ordinal) == sorted[ordinal]);
-    }
-
-    std::size_t walked = 0;
-    for (auto walk = layout.begin(); walk != layout.end(); ++walk, ++walked) st_verify_(*walk == sorted[walked]);
-    st_verify_eq_(walked, sorted.size());
-    st_verify_(layout.at_rank(sorted.size()) == layout.end());
-}
-
 template <typename kit_type_, typename key_type_, std::size_t keys_per_row_>
 void verify_layouts_of(std::mt19937_64 &generator) {
     using btree_t = immutable_b_tree<key_type_, keys_per_row_, kit_type_>;
     using splus_t = immutable_splus_tree<key_type_, keys_per_row_, kit_type_>;
+    test_ordered_readonly_tags<btree_t>();
+    test_ordered_readonly_tags<splus_t>();
     std::size_t const row = keys_per_row_;
     std::size_t const fanout = row + 1;
     std::size_t const sizes[] = {
@@ -277,12 +240,12 @@ void verify_layouts_of(std::mt19937_64 &generator) {
             collect_wanted(sorted, generator, wanted);
             std::span<key_type_ const> const asked(wanted.data(), wanted.size());
 
-            auto btree = btree_t::make(sorted);
+            expected<btree_t> btree = btree_t::make(sorted);
             st_verify_(btree);
-            verify_layout(*btree, sorted, asked);
-            auto splus = splus_t::make(sorted);
+            verify_ordered_readonly(*btree, sorted, asked);
+            expected<splus_t> splus = splus_t::make(sorted);
             st_verify_(splus);
-            verify_layout(*splus, sorted, asked);
+            verify_ordered_readonly(*splus, sorted, asked);
         }
 
     // Out-of-order input is refused rather than built into a tree that answers wrongly.
@@ -397,6 +360,16 @@ void layouts_neon_kit() { verify_layouts_through(row_kit_t::neon_k); }
 void layouts_sve_kit() { verify_layouts_through(row_kit_t::sve_k); }
 void layouts_rvv_kit() { verify_layouts_through(row_kit_t::rvv_k); }
 
+/** A map form answers the keys its set twin answers, and hands back the value each key arrived with. */
+void layouts_mapped_values() {
+    test_ordered_readonly_mapping<immutable_b_map<std::uint64_t, std::uint64_t>, immutable_b_set<std::uint64_t>>();
+    test_ordered_readonly_mapping<immutable_splus_map<std::uint64_t, std::uint64_t>,
+                                  immutable_splus_set<std::uint64_t>>();
+    test_ordered_readonly_mapping<immutable_b_map<std::uint32_t, std::uint32_t>, immutable_b_set<std::uint32_t>>();
+    test_ordered_readonly_mapping<immutable_splus_map<std::int64_t, std::uint64_t>,
+                                  immutable_splus_set<std::int64_t>>();
+}
+
 #pragma endregion Tests
 
 } // namespace
@@ -419,6 +392,7 @@ int main() {
     failures += run_test(filter, "layouts.neon_kit", layouts_neon_kit);
     failures += run_test(filter, "layouts.sve_kit", layouts_sve_kit);
     failures += run_test(filter, "layouts.rvv_kit", layouts_rvv_kit);
+    failures += run_test(filter, "layouts.mapped_values", layouts_mapped_values);
 
     return report_test_failures(failures);
 }

@@ -437,9 +437,9 @@ Headers group as:
     ├─ basic_flat_set<T, Comparator, Kit, Alloc>    # sorted, one allocation, searched a row at a time
     └─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
 
-  Immutable, built once from sorted keys
-    ├─ immutable_b_tree<Key, KeysPerRow, Kit, Alloc>     # keys on every level
-    └─ immutable_splus_tree<Key, KeysPerRow, Kit, Alloc> # every key in the leaves, separators above
+  Immutable, built once from a sorted span
+    ├─ immutable_b_tree<T, KeysPerRow, Kit, Alloc>     # keys on every level
+    └─ immutable_splus_tree<T, KeysPerRow, Kit, Alloc> # every key in the leaves, separators above
 
   atomic_*              → Pinned core. Fixed capacity, atomic per slot, callback reads.
     └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
@@ -522,6 +522,7 @@ visit_row_kit(detect_row_kit(), [&](auto kit) {
 
 Keys may be 32- or 64-bit of either signedness, or 16 bytes ordered as `memcmp`.
 A 16-byte key is stored either interleaved or split into a column of high words and a column of low words, the low column read only where a high word ties.
+Whatever rides beside a key never enters a row, so a map form searches exactly what its set form does.
 
 ### Flat Sets and Rings
 
@@ -529,6 +530,7 @@ A 16-byte key is stored either interleaved or split into a column of high words 
 
 `basic_flat_set` is an ordered set in one contiguous allocation, growable and allocator-aware like `basic_avl_tree`, differing only in where elements live.
 Inserting and erasing shift the tail, so it suits a few hundred elements rather than millions, in exchange for a search that reads adjacent memory and allocates nothing.
+It answers the same `ordered_collection` surface the trees do — bounds, ranges and half-open erasure — so the shared suites hold it to the same contract.
 
 `basic_ring` is a first-in first-out queue over one allocation whose capacity is a power of two fixed at `make`, for batching and read-ahead.
 Two 32-bit counters of pushes and pops wrap together, so their difference is the size and a full ring is told from an empty one without a spare slot.
@@ -537,13 +539,16 @@ Two 32-bit counters of pushes and pops wrap together, so their difference is the
 
 > `smashtable/immutable_b_tree.hpp` · `smashtable/immutable_splus_tree.hpp`
 
-Both are built once from a span of sorted keys and never written again, so any number of threads may read one at once with no synchronization at all.
+Both are built once from a sorted span and never written again, so any number of threads may read one at once with no synchronization at all.
 
 `immutable_b_tree` stores nodes breadth-first with implicit children: node `i` holds one row of `B` keys and its children are nodes `i*(B+1)+j+1`.
 A lookup reads one row per level and the rank adds up as the descent goes, with no subtree sizes stored.
 
 `immutable_splus_tree` keeps every key in sorted leaves and copies separators onto the levels above.
 A lookup lands on the leaf whose position __is__ the rank, so `select` is an index into the leaves.
+
+`immutable_b_set` and `immutable_splus_set` hold bare keys; `immutable_b_map` and `immutable_splus_map` pair each key with a value.
+A map keeps the rows byte-identical to its set twin and puts the values in one array the rank indexes, so every kit still loads a row of nothing but keys, and `mapped_at(rank)` costs one further cache line.
 
 ### Transactional Stores
 
