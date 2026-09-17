@@ -699,7 +699,15 @@ class basic_wb_node {
      *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
     static find_or_make_result_t insert(node_t *node, node_t *new_child, comparator_t const &comparator) noexcept {
-        if (!node) return {new_child, new_child, new_child ? node_placement_t::made_k : node_placement_t::refused_k};
+        if (!node) {
+            // The traveller still points at the tree it came from, so it lands as a leaf.
+            if (new_child) {
+                new_child->left = nullptr;
+                new_child->right = nullptr;
+                update_size(new_child);
+            }
+            return {new_child, new_child, new_child ? node_placement_t::made_k : node_placement_t::refused_k};
+        }
 
         if (comparator(mapping_key_or_itself(new_child->payload), mapping_key_or_itself(node->payload))) {
             auto result = insert(node->left, new_child, comparator);
@@ -1382,30 +1390,36 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Merges another tree using upsert semantics (updates duplicates instead of skipping).
-     *  @param[inout] other Tree to merge from. Emptied on success, and on an allocation failure it
-     *      keeps every entry that could not be moved across.
+     *  @brief Merges another tree into this one with upsert semantics, overwriting the keys already here.
+     *
+     *  Every node travels across by relinking, so nothing is allocated and nothing can be refused, which
+     *  is what lets a batch modifier promise all-or-nothing once its staging tree is built.
+     *
+     *  @param[inout] other Tree to merge from, left empty.
+     *  @note Complexity: O(m log n) where m is @p other 's size and n is this tree's.
      */
     void merge_with_upsert(wb_tree_t &other) noexcept {
-        while (other.size() > 0) {
-            node_t *other_root = other.root_;
-            if (!other_root) break;
+        if (other.size_ == 0) return;
+        if (size_ == 0) {
+            root_ = std::exchange(other.root_, nullptr);
+            size_ = std::exchange(other.size_, 0);
+            return;
+        }
 
-            // The extracted node only carries its entry across; the guard frees the node itself
-            // once the entry has been upserted into this tree.
-            auto extracted = other.extract(other_root->payload);
-            if (!extracted) continue;
-
-            auto result = node_t::upsert(root_, std::move(extracted.node_ptr_->payload), comparator_,
-                                         [&]() noexcept { return allocator_.allocate(1); });
-            // Out of memory - hand the node back to the source tree rather than drop its entry
-            if (result.failed()) {
-                other.merge(std::move(extracted));
-                return;
-            }
+        node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
+            typename node_t::find_or_make_result_t const result = node_t::insert(root_, node, comparator_);
             root_ = result.root;
             size_ += result.placement == node_t::node_placement_t::made_k;
-        }
+            // A key already here keeps its own node and takes the entry, so the traveller goes back.
+            if (result.placement == node_t::node_placement_t::matched_k) {
+                result.match->payload = std::move(node->payload);
+                node->payload.~value_t();
+                other.allocator_.deallocate(node, 1);
+            }
+        });
+
+        other.root_ = nullptr;
+        other.size_ = 0;
     }
 
   public:
