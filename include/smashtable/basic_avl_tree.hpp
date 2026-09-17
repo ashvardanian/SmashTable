@@ -587,8 +587,13 @@ class basic_avl_node {
         return find_or_make(node, new_child->payload, comparator, [](node_t *) noexcept {}, new_child);
     }
 
-    /** What a bulk build produced, and why it stopped where it did. */
-    struct built_subtree_t {
+    /**
+     *  @brief What a bulk build produced, and why it stopped where it did.
+     *
+     *  Not an @c expected, which holds a value or a reason and never both: a refused build still
+     *  owns every node it made, and whoever asked for it has to free them.
+     */
+    struct build_result_t {
 
         /** Everything that was built, which the owner frees whether the build finished or not. */
         node_t *root = nullptr;
@@ -612,8 +617,8 @@ class basic_avl_node {
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
      */
     template <typename iterator_type_, typename allocator_func_>
-    static built_subtree_t build_from_sorted(iterator_type_ first, std::size_t count,
-                                             allocator_func_ &&allocate_node) noexcept {
+    static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
+                                            allocator_func_ &&allocate_node) noexcept {
         if (count == 0) return {};
 
         std::size_t const middle = count / 2;
@@ -633,14 +638,14 @@ class basic_avl_node {
         root->right = nullptr;
 
         // A refused subtree still hangs off this root, so whoever owns the root frees all of it.
-        built_subtree_t const left = build_from_sorted(first, middle, allocate_node);
+        build_result_t const left = build_from_sorted(first, middle, allocate_node);
         root->left = left.root;
         if (root->left) root->left->parent = root;
         if (failed(left.status)) return {root, left.status};
 
         iterator_type_ right_first = middle_iterator;
         ++right_first;
-        built_subtree_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
+        build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
         root->right = right.root;
         if (root->right) root->right->parent = root;
         if (failed(right.status)) return {root, right.status};
@@ -2153,7 +2158,7 @@ class basic_avl_tree {
             static_assert(std::forward_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
             std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
-            typename node_t::built_subtree_t const built =
+            typename node_t::build_result_t const built =
                 node_t::build_from_sorted(first, count, [&]() noexcept { return staged.allocator_.allocate(1); });
             // Hooked up even on a refusal, so the staging tree frees whatever was built.
             staged.root_ = built.root;
@@ -2170,25 +2175,19 @@ class basic_avl_tree {
 
   public:
     /**
-     *  @brief Inserts a range of entries only if ALL keys are new, all-or-nothing on failure.
-     *      Builds a temporary tree from the range, validates no conflicts, then merges it in one
-     *      step. On allocation failure or key conflict, this tree remains unchanged.
+     *  @brief Inserts every element of [ @p first, @p last ) whose key is free, leaving incumbents alone.
      *
-     *  @tparam input_iterator_type_ Type of input iterator.
-     *  @tparam tags_types_ Optional tag types:
-     *  - @c assume_sorted_t : Range is sorted, enables O(n) bulk construction
+     *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
-     *  @tparam tags_types_ Optional tags to control insertion behavior.
-     *  @return Success if all keys inserted, @c out_of_memory_heap_k on OOM, or
-     *      @c key_already_exists_k if any key already exists.
+     *  @return @c success_k however many keys were already here, or the first refusal.
      *
-     *  @note Complexity:
-     *  - With @c assume_sorted_t : O(n) build + O(m+n) validation + O(merge) time
-     *  - Without: O(n log n) build + O(m+n) validation + O(merge) time
-     *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
-     *  @note All-or-nothing on failure: if ANY key exists, nothing is inserted. Temp tree is
-     *      destroyed via RAII, this tree remains unchanged.
+     *  All-or-nothing over this tree from the first element on: a node the allocator refuses and an
+     *  element refusing its own copy are both met while the staging tree is built, and the merge
+     *  absorbing it only relinks nodes. A key already here is skipped, the way the single-element
+     *  overload skips one; @c insert refuses the whole batch over it instead.
+     *
+     *  @note Complexity: O(n log n) to build, or O(n) under @c assume_sorted_t, then O(merge).
      */
     template <typename input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
@@ -2197,11 +2196,34 @@ class basic_avl_tree {
         basic_avl_tree temp_tree = stage_alike();
         if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
 
-        // Check if ANY key already exists - O(m+n)
-        if (has_any_key(temp_tree))
-            return status_t::key_already_exists_k; // Temp tree auto-destructs, this tree unchanged
+        // Keeps the incumbent wherever both trees hold the key, and frees the traveller.
+        merge(temp_tree);
+        return success_k;
+    }
 
-        // All keys are new - safe to merge with assume_unique optimization
+    /**
+     *  @brief Inserts every element of [ @p first, @p last ), refusing the batch over a key already here.
+     *
+     *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
+     *  @param[in] first Beginning of range to insert.
+     *  @param[in] last End of range to insert.
+     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
+     *
+     *  All-or-nothing over this tree from the first element on, a taken key included: the whole
+     *  range is staged and checked before the merge absorbing it relinks a single node.
+     *
+     *  @note Complexity: O(n log n) to build, or O(n) under @c assume_sorted_t, plus O(m+n) to check.
+     */
+    template <typename input_iterator_type_, typename... tags_types_>
+    status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
+
+        if (first == last) return success_k;
+        basic_avl_tree temp_tree = stage_alike();
+        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
+
+        // The staging tree auto-destructs, leaving this one exactly as it was.
+        if (has_any_key(temp_tree)) return status_t::key_already_exists_k;
+
         merge(temp_tree, assume_unique_t {});
         return success_k;
     }
