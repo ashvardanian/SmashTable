@@ -16,6 +16,16 @@ failed=0
 
 # Prints the reason and the first offending lines, and marks the commit rejected. `failed` counts
 # rather than latches, because `selftest` asserts that a bad fixture trips exactly one rule.
+added_line_numbers() { # added_line_numbers <path>
+    git diff --cached --unified=0 -- "$1" | awk '
+        /^@@/ {
+            split($3, range, ",")
+            start = substr(range[1], 2) + 0
+            count = (range[2] == "") ? 1 : range[2] + 0
+            for (line = start; line < start + count; ++line) print line
+        }'
+}
+
 fail() { # fail <matches> <message-line>...
     local matches=$1
     shift
@@ -56,7 +66,7 @@ check_ascii_arrows() {
 check_memcpy() {
     local copies
     copies=$(printf '%s\n' "$added" |
-        grep -vE '^\+[[:space:]]*(\*|//)' |
+        grep -vE '^\+[[:space:]]*(\*|//|/\*)' |
         grep -E '(^|[^:[:alnum:]_])memcpy[[:space:]]*\(' || true)
     [ -z "$copies" ] || fail "$copies" \
         "$file calls unqualified memcpy - write std::memcpy for a genuine byte copy, or prefer" \
@@ -84,7 +94,7 @@ check_boolean_parameters() {
 check_binding_owns_no_containers() {
     local invented
     invented=$(printf '%s\n' "$added" |
-        grep -vE '^\+[[:space:]]*(\*|//)' |
+        grep -vE '^\+[[:space:]]*(\*|//|/\*)' |
         grep -E 'std::(vector|map|set|unordered_map|unordered_set|deque|list|pair|tuple|array|shared_mutex|mutex|condition_variable|atomic|thread|lock_guard|unique_lock)\b' || true)
     [ -z "$invented" ] || fail "$invented" \
         "$file is in the Python binding and reaches for an STL container or synchronization" \
@@ -141,7 +151,7 @@ check_region_names() {
 check_allocating_new() {
     local allocations
     allocations=$(printf '%s\n' "$added" |
-        grep -vE '^\+[[:space:]]*(\*|//)' |
+        grep -vE '^\+[[:space:]]*(\*|//|/\*)' |
         grep -vE '//[[:space:]]*allocator primitive[[:space:]]*$' |
         sed -e 's|"[^"]*"||g' -e 's|/\*.*\*/||g' -e 's|//.*$||' |
         grep -E '::operator[[:space:]]+(new|delete)|new[[:space:]]*\([[:space:]]*std::nothrow|new[[:space:]]+[A-Za-z_]|(^|[^_[:alnum:]])delete[[:space:]]*(\[[[:space:]]*\])?[[:space:]]+[A-Za-z_]' || true)
@@ -222,20 +232,32 @@ check_section_anchors() {
         "$file has an @section without an anchor - write '@section <anchor> <Title>':"
 }
 
-# Doxygen runs an @section title into the paragraph below it unless a blank line separates them.
+# An @section heading is a heading only with air around it, so the comment lines above and below must
+# be empty. Spacing is context rather than a line, so this reads the whole staged file and reports only
+# the headings the commit itself added - an unchanged blank line between two changed ones is invisible
+# to a check that sees the diff alone.
 check_section_spacing() {
-    local run_on
-    run_on=$(printf '%s\n' "$added" | awk '
-        /^\+[[:space:]]*\*[[:space:]]*@section[[:space:]]+[a-z_]/ { title = $0; next }
-        title != "" { if ($0 ~ /^\+[[:space:]]*\*[[:space:]]*[^[:space:]*\/]/) print title; title = "" }' || true)
-    [ -z "$run_on" ] || fail "$run_on" \
-        "$file runs an @section into its body - leave a blank ' *' line after the title:"
+    git show ":$file" | grep -q '@section' || return 0
+    local cramped
+    cramped=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        { lines[FNR] = $0; last = FNR }
+        END {
+            for (i = 1; i <= last; ++i)
+                if (lines[i] ~ /@section/ && (i in added)) {
+                    if (lines[i - 1] !~ /^[[:space:]]*\*[[:space:]]*$/) printf "line %d: no empty comment line above the @section\n", i
+                    if (lines[i + 1] !~ /^[[:space:]]*\*[[:space:]]*$/) printf "line %d: no empty comment line below the @section\n", i
+                }
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file"))
+    [ -z "$cramped" ] || fail "$cramped" \
+        "$file crams an @section against its neighbors - keep one empty comment line" \
+        "            above and below every @section heading:"
 }
 
 # Markdown emphasis prints literally through Doxygen. One or two tokens take @b instead.
 check_markdown_doxygen() {
     local emphasis
-    emphasis=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*\*.*\*\*[^*]+\*\*' || true)
+    emphasis=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*(\*|/\*\*).*\*\*[^*]+\*\*' || true)
     [ -z "$emphasis" ] || fail "$emphasis" \
         "$file uses Markdown emphasis in a Doxygen block - it prints literally, use @b:"
 }
@@ -243,7 +265,7 @@ check_markdown_doxygen() {
 # Backticks are for `//` implementation comments; docblocks mark code tokens with @c.
 check_doxygen_backticks() {
     local ticks
-    ticks=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*\*.*`[^`]+`' || true)
+    ticks=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*(\*|/\*\*).*`[^`]+`' || true)
     [ -z "$ticks" ] || fail "$ticks" \
         "$file uses backticks inside a Doxygen block - mark code tokens with @c:"
 }
@@ -308,6 +330,201 @@ check_workflow_names() {
         "$file adds a workflow step without a 'name:' - the Actions UI references it by name:"
 }
 
+# Boxed and ruled banners are not section markers here: code uses `#pragma region` / `# region`,
+
+# highlighting in most viewers, which only recognize the command after whitespace. Reword the
+# sentence so the command stands free; parentheses around a command are the usual offender.
+check_doxygen_glued() {
+    local glued
+    glued=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*(\*|//)' |
+        grep -E '[^[:space:]]@(brief|section|subsection|param|tparam|returns?|ref|see|note|file|date|author|c|p|b)\b' || true)
+    [ -z "$glued" ] || fail "$glued" \
+        "$file glues a Doxygen command to the previous character - write \`as @c foo does\`," \
+        "            never \`(@c foo)\`; a highlighter only sees a command that follows whitespace:"
+}
+
+# An `@section` line reads as a heading only when air surrounds it: the comment lines directly
+# above and below must be empty (`*` alone). Spacing is context, not a line, so this reads the
+
+# brace and an access specifier earn their blank line like anything else. Spacing is context rather than
+# a line, so this reads the whole staged file and reports only the docblocks the commit itself added.
+check_docblock_spacing() {
+    local cramped
+    cramped=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        { lines[FNR] = $0; last = FNR }
+        END {
+            for (i = 2; i <= last; ++i)
+                if (lines[i] ~ /^[[:space:]]*\/\*\*/ && (i in added) && lines[i - 1] !~ /^[[:space:]]*$/ &&
+                    lines[i - 1] !~ /^[[:space:]]*(public|private|protected):[[:space:]]*$/)
+                    printf "line %d: no empty line above the docblock\n", i
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file"))
+    [ -z "$cramped" ] || fail "$cramped" \
+        "$file opens a docblock against the line above - every /** takes an empty line above it," \
+        "            an opening brace included. An access specifier is the exception, since" \
+        "            clang-format removes a blank line there whatever this asks for:"
+}
+
+# A `@brief` separates a summary from what follows it, so a block with nothing following carries no
+# tag. Block tags are the contract trio, the file header's, and the cross-references; `@c`, `@p`,
+# `@b` and `@ref` are inline markup and open nothing. A blank comment line counts too - it starts a
+# body paragraph. Whole staged file, since a block is context, and only the blocks this commit added.
+check_lone_brief() {
+    local lone
+    lone=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        { lines[FNR] = $0; last = FNR }
+        END {
+            for (i = 1; i <= last; ++i) {
+                if (lines[i] !~ /^[[:space:]]*\/\*\*/) continue
+                brief = 0; section = 0; blank = 0; touched = 0
+                for (j = i; j <= last; ++j) {
+                    if (j in added) touched = 1
+                    if (lines[j] ~ /@brief/) brief = 1
+                    if (lines[j] ~ /^[[:space:]]*(\/\*\*|\*)[[:space:]]*@(param|tparam|return|retval|sa|see|note|warning|par|subsection|file|author|date|section|code)([^a-z]|$)/) section = 1
+                    if (lines[j] ~ /^[[:space:]]*\*[[:space:]]*$/) blank = 1
+                    if (lines[j] ~ /\*\//) break
+                }
+                if (brief && touched && !section && !blank)
+                    printf "line %d: @brief with nothing to separate it from\n", i
+                i = j
+            }
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file"))
+    [ -z "$lone" ] || fail "$lone" \
+        "$file tags a docblock that is one unstructured paragraph - drop the @brief," \
+        "            it earns its place only above a body paragraph or a tag section:"
+}
+
+# The indented summary runs at most three lines; past that the remainder is a body paragraph, which
+# is unindented and sits below a blank comment line.
+check_brief_length() {
+    local sprawling
+    sprawling=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        { lines[FNR] = $0; last = FNR }
+        END {
+            for (i = 1; i <= last; ++i) {
+                if (lines[i] !~ /@brief/) continue
+                span = 1
+                for (j = i + 1; j <= last; ++j) {
+                    if (lines[j] !~ /^[[:space:]]*\*[[:space:]]{5,}[^[:space:]]/) break
+                    if (lines[j] ~ /^[[:space:]]*\*[[:space:]]*@(param|tparam|return|retval|sa|see|note|warning|par|subsection|file|author|date|section|code)([^a-z]|$)/) break
+                    ++span
+                }
+                if (span > 3 && (i in added)) printf "line %d: @brief runs %d lines\n", i, span
+            }
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file"))
+    [ -z "$sprawling" ] || fail "$sprawling" \
+        "$file lets a @brief summary run past three lines - keep the summary short and move" \
+        "            the rest into an unindented body paragraph below a blank comment line:"
+}
+
+# A docblock's brackets say whether it is structured. With no block tag it is prose, so the text
+# starts on the opener and closes on its last line; with one it earns dedicated `/**` and `*/` lines.
+# A file's own header names itself before it describes itself: @file, @author, @date, @brief, in that
+# order, contiguous, with any prose below them. The whole staged file, since the header is context.
+check_file_header() {
+    local header
+    header=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        { lines[FNR] = $0; last = FNR }
+        END {
+            for (i = 1; i <= last; ++i) if (lines[i] ~ /^[[:space:]]*\/\*\*/) break
+            if (i > last) { print "line 1: no header docblock"; exit }
+            wanted = "file author date brief"; split(wanted, order, " ")
+            seen = 0; blank = 0; touched = 0
+            for (j = i; j <= last; ++j) {
+                if (j in added) touched = 1
+                if (lines[j] ~ /^[[:space:]]*\*[[:space:]]*$/) blank = 1
+                if (match(lines[j], /@(file|author|date|brief)/)) {
+                    tag = substr(lines[j], RSTART + 1, RLENGTH - 1)
+                    ++seen
+                    if (seen <= 4 && tag != order[seen])
+                        printf "line %d: @%s where @%s belongs\n", j, tag, order[seen]
+                    if (blank) printf "line %d: @%s sits below a blank line, outside the tag block\n", j, tag
+                }
+                if (lines[j] ~ /\*\//) break
+            }
+            if (touched && seen < 4) printf "line %d: the header names only %d of @file, @author, @date, @brief\n", i, seen
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file"))
+    [ -z "$header" ] || fail "$header" \
+        "$file misorders its file header - name the file, then the author, the date, and the summary," \
+        "            contiguously, with any prose below them:"
+}
+
+check_docblock_brackets() {
+    local shape
+    shape=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        { lines[FNR] = $0; last = FNR }
+        END {
+            for (i = 1; i <= last; ++i) {
+                if (lines[i] !~ /^[[:space:]]*\/\*\*/) continue
+                tagged = 0; touched = 0; single = (lines[i] ~ /\*\//)
+                for (j = i; j <= last; ++j) {
+                    if (j in added) touched = 1
+                    if (lines[j] ~ /^[[:space:]]*(\/\*\*|\*)[[:space:]]*@(brief|param|tparam|return|retval|sa|see|note|warning|par|subsection|file|author|date|section|code)([^a-z]|$)/) tagged = 1
+                    if (lines[j] ~ /\*\//) break
+                }
+                bare_open = (lines[i] ~ /^[[:space:]]*\/\*\*[[:space:]]*$/)
+                bare_close = (lines[j] ~ /^[[:space:]]*\*\/[[:space:]]*$/)
+                expanded = (bare_open || bare_close)
+                if (touched && !single) {
+                    if (tagged && !expanded) printf "line %d: tagged docblock without its own /** and */ lines\n", i
+                    if (!tagged && expanded) printf "line %d: untagged docblock spending lines on bare /** and */\n", i
+                }
+                i = j
+            }
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file"))
+    [ -z "$shape" ] || fail "$shape" \
+        "$file mismatches a docblock's brackets to its content - prose opens on the /** and closes" \
+        "            on its last line, a tagged block takes dedicated /** and */ lines:"
+}
+
+# Member documentation is Doxygen: a bare `//` line directly above a declaration (a member or a type)
+# is the banned doc style - those entities get `/** @brief ... */`. The same `Type name = ...;` shape
+# inside a function body is a local variable and its `//` note is a legal implementation note, and
+# this library is header-only so headers carry both - so the staged file is read whole and the brace
+# stack says which scope each declaration sits in, with only the added pairings reported.
+check_bare_member_docs() {
+    local member_docs
+    member_docs=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        {
+            line = $0
+            # Block comments are stripped first, so a brace inside a docblock never moves the stack.
+            if (in_comment) { if (match(line, /\*\//)) { line = substr(line, RSTART + 2); in_comment = 0 } else next }
+            gsub(/\/\*([^*]|\*[^\/])*\*\//, " ", line)
+            if (match(line, /\/\*/)) { line = substr(line, 1, RSTART - 1); in_comment = 1 }
+            comment_at = index(line, "//")
+            code = comment_at ? substr(line, 1, comment_at - 1) : line
+            if (comment_at && substr(line, comment_at + 2, 1) != "/" && code ~ /^[[:space:]]*$/) { pending = $0; pending_line = FNR }
+            else if (kind[depth] == "record" && pending &&
+                     code ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_:<>,* ]* [A-Za-z_][A-Za-z0-9_]* *([={;]|$)/) {
+                if ((pending_line in added) || (FNR in added)) printf "line %d:%s\n", pending_line, pending
+                pending = ""
+            }
+            else if (code !~ /^[[:space:]]*$/) pending = ""
+            # `statement` holds the declaration text since the last terminator, so a class whose
+            # brace sits on a continuation line still opens a record scope.
+            statement = statement " " code
+            for (position = 1; position <= length(code); ++position) {
+                character = substr(code, position, 1)
+                if (character == "{") {
+                    ++depth
+                    kind[depth] = (kind[depth - 1] == "code") ? "code" \
+                        : (statement ~ /(^|[^A-Za-z0-9_])(class|struct|union|enum)([^A-Za-z0-9_]|$)/) ? "record" \
+                        : (statement ~ /(^|[^A-Za-z0-9_])namespace([^A-Za-z0-9_]|$)/) ? "namespace" : "code"
+                    statement = ""
+                } else if (character == "}") { if (depth > 0) delete kind[depth--]; statement = "" }
+                else if (character == ";") statement = ""
+            }
+        }' <(printf '%s\n' "$added_lines") <(git show ":$file") || true)
+    [ -z "$member_docs" ] || fail "$member_docs" \
+        "$file documents a declaration with a bare \`//\` comment - docs are" \
+        "            /** @brief ... */ blocks; \`//\` is for implementation notes inside bodies:"
+}
+
 if ! git rev-parse --verify HEAD > /dev/null 2>&1; then
     exit 0
 fi
@@ -328,6 +545,7 @@ while IFS= read -r -d '' file; do
     esac
 
     added=$(git diff --cached -U0 -- "$file" | grep -E '^\+' | grep -v '^+++' || true)
+    added_lines=$(added_line_numbers "$file")
     [ -n "$added" ] || continue
     case "$file" in
     python/*.cpp | python/*.hpp)
@@ -350,6 +568,13 @@ while IFS= read -r -d '' file; do
         check_section_spacing
         check_markdown_doxygen
         check_doxygen_backticks
+        check_doxygen_glued
+        check_docblock_spacing
+        check_lone_brief
+        check_brief_length
+        check_file_header
+        check_docblock_brackets
+        check_bare_member_docs
         check_mangled_literals
         check_sibling_justification
         check_abbreviated_identifiers

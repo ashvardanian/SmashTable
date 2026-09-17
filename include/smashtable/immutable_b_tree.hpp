@@ -1,15 +1,17 @@
 /**
- *  @brief An immutable B-tree over sorted keys, stored breadth-first with implicit children and keys on every level.
- *  @author Ash Vardanian
  *  @file include/smashtable/immutable_b_tree.hpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief An immutable B-tree over sorted keys, stored breadth-first with implicit children and
+ *      keys on every level.
  *
  *  @section immutable_btree_layout Layout
  *
- *  Node @c i holds one row of @c B keys, and its @c B+1 children are the nodes @c i*(B+1)+j+1. Nodes are numbered
- *  breadth-first and keys are placed in order, so every level above the deepest is complete, and the unused slots,
- *  all at the end of the order, hold the padding key. A lookup reads one row per level. Within one level the keys
- *  below a wanted key form a prefix, so the rank adds up as the descent goes, with no subtree sizes stored.
+ *  Node @c i holds one row of @c B keys, and its @c B+1 children are the nodes @c i*(B+1)+j+1.
+ *  Nodes are numbered breadth-first and keys are placed in order, so every level above the deepest
+ *  is complete, and the unused slots, all at the end of the order, hold the padding key. A lookup
+ *  reads one row per level. Within one level the keys below a wanted key form a prefix, so the rank
+ *  adds up as the descent goes, with no subtree sizes stored.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -25,8 +27,9 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  An immutable B-tree over @p key_type_, built once from a sorted span, whose nodes are rows of @p keys_per_row_
- *  keys searched by @p row_kit_type_. Its storage is one allocation from @p allocator_type_.
+ *  An immutable B-tree over @p key_type_, built once from a sorted span, whose nodes are rows of
+ *  @p keys_per_row_ keys searched by @p row_kit_type_. Its storage is one allocation from
+ *  @p allocator_type_.
  *
  *  @tparam keys_per_row_ Keys per node, which is @c default_row_bytes_k worth by default.
  */
@@ -127,7 +130,8 @@ class immutable_b_tree {
 
     /**
      *  Builds the tree over @p sorted, which may repeat keys.
-     *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or @c out_of_memory_heap_k.
+     *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or
+     *      @c out_of_memory_heap_k.
      */
     [[nodiscard]] static expected<immutable_b_tree> make(std::span<key_t const> sorted,
                                                          allocator_t allocator = {}) noexcept {

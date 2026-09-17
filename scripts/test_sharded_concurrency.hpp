@@ -1,16 +1,16 @@
 /**
+ *  @file scripts/test_sharded_concurrency.hpp
+ *  @author Ash Vardanian
+ *  @date August 17, 2026
  *  @brief Suites for the thread-safety wrappers, each naming a defect that went on passing every
  *      other suite in the tree.
- *  @author Ash Vardanian
- *  @file scripts/test_sharded_concurrency.hpp
- *  @date August 17, 2026
  *
  *  @section test_sharded_concurrency_scope Scope
  *
- *  Most of what is here drives @c partitioned_store, whose sixteen independently locked parts are what
- *  the defects lived between. @c test_locked_store_forwards_construction_and_writes drives
- *  @c locked_store instead, the single-mutex wrapper, where forwarding is the same question asked of
- *  one lock rather than sixteen.
+ *  Most of what is here drives @c partitioned_store, whose sixteen independently locked parts are
+ *  what the defects lived between. @c test_locked_store_forwards_construction_and_writes drives
+ *  @c locked_store instead, the single-mutex wrapper, where forwarding is the same question asked
+ *  of one lock rather than sixteen.
  *
  *  @section test_sharded_concurrency_oracles Oracles
  *
@@ -18,26 +18,27 @@
  *  thread reads after the join, and the few checks that do run inside a worker guard a status the
  *  very next line depends on, aborting there rather than carrying a broken value forward.
  *
- *  Two are different. @c test_sharded_walks_never_race_erasures and @c
- *  test_sharded_lower_bound_probes_twice drive a walker reading a key an eraser is freeing, which
- *  nothing but ThreadSanitizer can see, so their tallies check that the probes ran and TSan is the
- *  oracle for what they found.
+ *  Two are different. @c test_sharded_walks_never_race_erasures and
+ *  @c test_sharded_lower_bound_probes_twice drive a walker reading a key an eraser is freeing,
+ *  which nothing but ThreadSanitizer can see, so their tallies check that the probes ran and TSan
+ *  is the oracle for what they found.
  *
  *  @section test_sharded_concurrency_threads Threading
  *
- *  Where the overlap has to be provable, a gate holds one side until the other is inside its loop, so
- *  a schedule that meant to cross the two cannot pass by running them one after the other. Several
- *  suites spawn no thread at all - a signature checked by @c static_assert, the bookkeeping of the
- *  builder that assembles a partition array, the forwarding of one wrapper, and the schedules whose
- *  transactions run one after another on the calling thread.
+ *  Where the overlap has to be provable, a gate holds one side until the other is inside its loop,
+ *  so a schedule that meant to cross the two cannot pass by running them one after the other.
+ *  Several suites spawn no thread at all - a signature checked by @c static_assert, the bookkeeping
+ *  of the builder that assembles a partition array, the forwarding of one wrapper, and the
+ *  schedules whose transactions run one after another on the calling thread.
  *
  *  @section test_sharded_concurrency_levels Isolation Levels
  *
  *  A wrapper carries the level of the store beneath it, so what a suite may assert of a shard set
- *  depends on that store. The thresholds are @c whole_commits_from_k, @c repeatable_reads_from_k and
- *  @c validated_reads_from_k from @c test_consistency.hpp, and each is asserted from both sides: an
- *  anomaly a level permits is a promise that level makes. Only the wait a strict commit performs is
- *  one-sided, because the cheaper level answering sooner is a measurement rather than an assertion.
+ *  depends on that store. The thresholds are @c whole_commits_from_k, @c repeatable_reads_from_k
+ *  and @c validated_reads_from_k from @c test_consistency.hpp, and each is asserted from both
+ *  sides: an anomaly a level permits is a promise that level makes. Only the wait a strict commit
+ *  performs is one-sided, because the cheaper level answering sooner is a measurement rather than
+ *  an assertion.
  */
 #pragma once
 #include <cstddef> // `std::size_t`
@@ -96,8 +97,8 @@ void test_range_walk_takes_partitions_shared() {
  *  status is checked because it was discarded before there was one.
  *
  *  A walk crossing the writer meets a span that is emptied or refilled, so its element count lands
- *  anywhere between half the span and all of it and cannot be pinned. What can is the half the writer
- *  never touches, which is asserted key by key after the join.
+ *  anywhere between half the span and all of it and cannot be pinned. What can is the half the
+ *  writer never touches, which is asserted key by key after the join.
  */
 template <typename container_type_>
 void test_sharded_range_walks_share_partitions(std::size_t key_span = 256, std::size_t rounds = 40) {
@@ -223,9 +224,10 @@ void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size
  *  Every ordered step of a sharded collection scans all partitions for the smallest successor and
  *  then re-reads it, and that re-read once ran with no partition lock held.
  *
- *  The oracle is ThreadSanitizer, because the race is a read of freed bytes rather than a wrong answer.
- *  A walker crossing the eraser breaks off wherever the churn leaves it, so how far the threaded walks
- *  get is not a number this can pin; the walk after the join is, and it is asserted exactly.
+ *  The oracle is ThreadSanitizer, because the race is a read of freed bytes rather than a wrong
+ *  answer. A walker crossing the eraser breaks off wherever the churn leaves it, so how far the
+ *  threaded walks get is not a number this can pin; the walk after the join is, and it is
+ *  asserted exactly.
  */
 template <typename container_type_>
 void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::size_t rounds = 200) {
@@ -291,16 +293,17 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
 }
 
 /**
- *  @brief The scratch storage a partition array is assembled in must be aligned, and must be emptied.
+ *  @brief The scratch storage a partition array is assembled in must be aligned, and must
+ *      be emptied.
  *
- *  Partitions and their transactions are placement-new'd into a local buffer and then moved into the
- *  array that gets returned. The buffer is raw storage the builder owns, so every element it built it
- *  has to destroy - a moved-from element still has a destructor - and the buffer has to be aligned for
- *  the element rather than for @c char.
+ *  Partitions and their transactions are placement-new'd into a local buffer and then moved into
+ *  the array that gets returned. The buffer is raw storage the builder owns, so every element it
+ *  built it has to destroy - a moved-from element still has a destructor - and the buffer has to be
+ *  aligned for the element rather than for @c char.
  */
 inline void test_partition_array_leaves_no_scratch_behind() {
 
-    /** @brief The lifetime events the elements below report, owned by this call rather than the process. */
+    /** The lifetime events the elements below report, owned by this call rather than the process. */
     struct tally_t {
         std::size_t constructed = 0;
         std::size_t destructed = 0;
@@ -308,7 +311,7 @@ inline void test_partition_array_leaves_no_scratch_behind() {
     };
     tally_t tally;
 
-    /** @brief Counts its own lifetime events into the caller's tally, so a skipped destructor is arithmetic. */
+    /** Counts its own lifetime events into the caller's tally, so a skipped destructor is arithmetic. */
     struct counted_t {
         alignas(64) std::uint64_t payload = 0;
         tally_t &tally;
@@ -453,7 +456,7 @@ void test_sharded_stage_unwinds_on_partial_failure(std::size_t key_span = 64) {
     st_verify_eq_(container.size(), key_span);
 }
 
-/** @brief A comparator the caller must supply, since a container cannot manufacture one. */
+/** A comparator the caller must supply, since a container cannot manufacture one. */
 struct no_default_less_t {
     using is_transparent = void;
     int tag;
@@ -468,9 +471,9 @@ struct no_default_less_t {
 /**
  *  @brief The locked wrapper forwards construction, erase and conditional insert.
  *
- *  A comparator with no default constructor is the case that forced the forwarding form: a wrapper that
- *  manufactured its own would have to default-construct one, and the Python binding's comparator holds a
- *  function pointer that must come from the caller.
+ *  A comparator with no default constructor is the case that forced the forwarding form: a wrapper
+ *  that manufactured its own would have to default-construct one, and the Python binding's
+ *  comparator holds a function pointer that must come from the caller.
  */
 inline void test_locked_store_forwards_construction_and_writes() {
 
@@ -496,7 +499,7 @@ inline void test_locked_store_forwards_construction_and_writes() {
     st_verify_eq_(store.size(), 0u);
 }
 
-/** @brief What one reader thread saw, summed after the join rather than under an atomic. */
+/** What one reader thread saw, summed after the join rather than under an atomic. */
 struct commit_span_tally_t {
     std::size_t passes = 0;
     std::size_t torn = 0;
@@ -505,7 +508,7 @@ struct commit_span_tally_t {
     std::size_t missing = 0;
 };
 
-/** @brief One pass over every key: what the first key held, and each way the pass went wrong. */
+/** One pass over every key: what the first key held, and each way the pass went wrong. */
 struct commit_span_sweep_t {
     std::size_t first_value = 0;
     bool torn = false;
@@ -516,8 +519,8 @@ struct commit_span_sweep_t {
 /**
  *  @brief Reads every key once, reporting the first key's value and each way the pass went wrong.
  *
- *  Tearing and unrepeatability are independent: a pass whose keys disagreed still read the first key
- *  at some commit, and that value is what a second pass is compared against.
+ *  Tearing and unrepeatability are independent: a pass whose keys disagreed still read the first
+ *  key at some commit, and that value is what a second pass is compared against.
  */
 template <typename member_type_, typename reader_type_>
 static commit_span_sweep_t read_every_key(reader_type_ &reader, std::size_t keys_count) noexcept {
@@ -541,16 +544,16 @@ static commit_span_sweep_t read_every_key(reader_type_ &reader, std::size_t keys
  *  @brief Whether a reader crossing a commit that spans partitions sees all of it, or may see half.
  *
  *  A commit takes and releases one partition lock at a time, so its writes land one partition after
- *  another and a reader opening in the middle of the walk can catch half of them. What denies that is
- *  the stamp: the reader fixes one snapshot for every partition, the commit draws one stamp for every
- *  partition, and the watermark only moves once the last partition has been written. A part that
- *  keeps no stamp leaves a snapshot drawn per partition instead, which caps the shard set at
+ *  another and a reader opening in the middle of the walk can catch half of them. What denies that
+ *  is the stamp: the reader fixes one snapshot for every partition, the commit draws one stamp for
+ *  every partition, and the watermark only moves once the last partition has been written. A part
+ *  that keeps no stamp leaves a snapshot drawn per partition instead, which caps the shard set at
  *  @c read_committed_k and shows up here within a few rounds as two rounds read at once.
  *
  *  Readers loop until the writer has spent its rounds, so how many passes each takes is set by the
- *  scheduler and only the fact that one was taken can be asserted. Tearing is asserted from both sides
- *  out of those tallies; whether a pair of passes straddled a commit is not, so the licence a weaker
- *  rung carries is pinned by a schedule at the end instead.
+ *  scheduler and only the fact that one was taken can be asserted. Tearing is asserted from both
+ *  sides out of those tallies; whether a pair of passes straddled a commit is not, so the licence a
+ *  weaker rung carries is pinned by a schedule at the end instead.
  */
 template <typename container_type_>
 void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16, std::size_t rounds = 300) {
@@ -563,7 +566,8 @@ void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16,
         st_verify_(container.upsert(trivial_id_to_member<member_t>(identifier, 0)));
 
     std::atomic<bool> writing {true};
-    /** @brief Holds the writer until every reader is inside its loop, so the two provably overlap. */
+
+    /** Holds the writer until every reader is inside its loop, so the two provably overlap. */
     std::atomic<std::size_t> readers_ready {0};
     // One slot per reader, written only by its owner and read only after the join, so never atomic.
     std::vector<commit_span_tally_t> tallies(sharded_threads_count_k);
@@ -648,8 +652,8 @@ void test_commit_spans_partitions_matches_isolation(std::size_t keys_count = 16,
  *  @brief A commit that refuses must have published nothing, whichever partition refused.
  *
  *  A refusal is the caller's signal to retry, so a commit that refuses after publishing part of
- *  itself makes the retry apply that part twice. Several writers over one key set conflict on nearly
- *  every round here, which is what makes the refusals frequent enough to check.
+ *  itself makes the retry apply that part twice. Several writers over one key set conflict on
+ *  nearly every round here, which is what makes the refusals frequent enough to check.
  */
 template <typename container_type_>
 void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::size_t rounds = 60) {
@@ -735,9 +739,9 @@ void test_refused_commit_publishes_nothing(std::size_t keys_count = 128, std::si
  *
  *  The sharded enumeration takes one partition at a time rather than all of them, so a writer runs
  *  alongside it and the walk is not a snapshot. What it still owes the caller is that nothing which
- *  stayed put is missed or counted twice - a key's partition is fixed by its hash, so it can neither
- *  be moved ahead of the cursor nor behind it. The churned keys carry the other half of the promise:
- *  they may or may not turn up, and either answer is allowed, but never twice in one walk.
+ *  stayed put is missed or counted twice - a key's partition is fixed by its hash, so it can
+ *  neither be moved ahead of the cursor nor behind it. The churned keys carry the other half of the
+ *  promise: they may or may not turn up, and either answer is allowed, but never twice in one walk.
  */
 template <typename container_type_>
 void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count = 128, std::size_t churn_count = 128,
@@ -797,12 +801,13 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
 }
 
 /**
- *  @brief Pauses one comparison so a commit can be caught between drawing its stamp and publishing it.
+ *  @brief Pauses one comparison so a commit can be caught between drawing its stamp and
+ *      publishing it.
  *
- *  A commit's stamp holds the watermark down for every commit drawn after it, and the only injectable
- *  thing called between @c begin_commit and @c end_commit is the comparator the publish walk uses. So
- *  the gate lives here: whichever thread compares @c gated_key_k stops until it is let go, and its
- *  stamp stays in flight meanwhile.
+ *  A commit's stamp holds the watermark down for every commit drawn after it, and the only
+ *  injectable thing called between @c begin_commit and @c end_commit is the comparator the publish
+ *  walk uses. So the gate lives here: whichever thread compares @c gated_key_k stops until it is
+ *  let go, and its stamp stays in flight meanwhile.
  */
 struct publication_gate_t {
     static constexpr std::int64_t gated_key_k = 777;
@@ -830,7 +835,7 @@ struct publication_gate_t {
     }
 };
 
-/** @brief Orders keys as @c less_t does, and stops on the gated one so a commit can be held open. */
+/** Orders keys as @c less_t does, and stops on the gated one so a commit can be held open. */
 struct gated_less_t {
     using is_transparent = void;
     template <typename first_type_, typename second_type_>
@@ -843,10 +848,11 @@ struct gated_less_t {
 /**
  *  @brief A transaction opening after a commit returned must see that commit.
  *
- *  Serializability alone does not promise it: a commit drawn earlier and still writing itself out holds
- *  the watermark below the stamp just published, so a transaction opening afterwards can read at a
- *  snapshot that predates a commit which has already answered its caller. The gate makes that window
- *  deliberate rather than hoped for, by stopping an earlier commit inside its own publication.
+ *  Serializability alone does not promise it: a commit drawn earlier and still writing itself out
+ *  holds the watermark below the stamp just published, so a transaction opening afterwards can read
+ *  at a snapshot that predates a commit which has already answered its caller. The gate makes that
+ *  window deliberate rather than hoped for, by stopping an earlier commit inside its
+ *  own publication.
  */
 template <typename container_type_>
 void test_commit_is_visible_to_what_opens_after_it() {
@@ -939,18 +945,20 @@ void test_commit_is_visible_to_what_opens_after_it() {
 }
 
 /**
- *  @brief A window a sharded transaction read is validated at commit, where the level says reads are.
+ *  @brief A window a sharded transaction read is validated at commit, where the level says
+ *      reads are.
  *
  *  A partitioned transaction publishes only the partitions it marked, so an ordered read that seeds
  *  every partition and marks none files its window where the commit never looks. The key committed
- *  into that window is then missed by a store advertising the level whose whole point is catching it.
+ *  into that window is then missed by a store advertising the level whose whole point is
+ *  catching it.
  *
  *  Timeline:
- *    T1:  range(20, 80) over every partition  →  upsert(a key outside it)
+ *      T1:  range(20, 80) over every partition  →  upsert(a key outside it)
  *
- *    T2:  upsert(45), inside T1's window  →  stage()  →  commit()
+ *      T2:  upsert(45), inside T1's window  →  stage()  →  commit()
  *
- *    T1:  stage()  →  commit()  →  phantom from @c validated_reads_from_k up, lands below it
+ *      T1:  stage()  →  commit()  →  phantom from @c validated_reads_from_k up, lands below it
  */
 template <typename container_type_>
 void test_sharded_window_read_is_validated() {

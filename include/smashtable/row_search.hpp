@@ -1,27 +1,29 @@
 /**
- *  @brief Row searchers over ordered keys: one kit per microarchitecture, chosen once and then called directly.
- *    The rows themselves, and the keys in them, are @c row_layout.hpp .
- *  @author Ash Vardanian
  *  @file include/smashtable/row_search.hpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief Row searchers over ordered keys: one kit per microarchitecture, chosen once and then
+ *      called directly. The rows themselves, and the keys in them, are @c row_layout.hpp .
  *
  *  @section row_search_kits Kits
  *
- *  A kit is a struct of static @c count_below overloads, one per key type, each answering how many keys of a row
- *  order below a wanted key. For a sorted row that count is the lower bound, and counts of consecutive rows add up
- *  to a rank, so the answer serves an implicit B-tree, a B+ tree and a sorted leaf alike.
+ *  A kit is a struct of static @c count_below overloads, one per key type, each answering how many
+ *  keys of a row order below a wanted key. For a sorted row that count is the lower bound, and
+ *  counts of consecutive rows add up to a rank, so the answer serves an implicit B-tree, a B+ tree
+ *  and a sorted leaf alike.
  *
- *  Every kit the compiler can emit is compiled into the same artifact, each region under its own target attributes,
- *  so no global instruction-set flag is needed. @c detect_row_kit probes the processor, and @c visit_row_kit hands the
- *  chosen kit to a callback as a type: a structure instantiated over that type calls its kit directly, with no table
- *  and no branch per key.
+ *  Every kit the compiler can emit is compiled into the same artifact, each region under its own
+ *  target attributes, so no global instruction-set flag is needed. @c detect_row_kit probes the
+ *  processor, and @c visit_row_kit hands the chosen kit to a callback as a type: a structure
+ *  instantiated over that type calls its kit directly, with no table and no branch per key.
  *
  *  @section row_search_layout Row Layout
  *
- *  A row is a @c std::span whose extent is the row width: static where the medium fixes it, which lets the kit unroll
- *  its loop, and dynamic otherwise. A 16-byte key is @c key128_t, two big-endian words ordered as @c memcmp. Split rows
- *  keep high and low words in separate columns, so the low column is read only where a high word ties; interleaved
- *  rows keep whole @c key128_t pairs for containers that hand out keys.
+ *  A row is a @c std::span whose extent is the row width: static where the medium fixes it, which
+ *  lets the kit unroll its loop, and dynamic otherwise. A 16-byte key is @c key128_t, two
+ *  big-endian words ordered as @c memcmp. Split rows keep high and low words in separate columns,
+ *  so the low column is read only where a high word ties; interleaved rows keep whole @c key128_t
+ *  pairs for containers that hand out keys.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -76,10 +78,9 @@ enum class row_kit_t : std::uint8_t {
     return false;
 }
 
-/**
- *  Whether this build carries @p kit and the running processor and operating system can execute it.
- *  Probes the processor on every call, so a caller asks once, at open or construction, and keeps the answer.
- */
+/** Whether this build carries @p kit and the running processor and operating system can execute it.
+ *  Probes the processor on every call, so a caller asks once, at open or construction, and keeps
+ *  the answer. */
 #if ST_TARGET_X8664_ && (defined(__GNUC__) || defined(__clang__))
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     __builtin_cpu_init();
@@ -336,6 +337,9 @@ struct haswell_row_kit_t {
 #pragma GCC pop_options
 #endif
 #else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
+ * branches. */
 struct haswell_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::haswell_k;
     static constexpr bool compiled_k = false;
@@ -477,6 +481,9 @@ struct skylake_row_kit_t {
 #pragma GCC pop_options
 #endif
 #else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
+ * branches. */
 struct skylake_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::skylake_k;
     static constexpr bool compiled_k = false;
@@ -597,6 +604,9 @@ struct neon_row_kit_t {
 #pragma GCC pop_options
 #endif
 #else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
+ * branches. */
 struct neon_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::neon_k;
     static constexpr bool compiled_k = false;
@@ -715,6 +725,9 @@ struct sve_row_kit_t {
 #pragma GCC pop_options
 #endif
 #else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
+ * branches. */
 struct sve_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::sve_k;
     static constexpr bool compiled_k = false;
@@ -833,6 +846,9 @@ struct rvv_row_kit_t {
 #pragma clang attribute pop
 #endif
 #else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
+ * branches. */
 struct rvv_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::rvv_k;
     static constexpr bool compiled_k = false;
@@ -873,11 +889,12 @@ using native_row_kit_t = serial_row_kit_t;
 #endif
 
 /**
- *  Calls @p callback with an instance of the kit @p kit names, or of the serial kit when this build lacks it.
- *  The callback is instantiated once per compiled kit, so a structure it builds calls that kit with no dispatch.
+ *  Calls @p callback with an instance of the kit @p kit names, or of the serial kit when this build
+ *  lacks it. The callback is instantiated once per compiled kit, so a structure it builds calls
+ *  that kit with no dispatch.
  *
- *  @warning Visiting a kit the processor cannot run faults on its first search; pass a kit @c row_kit_supported
- *    accepted, such as the one @c detect_row_kit returns.
+ *  @warning Visiting a kit the processor cannot run faults on its first search; pass a kit
+ *      @c row_kit_supported accepted, such as the one @c detect_row_kit returns.
  */
 template <typename callback_type_>
 constexpr decltype(auto) visit_row_kit(row_kit_t kit, callback_type_ &&callback) noexcept {
@@ -935,10 +952,9 @@ template <row_kit row_kit_type_, std::size_t extent_>
     return successor == wanted ? high_words.size() : row_kit_type_::count_below(high_words, low_words, successor);
 }
 
-/**
- *  The lower bound of @p wanted in @p sorted of any length. A row of up to about 256 bytes of keys goes to the kit
- *  whole; a longer one is first narrowed to such a window by branchless halving. Exact only when @p sorted is sorted.
- */
+/** The lower bound of @p wanted in @p sorted of any length. A row of up to about 256 bytes of keys
+ *  goes to the kit whole; a longer one is first narrowed to such a window by branchless halving.
+ *  Exact only when @p sorted is sorted. */
 template <row_kit row_kit_type_, typename key_type_, std::size_t extent_>
     requires row_searchable_key<key_type_>
 [[nodiscard]] std::size_t count_below_sorted(std::span<key_type_ const, extent_> sorted,
@@ -974,10 +990,8 @@ template <row_kit row_kit_type_, std::size_t extent_>
     return low + row_kit_type_::count_below(high_words.subspan(low, length), low_words.subspan(low, length), wanted);
 }
 
-/**
- *  @brief The lower bound of @p wanted in the sorted row at @p row, laid out by @p format_type_ and
- *    searched by @p row_kit_type_.
- */
+/** The lower bound of @p wanted in the sorted row at @p row, laid out by @p format_type_ and searched by
+ *  @p row_kit_type_. */
 template <typename format_type_, row_kit row_kit_type_>
 [[nodiscard]] std::size_t count_below_in_row(typename format_type_::word_t const *row,
                                              typename format_type_::key_t wanted) noexcept {

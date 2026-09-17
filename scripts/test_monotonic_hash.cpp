@@ -1,13 +1,13 @@
 /**
+ *  @file scripts/test_monotonic_hash.cpp
+ *  @author Ash Vardanian
+ *  @date August 17, 2026
  *  @brief Test instantiations for the transactional store over an open-addressed hash table, which
  *      answers points rather than windows.
- *  @author Ash Vardanian
- *  @file scripts/test_monotonic_hash.cpp
- *  @date August 17, 2026
  *
- *  The point-access surface is all an unordered core supplies - insert, upsert, update, erase, find,
- *  watch and the two-phase commit - so there are no bounds, no ranges and no order statistics here.
- *  Around it run the commit-stamp, fixture-coverage and transactional-consistency families.
+ *  The point-access surface is all an unordered core supplies - insert, upsert, update, erase,
+ *  find, watch and the two-phase commit - so there are no bounds, no ranges and no order statistics
+ *  here. Around it run the commit-stamp, fixture-coverage and transactional-consistency families.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -32,41 +32,31 @@ namespace {
 
 #pragma region Type Aliases
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Baseline transactional correctness over the cheapest possible key
- */
+/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
+ *  Tests: Baseline transactional correctness over the cheapest possible key */
 using transactional_trivial_set_t = monotonic_hash_set<trivial_key_t>;
 
-/**
- *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✓
- *  Tests: Watch copy OOM, rollback with a heap-allocating key
- */
+/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
+ *  Transaction: ✓ Tests: Watch copy OOM, rollback with a heap-allocating key */
 using transactional_heavy_set_t = monotonic_hash_set<heavy_key_t>;
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
- *  Value: int | Tests: Transactional map operations, value overwrites
- */
+/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
+ *  Value: int | Tests: Transactional map operations, value overwrites */
 using transactional_trivial_map_t = monotonic_hash_map<trivial_key_t, int>;
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✓
- *  Value: guarded_payload_t | Tests: Rollback with non-trivial values
- */
+/** Heterogeneous lookup: ✗ | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction:
+ *  ✓ Value: guarded_payload_t | Tests: Rollback with non-trivial values */
 using transactional_composite_map_t = monotonic_hash_map<composite_key_t, guarded_payload_t>;
 
-/**
- *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✓
- *  Value: guarded_payload_t | Tests: Dual-heap staging and rollback
- */
+/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
+ *  Transaction: ✓ Value: guarded_payload_t | Tests: Dual-heap staging and rollback */
 using transactional_heavy_map_t = monotonic_hash_map<heavy_key_t, guarded_payload_t>;
 
 #pragma endregion Type Aliases
 
 #pragma region Helpers
 
-/** @brief Where @p member's key sits in @p keys, or one slot past the last where none of them is it. */
+/** Where @p member's key sits in @p keys, or one slot past the last where none of them is it. */
 template <typename member_type_, typename key_type_>
 static std::size_t key_slot(member_type_ const &member, std::vector<key_type_> const &keys) noexcept {
     for (std::size_t slot = 0; slot != keys.size(); ++slot)
@@ -78,7 +68,7 @@ static std::size_t key_slot(member_type_ const &member, std::vector<key_type_> c
 
 #pragma region Point Access Tests
 
-/** @brief Tests that the four insert strategies differ exactly as documented */
+/** Tests that the four insert strategies differ exactly as documented */
 template <typename container_type_>
 static void test_point_insert_strategies() {
 
@@ -103,7 +93,7 @@ static void test_point_insert_strategies() {
     st_verify_eq_(container.contains(trivial_id_to_key<member_t>(2)), false);
 }
 
-/** @brief Tests that an erase staged in a transaction only becomes visible on commit */
+/** Tests that an erase staged in a transaction only becomes visible on commit */
 template <typename container_type_>
 static void test_point_erase_visibility() {
 
@@ -131,7 +121,7 @@ static void test_point_erase_visibility() {
     }
 }
 
-/** @brief Tests that a rollback pulls every staged version back and leaves the store as it was */
+/** Tests that a rollback pulls every staged version back and leaves the store as it was */
 template <typename container_type_>
 static void test_point_rollback_restores_store() {
 
@@ -159,7 +149,7 @@ static void test_point_rollback_restores_store() {
     st_verify_eq_(container.size(), 5);
 }
 
-/** @brief Tests that staging enough keys to outgrow the slab several times loses none of them */
+/** Tests that staging enough keys to outgrow the slab several times loses none of them */
 template <typename container_type_>
 static void test_point_staging_survives_growth(std::size_t size = 500) {
 
@@ -180,7 +170,7 @@ static void test_point_staging_survives_growth(std::size_t size = 500) {
     }
 }
 
-/** @brief Tests that the unordered walk reports every member once, over a store and over a transaction */
+/** Tests that the unordered walk reports every member once, over a store and over a transaction */
 template <typename container_type_>
 static void test_point_enumeration_visits_every_member() {
 
@@ -345,12 +335,12 @@ static void transactional_consistency_fractured_read_prevention() {
     test_fractured_read_prevention<transactional_heavy_map_t>();
 }
 
-/** @brief Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
+/** Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
 static void transactional_consistency_sequential_updates_never_regress() {
     test_sequential_updates_never_regress<transactional_trivial_map_t>();
 }
 
-/** @brief Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
+/** Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
 static void transactional_consistency_transaction_commits_maintain_order() {
     test_transaction_commits_maintain_order<transactional_trivial_map_t>();
 }
@@ -557,8 +547,8 @@ static void transactional_consistency_group_unwinds_every_participant_on_conflic
 /**
  *  @brief A capacity hint reaches the slab the table grows, rather than being swallowed.
  *
- *  The ledger is what makes the difference observable: a hint that is honoured asks the allocator for
- *  a slab before any element is written, and a hint that is merely accepted asks for nothing.
+ *  The ledger is what makes the difference observable: a hint that is honoured asks the allocator
+ *  for a slab before any element is written, and a hint that is merely accepted asks for nothing.
  */
 static void test_reserve_reaches_the_slab() {
     using member_t = mapping<trivial_key_t, int>;

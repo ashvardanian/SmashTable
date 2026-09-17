@@ -13,7 +13,8 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 ## What's Inside
 
 ```bash
-  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash
+  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring
+  immutable_*        → built once from sorted keys   B-tree · S+ tree
   atomic_*           → pinned, GPU-capable        hash
        ↑ ::adopt() moves one allocation between the two, no rehash, no copy
 
@@ -37,6 +38,10 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `basic_avl_tree`            | …                       |  one thread   |      …       |         ✔         |
 | `basic_wb_tree`             | …                       |  one thread   |      …       | `rank` · `select` |
 | `basic_hash_table`          | …                       |  one thread   |      …       |         …         |
+| `basic_flat_set`            | …                       |  one thread   |      …       |         ✔         |
+| `basic_ring`                | …                       |  one thread   |      …       |         …         |
+| `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
+| `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
 | `atomic_hash_table`         | … ⁴                     |  per slot ⁴   |      …       |         …         |
 | `monotonic_store`           | Monotonic Atomic View ⁶ |  one thread   |      ✔       |     inherits      |
 | `snapshot_store`            | Snapshot ⁷              |  one thread   |      ✔       |    inherits ²     |
@@ -57,6 +62,7 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 > ⁷ Refuses both; permits [write skew](https://jepsen.io/consistency/phenomena/a5b), since a read you did not `watch` is not validated.
 > ⁸ Refuses write skew and phantoms too: every key and window read is re-checked at commit.
 > ⁹ Same refusals as ⁸; [strict](https://jepsen.io/consistency/models/strict-serializable) also waits for its own publication, so a transaction opening after a commit cannot precede it — which changes only sharded commits and writes outside a transaction.
+> ¹⁰ Built once from a span of sorted keys and never written again, so there is nothing to synchronize and any number of threads may read one at once.
 
 The ladder runs from [Read Committed](https://jepsen.io/consistency/models/read-committed) through [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) and [Snapshot Isolation](https://jepsen.io/consistency/models/snapshot-isolation) to the two serializable rungs, and every level from Monotonic Atomic View upward is delivered by [multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control): a key keeps one version per commit that touched it, a reader is answered from the newest version its own snapshot can name, and versions below the oldest live reader are reclaimed.
 
@@ -427,7 +433,13 @@ Headers group as:
     ├─ basic_vector<T, Alloc>
     ├─ basic_avl_tree<T, Comparator, Alloc>
     ├─ basic_wb_tree<T, Comparator, Alloc>          # also `rank` and `select`
-    └─ basic_hash_table<T, Hash, Equals, Alloc>     # grows, iterates, rehashes
+    ├─ basic_hash_table<T, Hash, Equals, Alloc>     # grows, iterates, rehashes
+    ├─ basic_flat_set<T, Comparator, Kit, Alloc>    # sorted, one allocation, searched a row at a time
+    └─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
+
+  Immutable, built once from sorted keys
+    ├─ immutable_b_tree<Key, KeysPerRow, Kit, Alloc>     # keys on every level
+    └─ immutable_splus_tree<Key, KeysPerRow, Kit, Alloc> # every key in the leaves, separators above
 
   atomic_*              → Pinned core. Fixed capacity, atomic per slot, callback reads.
     └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
@@ -489,6 +501,49 @@ Storing sizes buys __order statistics__: `select(k)` finds the k-th smallest and
 That is what pagination, percentiles and quantiles need, and it is the one thing the AVL tree cannot offer.
 
 Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amortized rotations per update.
+
+### Row-Searched Layouts
+
+> `smashtable/row_layout.hpp` · `smashtable/row_search.hpp`
+
+Four containers search sorted keys a __row__ at a time rather than a key at a time.
+A row is a span wide enough to be worth one vectorized pass — 512 bytes by default, which is `default_row_bytes_k`.
+`row_layout.hpp` says what a key may be and where each one sits in a row; `row_search.hpp` says how a row is searched.
+
+Every kit the compiler can emit is compiled into the same artifact, each under its own target attributes, so no global instruction-set flag is needed.
+`detect_row_kit()` probes the processor once and `visit_row_kit` hands the answer over as a __type__, so a container instantiated over it calls its kit with no table and no branch per key.
+
+```cpp
+visit_row_kit(detect_row_kit(), [&](auto kit) {
+    using tree_t = immutable_b_tree<std::uint64_t, 64, decltype(kit)>;
+    // …built once, then read from any number of threads
+});
+```
+
+Keys may be 32- or 64-bit of either signedness, or 16 bytes ordered as `memcmp`.
+A 16-byte key is stored either interleaved or split into a column of high words and a column of low words, the low column read only where a high word ties.
+
+### Flat Sets and Rings
+
+> `smashtable/basic_flat_set.hpp` · `smashtable/basic_ring.hpp`
+
+`basic_flat_set` is an ordered set in one contiguous allocation, growable and allocator-aware like `basic_avl_tree`, differing only in where elements live.
+Inserting and erasing shift the tail, so it suits a few hundred elements rather than millions, in exchange for a search that reads adjacent memory and allocates nothing.
+
+`basic_ring` is a first-in first-out queue over one allocation whose capacity is a power of two fixed at `make`, for batching and read-ahead.
+Two 32-bit counters of pushes and pops wrap together, so their difference is the size and a full ring is told from an empty one without a spare slot.
+
+### Immutable Trees
+
+> `smashtable/immutable_b_tree.hpp` · `smashtable/immutable_splus_tree.hpp`
+
+Both are built once from a span of sorted keys and never written again, so any number of threads may read one at once with no synchronization at all.
+
+`immutable_b_tree` stores nodes breadth-first with implicit children: node `i` holds one row of `B` keys and its children are nodes `i*(B+1)+j+1`.
+A lookup reads one row per level and the rank adds up as the descent goes, with no subtree sizes stored.
+
+`immutable_splus_tree` keeps every key in sorted leaves and copies separators onto the levels above.
+A lookup lands on the leaf whose position __is__ the rank, so `select` is an index into the leaves.
 
 ### Transactional Stores
 

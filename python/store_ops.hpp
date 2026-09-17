@@ -1,8 +1,8 @@
 /**
- *  @brief Turns one store instantiation into a @c store_ops_t table of function pointers.
- *  @author Ash Vardanian
  *  @file python/store_ops.hpp
+ *  @author Ash Vardanian
  *  @date August 18, 2026
+ *  @brief Turns one store instantiation into a @c store_ops_t table of function pointers.
  *
  *  Every operation the binding performs on a store passes through here exactly once, at compile time.
  *  The bridge is what lets @c container.cpp name no concrete store: it resolves the callback-shaped,
@@ -28,10 +28,12 @@ namespace ashvardanian::smashtable::py {
 #pragma region Bridge
 
 /**
- *  @brief Deep-copies @p source into @p target, answering why it could not rather than half writing it.
+ *  @brief Deep-copies @p source into @p target, answering why it could not rather than half
+ *      writing it.
  *
- *  The assigning counterpart to @c copy_safely, for the callbacks a store hands elements to: those are
- *  @c noexcept and return @c void, so a failed copy has nowhere to go but a status the caller reads after.
+ *  The assigning counterpart to @c copy_safely, for the callbacks a store hands elements to: those
+ *  are @c noexcept and return @c void, so a failed copy has nowhere to go but a status the caller
+ *  reads after.
  */
 template <typename target_type_, typename source_type_>
 static status_t copy_into(target_type_ &target, source_type_ const &source) noexcept {
@@ -45,7 +47,7 @@ static status_t copy_into(target_type_ &target, source_type_ const &source) noex
  *  @brief One store type's whole @c store_ops_t table, generated member by member.
  *
  *  @tparam store_type_ A fully wrapped store - a core, inside an isolation level, inside a sharing
- *    strategy - whose transactions the binding drives.
+ *      strategy - whose transactions the binding drives.
  */
 template <typename store_type_>
 struct store_bridge {
@@ -54,15 +56,16 @@ struct store_bridge {
     using transaction_t = typename store_t::transaction_t;
     using value_t = typename store_t::value_t;
 
-    /** @brief Whether elements carry a mapped value, which decides map-versus-set at every shared site. */
+    /** Whether elements carry a mapped value, which decides map-versus-set at every shared site. */
     static constexpr bool associative_k = is_mapping<value_t>;
-    /** @brief Whether a partition hash routes the keys, which is what distinguishes the two sharings. */
+
+    /** Whether a partition hash routes the keys, which is what distinguishes the two sharings. */
     static constexpr bool partitioned_k = requires { typename store_t::hash_t; };
 
-    /** @brief Whether the core can hand back every element, which the collector's traversal needs. */
+    /** Whether the core can hand back every element, which the collector's traversal needs. */
     static constexpr bool enumerable_k = requires(store_t const &store) { store.for_each(no_op_t {}); };
 
-    /** @brief Whether the core orders its keys, which is what the ordered slots rest on. */
+    /** Whether the core orders its keys, which is what the ordered slots rest on. */
     static constexpr bool ordered_k =
         requires(store_t &store, key_variant_t const &key) { store.lower_bound(key, no_op_t {}, no_op_t {}); };
 
@@ -71,7 +74,7 @@ struct store_bridge {
         return *static_cast<transaction_t *>(transaction);
     }
 
-    /** @brief Builds the element a write stores, which is a pair for a map and the key alone for a set. */
+    /** Builds the element a write stores, which is a pair for a map and the key alone for a set. */
     static value_t element_of(key_variant_t &&key, value_variant_t *value) noexcept {
         if constexpr (associative_k) {
             assert(value && "a map write needs a value");
@@ -86,11 +89,13 @@ struct store_bridge {
 #pragma region Lifetime
 
     /**
-     *  @brief Builds @p object_type_ in storage CPython owns, so the binding's allocations are accounted
-     *    for by the same allocator every Python object uses and appear in @c tracemalloc.
+     *  @brief Builds @p object_type_ in storage CPython owns, so the binding's allocations are
+     *      accounted for by the same allocator every Python object uses and appear in
+     *      @c tracemalloc.
      *
-     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t, which the assertion below
-     *    pins - an over-aligned store would otherwise be constructed on a boundary it did not ask for.
+     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t, which the
+     *  assertion below pins - an over-aligned store would otherwise be constructed on a boundary it
+     *  did not ask for.
      */
     template <typename object_type_, typename... arguments_type_>
     [[nodiscard]] static object_type_ *own_in_python_storage(arguments_type_ &&...arguments) noexcept {
@@ -101,7 +106,7 @@ struct store_bridge {
         return std::construct_at(static_cast<object_type_ *>(raw), std::forward<arguments_type_>(arguments)...);
     }
 
-    /** @brief Destroys and returns what @c own_in_python_storage handed out, tolerating a null. */
+    /** Destroys and returns what @c own_in_python_storage handed out, tolerating a null. */
     template <typename object_type_>
     static void release_python_storage(void *owned) noexcept {
         if (!owned) return;
@@ -114,9 +119,9 @@ struct store_bridge {
      *
      *  The one place that strategy shows through: a partitioned store routes keys by hash and needs
      *  one, a locked store forwards what its core takes, and neither default-constructs because
-     *  @c key_less_t has no default constructor. An ordered core takes the comparator chosen for this
-     *  layout and an unordered one the equality, while the hash is the same stateless visit either
-     *  way, since an unordered core builds its own and takes no seed.
+     *  @c key_less_t has no default constructor. An ordered core takes the comparator chosen for
+     *  this layout and an unordered one the equality, while the hash is the same stateless visit
+     *  either way, since an unordered core builds its own and takes no seed.
      */
     static auto built_core(key_ops_t const *ops) noexcept {
         if constexpr (ordered_k) {
@@ -132,9 +137,9 @@ struct store_bridge {
     /**
      *  @brief Puts a built core on the heap, handing back the pointer @c destroy owns.
      *
-     *  The probe in @c built_core asks for the member type rather than trying the call, since a store
-     *  forwarding its arguments variadically accepts every signature at the declaration and refuses
-     *  only inside the body, where a @c requires expression cannot see.
+     *  The probe in @c built_core asks for the member type rather than trying the call, since a
+     *  store forwarding its arguments variadically accepts every signature at the declaration and
+     *  refuses only inside the body, where a @c requires expression cannot see.
      */
     static expected<void *> make(key_ops_t const *ops) noexcept {
         auto built = built_core(ops);
@@ -224,7 +229,7 @@ struct store_bridge {
         else return expected<entry_t> {entry_t {std::move(*taken)}, success_k};
     }
 
-    /** @brief Runs one algebra, dispatching the compile-time parameter from the runtime request. */
+    /** Runs one algebra, dispatching the compile-time parameter from the runtime request. */
     static status_t set_algebra(releases_t &releases, void *first, void *second, void *result,
                                 algebra_t algebra) noexcept
         requires(!associative_k)
@@ -294,8 +299,9 @@ struct store_bridge {
     /**
      *  @brief Walks the window @p lower and @p upper name, whichever ends they leave open.
      *
-     *  Four named calls rather than one taking a bound that stands for "no bound", because that is how
-     *  the engine spells it and there is no greatest key the text layouts could close an open end with.
+     *  Four named calls rather than one taking a bound that stands for "no bound", because that is
+     *  how the engine spells it and there is no greatest key the text layouts could close an open
+     *  end with.
      */
     template <typename readable_type_, typename callback_type_>
     static status_t walk_window(readable_type_ &self, key_variant_t const *lower, key_variant_t const *upper,
@@ -306,7 +312,7 @@ struct store_bridge {
         return self.for_each(step);
     }
 
-    /** @brief Erases the window @p lower and @p upper name, on the same four terms @c walk_window reads it. */
+    /** Erases the window @p lower and @p upper name, on the same four terms @c walk_window reads it. */
     template <typename writable_type_>
     static status_t erase_window(writable_type_ &self, key_variant_t const *lower,
                                  key_variant_t const *upper) noexcept {
@@ -319,11 +325,12 @@ struct store_bridge {
     /**
      *  @brief Collects the half-open window, which is the read a phantom is detected against.
      *
-     *  Which walk answers depends on which ends are named, because each records a different read and
-     *  the level is validated against exactly what was recorded: a closed window records that window,
-     *  an open end records one running to that end of the keyspace, and a window with no ends at all is
-     *  the whole keyspace and says so. Each is one store call, so the window a commit is validated
-     *  against is the one the caller asked for rather than one this layer chose.
+     *  Which walk answers depends on which ends are named, because each records a different read
+     *  and the level is validated against exactly what was recorded: a closed window records that
+     *  window, an open end records one running to that end of the keyspace, and a window with no
+     *  ends at all is the whole keyspace and says so. Each is one store call, so the window a
+     *  commit is validated against is the one the caller asked for rather than one this
+     *  layer chose.
      */
     static status_t collect_window(transaction_t &self, key_variant_t const *lower, key_variant_t const *upper,
                                    std::size_t limit, basic_vector<entry_t> &collected) noexcept
@@ -345,8 +352,8 @@ struct store_bridge {
     /**
      *  @brief Collects the half-open window in one span, through a transaction opened for the walk.
      *
-     *  The store wrappers carry no half-open walk, and one transaction answers all four window shapes
-     *  alike; this one is read-only and unwinds rather than commits.
+     *  The store wrappers carry no half-open walk, and one transaction answers all four window
+     *  shapes alike; this one is read-only and unwinds rather than commits.
      */
     static status_t store_scan(releases_t &releases, void *store, key_variant_t const *lower,
                                key_variant_t const *upper, std::size_t limit, basic_vector<entry_t> &collected) noexcept
@@ -382,7 +389,7 @@ struct store_bridge {
 
     static cursor_t &cursor_of(void *cursor) noexcept { return *static_cast<cursor_t *>(cursor); }
 
-    /** @brief Opens the walk the pair of bounds names; a null bound is unbounded on that side. */
+    /** Opens the walk the pair of bounds names; a null bound is unbounded on that side. */
     static cursor_t opened_cursor(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept
         requires ordered_k
     {
@@ -412,8 +419,8 @@ struct store_bridge {
      *  @brief Takes one step, answering whether a member was handed over or why it could not be.
      *
      *  Both halves are copied through the reporting form rather than assigned: a text key or a text
-     *  value allocates, and a throwing copy inside this @c noexcept step would end the process rather
-     *  than the walk.
+     *  value allocates, and a throwing copy inside this @c noexcept step would end the process
+     *  rather than the walk.
      */
     static expected<cursor_step_t> cursor_next(void *cursor, key_variant_t &key, value_variant_t *value) noexcept
         requires ordered_k
@@ -477,7 +484,7 @@ struct store_bridge {
         return transaction_of(transaction).watch(key);
     }
 
-    /** @brief Copies one element into @p into, reporting what the copy could not do. */
+    /** Copies one element into @p into, reporting what the copy could not do. */
     static status_t collect(value_t const &element, basic_vector<entry_t> &into) noexcept {
         auto key = mapping_key_or_itself<value_t>(element).copy();
         if (!key) return key.status();
@@ -491,7 +498,7 @@ struct store_bridge {
         return into.push_back(std::move(taken));
     }
 
-    /** @brief Collects the half-open window from a transaction the caller owns. */
+    /** Collects the half-open window from a transaction the caller owns. */
     static status_t transaction_scan(releases_t &releases, void *transaction, key_variant_t const *lower,
                                      key_variant_t const *upper, std::size_t limit,
                                      basic_vector<entry_t> &collected) noexcept
@@ -501,11 +508,9 @@ struct store_bridge {
         return collect_window(transaction_of(transaction), lower, upper, limit, collected);
     }
 
-    /**
-     *  @brief Stages a tombstone for every member of that same window.
-     *    One engine call per shape, so the read a commit is validated against is the one the window
-     *    named - and a window with no ends at all is the whole store, which @c clear answers for.
-     */
+    /** Stages a tombstone for every member of that same window. One engine call per shape, so the read a commit is
+     *  validated against is the one the window named - and a window with no ends at all is the whole store, which
+     *  @c clear answers for. */
     static status_t transaction_erase_range(releases_t &releases, void *transaction, key_variant_t const *lower,
                                             key_variant_t const *upper) noexcept
         requires ordered_k
@@ -514,11 +519,9 @@ struct store_bridge {
         return erase_window(transaction_of(transaction), lower, upper);
     }
 
-    /**
-     *  @brief Forwards one argument-free lifecycle call with the container's release ledger held.
-     *    The whole family differs only in which member it names, so the member is the parameter and
-     *    the return type follows it - @c publish_under answers nothing and the rest a @c status_t.
-     */
+    /** Forwards one argument-free lifecycle call with the container's release ledger held. The whole family differs
+     *  only in which member it names, so the member is the parameter and the return type follows it -
+     *  @c publish_under answers nothing and the rest a @c status_t. */
     template <auto member_>
     static auto transaction_lifecycle(releases_t &releases, void *transaction) noexcept {
         shared_lock deferral {releases};
@@ -548,7 +551,7 @@ struct store_bridge {
 
 #pragma endregion Transactions
 
-    /** @brief The whole table, with every slot a core cannot supply left null. */
+    /** The whole table, with every slot a core cannot supply left null. */
     static constexpr store_ops_t table() noexcept {
         store_ops_t built {};
         built.isolation_name = isolation_name_of(store_t::isolation_k);

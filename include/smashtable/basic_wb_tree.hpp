@@ -1,17 +1,18 @@
 /**
- *  @brief Weight-balanced tree with order statistics support. Size-balanced alternative to AVL trees, enabling O(log n)
- *      @c select and @c rank operations.
- *  @author Ash Vardanian
  *  @file include/smashtable/basic_wb_tree.hpp
+ *  @author Ash Vardanian
  *  @date October 24, 2025
+ *  @brief Weight-balanced tree with order statistics support. Size-balanced alternative to AVL
+ *      trees, enabling O(log n) @c select and @c rank operations.
  *
  *  @section basic_wb_tree_weight_balanced_trees Weight-Balanced Trees
  *
- *  Weight-balanced trees maintain balance based on subtree sizes rather than heights. Rebalancing uses parameters
- *  Δ=3 and Γ=2, which are the only proven integer solution (Hirai & Yamamoto, 2011).
+ *  Weight-balanced trees maintain balance based on subtree sizes rather than heights. Rebalancing
+ *  uses parameters Δ=3 and Γ=2, which are the only proven integer solution (Hirai &
+ *  Yamamoto, 2011).
  *
- *  Balance invariant: for every node, weight(left) ≤ Δ × weight(right) AND weight(right) ≤ Δ × weight(left),
- *  where weight is size+1.
+ *  Balance invariant: for every node, weight(left) ≤ Δ × weight(right) AND weight(right) ≤ Δ ×
+ *  weight(left), where weight is size+1.
  *
  *  @section basic_wb_tree_order_statistics Order Statistics
  *
@@ -21,9 +22,10 @@
  *
  *  Use cases: pagination (OFFSET/LIMIT), percentiles, window functions, quantile estimation.
  *
- *  A wrapper that answers for only some of the stored entries supplies an augmentation policy, and the tree
- *  keeps a second subtree count over that predicate - @c select_augmented and @c rank_augmented descend on it
- *  in O(log n). An unaugmented tree keeps neither the field nor the work.
+ *  A wrapper that answers for only some of the stored entries supplies an augmentation policy, and
+ *  the tree keeps a second subtree count over that predicate - @c select_augmented and
+ *  @c rank_augmented descend on it in O(log n). An unaugmented tree keeps neither the field nor
+ *  the work.
  *
  *  @section basic_wb_tree_performance Performance
  *
@@ -45,31 +47,30 @@ namespace ashvardanian::smashtable {
 
 #pragma region Augmentation Policies
 
-/**
- *  @brief Marks a tree that keeps only @c size, leaving nodes byte-identical to an unaugmented build.
- */
+/** Marks a tree that keeps only @c size, leaving nodes byte-identical to an unaugmented build. */
 struct no_augmentation_t {};
 
 /**
  *  @brief Contract a wrapper satisfies to keep a second subtree count beside @c size.
  *
- *  @c augmented_count reads the entry and returns 0 or 1. The tree recomputes it from the entry alone on
- *  every rotation, join, and split, so a predicate that depends on anything else - a sibling entry, a
- *  global stamp - has to be materialized into the entry by the wrapper before the tree can aggregate it.
+ *  @c augmented_count reads the entry and returns 0 or 1. The tree recomputes it from the entry
+ *  alone on every rotation, join, and split, so a predicate that depends on anything else - a
+ *  sibling entry, a global stamp - has to be materialized into the entry by the wrapper before the
+ *  tree can aggregate it.
  */
 template <typename augmentation_type_, typename value_type_>
 concept wb_augmentation = requires(value_type_ const &fruit) {
     { augmentation_type_::augmented_count(fruit) } -> std::convertible_to<std::size_t>;
 };
 
-/** @brief Stand-in for the augmented counter in an unaugmented tree, occupying no bytes. */
+/** Stand-in for the augmented counter in an unaugmented tree, occupying no bytes. */
 struct no_augmented_count_t {};
 
 #pragma endregion Augmentation Policies
 
 /**
- *  @brief Node for weight-balanced binary search tree.
- *    Stores subtree size for O(log n) order statistics and O(1) amortized rebalancing.
+ *  @brief Node for weight-balanced binary search tree. Stores subtree size for O(log n) order
+ *      statistics and O(1) amortized rebalancing.
  *
  *  @tparam value_type_ Type of elements stored in nodes.
  *  @tparam comparator_type_ Comparator defining ordering. For heterogeneous lookups, define:
@@ -77,27 +78,28 @@ struct no_augmented_count_t {};
  *
  *  @section basic_wb_tree_rebalancing_parameters Rebalancing Parameters
  *
- *  Δ=3: Rotation threshold. Rebalance if weight(left) > 3×weight(right) or vice versa, with weight = size+1.
- *  Γ=2: Rotation type selector. Single rotation if weight(heavy.inner) < 2×weight(heavy.outer).
+ *  Δ=3: Rotation threshold. Rebalance if weight(left) > 3×weight(right) or vice versa, with weight
+ *  = size+1. Γ=2: Rotation type selector. Single rotation if weight(heavy.inner)
+ *  < 2×weight(heavy.outer).
  *
- *  These are the @b only valid integer parameters, proven in Coq by Hirai and Yamamoto in 2011, and are
- *  exposed as @c delta_k and @c gamma_k.
+ *  These are the @b only valid integer parameters, proven in Coq by Hirai and Yamamoto in 2011, and
+ *  are exposed as @c delta_k and @c gamma_k.
  *
- *  Layout: @c fruit is the stored entry, @c left and @c right the links, and @c size the number of nodes
- *  in the subtree rooted here - invariant @c size @c = @c 1 @c + @c size(left) @c + @c size(right), which
- *  is what makes @c select and @c rank logarithmic.
+ *  Layout: @c fruit is the stored entry, @c left and @c right the links, and @c size the number of
+ *  nodes in the subtree rooted here - invariant @c size @c = @c 1 @c + @c size(left) @c +
+ *  @c size(right), which is what makes @c select and @c rank logarithmic.
  *
- *  @tparam augmentation_type_ Policy carrying a second per-subtree count, kept over a predicate of the
- *    wrapper's choosing. The default @c no_augmentation_t adds no field and no work.
+ *  @tparam augmentation_type_ Policy carrying a second per-subtree count, kept over a predicate of
+ *      the wrapper's choosing. The default @c no_augmentation_t adds no field and no work.
  *
  *  @section basic_wb_tree_augmentation Augmentation
  *
  *  An augmented tree keeps @c augmented_size next to @c size, holding the number of entries in the
- *  subtree for which @c augmentation_type_::augmented_count returns 1. Because that count is read off the
- *  entry, every rotation, join, and split restores it from the moved node's own entry and its two children.
- *  An entry whose count flips while it sits in the tree is repaired by @c refresh_augmentation, which
- *  rewalks only the root-to-entry path and may be called any number of times per write - one wrapper
- *  operation is free to retag several entries.
+ *  subtree for which @c augmentation_type_::augmented_count returns 1. Because that count is read
+ *  off the entry, every rotation, join, and split restores it from the moved node's own entry and
+ *  its two children. An entry whose count flips while it sits in the tree is repaired by
+ *  @c refresh_augmentation, which rewalks only the root-to-entry path and may be called any number
+ *  of times per write - one wrapper operation is free to retag several entries.
  */
 template <typename value_type_, typename comparator_type_, typename augmentation_type_ = no_augmentation_t>
 class basic_wb_node {
@@ -108,12 +110,12 @@ class basic_wb_node {
     using size_t = std::size_t;
     using node_t = basic_wb_node;
 
-    /** @brief True when a second count is maintained, which is what gates every augmented code path. */
+    /** True when a second count is maintained, which is what gates every augmented code path. */
     static constexpr bool is_augmented_k = !std::is_same_v<augmentation_t, no_augmentation_t>;
     static_assert(!is_augmented_k || wb_augmentation<augmentation_t, value_t>,
                   "An augmentation policy must expose `static std::size_t augmented_count(value_t const &)`");
 
-    /** @brief The augmented counter, degenerating to an empty type when no augmentation is asked for. */
+    /** The augmented counter, degenerating to an empty type when no augmentation is asked for. */
     using augmented_count_t = std::conditional_t<is_augmented_k, std::size_t, no_augmented_count_t>;
 
     value_t fruit;
@@ -129,13 +131,13 @@ class basic_wb_node {
 
     static size_t get_size(node_t *node) noexcept { return node ? node->size : 0; }
 
-    /** @brief Number of entries in the subtree rooted at @p node that the policy counts. */
+    /** Number of entries in the subtree rooted at @p node that the policy counts. */
     static size_t get_augmented_size(node_t *node) noexcept {
         if constexpr (is_augmented_k) return node ? node->augmented_size : 0;
         else return 0;
     }
 
-    /** @brief The entry's own contribution to the augmented count, 0 or 1. */
+    /** The entry's own contribution to the augmented count, 0 or 1. */
     static size_t get_own_augmented_count(node_t *node) noexcept {
         if constexpr (is_augmented_k) return augmentation_t::augmented_count(node->fruit);
         else return 0;
@@ -271,11 +273,10 @@ class basic_wb_node {
      *  @param[in] comparator Comparator instance.
      *  @return Pointer to k-th node, or nullptr if k >= size.
      *
-     *  @par Complexity
-     *  O(log n) expected, where n = size(node).
+     *  @par Complexity O(log n) expected, where n = size(node).
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto median = select(root, size/2, comp);  // Find median
      *  auto q1 = select(root, size/4, comp);      // First quartile
      *  @endcode
@@ -296,11 +297,10 @@ class basic_wb_node {
      *  @param[in] comparator Comparator instance.
      *  @return Number of elements < comparable. If element exists, this is its 0-based index.
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto position = rank(root, value, comp);
      *  // position elements are smaller than value
      *  // If value exists, it's at index position
@@ -330,8 +330,8 @@ class basic_wb_node {
      *  @param[in] k Index among counted entries, 0 for the smallest.
      *  @return Pointer to the k-th counted node, or nullptr when fewer than k+1 are counted.
      *
-     *  @par Complexity
-     *  O(log n), following one root-to-node path and reading only the stored counts.
+     *  @par Complexity O(log n), following one root-to-node path and reading only the
+     *      stored counts.
      */
     static node_t *select_augmented(node_t *node, size_t k) noexcept {
         while (node) {
@@ -355,8 +355,7 @@ class basic_wb_node {
      *  @param[in] comparable Key to find the augmented rank of.
      *  @param[in] comparator Comparator instance.
      *
-     *  @par Complexity
-     *  O(log n).
+     *  @par Complexity O(log n).
      */
     template <typename comparable_type_>
     static size_t rank_augmented(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
@@ -373,11 +372,11 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Repairs the augmented counts on the path to @p comparable after its predicate flipped.
+     *  @brief Repairs the augmented counts on the path to @p comparable after its
+     *      predicate flipped.
      *  @return True when the entry was found, which is when anything was repaired.
      *
-     *  @par Complexity
-     *  O(log n), touching only the ancestors whose counts could have moved.
+     *  @par Complexity O(log n), touching only the ancestors whose counts could have moved.
      */
     template <typename comparable_type_>
     static bool refresh_augmentation(node_t *node, comparable_type_ &&comparable,
@@ -396,8 +395,8 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief In-order traversal (left-root-right) with callback.
-     *    Visits nodes in sorted order according to comparator.
+     *  @brief In-order traversal (left-root-right) with callback. Visits nodes in sorted order
+     *      according to comparator.
      *
      *  @param[in] node Root of subtree to traverse.
      *  @param[in] callback Callback to invoke for each node. Must be @c noexcept.
@@ -413,7 +412,7 @@ class basic_wb_node {
 
     /**
      *  @brief Finds all nodes in the half-open range [low, high) and invokes callback for each.
-     *    Recursively traverses the tree, visiting only nodes within the specified range.
+     *      Recursively traverses the tree, visiting only nodes within the specified range.
      *
      *  @param[in] node Root of subtree to search.
      *  @param[in] low Lower bound of range (inclusive).
@@ -448,20 +447,15 @@ class basic_wb_node {
 
 #pragma region Rotations and Rebalancing
 
-    /**
-     *  @brief Update size field to match children.
-     *    Must be called after any operation that modifies children.
-     */
+    /** Update size field to match children. Must be called after any operation that modifies children. */
     static void update_size(node_t *node) noexcept {
         if (!node) return;
         node->size = 1 + get_size(node->left) + get_size(node->right);
         update_augmented_size(node);
     }
 
-    /**
-     *  @brief Recomputes only the augmented count, for a node whose shape is already correct.
-     *    Used where an entry's own predicate changed but no link moved.
-     */
+    /** Recomputes only the augmented count, for a node whose shape is already correct. Used where an entry's own
+     *  predicate changed but no link moved. */
     static void update_augmented_size(node_t *node) noexcept {
         if constexpr (is_augmented_k) {
             if (!node) return;
@@ -470,7 +464,7 @@ class basic_wb_node {
         }
     }
 
-    /** @brief Restores a node whose links were just cleared, so both counts describe it alone. */
+    /** Restores a node whose links were just cleared, so both counts describe it alone. */
     static void reset_to_leaf(node_t *node) noexcept {
         node->size = 1;
         update_augmented_size(node);
@@ -479,7 +473,7 @@ class basic_wb_node {
     /**
      *  @brief Single right rotation.
      *
-     *  @code
+     *  @code{.cpp}
      *      y              x
      *     / \            / \
      *    x   C    =>    A   y
@@ -503,7 +497,7 @@ class basic_wb_node {
     /**
      *  @brief Single left rotation.
      *
-     *  @code
+     *  @code{.cpp}
      *    x                y
      *   / \              / \
      *  A   y      =>    x   C
@@ -527,9 +521,9 @@ class basic_wb_node {
     /**
      *  @brief Weight of a subtree, counting the empty tree as 1.
      *
-     *  Hirai and Yamamoto state the invariant over @c size+1; comparing raw sizes makes
-     *  every node with an empty child look unbalanced and asks for rotations that cannot
-     *  be performed, since the pivot's child is null.
+     *  Hirai and Yamamoto state the invariant over @c size+1; comparing raw sizes makes every node
+     *  with an empty child look unbalanced and asks for rotations that cannot be performed, since
+     *  the pivot's child is null.
      */
     static size_t get_weight(node_t *node) noexcept { return get_size(node) + 1; }
 
@@ -545,13 +539,13 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Rebalance node if weight invariant violated.
-     *    Uses Δ=3, Γ=2 parameters (only valid integer solution).
+     *  @brief Rebalance node if weight invariant violated. Uses Δ=3, Γ=2 parameters (only valid
+     *      integer solution).
      *
      *  @par Algorithm
      *  - If left too heavy, with weight(left) > 3×weight(right):
-     *    - Single right rotation if weight(left.right) < 2×weight(left.left)
-     *    - Double (left-right) rotation otherwise
+     *  - Single right rotation if weight(left.right) < 2×weight(left.left)
+     *  - Double (left-right) rotation otherwise
      *  - Mirror logic for right-heavy case
      *
      *  @return New root after rebalancing (may be unchanged).
@@ -673,13 +667,16 @@ class basic_wb_node {
 
 #pragma region Insertions
 
-    /** @brief What a walk that may create a node did with the key it was handed. */
+    /** What a walk that may create a node did with the key it was handed. */
     enum class node_placement_t : std::uint8_t {
-        /** @brief No node was available to store the key, so nothing was stored. */
+
+        /** No node was available to store the key, so nothing was stored. */
         refused_k,
-        /** @brief An equal key was already there, and @c match names the node holding it. */
+
+        /** An equal key was already there, and @c match names the node holding it. */
         matched_k,
-        /** @brief A fresh node took the key, and @c match names it. */
+
+        /** A fresh node took the key, and @c match names it. */
         made_k,
     };
 
@@ -688,13 +685,13 @@ class basic_wb_node {
         node_t *match = nullptr;
         node_placement_t placement = node_placement_t::refused_k;
 
-        /** @brief Whether nothing was stored, which is the only way this walk fails. */
+        /** Whether nothing was stored, which is the only way this walk fails. */
         bool failed() const noexcept { return placement == node_placement_t::refused_k; }
     };
 
     /**
-     *  @brief Inserts an existing node into the tree.
-     *    Used by merge operation to insert extracted nodes.
+     *  @brief Inserts an existing node into the tree. Used by merge operation to insert
+     *      extracted nodes.
      *  @param[in] node Root of subtree to insert into.
      *  @param[in] new_child Pre-allocated node to insert.
      *  @param[in] comparator Comparator for element comparison.
@@ -730,13 +727,14 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Inserts or updates an fruit in the tree.
-     *    If key exists, overwrites the fruit. If not, creates new node.
+     *  @brief Inserts or updates a fruit in the tree. If key exists, overwrites the fruit. If not,
+     *      creates new node.
      *
      *  @param[in] node Root of subtree.
      *  @param[in] fruit Entry to insert or assign (moved).
      *  @param[in] comparator Comparator for element comparison.
-     *  @param[in] node_allocator Allocator function that returns new node pointer or nullptr on failure.
+     *  @param[in] node_allocator Allocator function that returns new node pointer or nullptr
+     *      on failure.
      *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
     template <typename node_allocator_type_>
@@ -783,7 +781,7 @@ class basic_wb_node {
         }
     }
 
-    /** @brief Visits every node bottom-up, so a caller may free each one as it goes. */
+    /** Visits every node bottom-up, so a caller may free each one as it goes. */
     template <typename callback_type_>
     static void for_each_bottom_up(node_t *node, callback_type_ &&callback) noexcept {
         if (!node) return;
@@ -797,11 +795,9 @@ class basic_wb_node {
         std::size_t count = 0;
     };
 
-    /**
-     *  @brief Drops every node satisfying @p predicate, returning the new root and surviving count.
-     *    Both halves may shed any number of nodes, so the two survivors are re-joined rather than
-     *    stitched back in place - rotating once could not close a gap of many weight classes.
-     */
+    /** Drops every node satisfying @p predicate, returning the new root and surviving count. Both halves may shed
+     *  any number of nodes, so the two survivors are re-joined rather than stitched back in place - rotating once
+     *  could not close a gap of many weight classes. */
     template <typename predicate_type_, typename node_deallocator_type_>
     static erase_if_result_t erase_if(node_t *node, predicate_type_ &&predicate,
                                       node_deallocator_type_ &&node_deallocator,
@@ -821,7 +817,7 @@ class basic_wb_node {
         return {join_with_root(left_result.root, node, right_result.root), surviving + 1};
     }
 
-    /** @brief Uniformly samples one node whose key lies in [lower, upper), or nullptr when empty. */
+    /** Uniformly samples one node whose key lies in [lower, upper), or nullptr when empty. */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename predicate_type_ = no_op_t>
     static node_t *sample_range(node_t *node, lower_type_ &&lower, upper_type_ &&upper, comparator_t const &comparator,
                                 generator_type_ &&generator, predicate_type_ &&predicate = {}) noexcept {
@@ -842,27 +838,26 @@ class basic_wb_node {
 
 #pragma region Split and Join Operations
 
-    /**
-     *  @brief Result of splitting a tree at a key.
-     */
+    /** Result of splitting a tree at a key. */
     struct split_result_t {
-        /** @brief Subtree with all elements ordered before the split key. */
+
+        /** Subtree with all elements ordered before the split key. */
         node_t *left = nullptr;
-        /** @brief Subtree with all elements not ordered before the split key. */
+
+        /** Subtree with all elements not ordered before the split key. */
         node_t *right = nullptr;
     };
 
     /**
-     *  @brief Joins two trees with a root node between them.
-     *    Precondition: @p root is non-null and all(left) < root < all(right).
+     *  @brief Joins two trees with a root node between them. Precondition: @p root is non-null and
+     *      all(left) < root < all(right).
      *
      *  @param[in] left Left subtree (all elements < root).
      *  @param[in] root Middle node to join with.
      *  @param[in] right Right subtree (all elements > root).
      *  @return New root of joined tree.
      *
-     *  @par Complexity
-     *  O(log n) expected, where n is size of larger tree.
+     *  @par Complexity O(log n) expected, where n is size of larger tree.
      *
      *  The two sides may sit many weight classes apart, so hanging @p root between them and
      *  rotating once is not enough. Walking down the heavier side's inner spine until the two
@@ -894,16 +889,15 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Joins two trees where all(left) < all(right).
-     *    Recursively joins trees by extracting min from right subtree.
+     *  @brief Joins two trees where all(left) < all(right). Recursively joins trees by extracting
+     *      min from right subtree.
      *
      *  @param[in] left Left subtree.
      *  @param[in] right Right subtree.
      *  @param[in] comparator Comparator for ordering elements.
      *  @return New root of joined tree.
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      */
     static node_t *join(node_t *left, node_t *right, comparator_t const &comparator) noexcept {
         if (!left) return right;
@@ -917,20 +911,18 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Splits tree at a given key.
-     *    Returns two trees: left contains all elements < comparable,
-     *    right contains all elements >= comparable.
+     *  @brief Splits tree at a given key. Returns two trees: left contains all elements <
+     *      comparable, right contains all elements >= comparable.
      *
      *  @param[in] node Root of tree to split.
      *  @param[in] comparable Key to split at.
      *  @param[in] comparator Comparator for element comparison.
      *  @return Split result with left and right subtrees.
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto [left, right] = split(root, 5, comp);
      *  // left: all elements < 5
      *  // right: all elements >= 5
@@ -954,8 +946,8 @@ class basic_wb_node {
 };
 
 /**
- *  @brief Weight-balanced tree container with order statistics support.
- *    Provides ordered storage similar to @c std::set with additional O(log n) select/rank operations.
+ *  @brief Weight-balanced tree container with order statistics support. Provides ordered storage
+ *      similar to @c std::set with additional O(log n) select/rank operations.
  *
  *  @tparam value_type_ Type of elements stored.
  *  @tparam comparator_type_ Comparator defining ordering.
@@ -1000,8 +992,8 @@ class basic_wb_tree {
     using is_associative = std::bool_constant<is_mapping<value_t>>;
 
     /**
-     *  @brief Rebind this tree type to different fruit and comparator types.
-     *    Follows STL allocator rebind pattern for type transformations.
+     *  @brief Rebind this tree type to different fruit and comparator types. Follows STL allocator
+     *      rebind pattern for type transformations.
      *
      *  @tparam other_value_type_ New fruit type for the rebound tree.
      *  @tparam other_comparator_ New comparator type for the rebound tree.
@@ -1019,27 +1011,21 @@ class basic_wb_tree {
     ST_NO_UNIQUE_ADDRESS_ node_allocator_t allocator_;
 
   public:
-    /**
-     *  @brief Default constructor. Creates empty tree.
-     */
+    /** Default constructor. Creates empty tree. */
     basic_wb_tree() noexcept = default;
 
     explicit basic_wb_tree(allocator_t allocator) noexcept : allocator_(std::move(allocator)) {}
 
-    /** @brief Seeds both policies, which a stateful comparator needs to survive a rebind. */
+    /** Seeds both policies, which a stateful comparator needs to survive a rebind. */
     basic_wb_tree(comparator_t comparator, allocator_t allocator) noexcept
         : comparator_(std::move(comparator)), allocator_(std::move(allocator)) {}
 
-    /**
-     *  @brief Move constructor.
-     */
+    /** Move constructor. */
     basic_wb_tree(wb_tree_t &&other) noexcept
         : root_(std::exchange(other.root_, nullptr)), size_(std::exchange(other.size_, 0)),
           comparator_(std::move(other.comparator_)), allocator_(std::move(other.allocator_)) {}
 
-    /**
-     *  @brief Move assignment operator.
-     */
+    /** Move assignment operator. */
     wb_tree_t &operator=(wb_tree_t &&other) noexcept {
         std::swap(root_, other.root_);
         std::swap(size_, other.size_);
@@ -1048,9 +1034,7 @@ class basic_wb_tree {
         return *this;
     }
 
-    /**
-     *  @brief Destructor. Deallocates all nodes.
-     */
+    /** Destructor. Deallocates all nodes. */
     ~basic_wb_tree() noexcept { clear(); }
 
     // Disable copy
@@ -1061,30 +1045,23 @@ class basic_wb_tree {
 
 #pragma region Capacity
 
-    /**
-     *  @brief Returns the number of elements in the tree.
-     */
+    /** Returns the number of elements in the tree. */
     size_t size() const noexcept { return size_; }
 
-    /**
-     *  @brief Checks whether the tree is empty.
-     */
+    /** Checks whether the tree is empty. */
     bool empty() const noexcept { return size_ == 0; }
 
 #pragma endregion Capacity
 
 #pragma region Modifiers
 
-    /**
-     *  @brief The node an upsert settled on, and how it got there.
-     *    Assigning to the result overwrites that node's entry, which is what makes it usable as a
-     *    handle rather than a report.
-     */
+    /** The node an upsert settled on, and how it got there. Assigning to the result overwrites that node's entry,
+     *  which is what makes it usable as a handle rather than a report. */
     struct upserted_node_t {
         node_t *node = nullptr;
         typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
 
-        /** @brief Whether nothing was stored, which is the only way an upsert fails. */
+        /** Whether nothing was stored, which is the only way an upsert fails. */
         bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
         explicit operator bool() const noexcept { return !failed(); }
         upserted_node_t &operator=(value_t &&fruit) noexcept {
@@ -1111,10 +1088,10 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Atomically inserts or updates an fruit. Always succeeds (unless OOM).
-     *    Overwrites existing fruit if key exists. Matches @c std::map::insert_or_assign() semantics.
+     *  @brief Atomically inserts or updates a fruit. Always succeeds (unless OOM). Overwrites
+     *      existing fruit if key exists. Matches @c std::map::insert_or_assign() semantics.
      *
-     *  @param[in] fruit Entry to insert or assign (moved into the tree).
+     *  @param[in] comparable Entry to insert or assign (moved into the tree).
      *  @return The node the entry now lives in, and whether it was made or matched.
      */
     template <typename comparable_type_>
@@ -1127,8 +1104,8 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an fruit.
-     *  @param[in] fruit Entry to insert or assign (moved into the tree).
+     *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates a fruit.
+     *  @param[in] comparable Entry to insert or assign (moved into the tree).
      *  @return The node the entry now lives in, and whether it was made or matched.
      */
     template <typename comparable_type_>
@@ -1136,9 +1113,7 @@ class basic_wb_tree {
         return insert_or_assign(std::forward<comparable_type_>(comparable));
     }
 
-    /**
-     *  @brief Removes all elements from the tree.
-     */
+    /** Removes all elements from the tree. */
     void clear() noexcept {
         clear_recursive(root_);
         root_ = nullptr;
@@ -1152,7 +1127,6 @@ class basic_wb_tree {
     /**
      *  @brief Existence check, heterogeneous when the comparator declares @c is_transparent.
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @param[out] present Set to whether an element equal to @p comparable is here.
      *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_ = value_t>
@@ -1163,7 +1137,6 @@ class basic_wb_tree {
     /**
      *  @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys.
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @param[out] matches Set to how many elements equal @p comparable.
      *  @return Always success; a lookup over owned nodes has nothing to refuse.
      */
     template <typename comparable_type_ = value_t>
@@ -1182,11 +1155,10 @@ class basic_wb_tree {
      *  @param[in] k Index of element to find (0 = minimum, size-1 = maximum).
      *  @return Pointer to k-th node, or nullptr if k >= size.
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto median_node = tree.select(tree.size() / 2);
      *  if (median_node) {
      *      std::cout << "Median: " << median_node->fruit << std::endl;
@@ -1195,46 +1167,42 @@ class basic_wb_tree {
      */
     node_t *select(size_t k) noexcept { return node_t::select(root_, k, comparator_); }
 
-    /**
-     *  @brief Select k-th smallest element (const version).
-     */
+    /** Select k-th smallest element (const version). */
     node_t const *select(size_t k) const noexcept { return node_t::select(root_, k, comparator_); }
 
     /**
      *  @brief Find rank (position) of element in sorted order.
      *  @param[in] fruit Entry to find rank of.
-     *  @return Number of elements < fruit. If element exists, this is its 0-based index.
-     *    Returns size() if element is greater than all elements in tree.
+     *  @return Number of elements < fruit. If element exists, this is its 0-based index. Returns
+     *      size() if element is greater than all elements in tree.
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto position = tree.rank(42);
      *  // position elements are smaller than 42
      *  @endcode
      */
     size_t rank(value_t const &fruit) const noexcept { return node_t::rank(root_, fruit, comparator_); }
 
-    /**
-     *  @brief Number of entries the augmentation policy counts across the whole tree.
-     *    Exact for the counts as they stand now. One scalar per node cannot encode a function of a
-     *    parameter, so a reader whose predicate differs from the one currently materialized in the entries
-     *    - an older snapshot, say - gets no answer from this count and none of the descents built on it.
-     */
+    /** Number of entries the augmentation policy counts across the whole tree. Exact for the counts as they stand
+     *  now. One scalar per node cannot encode a function of a parameter, so a reader whose predicate differs from
+     *  the one currently materialized in the entries - an older snapshot, say - gets no answer from this count and
+     *  none of the descents built on it. */
     [[nodiscard]] size_t augmented_size() const noexcept { return node_t::get_augmented_size(root_); }
 
     /**
-     *  @brief Select the k-th smallest entry among those the augmentation policy counts, in O(log n).
+     *  @brief Select the k-th smallest entry among those the augmentation policy counts, in
+     *      O(log n).
      *  @return Pointer to the node, or nullptr when @c augmented_size() is at most @p k.
      */
     node_t *select_augmented(size_t k) noexcept { return node_t::select_augmented(root_, k); }
 
-    /** @brief Select over the augmented count, const version. */
+    /** Select over the augmented count, const version. */
     node_t const *select_augmented(size_t k) const noexcept { return node_t::select_augmented(root_, k); }
 
-    /** @brief Number of counted entries ordered before @p comparable, in O(log n). */
+    /** Number of counted entries ordered before @p comparable, in O(log n). */
     template <typename comparable_type_>
     size_t rank_augmented(comparable_type_ &&comparable) const noexcept {
         return node_t::rank_augmented(root_, std::forward<comparable_type_>(comparable), comparator_);
@@ -1242,8 +1210,10 @@ class basic_wb_tree {
 
     /**
      *  @brief Tells the tree that the entry matching @p comparable changed its augmented count.
-     *    Repairs the root-to-entry path in O(log n) rather than rescanning. A wrapper calls this once per
-     *    retagged entry, which may be several per write when one publish supersedes another entry.
+     *      Repairs the root-to-entry path in O(log n) rather than rescanning.
+     *
+     *  A wrapper calls this once per retagged entry, which may be several per write when one
+     *  publish supersedes another entry.
      *  @return True when the entry was found.
      */
     template <typename comparable_type_>
@@ -1262,7 +1232,7 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /** @brief Sum of absolute subtree-size differences, used by the tests to watch balance quality. */
+    /** Sum of absolute subtree-size differences, used by the tests to watch balance quality. */
     [[nodiscard]] std::size_t total_imbalance() const noexcept {
         std::size_t total = 0;
         node_t::for_each_left_right(root_, [&](node_t *node) noexcept {
@@ -1273,7 +1243,7 @@ class basic_wb_tree {
         return total;
     }
 
-    /** @brief Drops every element satisfying @p predicate and reports how many went. */
+    /** Drops every element satisfying @p predicate and reports how many went. */
     template <typename predicate_type_>
     std::size_t erase_if(predicate_type_ &&predicate) noexcept {
         auto result = node_t::erase_if(
@@ -1289,10 +1259,8 @@ class basic_wb_tree {
         return removed;
     }
 
-    /**
-     *  @brief Erases the half-open range [lower, upper), invoking @p callback for each element.
-     *    Splitting twice and re-joining keeps this O(log N + K) rather than K separate erases.
-     */
+    /** Erases the half-open range [lower, upper), invoking @p callback for each element. Splitting twice and
+     *  re-joining keeps this O(log N + K) rather than K separate erases. */
     template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         if (!root_) return;
@@ -1316,10 +1284,8 @@ class basic_wb_tree {
 
 #pragma region Extraction and Merging
 
-    /**
-     *  @brief RAII wrapper for extracted nodes.
-     *    Owns the extracted node and deallocates it when destroyed (unless released).
-     */
+    /** RAII wrapper for extracted nodes. Owns the extracted node and deallocates it when destroyed (unless
+     *  released). */
     struct extract_result_t {
         basic_wb_tree *tree_ = nullptr;
         node_t *node_ptr_ = nullptr;
@@ -1352,17 +1318,16 @@ class basic_wb_tree {
     };
 
     /**
-     *  @brief Extracts a node from the tree.
-     *    The extracted node is removed from the tree and returned in an RAII wrapper.
+     *  @brief Extracts a node from the tree. The extracted node is removed from the tree and
+     *      returned in an RAII wrapper.
      *
      *  @param[in] comparable Key to extract.
      *  @return RAII wrapper containing extracted node (empty if not found).
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto extracted = tree.extract(42);
      *  if (extracted) {
      *      other_tree.merge(std::move(extracted));
@@ -1395,7 +1360,8 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Checks if all keys from other tree exist in this tree using O(m+n) simultaneous traversal.
+     *  @brief Checks if all keys from other tree exist in this tree using O(m+n)
+     *      simultaneous traversal.
      *  @param[in] other Tree whose keys to check.
      *  @return True if all keys from other exist in this tree, false otherwise.
      */
@@ -1416,8 +1382,8 @@ class basic_wb_tree {
 
     /**
      *  @brief Merges another tree using upsert semantics (updates duplicates instead of skipping).
-     *  @param[inout] other Tree to merge from. Emptied on success, and on an allocation failure
-     *    it keeps every entry that could not be moved across.
+     *  @param[inout] other Tree to merge from. Emptied on success, and on an allocation failure it
+     *      keeps every entry that could not be moved across.
      */
     void merge_with_upsert(wb_tree_t &other) noexcept {
         while (other.size() > 0) {
@@ -1448,7 +1414,7 @@ class basic_wb_tree {
      *  @param[in] other Extracted node to merge.
      *
      *  @note Unlike @c std::set::merge(), a node with a duplicate key is deallocated rather than
-     *    being returned. This ensures no memory leaks in a noexcept context.
+     *      being returned. This ensures no memory leaks in a noexcept context.
      */
     void merge(extract_result_t other) noexcept {
         if (!other.node_ptr_) return;
@@ -1464,13 +1430,13 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Merges another tree into this one, transferring all nodes.
-     *    Elements with keys that already exist in this tree are deallocated (not kept in source).
+     *  @brief Merges another tree into this one, transferring all nodes. Elements with keys that
+     *      already exist in this tree are deallocated (not kept in source).
      *
      *  @param[in] other Tree to merge from. Will be empty after merge.
      *
      *  @note Unlike @c std::set::merge(), nodes with duplicate keys are deallocated rather than
-     *    remaining in the source container. This ensures no memory leaks in a noexcept context.
+     *      remaining in the source container. This ensures no memory leaks in a noexcept context.
      *  @note Complexity: O(m log n) where m = other.size(), n = this.size().
      */
     void merge(wb_tree_t &other) noexcept {
@@ -1486,13 +1452,12 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Merges another tree into this one, assuming all keys are unique.
-     *    More efficient than regular merge when caller guarantees no duplicate keys.
+     *  @brief Merges another tree into this one, assuming all keys are unique. More efficient than
+     *      regular merge when caller guarantees no duplicate keys.
      *
      *  @param[in] other Tree to merge from. Will be empty after merge.
      *
-     *  @par Precondition
-     *  All keys in @c other must be different from keys in this tree.
+     *  @par Precondition All keys in @c other must be different from keys in this tree.
      *
      *  @warning If precondition violated (duplicate keys exist), behavior is undefined.
      */
@@ -1530,7 +1495,7 @@ class basic_wb_tree {
     class iterator;
     class const_iterator;
 
-    /** @brief Visits every element in [lower, upper) in sorted order, or fewer if the callback halts. */
+    /** Visits every element in [lower, upper) in sorted order, or fewer if the callback halts. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
@@ -1538,7 +1503,7 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /** @brief Same range walk, but the callback may modify each element in place. */
+    /** Same range walk, but the callback may modify each element in place. */
     template <typename lower_type_ = value_t, typename upper_type_ = value_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept {
         node_t::range(root_, std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), comparator_,
@@ -1546,7 +1511,7 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /** @brief Copies out the element equal to @p comparable, or reports @c key_not_found_k. */
+    /** Copies out the element equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = find(std::forward<comparable_type_>(comparable));
@@ -1554,7 +1519,7 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
-    /** @brief Copies out the first element not less than @p comparable. */
+    /** Copies out the first element not less than @p comparable. */
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = lower_bound(std::forward<comparable_type_>(comparable));
@@ -1562,7 +1527,7 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
-    /** @brief Copies out the first element greater than @p comparable. */
+    /** Copies out the first element greater than @p comparable. */
     template <typename comparable_type_>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = upper_bound(std::forward<comparable_type_>(comparable));
@@ -1570,22 +1535,22 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
-    /**
-     *  @brief Where an insertion settled, and how it got there.
-     *    Names the same three outcomes as @c upserted_node_t, one level up from the nodes.
-     */
+    /** Where an insertion settled, and how it got there. Names the same three outcomes as @c upserted_node_t, one
+     *  level up from the nodes. */
     struct inserted_iterator_t {
-        /** @brief The element's position, which is @c end() when nothing was stored. */
+
+        /** The element's position, which is @c end() when nothing was stored. */
         iterator position;
-        /** @brief Whether the entry was made, matched an incumbent, or refused for want of memory. */
+
+        /** Whether the entry was made, matched an incumbent, or refused for want of memory. */
         typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
 
-        /** @brief Whether nothing was stored, which is the only way an insertion fails. */
+        /** Whether nothing was stored, which is the only way an insertion fails. */
         bool failed() const noexcept { return placement == node_t::node_placement_t::refused_k; }
         explicit operator bool() const noexcept { return !failed(); }
     };
 
-    /** @brief Inserts one element only when its key is absent, leaving any existing element alone. */
+    /** Inserts one element only when its key is absent, leaving any existing element alone. */
     template <typename comparable_type_>
     inserted_iterator_t insert_if_missing(comparable_type_ &&comparable) noexcept {
         if (auto existing = find(comparable); existing != end()) return {existing, node_t::node_placement_t::matched_k};
@@ -1593,7 +1558,7 @@ class basic_wb_tree {
         return {iterator {this, result.node}, result.placement};
     }
 
-    /** @brief Inserts a range, skipping keys that are already present. */
+    /** Inserts a range, skipping keys that are already present. */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first) {
@@ -1604,7 +1569,7 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /** @brief Upserts a range, overwriting any key already present. */
+    /** Upserts a range, overwriting any key already present. */
     template <typename input_iterator_type_>
     [[nodiscard]] status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         for (; first != last; ++first)
@@ -1612,21 +1577,17 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /**
-     *  @brief Result of an erase operation on an iterator.
-     *    Combines iterator to next element with operation status.
-     */
+    /** Result of an erase operation on an iterator. Combines iterator to next element with operation status. */
     struct erase_result_t {
-        /** @brief Iterator to the element following the erased one, or @c end(). */
+
+        /** Iterator to the element following the erased one, or @c end(). */
         iterator next;
-        /** @brief Status of the erase operation. */
+
+        /** Status of the erase operation. */
         status_t status = success_k;
     };
 
-    /**
-     *  @brief Bidirectional iterator for WB tree.
-     *    Provides in-order traversal of tree elements.
-     */
+    /** Bidirectional iterator for WB tree. Provides in-order traversal of tree elements. */
     class iterator {
         friend class basic_wb_tree;
         friend class const_iterator;
@@ -1675,10 +1636,7 @@ class basic_wb_tree {
         bool operator!=(iterator const &other) const noexcept { return node_ != other.node_; }
     };
 
-    /**
-     *  @brief Const bidirectional iterator for WB tree.
-     *    Provides in-order traversal of tree elements (read-only).
-     */
+    /** Const bidirectional iterator for WB tree. Provides in-order traversal of tree elements (read-only). */
     class const_iterator {
         friend class basic_wb_tree;
 
@@ -1727,39 +1685,27 @@ class basic_wb_tree {
         bool operator!=(const_iterator const &other) const noexcept { return node_ != other.node_; }
     };
 
-    /**
-     *  @brief Returns iterator to first element (minimum).
-     */
+    /** Returns iterator to first element (minimum). */
     iterator begin() noexcept { return iterator(this, node_t::find_min(root_)); }
 
-    /**
-     *  @brief Returns const iterator to first element (minimum).
-     */
+    /** Returns const iterator to first element (minimum). */
     const_iterator begin() const noexcept { return const_iterator(this, node_t::find_min(root_)); }
 
-    /**
-     *  @brief Returns const iterator to first element (minimum).
-     */
+    /** Returns const iterator to first element (minimum). */
     const_iterator cbegin() const noexcept { return begin(); }
 
-    /**
-     *  @brief Returns iterator to past-the-end element.
-     */
+    /** Returns iterator to past-the-end element. */
     iterator end() noexcept { return iterator(this, nullptr); }
 
-    /**
-     *  @brief Returns const iterator to past-the-end element.
-     */
+    /** Returns const iterator to past-the-end element. */
     const_iterator end() const noexcept { return const_iterator(this, nullptr); }
 
-    /**
-     *  @brief Returns const iterator to past-the-end element.
-     */
+    /** Returns const iterator to past-the-end element. */
     const_iterator cend() const noexcept { return end(); }
 
     /**
-     *  @brief Finds an element equal to the given @p comparable.
-     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *  @brief Finds an element equal to the given @p comparable. Heterogeneous lookup supported if
+     *      comparator defines @c is_transparent.
      *
      *  @param[in] comparable Object comparable to @c value_t.
      *  @return Iterator to found element, or end() if not found.
@@ -1770,8 +1716,8 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Finds an element equal to the given @p comparable (const version).
-     *    Heterogeneous lookup supported if comparator defines @c is_transparent.
+     *  @brief Finds an element equal to the given @p comparable (const version). Heterogeneous
+     *      lookup supported if comparator defines @c is_transparent.
      *
      *  @param[in] comparable Object comparable to @c value_t.
      *  @return Const iterator to found element, or end() if not found.
@@ -1839,14 +1785,14 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Erases the element at the specified iterator position.
-     *    Unlike STL, returns both the next iterator and a status code for error reporting.
+     *  @brief Erases the element at the specified iterator position. Unlike STL, returns both the
+     *      next iterator and a status code for error reporting.
      *
      *  @param[in] position Iterator to element to erase. Must be valid and dereferenceable.
      *  @return Contains iterator to element following the erased element and operation status.
      *
-     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
-     *    If erase fails (e.g., tree corruption), returns {end(), error}.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree. If erase
+     *      fails (e.g., tree corruption), returns {end(), error}.
      */
     erase_result_t erase(iterator position) noexcept {
         if (position == end()) return {end(), {success_k}};
@@ -1857,23 +1803,23 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Erases the element at the specified const_iterator position.
-     *    Unlike STL, returns both the next iterator and a status code for error reporting.
+     *  @brief Erases the element at the specified const_iterator position. Unlike STL, returns both
+     *      the next iterator and a status code for error reporting.
      *
      *  @param[in] position Const iterator to element to erase. Must be valid and dereferenceable.
      *  @return Contains iterator to element following the erased element and operation status.
      *
-     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
-     *    If erase fails (e.g., tree corruption), returns {end(), error}.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree. If erase
+     *      fails (e.g., tree corruption), returns {end(), error}.
      */
     erase_result_t erase(const_iterator position) noexcept {
         return erase(iterator(const_cast<basic_wb_tree *>(this), const_cast<node_t *>(position.node_)));
     }
 
     /**
-     *  @brief Erases all elements in the range [first, last).
-     *    Unlike STL, returns both the iterator following the last erased element and a status code.
-     *    On error, some elements may have been erased (partial erase, matches STL's basic guarantee).
+     *  @brief Erases all elements in the range [first, last). Unlike STL, returns both the iterator
+     *      following the last erased element and a status code. On error, some elements may have
+     *      been erased (partial erase, matches STL's basic guarantee).
      *
      *  @param[in] first Iterator to first element in range.
      *  @param[in] last Iterator to past-the-end of range.
@@ -1894,14 +1840,13 @@ class basic_wb_tree {
 
 #pragma region Split and Join Operations
 
-    /**
-     *  @brief Result of splitting a tree at a key.
-     *    Contains two trees: left (all < key) and right (all >= key).
-     */
+    /** Result of splitting a tree at a key. Contains two trees: left (all < key) and right (all >= key). */
     struct split_result_t {
-        /** @brief Tree with all elements ordered before the split key. */
+
+        /** Tree with all elements ordered before the split key. */
         wb_tree_t left;
-        /** @brief Tree with all elements not ordered before the split key. */
+
+        /** Tree with all elements not ordered before the split key. */
         wb_tree_t right;
 
         split_result_t() = default;
@@ -1909,17 +1854,16 @@ class basic_wb_tree {
     };
 
     /**
-     *  @brief Splits this tree at a given key.
-     *    Returns both left (< key) and right (>= key) parts. This tree is left empty.
+     *  @brief Splits this tree at a given key. Returns both left (< key) and right (>= key) parts.
+     *      This tree is left empty.
      *
      *  @param[in] comparable Key to split at.
      *  @return Split result containing left and right trees.
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto split = tree.split(5);
      *  // split.left has elements < 5
      *  // split.right has elements >= 5
@@ -1946,19 +1890,18 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Joins another tree into this one.
-     *    Precondition: all elements in this tree < all elements in other tree.
+     *  @brief Joins another tree into this one. Precondition: all elements in this tree < all
+     *      elements in other tree.
      *
      *  @param[in] other Tree to join (will be empty after join).
      *
-     *  @par Complexity
-     *  O(log n) expected.
+     *  @par Complexity O(log n) expected.
      *
-     *  @warning This is a low-level operation. The caller must ensure all(this) < all(other).
-     *    For general merging with duplicate handling, use merge() instead.
+     *  @warning This is a low-level operation. The caller must ensure all(this) < all(other). For
+     *      general merging with duplicate handling, use merge() instead.
      *
      *  @par Example
-     *  @code
+     *  @code{.cpp}
      *  auto right = tree.split(5);  // tree: [0,5), right: [5,∞)
      *  tree.join(right);            // tree: [0,∞)
      *  @endcode
@@ -1984,24 +1927,16 @@ class basic_wb_tree {
 
 #pragma region Observers
 
-    /**
-     *  @brief Returns the comparator object.
-     */
+    /** Returns the comparator object. */
     comparator_t key_comp() const noexcept { return comparator_; }
 
-    /**
-     *  @brief Returns pointer to root node (for internal use).
-     */
+    /** Returns pointer to root node (for internal use). */
     node_t *root() const noexcept { return root_; }
 
-    /**
-     *  @brief Returns reference to node allocator (for internal use).
-     */
+    /** Returns reference to node allocator (for internal use). */
     node_allocator_t &allocator() noexcept { return allocator_; }
 
-    /**
-     *  @brief Returns const reference to node allocator (for internal use).
-     */
+    /** Returns const reference to node allocator (for internal use). */
     node_allocator_t const &allocator() const noexcept { return allocator_; }
 
   private:

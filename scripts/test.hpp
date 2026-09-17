@@ -1,25 +1,27 @@
 /**
- *  @brief Harness for the C++ suites - assertions, a named test runner, and crash localization.
- *  @author Ash Vardanian
  *  @file scripts/test.hpp
+ *  @author Ash Vardanian
  *  @date August 15, 2026
+ *  @brief Harness for the C++ suites - assertions, a named test runner, and crash localization.
  *
  *  @section test_environment_variables Environment Variables
  *
- *  - @c SMASHTABLE_FILTER : substring matched against a test's "suite.name" label; only matching tests
- *    run. Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, and
- *    a filter that matched nothing fails the binary rather than reporting an empty suite as passing.
+ *  - @c SMASHTABLE_FILTER : substring matched against a test's "suite.name" label; only matching
+ *    tests run. Unset or empty runs everything. Honored by @c run_test, which announces what it
+ *    skipped, and a filter that matched nothing fails the binary rather than reporting an empty
+ *    suite as passing.
  *
- *  - @c SMASHTABLE_SEED : the seed every randomized suite draws from, so a failure names the run that
- *    produced it. Unset means @c default_seed_k, which keeps an unattended build deterministic, while a
- *    value that is not a whole number aborts rather than quietly reproducing the default run.
+ *  - @c SMASHTABLE_SEED : the seed every randomized suite draws from, so a failure names the run
+ *    that produced it. Unset means @c default_seed_k, which keeps an unattended build
+ *    deterministic, while a value that is not a whole number aborts rather than quietly reproducing
+ *    the default run.
  *
  *  @section test_failure_model Failure Model
  *
- *  Assertions abort rather than accumulate. Many of them guard the dereference or the index on the very
- *  next line, so a check that recorded a failure and carried on would hand the following statement a
- *  disengaged optional or an out-of-range subscript. The process dies at the defect, and the installed
- *  signal handler turns that into a backtrace.
+ *  Assertions abort rather than accumulate. Many of them guard the dereference or the index on the
+ *  very next line, so a check that recorded a failure and carried on would hand the following
+ *  statement a disengaged optional or an out-of-range subscript. The process dies at the defect,
+ *  and the installed signal handler turns that into a backtrace.
  */
 #pragma once
 #include <csignal> // `std::signal`, `SIGSEGV`, `SIGABRT`
@@ -46,7 +48,7 @@
 
 #pragma region Assertions
 
-/** @brief Adds the status a check was handed, where it was handed one, to the message it prints. */
+/** Adds the status a check was handed, where it was handed one, to the message it prints. */
 template <typename type_>
 inline void st_explain_(type_ const &answered) noexcept {
     if constexpr (std::is_same_v<std::remove_cvref_t<type_>, ::ashvardanian::smashtable::status_t>)
@@ -80,41 +82,41 @@ template <typename left_type_, typename right_type_>
     else return left == right;
 }
 
-/** @brief Whether the two differ, so every relation reads the same way round for the shared body. */
+/** Whether the two differ, so every relation reads the same way round for the shared body. */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_not_equal_(left_type_ const &left, right_type_ const &right) noexcept {
     return !st_equal_(left, right);
 }
 
-/** @brief Whether the left side orders below the right, with the same cross-signedness parity. */
+/** Whether the left side orders below the right, with the same cross-signedness parity. */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_less_(left_type_ const &left, right_type_ const &right) noexcept {
     if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_less(left, right);
     else return left < right;
 }
 
-/** @brief Whether the left side orders below the right or matches it. */
+/** Whether the left side orders below the right or matches it. */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_less_equal_(left_type_ const &left, right_type_ const &right) noexcept {
     if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_less_equal(left, right);
     else return left <= right;
 }
 
-/** @brief Whether the left side orders above the right. */
+/** Whether the left side orders above the right. */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_greater_(left_type_ const &left, right_type_ const &right) noexcept {
     if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_greater(left, right);
     else return left > right;
 }
 
-/** @brief Whether the left side orders above the right or matches it. */
+/** Whether the left side orders above the right or matches it. */
 template <typename left_type_, typename right_type_>
 [[nodiscard]] constexpr bool st_greater_equal_(left_type_ const &left, right_type_ const &right) noexcept {
     if constexpr (st_whole_numbers_<left_type_, right_type_>) return std::cmp_greater_equal(left, right);
     else return left >= right;
 }
 
-/** @brief Adds one side of a comparison to the message, naming a status rather than numbering it. */
+/** Adds one side of a comparison to the message, naming a status rather than numbering it. */
 template <typename type_>
 inline void st_print_operand_(char const *label, type_ const &value) noexcept {
     using bare_t = std::remove_cvref_t<type_>;
@@ -137,10 +139,11 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
 }
 
 /**
- *  @brief Verification that stays active regardless of @c NDEBUG - a test's oracle must never compile out.
+ *  @brief Verification that stays active regardless of @c NDEBUG - a test's oracle must never
+ *      compile out.
  *
- *  Wrapped in @c do/while(0) so the macro is one statement: it demands its terminating semicolon and
- *  swallows a dangling @c else. Context belongs inside the condition as @c &&"text", which the
+ *  Wrapped in @c do/while(0) so the macro is one statement: it demands its terminating semicolon
+ *  and swallows a dangling @c else. Context belongs inside the condition as @c &&"text", which the
  *  stringified expression then prints; there is no streamed message and no object to return.
  */
 #define st_verify_(condition)                                            \
@@ -153,9 +156,10 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
             std::abort();                                                \
         }                                                                \
     } while (0)
+
 /**
  *  @brief The body every relational check shares: bind each side once, and on failure name the
- *    relation, both operands, the caller's message and the line.
+ *      relation, both operands, the caller's message and the line.
  *
  *  @p holds answers whether the assertion passed, so every relation reads the same way round.
  *  Binding before comparing is what lets the message print an operand rather than the expression
@@ -175,25 +179,25 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
         }                                                                                   \
     } while (0)
 
-/** @brief Verification that two values match, naming both when they do not. */
+/** Verification that two values match, naming both when they do not. */
 #define st_verify_eq_(first, second, ...) st_verify_relation_(first, st_equal_, "==", second __VA_OPT__(, ) __VA_ARGS__)
 
-/** @brief Verification that two values differ, naming both when they do not. */
+/** Verification that two values differ, naming both when they do not. */
 #define st_verify_ne_(first, second, ...) \
     st_verify_relation_(first, st_not_equal_, "!=", second __VA_OPT__(, ) __VA_ARGS__)
 
-/** @brief Verification that the first orders below the second, naming both when it does not. */
+/** Verification that the first orders below the second, naming both when it does not. */
 #define st_verify_lt_(first, second, ...) st_verify_relation_(first, st_less_, "<", second __VA_OPT__(, ) __VA_ARGS__)
 
-/** @brief Verification that the first never rises above the second, naming both when it does. */
+/** Verification that the first never rises above the second, naming both when it does. */
 #define st_verify_le_(first, second, ...) \
     st_verify_relation_(first, st_less_equal_, "<=", second __VA_OPT__(, ) __VA_ARGS__)
 
-/** @brief Verification that the first orders above the second, naming both when it does not. */
+/** Verification that the first orders above the second, naming both when it does not. */
 #define st_verify_gt_(first, second, ...) \
     st_verify_relation_(first, st_greater_, ">", second __VA_OPT__(, ) __VA_ARGS__)
 
-/** @brief Verification that the first never falls below the second, naming both when it does. */
+/** Verification that the first never falls below the second, naming both when it does. */
 #define st_verify_ge_(first, second, ...) \
     st_verify_relation_(first, st_greater_equal_, ">=", second __VA_OPT__(, ) __VA_ARGS__)
 
@@ -203,17 +207,18 @@ namespace ashvardanian::smashtable::scripts {
 
 #pragma region Randomization
 
-/** @brief The seed a randomized suite draws from when @c SMASHTABLE_SEED is unset. */
+/** The seed a randomized suite draws from when @c SMASHTABLE_SEED is unset. */
 inline constexpr unsigned int default_seed_k = 42;
 
 /**
  *  @brief Reads @c SMASHTABLE_SEED, or @c default_seed_k when it is unset.
  *  @warning Aborts on anything but a run of decimal digits below 2^32, so a sign or a stray space
- *    names no run rather than wrapping into one.
+ *      names no run rather than wrapping into one.
  *
- *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a defect
- *  nobody can reproduce. The seed is therefore an input the runner prints, so a failing run names the
- *  sequence that produced it and a sweep is a loop in the shell rather than an edit to the source.
+ *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a
+ *  defect nobody can reproduce. The seed is therefore an input the runner prints, so a failing run
+ *  names the sequence that produced it and a sweep is a loop in the shell rather than an edit to
+ *  the source.
  */
 [[nodiscard]] inline unsigned int test_seed() noexcept {
 #if defined(_MSC_VER)
@@ -242,9 +247,10 @@ inline constexpr unsigned int default_seed_k = 42;
 /**
  *  @brief The seed one suite draws from, mixed from @c test_seed() and the suite's own name.
  *
- *  Two suites seeded alike walk one sequence between them and cover half of what their count suggests.
- *  Passing @c __func__ keeps the name that separates them the same name the compiler already knows, so
- *  a suite cannot be added, renamed, or moved into another binary and collide with one already there.
+ *  Two suites seeded alike walk one sequence between them and cover half of what their count
+ *  suggests. Passing @c __func__ keeps the name that separates them the same name the compiler
+ *  already knows, so a suite cannot be added, renamed, or moved into another binary and collide
+ *  with one already there.
  */
 [[nodiscard]] inline unsigned int test_seed_for(std::string_view suite) noexcept {
     std::size_t const named = hash<std::string_view> {}(suite);
@@ -255,10 +261,8 @@ inline constexpr unsigned int default_seed_k = 42;
 
 #pragma region Crash Localization
 
-/**
- *  @brief Prints a backtrace on a fatal signal, so an aborting check self-localizes rather than dying
- *    silently under CI's output redirection.
- */
+/** Prints a backtrace on a fatal signal, so an aborting check self-localizes rather than dying silently under CI's
+ *  output redirection. */
 inline void test_fatal_signal_handler(int signal_number) noexcept {
     std::fprintf(stderr, "\n*** Fatal signal %d - backtrace follows ***\n", signal_number);
 #if defined(__linux__) && defined(__GLIBC__)
@@ -272,7 +276,7 @@ inline void test_fatal_signal_handler(int signal_number) noexcept {
     std::raise(signal_number);
 }
 
-/** @brief Installs the backtrace handlers and line-buffers stdout. Call once, from @c main. */
+/** Installs the backtrace handlers and line-buffers stdout. Call once, from @c main. */
 inline void install_test_signal_handlers() noexcept {
     // Line-buffered, so progress survives a crash under redirection. The size must be nonzero:
     // Windows ucrt fast-fails on a zero-sized buffering mode.
@@ -287,7 +291,7 @@ inline void install_test_signal_handlers() noexcept {
 
 #pragma region Formatted Output
 
-/** @brief Output iterator handing each character straight to a @c std::FILE. */
+/** Output iterator handing each character straight to a @c std::FILE. */
 struct file_output_iterator_t {
     using difference_type = std::ptrdiff_t;
 
@@ -304,7 +308,7 @@ struct file_output_iterator_t {
 
 /**
  *  @brief Writes one formatted line to @p stream, checking the pattern against its arguments and
- *    terminating it here, so @p pattern carries no trailing newline of its own.
+ *      terminating it here, so @p pattern carries no trailing newline of its own.
  *  @warning Never from a signal handler - formatting is not async-signal-safe.
  *
  *  Formats straight into @p stream rather than into a @c std::string, so there is no allocation and
@@ -323,9 +327,9 @@ inline void print_line(std::FILE *stream, std::format_string<args_types_...> pat
 /**
  *  @brief Reads @c SMASHTABLE_FILTER, or @c nullptr when it is unset.
  *
- *  MSVC deprecates @c std::getenv in favor of the allocating @c _dupenv_s, which buys a suite nothing:
- *  the value is read once from @c main, before any thread exists, and the environment block outlives
- *  the run. One place to say so beats the same suppression in every suite.
+ *  MSVC deprecates @c std::getenv in favor of the allocating @c _dupenv_s, which buys a suite
+ *  nothing: the value is read once from @c main, before any thread exists, and the environment
+ *  block outlives the run. One place to say so beats the same suppression in every suite.
  */
 [[nodiscard]] inline char const *test_filter() noexcept {
 #if defined(_MSC_VER)
@@ -359,9 +363,9 @@ struct test_tally_t {
  *  @param[in] test_function A function taking no arguments.
  *  @return The number of failures - 0 on success or when skipped, 1 when the test threw.
  *
- *  A failed assertion aborts before this returns, so the count covers only thrown exceptions; naming
- *  them here beats a bare @c what() at the top of @c main. The started line prints before the call, so
- *  a hard crash leaves the running test as the last thing on stdout.
+ *  A failed assertion aborts before this returns, so the count covers only thrown exceptions;
+ *  naming them here beats a bare @c what() at the top of @c main. The started line prints before
+ *  the call, so a hard crash leaves the running test as the last thing on stdout.
  *
  *  Takes a function pointer rather than any callable on purpose: a suite that grows a defaulted
  *  parameter stops being a @c void() and would otherwise hide behind a lambda at every call site
@@ -393,10 +397,11 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
 }
 
 /**
- *  @brief Reports whether every test passed, printing the verdict. Use its result as @c main's status.
+ *  @brief Reports whether every test passed, printing the verdict. Use its result as @c
+ *      main's status.
  *
- *  A filter that matched nothing fails here rather than passing: every test skipping leaves no failures
- *  to count, so a mistyped filter would otherwise be indistinguishable from a green suite.
+ *  A filter that matched nothing fails here rather than passing: every test skipping leaves no
+ *  failures to count, so a mistyped filter would otherwise be indistinguishable from a green suite.
  */
 inline int report_test_failures(std::size_t failures) noexcept {
     if (failures != 0) {
@@ -415,7 +420,7 @@ inline int report_test_failures(std::size_t failures) noexcept {
 
 #pragma region Container Helpers
 
-/** @brief Clears a container whether or not its @c clear reports a status. */
+/** Clears a container whether or not its @c clear reports a status. */
 template <typename container_type_>
 void clear_container(container_type_ &container) noexcept {
     if constexpr (std::is_void_v<decltype(container.clear())>) container.clear();

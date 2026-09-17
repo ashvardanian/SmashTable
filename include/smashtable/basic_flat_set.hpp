@@ -1,11 +1,12 @@
 /**
- *  @brief A small sorted set in one contiguous array, searched through a row kit where the element is a plain key.
- *  @author Ash Vardanian
  *  @file include/smashtable/basic_flat_set.hpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief A small sorted set in one contiguous array, searched through a row kit where the element
+ *      is a plain key.
  *
- *  Inserting and erasing shift the tail of the array, so the set suits a few hundred elements rather than millions,
- *  in exchange for a search that reads adjacent memory and allocates nothing.
+ *  Inserting and erasing shift the tail of the array, so the set suits a few hundred elements
+ *  rather than millions, in exchange for a search that reads adjacent memory and allocates nothing.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -21,11 +22,9 @@
 
 namespace ashvardanian::smashtable {
 
-/**
- *  A sorted set of unique @p element_type_ ordered by @p comparator_type_.
- *  The rank search goes through @p row_kit_type_ when the element is a @c row_searchable_key ordered by @c less_t,
- *  and through a binary search with the comparator otherwise.
- */
+/** A sorted set of unique @p element_type_ ordered by @p comparator_type_. The rank search goes
+ *  through @p row_kit_type_ when the element is a @c row_searchable_key ordered by @c less_t, and
+ *  through a binary search with the comparator otherwise. */
 template <typename element_type_, typename comparator_type_ = less_t, row_kit row_kit_type_ = native_row_kit_t,
           typename allocator_type_ = default_allocator<element_type_>>
 class basic_flat_set {

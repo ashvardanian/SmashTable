@@ -1,9 +1,9 @@
 /**
- *  @brief Test instantiations for the @c std::set-backed transactional store. The baseline reference design, exercised
- *      by the same suites as the tree containers.
- *  @author Ash Vardanian
  *  @file scripts/test_std_set.cpp
+ *  @author Ash Vardanian
  *  @date August 16, 2026
+ *  @brief Test instantiations for the @c std::set-backed transactional store. The baseline
+ *      reference design, exercised by the same suites as the tree containers.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -59,7 +59,7 @@ using transactional_heavy_map_t = reference_store<mapping<heavy_key_t, guarded_p
 
 #pragma region Basic Operations Tests
 
-/** @brief Tests operations on empty container don't crash */
+/** Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_trivial_set_t>();
     test_empty_container_operations<transactional_tracking_set_t>();
@@ -71,7 +71,7 @@ static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests operations on single-element container */
+/** Tests operations on single-element container */
 static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_trivial_set_t>();
     test_single_element_operations<transactional_tracking_set_t>();
@@ -83,7 +83,7 @@ static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests ascending, descending, and random insertion patterns across every container here. */
+/** Tests ascending, descending, and random insertion patterns across every container here. */
 static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_trivial_set_t>();
     test_basic_insertion_patterns<transactional_tracking_set_t>();
@@ -95,7 +95,7 @@ static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk insertion from iterators across every container here. */
+/** Tests bulk insertion from iterators across every container here. */
 static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<transactional_trivial_set_t>();
     test_bulk_insertion_from_iterators<transactional_tracking_set_t>();
@@ -107,13 +107,13 @@ static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk upsert correctly overwrites duplicate keys */
+/** Tests bulk upsert correctly overwrites duplicate keys */
 static void basic_ops_bulk_upsert_with_duplicate_pairs() {
     test_bulk_upsert_with_duplicates<transactional_trivial_map_t>();
     test_bulk_upsert_with_duplicates<transactional_tracking_map_t>();
 }
 
-/** @brief Tests range queries on committed HEAD state */
+/** Tests range queries on committed HEAD state */
 static void basic_ops_range_query_head_state() {
     test_range_query_head_state<transactional_trivial_set_t>();
     test_range_query_head_state<transactional_tracking_set_t>();
@@ -123,7 +123,7 @@ static void basic_ops_range_query_head_state() {
     test_range_query_head_state<transactional_composite_map_t>();
 }
 
-/** @brief Tests erase_range on committed HEAD state */
+/** Tests erase_range on committed HEAD state */
 static void basic_ops_erase_range_head_state() {
     test_erase_range_head_state<transactional_trivial_set_t>();
     test_erase_range_head_state<transactional_tracking_set_t>();
@@ -135,7 +135,7 @@ static void basic_ops_erase_range_head_state() {
     test_erase_range_head_state<transactional_heavy_map_t>();
 }
 
-/** @brief Tests heterogeneous lookup for composite and heavy key types */
+/** Tests heterogeneous lookup for composite and heavy key types */
 static void basic_ops_heterogeneous_lookups() {
     test_heterogeneous_composite_find<transactional_composite_set_t>();
     test_heterogeneous_heavy_string_view_find<transactional_heavy_set_t>();
@@ -216,7 +216,7 @@ static void transactional_consistency_sequential_updates_never_regress() {
     test_sequential_updates_never_regress<transactional_tracking_map_t>();
 }
 
-/** @brief Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
+/** Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
 static void transactional_consistency_transaction_commits_maintain_order() {
     test_transaction_commits_maintain_order<transactional_trivial_map_t>();
     test_transaction_commits_maintain_order<transactional_tracking_map_t>();

@@ -1,15 +1,17 @@
 /**
- *  @brief An immutable S+ tree over sorted keys: every key in sorted leaves, separator copies on the levels above.
- *  @author Ash Vardanian
  *  @file include/smashtable/immutable_splus_tree.hpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief An immutable S+ tree over sorted keys: every key in sorted leaves, separator copies on
+ *      the levels above.
  *
  *  @section immutable_splus_tree_layout Layout
  *
- *  The leaves are the sorted keys cut into rows of @c B, the last row padded. Each level above cuts the one below
- *  into groups of @c B+1 nodes, and node @c t holds as its key @c j the first key of child @c t*(B+1)+j+1, so the
- *  first level up copies every @c B-th key. Levels are stored root first and leaves last. A lookup reads one row per
- *  level and lands on the leaf whose position is the rank, so @c select is an index into the leaves.
+ *  The leaves are the sorted keys cut into rows of @c B, the last row padded. Each level above cuts
+ *  the one below into groups of @c B+1 nodes, and node @c t holds as its key @c j the first key of
+ *  child @c t*(B+1)+j+1, so the first level up copies every @c B-th key. Levels are stored root
+ *  first and leaves last. A lookup reads one row per level and lands on the leaf whose position is
+ *  the rank, so @c select is an index into the leaves.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -26,8 +28,9 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  An immutable S+ tree over @p key_type_, built once from a sorted span, whose nodes are rows of @p keys_per_row_
- *  keys searched by @p row_kit_type_. Its storage is one allocation from @p allocator_type_.
+ *  An immutable S+ tree over @p key_type_, built once from a sorted span, whose nodes are rows of
+ *  @p keys_per_row_ keys searched by @p row_kit_type_. Its storage is one allocation from
+ *  @p allocator_type_.
  *
  *  @tparam keys_per_row_ Keys per node, which is @c default_row_bytes_k worth by default.
  */
@@ -118,7 +121,8 @@ class immutable_splus_tree {
 
     /**
      *  Builds the tree over @p sorted, which may repeat keys.
-     *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or @c out_of_memory_heap_k.
+     *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or
+     *      @c out_of_memory_heap_k.
      */
     [[nodiscard]] static expected<immutable_splus_tree> make(std::span<key_t const> sorted,
                                                              allocator_t allocator = {}) noexcept {

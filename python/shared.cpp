@@ -1,16 +1,17 @@
 /**
- *  @brief Machinery every container shares - key layouts, scalar conversion, errors, and the cursor.
- *  @author Ash Vardanian
  *  @file python/shared.cpp
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Machinery every container shares - key layouts, scalar conversion, errors, and
+ *      the cursor.
  *
  *  Mirrors @c include/smashtable/shared.hpp on the C++ side: one place for the vocabulary the
  *  container files are written in, so they contain only their Python protocol and nothing else.
  *
  *  The four regions build on each other in order. A key layout says what a key IS - how it orders,
  *  how it hashes, where its floor is. Conversion carries a Python scalar across the boundary under
- *  that layout, refusing every type the store was not built for. Errors turn a store's status
- *  into a raised exception. The cursor is the one traversal in the binding, and every walk in every
+ *  that layout, refusing every type the store was not built for. Errors turn a store's status into
+ *  a raised exception. The cursor is the one traversal in the binding, and every walk in every
  *  container goes through it.
  */
 
@@ -225,7 +226,7 @@ bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases
 
 #pragma region Converting Keys In
 
-/** @brief Names the offending type in a way that points at the fix rather than just the refusal. */
+/** Names the offending type in a way that points at the fix rather than just the refusal. */
 static void raise_wrong_key_type(PyObject *object, key_ops_t const *ops) noexcept {
     if (PyBool_Check(object) || PyFloat_Check(object)) {
         PyErr_Format(PyExc_TypeError, "%s is not a valid key; this store takes %s keys, and %s may only be a value",
@@ -341,7 +342,7 @@ PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value)
     return pair;
 }
 
-/** @brief Builds one element in whichever shape @p yields names. */
+/** Builds one element in whichever shape @p yields names. */
 static PyObject *element_to_python(key_variant_t const &key, value_variant_t const &value,
                                    cursor_yields_t yields) noexcept {
     switch (yields) {

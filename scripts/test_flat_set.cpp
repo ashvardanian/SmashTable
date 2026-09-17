@@ -1,8 +1,9 @@
 /**
- *  @brief Tests for @c basic_flat_set: random operations against a presence oracle, through every kit that runs here.
- *  @author Ash Vardanian
  *  @file scripts/test_flat_set.cpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief Tests for @c basic_flat_set: random operations against a presence oracle, through every
+ *      kit that runs here.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1

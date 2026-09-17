@@ -1,15 +1,15 @@
 /**
- *  @brief The @c store_ops_t tables for the unordered core, which supplies no ordering at all.
- *  @author Ash Vardanian
  *  @file python/store_ops_hashed.cpp
+ *  @author Ash Vardanian
  *  @date August 18, 2026
+ *  @brief The @c store_ops_t tables for the unordered core, which supplies no ordering at all.
  *
  *  A separate translation unit from the ordered core because the cores are what pull in the heavy
  *  templates, and because nothing here shares an instantiation with that file.
  *
  *  Every ordered slot in these tables is null. That is not a refusal invented here - the bridge
- *  probes for the member and the core does not have one, so the class built on these tables installs
- *  no iteration, no scan and no range erase, and reaching for one is an @c AttributeError.
+ *  probes for the member and the core does not have one, so the class built on these tables
+ *  installs no iteration, no scan and no range erase, and reaching for one is an @c AttributeError.
  */
 #include "store_ops.hpp"
 
@@ -17,7 +17,7 @@ namespace ashvardanian::smashtable::py {
 
 #pragma region Instantiations
 
-/** @brief The unordered core every class here is built on, once per element shape. */
+/** The unordered core every class here is built on, once per element shape. */
 template <typename value_type_>
 using hashed_core = basic_hash_table<value_type_, key_variant_hash_t, key_variant_equal_t, std::allocator<std::byte>>;
 

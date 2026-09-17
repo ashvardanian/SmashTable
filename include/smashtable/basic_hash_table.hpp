@@ -1,13 +1,13 @@
 /**
- *  @brief Growable open-addressing hash table optimized for CPU and GPU workloads.
- *  @author Ash Vardanian
  *  @file include/smashtable/basic_hash_table.hpp
+ *  @author Ash Vardanian
  *  @date December 21, 2021
+ *  @brief Growable open-addressing hash table optimized for CPU and GPU workloads.
  *
  *  @section basic_hash_table_overview Overview
  *
- *  This file implements @c basic_hash_table, a high-performance open-addressing hash table
- *  designed for both CPU and GPU execution. Unlike STL containers, like @c std::unordered_map,
+ *  This file implements @c basic_hash_table, a high-performance open-addressing hash table designed
+ *  for both CPU and GPU execution. Unlike STL containers, like @c std::unordered_map,
  *  this implementation:
  *  - Never throws exceptions (all operations are @c noexcept)
  *  - Uses only 2 bits of metadata per slot (vs 1 byte in Google's SwissTable)
@@ -24,18 +24,19 @@
  *  This is 4× more space-efficient than SwissTable's 1 byte per slot. We colocate 32× such slots,
  *  cause single- and dual-bit atomic operations aren't possible, but 64-bit ones are!
  *
- *  @b Cache-Efficiency: Keys and values are stored separately (Structure-of-Arrays) rather
- *  than interleaved (Array-of-Structures). During lookups that don't need values, only keys are
- *  loaded into cache, halving memory traffic for failed lookups.
+ *  @b Cache-Efficiency: Keys and values are stored separately (Structure-of-Arrays) rather than
+ *  interleaved (Array-of-Structures). During lookups that don't need values, only keys are loaded
+ *  into cache, halving memory traffic for failed lookups.
  *
- *  @b Performance: Optimized for bulk operations common in analytical and database workloads.
- *  The promises a call carries - @c assume_reserved_t, @c assume_unique_t - select the specialized
- *  code path at compile time, so no branch survives into the emitted code. Each is a claim about the
+ *  @b Performance: Optimized for bulk operations common in analytical and database workloads. The
+ *  promises a call carries - @c assume_reserved_t, @c assume_unique_t - select the specialized code
+ *  path at compile time, so no branch survives into the emitted code. Each is a claim about the
  *  argument or the container's state that the callee cannot check for itself, never a mode switch.
  *
  *  @section basic_hash_table_key_design_decisions Key Design Decisions
  *
- *  @par Load and Probing Strategy
+ *  @section basic_hash_table_load_and_probing_strategy Load and Probing Strategy
+ *
  *  Uses linear probing with step size 1: @code (hash + i) % capacity @endcode.
  *  While simpler than quadratic probing or double hashing, linear probing offers:
  *  - Excellent cache locality (sequential memory access)
@@ -46,13 +47,15 @@
  *  It's recommended to keep the 75% load factor cap to ensure reasonable probe sequence lengths.
  *  Keep it under 40% for best performance to maximize single-probe hits leveraging @b SIMD-gathers.
  *
- *  @par Memory Layout
+ *  @section basic_hash_table_memory_layout_a Memory Layout
+ *
  *  A single allocation carved into three regions, owned by @c hash_storage and described in
  *  @c hash_layout.hpp. The ordering enables @b compaction: when squeezing the hash table into a
  *  dense array, the keys and values are already contiguous at the start of the buffer, and the
  *  headers at the end can be discarded.
  *
- *  @par SIMD Acceleration
+ *  @section basic_hash_table_simd_acceleration_bulk SIMD Acceleration
+ *
  *  Bulk operations can benefit from vectorized hashing:
  *  - AVX-512: Hash many strings in parallel
  *  - SIMD metadata scanning for iteration
@@ -61,9 +64,10 @@
  *  Note: Line Fill Buffer (LFB) limits on x86 (10 concurrent L1D misses) can bottleneck gather
  *  instructions, so vectorized hashing provides more benefit than vectorized probing.
  *
- *  @par Small String Optimization
- *  Inline storage for keys under 16 bytes can eliminate heap allocations and enable efficient
- *  vectorized hashing of fixed-size data. Two approaches possible:
+ *  @section basic_hash_table_small_string_optimization_inline Small String Optimization
+ *
+ *  Inline storage for keys under 16 bytes can eliminate heap allocations and enable efficient vectorized
+ *  hashing of fixed-size data. Two approaches possible:
  *  - Dual tables: separate @c basic_hash_table<array<char,16>, V> for short strings
  *  - Variant storage: @c union of inline buffer and pointer (standard SSO pattern)
  *
@@ -87,7 +91,7 @@ namespace ashvardanian::smashtable {
 
 #pragma region Iterators
 
-/** @brief Detects iterators by the presence of an @c iterator_category, without hard-erroring on other types. */
+/** Detects iterators by the presence of an @c iterator_category, without hard-erroring on other types. */
 template <typename type_, typename = void>
 struct is_iterator_type : std::false_type {};
 
@@ -95,7 +99,7 @@ template <typename type_>
 struct is_iterator_type<type_, std::void_t<decltype(*std::declval<type_ &>()), decltype(++std::declval<type_ &>())>>
     : std::true_type {};
 
-/** @brief Type trait to check if a type is an iterator. */
+/** Type trait to check if a type is an iterator. */
 template <typename type_>
 constexpr bool is_iterator() {
     return is_iterator_type<std::remove_cvref_t<type_>>::value;
@@ -170,14 +174,16 @@ struct hash_table_iterator : public hash_slot_ref<element_type_, hasher_type_> {
 #pragma endregion Iterators
 
 /**
- *  @brief Growable hash table with linear probing and Structure-of-Arrays layout.
- *    Compatible with @c std::unordered_set interface. See file header for detailed design rationale.
+ *  @brief Growable hash table with linear probing and Structure-of-Arrays layout. Compatible with
+ *      @c std::unordered_set interface. See file header for detailed design rationale.
  *
  *  @tparam element_type_ Hashable and equality-comparable key type, or @c mapping<K,V> for maps.
- *  @tparam hasher_type_ Hash function type. Must be copy-constructible. Defaults to a @c std::hash wrapper.
- *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be copy-constructible.
- *    Defaults to a transparent @c std::equal_to.
- *  @tparam allocator_type_ Allocator for internal memory management. Defaults to @c default_allocator<std::byte>.
+ *  @tparam hasher_type_ Hash function type. Must be copy-constructible. Defaults to a @c
+ *      std::hash wrapper.
+ *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be
+ *      copy-constructible. Defaults to a transparent @c std::equal_to.
+ *  @tparam allocator_type_ Allocator for internal memory management. Defaults to
+ *      @c default_allocator<std::byte>.
  *
  *  @see https://en.cppreference.com/w/cpp/container/unordered_set
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
@@ -193,13 +199,16 @@ class basic_hash_table {
     using element_t = typename layout_t::element_t;
     using offset_t = typename layout_t::offset_t;
 
-    /** @brief Whether the element carries a mapped value, making this table a map rather than a set. */
+    /** Whether the element carries a mapped value, making this table a map rather than a set. */
     inline static constexpr bool has_values_k = layout_t::has_values_k;
-    /** @brief Bytes one bucket occupies across all three regions, header included. */
+
+    /** Bytes one bucket occupies across all three regions, header included. */
     inline static constexpr std::size_t bytes_in_bucket_k = layout_t::bytes_in_bucket_k;
-    /** @brief Whether the hasher is stateless, so swapping tables need not exchange it. */
+
+    /** Whether the hasher is stateless, so swapping tables need not exchange it. */
     inline static constexpr bool hasher_is_empty_k = std::is_empty<hasher_type_>::value;
-    /** @brief Whether the equality predicate is stateless, so swapping tables need not exchange it. */
+
+    /** Whether the equality predicate is stateless, so swapping tables need not exchange it. */
     inline static constexpr bool equals_is_empty_k = std::is_empty<equals_type_>::value;
 
     using hasher_t = hasher_type_;
@@ -216,49 +225,57 @@ class basic_hash_table {
     static_assert(std::is_unsigned<offset_t>(),
                   "Hash value must be an unsigned integer, like std::uint32_t or std::uint64_t!");
 
-    /** @brief Whether erasure and teardown must run a key destructor. */
+    /** Whether erasure and teardown must run a key destructor. */
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
-    /** @brief Whether erasure and teardown must run a value destructor. */
+
+    /** Whether erasure and teardown must run a value destructor. */
     inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
 
   public:
-    /** @brief What a probe that may store an element managed to do. */
+    /** What a probe that may store an element managed to do. */
     enum class upsert_result_t : std::uint8_t {
-        /** @brief A free or tombstoned slot took the new element. */
+
+        /** A free or tombstoned slot took the new element. */
         inserted_k,
-        /** @brief An equal key was already there, and the callback saw it. */
+
+        /** An equal key was already there, and the callback saw it. */
         updated_k,
-        /** @brief Every slot along the probe sequence was taken by a different key. */
+
+        /** Every slot along the probe sequence was taken by a different key. */
         no_slot_k,
-        /** @brief A new key needed a larger table, and the allocator refused to supply one. */
+
+        /** A new key needed a larger table, and the allocator refused to supply one. */
         no_memory_k,
     };
 
     /**
      *  @brief A return type for the insert function, similar to @c insert_return_type in STL.
      *
-     *  @c position names the stored or the conflicting element, and the end when nothing was stored.
-     *  @c outcome says which of the four happened, so a key already taken, a probe with no slot left
-     *  and an allocation the table could not make are all distinguishable from one another, without
-     *  comparing the iterator against @c end().
+     *  @c position names the stored or the conflicting element, and the end when nothing was
+     *  stored. @c outcome says which of the four happened, so a key already taken, a probe with no
+     *  slot left and an allocation the table could not make are all distinguishable from one
+     *  another, without comparing the iterator against @c end().
      */
     struct insert_result_t {
         iterator_t position;
         upsert_result_t outcome = upsert_result_t::no_slot_k;
 
-        /** @brief Whether nothing was stored, which is the only way an insertion fails. */
+        /** Whether nothing was stored, which is the only way an insertion fails. */
         bool failed() const noexcept {
             return outcome != upsert_result_t::inserted_k && outcome != upsert_result_t::updated_k;
         }
     };
 
-    /** @brief What a growth attempt did to the table. */
+    /** What a growth attempt did to the table. */
     enum class reserve_result_t : std::uint8_t {
-        /** @brief The capacity already covered the request, so every iterator stays valid. */
+
+        /** The capacity already covered the request, so every iterator stays valid. */
         unchanged_k,
-        /** @brief A larger buffer replaced the old one, invalidating every iterator. */
+
+        /** A larger buffer replaced the old one, invalidating every iterator. */
         reallocated_k,
-        /** @brief The allocator refused, leaving the table exactly as it was. */
+
+        /** The allocator refused, leaving the table exactly as it was. */
         failed_k,
     };
 
@@ -269,7 +286,8 @@ class basic_hash_table {
     using mapped_type = value_t;
     using result_type = insert_result_t;
     using value_type = element_t;
-    /** @brief The element as an owned pair, which @c value_type cannot be: it views two regions. */
+
+    /** The element as an owned pair, which @c value_type cannot be: it views two regions. */
     using owned_value_type = typename layout_t::element_copy_t;
     using size_type = offset_t;
     using difference_type = std::ptrdiff_t;
@@ -287,32 +305,29 @@ class basic_hash_table {
     using is_associative = std::bool_constant<has_values_k>;
     using is_transactional = std::false_type;
 
-    /**
-     *  @brief Restates this table over a different element type, hasher and equality.
-     *    A store that decorates its elements - wrapping them in version metadata, say - needs the
-     *    equality restated alongside the hasher, since both must address the decorated shape.
-     */
+    /** Restates this table over a different element type, hasher and equality. A store that decorates its elements -
+     *  wrapping them in version metadata, say - needs the equality restated alongside the hasher, since both must
+     *  address the decorated shape. */
     template <typename other_element_type_, typename other_hasher_type_, typename other_equals_type_ = equals_t>
     using rebind = basic_hash_table<other_element_type_, other_hasher_type_, other_equals_type_, allocator_t>;
 
   private:
-    /** @brief The single allocation, the three regions carved from it, and the counters. */
+    /** The single allocation, the three regions carved from it, and the counters. */
     storage_t storage_;
 
-    /** @brief Hashes a key down to its initial probe offset. */
+    /** Hashes a key down to its initial probe offset. */
     ST_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
-    /** @brief Decides whether a probed key matches the wanted one. */
+
+    /** Decides whether a probed key matches the wanted one. */
     ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
-    /**
-     *  @brief Allocates and zeroes a table of the requested slot count.
-     *    On allocation failure the table is left empty, which the factories report as an error.
-     */
+    /** Allocates and zeroes a table of the requested slot count. On allocation failure the table is left empty,
+     *  which the factories report as an error. */
     basic_hash_table(hash_slots_count_t slots, hasher_t hasher, equals_t equals, allocator_t allocator) noexcept
         : storage_(storage_t::make(slots, std::move(allocator))), hasher_(std::move(hasher)),
           equals_(std::move(equals)) {}
 
-    /** @brief What an insertion that stored nothing reports: the end position, and why it stored nothing. */
+    /** What an insertion that stored nothing reports: the end position, and why it stored nothing. */
     insert_result_t missed_position_(upsert_result_t outcome) noexcept {
         insert_result_t result;
         unsafe_retarget(result.position, storage_.slots_count);
@@ -328,10 +343,10 @@ class basic_hash_table {
      *  slot before the probe has established the key is absent turns a plain overwrite into an
      *  allocation failure the caller has no way to satisfy.
      *
-     *  @param[in] tags Markers for special acceleration: @c assume_unique_t has already answered
-     *    the question the presence probe would ask, so the growth is decided without one.
+     *  @tparam tags_types_ Markers for special acceleration: @c assume_unique_t has already answered
+     *      the question the presence probe would ask, so the growth is decided without one.
      *  @return @c unchanged_k when nothing had to move, @c reallocated_k after a growth, and
-     *    @c failed_k when a growth the table genuinely needed was refused.
+     *      @c failed_k when a growth the table genuinely needed was refused.
      */
     template <typename comparable_key_type_, typename... tags_types_>
     reserve_result_t reserve_for_absent_key_(comparable_key_type_ const &wanted, tags_types_...) noexcept {
@@ -349,8 +364,8 @@ class basic_hash_table {
 #pragma region Constructors
 
     /**
-     *  @brief Default constructor, avoiding memory allocations, accepting a pre-constructed hasher functor,
-     *    an equality operator, and the allocator state.
+     *  @brief Default constructor, avoiding memory allocations, accepting a pre-constructed hasher
+     *      functor, an equality operator, and the allocator state.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/unordered_map
      */
     basic_hash_table(hasher_t hasher = {}, equals_t equals = {}, allocator_t allocator = {}) noexcept
@@ -368,7 +383,8 @@ class basic_hash_table {
     basic_hash_table(offset_t, hasher_t = {}, equals_t = {}, allocator_t = {}) noexcept = delete;
 
     /**
-     *  @brief Most commonly used @b constructor-like interface, sized by the element count you plan to store.
+     *  @brief Most commonly used @b constructor-like interface, sized by the element count you plan
+     *      to store.
      *  @return An empty-status @c expected if the allocation has failed.
      */
     [[nodiscard]] static expected<basic_hash_table> make(offset_t planned_elements, hasher_t hasher = {},
@@ -400,10 +416,10 @@ class basic_hash_table {
         return table;
     }
 
-    /** @brief Surrenders the allocation, leaving this table empty. */
+    /** Surrenders the allocation, leaving this table empty. */
     [[nodiscard]] storage_t release() && noexcept { return std::move(storage_); }
 
-    /** @brief Takes ownership of an allocation another table built. */
+    /** Takes ownership of an allocation another table built. */
     [[nodiscard]] static basic_hash_table adopt(storage_t &&storage, hasher_t hasher = {},
                                                 equals_t equals = {}) noexcept {
         basic_hash_table table(std::move(hasher), std::move(equals));
@@ -418,7 +434,7 @@ class basic_hash_table {
     bool empty() const noexcept { return !storage_.populated_count; }
     offset_t size() const noexcept { return storage_.populated_count; }
 
-    /** @brief Tombstones left behind by erasures, which only a rehash reclaims. */
+    /** Tombstones left behind by erasures, which only a rehash reclaims. */
     offset_t deleted_count() const noexcept { return storage_.deleted_count; }
 
     offset_t optimal_capacity() const noexcept { return storage_.growth_threshold; }
@@ -467,12 +483,13 @@ class basic_hash_table {
 #pragma region Probes
 
     /**
-     *  @brief Probe optimized for @c find: checks if a value is present.
-     *    Unlike @c probe_to_insert or @c probe_to_upsert, doesn't track "deleted" slots.
+     *  @brief Probe optimized for @c find: checks if a value is present. Unlike @c probe_to_insert
+     *      or @c probe_to_upsert, doesn't track "deleted" slots.
      *
      *  @param[in] wanted Hashable and comparable with key object.
-     *  @param[in] call A callback receiving a @c const_slot_ref_t to an initialized matching object.
-     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     *  @param[in] call A callback receiving a @c const_slot_ref_t to an initialized
+     *      matching object.
+     *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
     void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
@@ -514,13 +531,14 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Visits @b every populated slot matching @p wanted, not just the first.
-     *    A table whose equality separates versions of one key files them all in one probe run, because
-     *    the hasher still peels to the bare key. Finding one of them is not finding the newest one.
+     *  @brief Visits @b every populated slot matching @p wanted, not just the first. A table whose
+     *      equality separates versions of one key files them all in one probe run, because the
+     *      hasher still peels to the bare key. Finding one of them is not finding the newest one.
      *
      *  @param[in] wanted Hashable and comparable with key object.
-     *  @param[in] call Receives each @c const_slot_ref_t and returns @c probe_control_t. Must be @c noexcept.
-     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     *  @param[in] call Receives each @c const_slot_ref_t and returns @c probe_control_t. Must be
+     *      @c noexcept.
+     *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
     void probe_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
@@ -562,12 +580,12 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Probe optimized for @c find: checks if a value is present.
-     *    Unlike @c probe_to_insert or @c probe_to_upsert, doesn't track "deleted" slots.
+     *  @brief Probe optimized for @c find: checks if a value is present. Unlike @c probe_to_insert
+     *      or @c probe_to_upsert, doesn't track "deleted" slots.
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call A callback receiving a @c slot_ref_t to an initialized matching object.
-     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
     void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
@@ -604,13 +622,13 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Probe optimized for @c insert of a unique key.
-     *    Unlike @c probe_to_upsert avoids potentially expensive equality comparisons,
-     *    knowing that the incoming key is different from all present members.
+     *  @brief Probe optimized for @c insert of a unique key. Unlike @c probe_to_upsert avoids
+     *      potentially expensive equality comparisons, knowing that the incoming key is different
+     *      from all present members.
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call A callback receiving a @c slot_ref_t to UN-initialized memory, where an
-     *    element should be built.
+     *      element should be built.
      *  @return Whether a slot took the element; the counters only move when one did.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
@@ -643,13 +661,14 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Probe optimized for potential @c upserts.
-     *    More expensive than @c probe_to_find and @c probe_to_insert, so pick this method wisely.
+     *  @brief Probe optimized for potential @c upserts. More expensive than @c probe_to_find and
+     *      @c probe_to_insert, so pick this method wisely.
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call_unused A callback receiving a @c slot_ref_t to UN-initialized memory, where
-     *    an element should be built.
-     *  @param[in] call_equal A callback receiving a @c slot_ref_t to an initialized matching object.
+     *      an element should be built.
+     *  @param[in] call_equal A callback receiving a @c slot_ref_t to an initialized
+     *      matching object.
      *  @return What the probe managed to do; @c no_slot_k when every slot holds a different key.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_,
@@ -727,7 +746,7 @@ class basic_hash_table {
 
 #pragma region Lookups
 
-    /** @brief Number of slots between the reference's position and the end of the table. */
+    /** Number of slots between the reference's position and the end of the table. */
     template <typename address_or_iterator_type_>
     offset_t slots_remaining_after(address_or_iterator_type_ &&slot) const noexcept {
         return storage_.slots_count - slot.slot_;
@@ -737,7 +756,8 @@ class basic_hash_table {
      *  @brief Reports whether a key equivalent to @p wanted is present.
      *  @param[in] wanted Key to probe for.
      *  @param[in] tags Dispatch tags the probe understands.
-     *  @return Whether the key is present. A probe over owned slots allocates nothing, so it never refuses.
+     *  @return Whether the key is present. A probe over owned slots allocates nothing, so it
+     *      never refuses.
      */
     template <typename comparable_key_type_, typename... tags_types_>
     [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
@@ -781,7 +801,7 @@ class basic_hash_table {
      *  @brief Returns a reference to the mapped value of the element with the given key.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/at
      *  @warning A missing key has no value to name and this library does not throw, so the call
-     *    aborts rather than hand back a reference one past the values region.
+     *      aborts rather than hand back a reference one past the values region.
      */
     template <typename comparable_key_type_ = key_t const &>
     value_storage_t &at(comparable_key_type_ &&key) noexcept {
@@ -802,7 +822,7 @@ class basic_hash_table {
      *  @brief Returns a const reference to the mapped value of the element with the given key.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/at
      *  @warning A missing key has no value to name and this library does not throw, so the call
-     *    aborts rather than hand back a reference one past the values region.
+     *      aborts rather than hand back a reference one past the values region.
      */
     template <typename comparable_key_type_ = key_t const &>
     value_storage_t const &at(comparable_key_type_ &&key) const noexcept {
@@ -873,7 +893,7 @@ class basic_hash_table {
     end_sentinel_t end() const noexcept { return end_sentinel_t {}; }
     end_sentinel_t cend() const noexcept { return end_sentinel_t {}; }
 
-    /** @brief Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
+    /** Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<slot_ref_t>>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) noexcept {
         slot_ref_t slot;
@@ -886,7 +906,7 @@ class basic_hash_table {
         return success_k;
     }
 
-    /** @brief Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
+    /** Invokes the callback for every populated slot, bucket by bucket, until it halts the walk. */
     template <typename callback_type_ = no_op<const_slot_ref_t>>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept {
         const_slot_ref_t slot;
@@ -914,16 +934,16 @@ class basic_hash_table {
         return !has_values_k && std::is_constructible<key_t, convertible_key_type_ &&>();
     }
 
-    /** @brief What an insertion hands back: nothing at all, or where the element landed and how. */
+    /** What an insertion hands back: nothing at all, or where the element landed and how. */
     enum class emplace_report_t : bool { no_result_k, insert_result_k };
 
     /**
      *  @brief Deleted: hint-based emplace is not supported.
      *
-     *  A hint names a position, and an open-addressed table decides position by hashing the key,
-     *  so there is nothing a caller could usefully hint at. Declaring it deleted rather than
-     *  omitting it turns a port from @c std::unordered_map into a signposted error instead of an
-     *  unexplained missing member. Use @c emplace, or @c probe_to_upsert for finer control.
+     *  A hint names a position, and an open-addressed table decides position by hashing the key, so
+     *  there is nothing a caller could usefully hint at. Declaring it deleted rather than omitting
+     *  it turns a port from @c std::unordered_map into a signposted error instead of an unexplained
+     *  missing member. Use @c emplace, or @c probe_to_upsert for finer control.
      *
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/emplace_hint
      */
@@ -931,12 +951,12 @@ class basic_hash_table {
     iterator_t emplace_hint(const_iterator_t, args_types_ &&...) noexcept = delete;
 
     /**
-     *  @brief Main insertion method for maps, finding the optimal location and overwriting it.
-     *    More performant than @c insert, as it avoids temporary object construction.
+     *  @brief Main insertion method for maps, finding the optimal location and overwriting it. More
+     *      performant than @c insert, as it avoids temporary object construction.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/emplace
      *
-     *  @param[in] tags Markers for special acceleration:
-     *    @c assume_reserved_t avoids reserving more memory, @c assume_unique_t skips equality comparisons.
+     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids reserving more
+     *      memory, @c assume_unique_t skips equality comparisons.
      */
     template <
         emplace_report_t report_ = emplace_report_t::no_result_k, typename convertible_key_type_,
@@ -990,12 +1010,12 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Main insertion method for sets, finding the optimal location and overwriting it.
-     *    More performant than @c insert, as it avoids temporary object construction.
+     *  @brief Main insertion method for sets, finding the optimal location and overwriting it. More
+     *      performant than @c insert, as it avoids temporary object construction.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_set/emplace
      *
-     *  @param[in] tags Markers for special acceleration:
-     *    @c assume_reserved_t avoids reserving more memory, @c assume_unique_t skips equality comparisons.
+     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids reserving more
+     *      memory, @c assume_unique_t skips equality comparisons.
      */
     template <emplace_report_t report_ = emplace_report_t::no_result_k, typename convertible_key_type_,
               typename... tags_types_,
@@ -1072,14 +1092,14 @@ class basic_hash_table {
 
     /**
      *  @brief Files an element under its own key, replacing whatever key compared equal to it.
-     *    Unlike @c insert, which keeps the incumbent, this one always leaves the argument in place,
-     *    which is what a store layering its own versioning on top of the table needs.
+     *      Unlike @c insert, which keeps the incumbent, this one always leaves the argument in
+     *      place, which is what a store layering its own versioning on top of the table needs.
      *
      *  @param[in] element Element to file, moved into the table.
      *  @return @c out_of_memory_heap_k when a @b new key needed a larger table and the allocator
-     *    refused, @c capacity_exhausted_k when the bounded probe found no slot for it and only a
-     *    rehash can make one, and @c success_k otherwise - including the overwrite of a key already
-     *    stored, which needs no room and therefore never asks the allocator for any.
+     *      refused, @c capacity_exhausted_k when the bounded probe found no slot for it and only a
+     *      rehash can make one, and @c success_k otherwise - including the overwrite of a key
+     *      already stored, which needs no room and therefore never asks the allocator for any.
      */
     template <typename convertible_element_type_>
     [[nodiscard]] status_t upsert(convertible_element_type_ &&element) noexcept {
@@ -1110,8 +1130,8 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief An interface similar to @c std::unordered_map::merge, banned in favor of
-     *    a manual @c insert(begin, end).
+     *  @brief An interface similar to @c std::unordered_map::merge, banned in favor of a manual
+     *      @c insert(begin, end).
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/merge
      */
     template <typename other_type_>
@@ -1139,11 +1159,12 @@ class basic_hash_table {
     void erase(const_iterator_t) = delete;
 
     /**
-     *  @brief Removes a value by key in the most efficient fashion.
-     *    If you already have the iterator, use the faster overload that avoids the search entirely.
+     *  @brief Removes a value by key in the most efficient fashion. If you already have the
+     *      iterator, use the faster overload that avoids the search entirely.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/erase
      *
-     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t assumes a non-empty table.
+     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t assumes a
+     *      non-empty table.
      *  @return True if the wanted key was found.
      *
      *  @note Erasures never deallocate; memory stays cluttered until the next @c force_resize().
@@ -1191,7 +1212,8 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief The recommended entry point for bulk insertions, sizing for the elements already present.
+     *  @brief The recommended entry point for bulk insertions, sizing for the elements
+     *      already present.
      *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
      */
     reserve_result_t reserve_more(offset_t new_elements) noexcept {
@@ -1200,9 +1222,9 @@ class basic_hash_table {
 
     /**
      *  @brief Exports the data into a fresh table of the requested size and swaps the contents.
-     *    Also used to clean the tombstones left behind by deletions.
+     *      Also used to clean the tombstones left behind by deletions.
      *  @return @c failed_k when the request cannot hold what is stored, or the new buffer could not
-     *    be allocated, leaving this table untouched either way.
+     *      be allocated, leaving this table untouched either way.
      */
     reserve_result_t force_resize(hash_slots_count_t slots_count) noexcept {
         if (slots_count.raw < size()) return reserve_result_t::failed_k;
@@ -1232,8 +1254,8 @@ class basic_hash_table {
      *  @brief Brings the memory consumption of the container to the minimum.
      *  @see https://en.cppreference.com/w/cpp/container/vector/shrink_to_fit
      *  @note Best-effort, matching the @c void shape of the standard containers: a refused
-     *    allocation leaves the table exactly as it was, with every element still reachable.
-     *    Call @c force_resize when the outcome has to be known.
+     *      allocation leaves the table exactly as it was, with every element still reachable. Call
+     *      @c force_resize when the outcome has to be known.
      */
     void shrink_to_fit() noexcept {
         hash_slots_count_t const new_capacity {size()};
@@ -1253,7 +1275,7 @@ class basic_hash_table {
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/rehash
      *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
      *  @note A request too small for what is stored is raised to what the current size needs, so
-     *    @c rehash(0) compacts rather than emptying the table into a layout with no slots at all.
+     *      @c rehash(0) compacts rather than emptying the table into a layout with no slots at all.
      */
     reserve_result_t rehash(offset_t count_buckets) noexcept {
         hash_slots_count_t const wanted = hash_slots_count_t::from_slots(count_buckets * hash_bucket_capacity_k);
@@ -1267,9 +1289,9 @@ class basic_hash_table {
 
     /**
      *  @brief Creates a new buffer of the requested capacity and rehashes the present data into it.
-     *    Move-constructors are used, avoiding copies, and this table is left deallocated.
+     *      Move-constructors are used, avoiding copies, and this table is left deallocated.
      *  @return An unallocated table when the allocator refused or nothing was asked for, leaving
-     *    this one untouched.
+     *      this one untouched.
      *  @warning The new capacity can't be less than the current @c size().
      */
     basic_hash_table move_to_new(hash_slots_count_t slots_count) noexcept {
@@ -1294,7 +1316,7 @@ class basic_hash_table {
         return target;
     }
 
-    /** @brief Duplicates the table, reusing the exact bucket layout when the elements are trivial. */
+    /** Duplicates the table, reusing the exact bucket layout when the elements are trivial. */
     basic_hash_table copy_to_new() const noexcept {
 
         basic_hash_table target(slots_count(), hasher_, equals_, get_allocator());
@@ -1315,7 +1337,7 @@ class basic_hash_table {
         return target;
     }
 
-    /** @brief Duplicates the table into a differently sized one, rehashing every element. */
+    /** Duplicates the table into a differently sized one, rehashing every element. */
     basic_hash_table copy_to_new(hash_slots_count_t slots_count) const noexcept {
         basic_hash_table target(slots_count, hasher_, equals_, get_allocator());
         if (!target.storage_.is_allocated()) return target;

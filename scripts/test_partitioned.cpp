@@ -1,16 +1,17 @@
 /**
- *  @brief Test instantiations for the thread-safety wrappers, over every core and every isolation rung
- *      a wrapper is expected to carry unchanged.
- *  @author Ash Vardanian
  *  @file scripts/test_partitioned.cpp
+ *  @author Ash Vardanian
  *  @date August 16, 2026
+ *  @brief Test instantiations for the thread-safety wrappers, over every core and every isolation
+ *      rung a wrapper is expected to carry unchanged.
  *
  *  @section test_partitioned_stores The Stores Under The Wrappers
  *
- *  @c locked_store and @c partitioned_store are both meant to be invisible, so what they wrap is varied
- *  rather than fixed: AVL and weight-balanced trees, an open-addressed table with no ordering at all,
- *  the monotonic, snapshot and serializable families, and @c refusing_store to drive the refusal paths.
- *  A suite runs against whichever of those carries the surface and the level it asks about.
+ *  @c locked_store and @c partitioned_store are both meant to be invisible, so what they wrap is
+ *  varied rather than fixed: AVL and weight-balanced trees, an open-addressed table with no
+ *  ordering at all, the monotonic, snapshot and serializable families, and @c refusing_store to
+ *  drive the refusal paths. A suite runs against whichever of those carries the surface and the
+ *  level it asks about.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -57,21 +58,17 @@ using transactional_composite_map_t = partitioned_store<tree_composite_map_t>;
 using tree_tracking_set_t = monotonic_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 using self_tracking_set_t = partitioned_store<tree_tracking_set_t>;
 
-/**
- *  Sharded on @c std::shared_mutex rather than the library's own.
+/** Sharded on @c std::shared_mutex rather than the library's own.
  *
  *  The mutex is a template parameter, so the default is a choice and not the only thing that fits;
- *  running the concurrency suites against the standard one is what keeps the substitution honest.
- */
+ *  running the concurrency suites against the standard one is what keeps the substitution honest. */
 using standard_mutex_set_t = partitioned_store<tree_composite_set_t, hash<composite_key_t>, std::shared_mutex, 16>;
 using standard_mutex_map_t = partitioned_store<tree_composite_map_t, hash<composite_key_t>, std::shared_mutex, 16>;
 
-/**
- *  Wrapped around a hash-backed store, which offers no ordering at all.
+/** Wrapped around a hash-backed store, which offers no ordering at all.
  *
  *  The wrappers forward the ordered surface, so an unordered inner store must lose it at overload
- *  resolution rather than inside an instantiation of a body that cannot compile.
- */
+ *  resolution rather than inside an instantiation of a body that cannot compile. */
 using hash_store_t = monotonic_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
 
 static_assert(offers_ordered_surface<tree_trivial_set_t>, "the tree-backed store is ordered");
@@ -87,11 +84,12 @@ static_assert(!offers_ordered_surface<partitioned_store<hash_store_t>>,
               "the partitioned wrapper must not claim an ordering its inner store denies");
 
 /**
- *  @brief An ordered store that erases no window, which is what tells a per-method gate from a composite.
+ *  @brief An ordered store that erases no window, which is what tells a per-method gate from
+ *      a composite.
  *
  *  Every ordered forward once asked for the whole composite, so a store missing any one of its four
- *  methods lost the other three through every wrapper. Reading a bound and stepping a cursor ask for
- *  nothing that erases, and this fixture is the store that says so.
+ *  methods lost the other three through every wrapper. Reading a bound and stepping a cursor ask
+ *  for nothing that erases, and this fixture is the store that says so.
  */
 struct unerasable_ordered_set_t : tree_trivial_set_t {
     using base_t = tree_trivial_set_t;
@@ -107,7 +105,7 @@ struct unerasable_ordered_set_t : tree_trivial_set_t {
         return unerasable_ordered_set_t {std::move(*built)};
     }
 
-    /** @brief Hides the inherited window erase, so the composite is false while the bounds stay true. */
+    /** Hides the inherited window erase, so the composite is false while the bounds stay true. */
     template <typename... arguments_types_>
     void erase_range(arguments_types_ &&...) = delete;
 };
@@ -137,13 +135,14 @@ using monotonic_ranked_set_t = monotonic_wb_set<trivial_key_t, std::less<trivial
 /**
  *  @brief A store whose enumeration is spelled as a walk of the whole keyspace.
  *
- *  The wrapper suites walk this rather than a shipped store, so what they exercise is the forwarding
- *  and the locking around an enumeration, not the visibility rules a store applies inside its own.
+ *  The wrapper suites walk this rather than a shipped store, so what they exercise is the
+ *  forwarding and the locking around an enumeration, not the visibility rules a store applies
+ *  inside its own.
  */
 struct enumerable_set_t : tree_trivial_set_t {
     using base_t = tree_trivial_set_t;
 
-    /** @brief One past the largest identifier any suite here builds a key from. */
+    /** One past the largest identifier any suite here builds a key from. */
     static constexpr trivial_id_t keyspace_k = 1u << 20;
 
     enumerable_set_t() noexcept = default;
@@ -201,10 +200,9 @@ using partitioned_enumerable_set_t = partitioned_store<enumerable_set_t>;
 using transactional_tracking_set_t = locked_set<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
 
-/**
- *  The shape-naming aliases wrap one class each, so what distinguishes them is which stores they
- *  accept: an alias that took every store would name the same type as its sibling and catch nothing.
- */
+/** The shape-naming aliases wrap one class each, so what distinguishes them is which stores they
+ *  accept: an alias that took every store would name the same type as its sibling and catch
+ *  nothing. */
 template <typename store_type_>
 constexpr bool names_locked_set = requires { typename locked_set<store_type_>; };
 template <typename store_type_>
@@ -223,10 +221,8 @@ static_assert(names_partitioned_map<tree_trivial_map_t>, "the map alias takes a 
 static_assert(!names_partitioned_map<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
 static_assert(!names_partitioned_set<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
 
-/**
- *  A wrapper names itself @c store_t, which is what every engine calls its own self-alias, so one name
- *  means one thing whichever kind of store a generic caller is handed.
- */
+/** A wrapper names itself @c store_t, which is what every engine calls its own self-alias, so one
+ *  name means one thing whichever kind of store a generic caller is handed. */
 static_assert(std::is_same<typename locked_store<tree_trivial_set_t>::store_t, locked_store<tree_trivial_set_t>>(),
               "a store names itself");
 static_assert(
@@ -252,12 +248,10 @@ using serializable_trivial_map_t =
     serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 using sharded_serializable_map_t = partitioned_store<serializable_trivial_map_t>;
 
-/**
- *  Every public surface of every shipped store, against every wrapper nesting.
+/** Every public surface of every shipped store, against every wrapper nesting.
  *
- *  One line per store: the fold names the surface, the wrapper and the store in the diagnostic, so a
- *  forward that goes missing fails here rather than at whatever call site happened to want it.
- */
+ *  One line per store: the fold names the surface, the wrapper and the store in the diagnostic, so
+ *  a forward that goes missing fails here rather than at whatever call site happened to want it. */
 static_assert(every_wrapper_keeps_surfaces<tree_trivial_set_t>, "a wrapper must keep what its store offers");
 static_assert(every_wrapper_keeps_surfaces<tree_trivial_map_t>, "a wrapper must keep what its store offers");
 static_assert(every_wrapper_keeps_surfaces<monotonic_ranked_set_t>, "a wrapper must keep what its store offers");
@@ -298,13 +292,13 @@ static_assert(optimistically_concurrent_store<partitioned_store<locked_store<sna
 
 #pragma region Suites
 
-/** @brief Walkers crossing a sharded map while an eraser churns it. */
+/** Walkers crossing a sharded map while an eraser churns it. */
 static void sharded_concurrency_walks_never_race_erasures() {
     test_sharded_walks_never_race_erasures<transactional_composite_map_t>();
     test_sharded_walks_never_race_erasures<standard_mutex_map_t>();
 }
 
-/** @brief Range walks crossing a writer that empties and refills the span underneath them. */
+/** Range walks crossing a writer that empties and refills the span underneath them. */
 static void sharded_concurrency_range_walks_share_partitions() {
     test_sharded_range_walks_share_partitions<transactional_composite_map_t>();
     test_sharded_range_walks_share_partitions<standard_mutex_map_t>();
@@ -312,30 +306,32 @@ static void sharded_concurrency_range_walks_share_partitions() {
     test_sharded_lower_bound_probes_twice<standard_mutex_map_t>();
 }
 
-/** @brief The same suites against @c std::shared_mutex, so the substituted lock stays exercised. */
+/** The same suites against @c std::shared_mutex, so the substituted lock stays exercised. */
 static void sharded_concurrency_standard_mutex_substitutes() {
     test_empty_container_operations<standard_mutex_set_t>();
     test_single_element_operations<standard_mutex_set_t>();
     test_sharded_stage_unwinds_on_partial_failure<standard_mutex_map_t>();
 }
 
-/** @brief Concurrent transaction opens must never share a generation. */
+/** Concurrent transaction opens must never share a generation. */
 static void sharded_concurrency_distinct_generations() {
     test_concurrent_transactions_get_distinct_generations<tree_trivial_map_t>();
     test_concurrent_transactions_get_distinct_generations<tree_trivial_set_t>();
 }
 
-/** @brief A refused stage must leave no partition holding an unpublishable reservation. */
+/** A refused stage must leave no partition holding an unpublishable reservation. */
 static void sharded_concurrency_stage_unwinds_on_partial_failure() {
     test_sharded_stage_unwinds_on_partial_failure<transactional_trivial_map_t>();
     test_sharded_stage_unwinds_on_partial_failure<sharded_refusing_map_t>();
 }
 
 /**
- *  @brief What a commit spanning partitions looks like to a reader, at both levels a shard set reaches.
+ *  @brief What a commit spanning partitions looks like to a reader, at both levels a shard
+ *      set reaches.
  *
- *  A stamped part keeps its promise whole through the sharding, and a part without a stamp is capped
- *  at @c read_committed_k - so the same walk must tear against one and never against the other.
+ *  A stamped part keeps its promise whole through the sharding, and a part without a stamp is
+ *  capped at @c read_committed_k - so the same walk must tear against one and never against
+ *  the other.
  */
 static void sharded_concurrency_commit_spans_partitions() {
     test_commit_spans_partitions_matches_isolation<transactional_trivial_map_t>();
@@ -345,8 +341,9 @@ static void sharded_concurrency_commit_spans_partitions() {
 /**
  *  @brief Both sides of whether a sharded window read is validated at commit.
  *
- *  The snapshot store records no reads, so a key landing in a window it walked cannot refuse it; the
- *  serializable one records the window and must. One walk, one key, two levels, opposite answers.
+ *  The snapshot store records no reads, so a key landing in a window it walked cannot refuse it;
+ *  the serializable one records the window and must. One walk, one key, two levels,
+ *  opposite answers.
  */
 static void sharded_concurrency_window_read_is_validated() {
     test_sharded_window_read_is_validated<sharded_snapshot_map_t>();
@@ -356,15 +353,15 @@ static void sharded_concurrency_window_read_is_validated() {
 /**
  *  @brief A watch on an absent key survives a rollback here as it does on an unsharded store.
  *
- *  Registered for the sharded stores now that a rollback keeps its partition marks; without them the
- *  retry had nothing to stage and the watch went with the writes.
+ *  Registered for the sharded stores now that a rollback keeps its partition marks; without them
+ *  the retry had nothing to stage and the watch went with the writes.
  */
 static void transactional_consistency_absent_watch_survives_rollback() {
     test_absent_watch_survives_rollback<transactional_trivial_map_t>();
     test_absent_watch_survives_rollback<transactional_composite_map_t>();
 }
 
-/** @brief Tests operations on empty container don't crash */
+/** Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_trivial_set_t>();
     test_empty_container_operations<transactional_tracking_set_t>();
@@ -374,7 +371,7 @@ static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_composite_map_t>();
 }
 
-/** @brief Tests operations on single-element container */
+/** Tests operations on single-element container */
 static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_trivial_set_t>();
     test_single_element_operations<transactional_tracking_set_t>();
@@ -384,7 +381,7 @@ static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_composite_map_t>();
 }
 
-/** @brief Tests insertion patterns (ascending, descending, random) for all AVL containers */
+/** Tests insertion patterns (ascending, descending, random) for all AVL containers */
 static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_trivial_set_t>();
     test_basic_insertion_patterns<transactional_tracking_set_t>();
@@ -394,7 +391,7 @@ static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_composite_map_t>();
 }
 
-/** @brief Tests bulk insertion from iterators for all AVL containers */
+/** Tests bulk insertion from iterators for all AVL containers */
 static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<transactional_trivial_set_t>();
     test_bulk_insertion_from_iterators<transactional_tracking_set_t>();
@@ -404,13 +401,13 @@ static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<transactional_composite_map_t>();
 }
 
-/** @brief Tests bulk upsert correctly overwrites duplicate keys */
+/** Tests bulk upsert correctly overwrites duplicate keys */
 static void basic_ops_bulk_upsert_with_duplicate_pairs() {
     test_bulk_upsert_with_duplicates<transactional_trivial_map_t>();
     test_bulk_upsert_with_duplicates<transactional_tracking_map_t>();
 }
 
-/** @brief Tests range queries on committed HEAD state */
+/** Tests range queries on committed HEAD state */
 static void basic_ops_range_query_head_state() {
     test_range_query_head_state<transactional_trivial_set_t>();
     test_range_query_head_state<transactional_tracking_set_t>();
@@ -420,7 +417,7 @@ static void basic_ops_range_query_head_state() {
     test_range_query_head_state<transactional_composite_map_t>();
 }
 
-/** @brief Tests erase_range on committed HEAD state */
+/** Tests erase_range on committed HEAD state */
 static void basic_ops_erase_range_head_state() {
     test_erase_range_head_state<transactional_trivial_set_t>();
     test_erase_range_head_state<transactional_tracking_set_t>();
@@ -430,7 +427,7 @@ static void basic_ops_erase_range_head_state() {
     test_erase_range_head_state<transactional_composite_map_t>();
 }
 
-/** @brief Tests heterogeneous lookup for composite and heavy key types */
+/** Tests heterogeneous lookup for composite and heavy key types */
 static void basic_ops_heterogeneous_lookups() {
     test_heterogeneous_composite_find<transactional_composite_set_t>();
     test_heterogeneous_composite_find<transactional_composite_map_t>();
@@ -495,7 +492,7 @@ static void transactional_consistency_sequential_updates_never_regress() {
     test_sequential_updates_never_regress<transactional_tracking_map_t>();
 }
 
-/** @brief Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
+/** Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
 static void transactional_consistency_transaction_commits_maintain_order() {
     test_transaction_commits_maintain_order<transactional_trivial_map_t>();
     test_transaction_commits_maintain_order<transactional_tracking_map_t>();
@@ -603,7 +600,7 @@ static void transactional_consistency_find_does_not_watch() {
 
 #pragma region Forwarded Surface
 
-/** @brief Builds a store through its own @c make, since a wrapper has no other public constructor. */
+/** Builds a store through its own @c make, since a wrapper has no other public constructor. */
 template <typename store_type_>
 static expected<store_type_> built_store() {
     expected<store_type_> made = store_type_::make();
@@ -612,7 +609,8 @@ static expected<store_type_> built_store() {
 }
 
 /**
- *  @brief A strict insert through a wrapper must refuse an occupied key with the bare store's status.
+ *  @brief A strict insert through a wrapper must refuse an occupied key with the bare
+ *      store's status.
  *
  *  The status is read off the bare store rather than spelled out, so the suite stays true whichever
  *  refusal a store family picks - what is under test is that the wrapper hands the same one back.
@@ -653,7 +651,7 @@ static void test_forwarded_strict_insert() {
     st_verify_eq_(wrapped.size(), 3u);
 }
 
-/** @brief A strict update through a wrapper must refuse an absent key with the bare store's status. */
+/** A strict update through a wrapper must refuse an absent key with the bare store's status. */
 template <typename wrapper_type_, typename inner_type_>
 static void test_forwarded_strict_update() {
 
@@ -680,7 +678,7 @@ static void test_forwarded_strict_update() {
     st_verify_(writer->update(trivial_id_to_member<member_t>(3)));
 }
 
-/** @brief Ordinals through a wrapper must name the same elements the merged order does. */
+/** Ordinals through a wrapper must name the same elements the merged order does. */
 template <typename wrapper_type_>
 static void test_forwarded_order_statistics(std::size_t count = 64) {
 
@@ -721,7 +719,7 @@ static void test_forwarded_order_statistics(std::size_t count = 64) {
     st_verify_((missed) && "a key that is not there has no rank");
 }
 
-/** @brief A sweep through a wrapper must answer with a count and leave every survivor readable. */
+/** A sweep through a wrapper must answer with a count and leave every survivor readable. */
 template <typename wrapper_type_>
 static void test_forwarded_vacuum(std::size_t count = 32) {
 
@@ -745,7 +743,7 @@ static void test_forwarded_vacuum(std::size_t count = 32) {
     }
 }
 
-/** @brief A windowed sweep must reclaim its window and leave the rest of the keyspace readable. */
+/** A windowed sweep must reclaim its window and leave the rest of the keyspace readable. */
 template <typename wrapper_type_>
 static void test_forwarded_windowed_vacuum(std::size_t count = 32) {
 
@@ -764,7 +762,7 @@ static void test_forwarded_windowed_vacuum(std::size_t count = 32) {
     st_verify_eq_(container.size(), 0u);
 }
 
-/** @brief A range rewrite through a wrapper must touch the window and nothing beside it. */
+/** A range rewrite through a wrapper must touch the window and nothing beside it. */
 template <typename wrapper_type_>
 static void test_forwarded_update_range(std::size_t count = 32) {
 
@@ -794,7 +792,7 @@ static void test_forwarded_update_range(std::size_t count = 32) {
     }
 }
 
-/** @brief A wrapper names the least member of the whole store, not of one partition. */
+/** A wrapper names the least member of the whole store, not of one partition. */
 template <typename wrapper_type_>
 static void test_forwarded_smallest(std::size_t count = 64) {
 
@@ -816,7 +814,7 @@ static void test_forwarded_smallest(std::size_t count = 64) {
     st_verify_eq_(least, trivial_id_t {1});
 }
 
-/** @brief Popping the least member removes exactly it, and drains the store in ascending order. */
+/** Popping the least member removes exactly it, and drains the store in ascending order. */
 template <typename wrapper_type_>
 static void test_forwarded_pop_smallest(std::size_t count = 64) {
 
@@ -843,7 +841,7 @@ static void test_forwarded_pop_smallest(std::size_t count = 64) {
     st_verify_eq_(container.pop_smallest(), status_t::key_not_found_k);
 }
 
-/** @brief The open-ended erasures must each take their own half of the keyspace and no more. */
+/** The open-ended erasures must each take their own half of the keyspace and no more. */
 template <typename wrapper_type_>
 static void test_forwarded_open_ended_erase(std::size_t count = 32) {
 
@@ -871,7 +869,7 @@ static void test_forwarded_open_ended_erase(std::size_t count = 32) {
     st_verify_eq_(container.contains(trivial_id_to_key<member_t>(count / 4)), true);
 }
 
-/** @brief An enumeration through a wrapper must visit every member exactly once. */
+/** An enumeration through a wrapper must visit every member exactly once. */
 template <typename wrapper_type_>
 static void test_forwarded_for_each(std::size_t count = 200) {
 
@@ -942,7 +940,7 @@ static void test_forwarded_transaction_moves_as_a_value() {
     st_verify_(writers[1].reset());
 }
 
-/** @brief Every member equal to a key, which one partition owns outright and one lock covers. */
+/** Every member equal to a key, which one partition owns outright and one lock covers. */
 template <typename wrapper_type_>
 static void test_forwarded_equal_range() {
 
@@ -969,11 +967,8 @@ static void test_forwarded_equal_range() {
     st_verify_eq_(matched, 1u);
 }
 
-/**
- *  @brief An erase through a wrapper must take whatever the inner store compares against.
- *    A composite key is looked up by its identifier alone, which a wrapper narrowed to
- *    @c identifier_t refuses before the store is ever asked.
- */
+/** An erase through a wrapper must take whatever the inner store compares against. A composite key is looked up by
+ *  its identifier alone, which a wrapper narrowed to @c identifier_t refuses before the store is ever asked. */
 template <typename wrapper_type_>
 static void test_forwarded_heterogeneous_erase() {
 
@@ -997,7 +992,7 @@ static void test_forwarded_heterogeneous_erase() {
     st_verify_eq_(missed, 1u);
 }
 
-/** @brief What a transaction has staged, and the walks that show it, must survive both wrappers. */
+/** What a transaction has staged, and the walks that show it, must survive both wrappers. */
 template <typename wrapper_type_>
 static void test_forwarded_transaction_staged_surface() {
 
@@ -1037,8 +1032,8 @@ static void test_forwarded_transaction_staged_surface() {
  *  @brief The version bookkeeping a snapshot store keeps must be readable through both wrappers.
  *
  *  A reader is held open across the overwrite, because a superseded version nothing is reading is
- *  reclaimed where it stands: with no snapshot pinned there is no history to count, and an exact count
- *  taken then would pass a store that keeps none.
+ *  reclaimed where it stands: with no snapshot pinned there is no history to count, and an exact
+ *  count taken then would pass a store that keeps none.
  */
 template <typename wrapper_type_>
 static void test_forwarded_version_bookkeeping(std::size_t count = 4) {
@@ -1135,7 +1130,7 @@ static void forwarded_surface_for_each() {
     test_forwarded_for_each<partitioned_enumerable_set_t>();
 }
 
-/** @brief A transaction must survive being stored in a container and rearranged inside it. */
+/** A transaction must survive being stored in a container and rearranged inside it. */
 static void forwarded_surface_transaction_moves_as_a_value() {
     test_forwarded_transaction_moves_as_a_value<tree_trivial_set_t>();
     test_forwarded_transaction_moves_as_a_value<locked_store<tree_trivial_set_t>>();
@@ -1169,13 +1164,13 @@ static void forwarded_surface_version_bookkeeping() {
     test_forwarded_version_bookkeeping<partitioned_store<locked_store<snapshot_trivial_set_t>>>();
 }
 
-/** @brief The nesting a transparent wrapper creates has to behave like the shard set without it. */
+/** The nesting a transparent wrapper creates has to behave like the shard set without it. */
 static void forwarded_surface_nested_wrapper_behaves() {
     test_empty_container_operations<partitioned_store<locked_store<snapshot_trivial_set_t>>>();
     test_single_element_operations<partitioned_store<locked_store<snapshot_trivial_set_t>>>();
 }
 
-/** @brief An enumeration crossing a writer must still see everything that stayed put, exactly once. */
+/** An enumeration crossing a writer must still see everything that stayed put, exactly once. */
 static void forwarded_surface_for_each_sees_every_stable_element() {
     test_sharded_enumeration_sees_every_stable_element<partitioned_enumerable_set_t>();
     test_sharded_enumeration_sees_every_stable_element<locked_enumerable_set_t>();
@@ -1189,7 +1184,7 @@ static void failure_policy_bulk_methods() { test_bulk_methods_match_declared_pol
 
 #pragma region Merged Order
 
-/** @brief A store holding @p size members, keyed by identifier, spread across every partition. */
+/** A store holding @p size members, keyed by identifier, spread across every partition. */
 static transactional_trivial_set_t seeded_sharded_set(std::size_t size) {
     auto built = transactional_trivial_set_t::make();
     st_verify_((built) && "the sharded set must build");
@@ -1200,10 +1195,11 @@ static transactional_trivial_set_t seeded_sharded_set(std::size_t size) {
 }
 
 /**
- *  @brief A range over an ordered container answers in one ascending order, not sixteen sorted runs.
+ *  @brief A range over an ordered container answers in one ascending order, not sixteen
+ *      sorted runs.
  *
- *  Concatenating each partition's run passes every membership check ever written for @c range, which
- *  is how it survived: only asking whether the sequence rises catches it.
+ *  Concatenating each partition's run passes every membership check ever written for @c range,
+ *  which is how it survived: only asking whether the sequence rises catches it.
  */
 static void merged_order_range_ascends() {
     transactional_trivial_set_t store = seeded_sharded_set(256);
@@ -1222,7 +1218,7 @@ static void merged_order_range_ascends() {
     st_verify_eq_(seen, 256u);
 }
 
-/** @brief The merged range and repeated exclusive bounds answer with the same sequence. */
+/** The merged range and repeated exclusive bounds answer with the same sequence. */
 static void merged_order_range_matches_stepping() {
     transactional_trivial_set_t store = seeded_sharded_set(128);
 
@@ -1250,7 +1246,7 @@ static void merged_order_range_matches_stepping() {
         st_verify_eq_(walked[position], stepped[position]);
 }
 
-/** @brief An inclusive bound answers with the key itself when it is there, and its successor when it is not. */
+/** An inclusive bound answers with the key itself when it is there, and its successor when it is not. */
 static void merged_order_inclusive_bound_is_one_probe() {
     transactional_trivial_set_t store = seeded_sharded_set(64);
 
@@ -1274,7 +1270,7 @@ static void merged_order_inclusive_bound_is_one_probe() {
 
 #pragma region Ordered Cursor
 
-/** @brief Every key the cursor hands over from @p from onward, in the order it handed them over. */
+/** Every key the cursor hands over from @p from onward, in the order it handed them over. */
 static std::vector<trivial_id_t> drain_cursor(transactional_trivial_set_t const &store, trivial_id_t from,
                                               std::size_t limit) {
     std::vector<trivial_id_t> walked;
@@ -1290,7 +1286,7 @@ static std::vector<trivial_id_t> drain_cursor(transactional_trivial_set_t const 
     return walked;
 }
 
-/** @brief A cursor walks the same ascending sequence a merged range does, and stops when it runs out. */
+/** A cursor walks the same ascending sequence a merged range does, and stops when it runs out. */
 static void ordered_cursor_matches_the_range() {
     transactional_trivial_set_t store = seeded_sharded_set(200);
 
@@ -1305,7 +1301,8 @@ static void ordered_cursor_matches_the_range() {
 }
 
 /**
- *  @brief A cursor begun at a bound starts there, rather than at the smallest key of each partition.
+ *  @brief A cursor begun at a bound starts there, rather than at the smallest key of
+ *      each partition.
  *
  *  Every front is read against the bound when the cursor settles, so the bound has to be in place
  *  before that happens - a walk seeded from a default key hands over members ordered below it.
@@ -1321,7 +1318,7 @@ static void ordered_cursor_begins_at_the_bound_it_was_given() {
         st_verify_eq_(walked[position], from + position, "the walk must ascend from the bound with no gap");
 }
 
-/** @brief A bounded cursor stops before the key it was given, on the same half-open terms as a range. */
+/** A bounded cursor stops before the key it was given, on the same half-open terms as a range. */
 template <typename wrapper_type_>
 static void test_cursor_stops_at_its_bound(std::size_t count = 64) {
 
@@ -1352,14 +1349,14 @@ static void test_cursor_stops_at_its_bound(std::size_t count = 64) {
         st_verify_eq_(walked[position], position, "an unbounded start must ascend from the smallest key");
 }
 
-/** @brief The bounded and unbounded walks read the same on both wrappers, which is what one shape means. */
+/** The bounded and unbounded walks read the same on both wrappers, which is what one shape means. */
 static void ordered_cursor_stops_at_its_bound() {
     test_cursor_stops_at_its_bound<locked_store<tree_trivial_set_t>>();
     test_cursor_stops_at_its_bound<partitioned_store<tree_trivial_set_t>>();
     test_cursor_stops_at_its_bound<partitioned_store<locked_store<tree_trivial_set_t>>>();
 }
 
-/** @brief Erasing the key a cursor stands on hands over the successor rather than losing the walk. */
+/** Erasing the key a cursor stands on hands over the successor rather than losing the walk. */
 static void ordered_cursor_survives_its_own_key_erased() {
     transactional_trivial_set_t store = seeded_sharded_set(64);
 
@@ -1382,8 +1379,8 @@ static void ordered_cursor_survives_its_own_key_erased() {
  *  @brief A key inserted ahead of a live cursor is still handed over.
  *
  *  This is the property a cached front can quietly lose: the front was read before the insert, so
- *  nothing but the partition's write count tells the cursor to look again. Reverting the count leaves
- *  every other test here passing and this one failing.
+ *  nothing but the partition's write count tells the cursor to look again. Reverting the count
+ *  leaves every other test here passing and this one failing.
  */
 static void ordered_cursor_sees_a_key_inserted_ahead() {
     auto built = transactional_trivial_set_t::make();
@@ -1411,7 +1408,7 @@ static void ordered_cursor_sees_a_key_inserted_ahead() {
     st_verify_((handed) && "a key inserted ahead of a live cursor must still be handed over");
 }
 
-/** @brief A cursor hands over every key exactly once, whatever partition each of them hashed into. */
+/** A cursor hands over every key exactly once, whatever partition each of them hashed into. */
 static void ordered_cursor_hands_every_key_once() {
     constexpr trivial_id_t size_k = 300;
     transactional_trivial_set_t store = seeded_sharded_set(size_k);
@@ -1434,8 +1431,8 @@ static void ordered_cursor_hands_every_key_once() {
  *  @brief A shared mutex that counts how many times it was taken, so a walk's cost can be asserted.
  *
  *  The count lives here rather than in the store because the store is already parameterized on its
- *  mutex: what a walk costs is measurable from outside without the library carrying a tally it would
- *  only ever use in a test.
+ *  mutex: what a walk costs is measurable from outside without the library carrying a tally it
+ *  would only ever use in a test.
  */
 class counting_mutex_t {
     spin_shared_mutex_t held_;
@@ -1460,12 +1457,13 @@ class counting_mutex_t {
 
 using counted_sharded_set_t = partitioned_store<tree_trivial_set_t, hash<trivial_key_t>, counting_mutex_t, 16>;
 
-/** @brief How many partitions a sharded store was built with, for a cost a test states in those terms. */
+/** How many partitions a sharded store was built with, for a cost a test states in those terms. */
 template <typename store_type_>
 constexpr std::size_t partitions_of_v = store_type_::partitions_k;
 
 /**
- *  @brief A cursor costs one partition acquisition per element, where stepping a bound costs all sixteen.
+ *  @brief A cursor costs one partition acquisition per element, where stepping a bound costs
+ *      all sixteen.
  *
  *  Asserted rather than measured: the whole reason the cursor caches a front per partition is that
  *  re-probing every partition per element is what an ordered walk used to cost, and a cache that
@@ -1524,10 +1522,11 @@ static void lock_cost_cursor_beats_stepping() {
 /**
  *  @brief A key that refuses to be copied still reaches a partition.
  *
- *  Choosing a partition is a hash, and a hash needs to read a key rather than own one. Materializing an
- *  identifier to feed the hasher made every point operation demand a copy, so a move-only key - which
- *  every unsharded store accepts - could not be sharded at all. The merged walks still need a copy,
- *  because they remember one key per partition between steps, and they say so in their own assertion.
+ *  Choosing a partition is a hash, and a hash needs to read a key rather than own one.
+ *  Materializing an identifier to feed the hasher made every point operation demand a copy, so a
+ *  move-only key - which every unsharded store accepts - could not be sharded at all. The merged
+ *  walks still need a copy, because they remember one key per partition between steps, and they say
+ *  so in their own assertion.
  */
 static void sharded_ops_move_only_key_reaches_a_partition() {
     using heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
@@ -1562,10 +1561,10 @@ static void sharded_ops_move_only_key_reaches_a_partition() {
  *  @brief A commit spanning partitions publishes all of them or none, whatever a watch answers.
  *
  *  Each engine behind the unstamped path re-checks its watches when it commits, because another
- *  transaction may have published over a watched key while this one sat staged. Asking one partition
- *  at a time meant a later refusal arrived over writes an earlier partition had already made visible -
- *  a reader could name values from a transaction that told its caller it had not committed, which is
- *  weaker than the level this configuration reports.
+ *  transaction may have published over a watched key while this one sat staged. Asking one
+ *  partition at a time meant a later refusal arrived over writes an earlier partition had already
+ *  made visible - a reader could name values from a transaction that told its caller it had not
+ *  committed, which is weaker than the level this configuration reports.
  */
 static void sharded_ops_commit_publishes_all_or_nothing() {
     using store_t = transactional_trivial_map_t;
@@ -1606,8 +1605,8 @@ static void sharded_ops_commit_publishes_all_or_nothing() {
 /**
  *  @brief A store that refuses to open a transaction, naming a reason a wrapper must carry outward.
  *
- *  Only @c reference_store can refuse this for real, and only when its own allocation throws, which is
- *  not schedulable from a test. Refusing on demand is what makes the wrapper's relay observable.
+ *  Only @c reference_store can refuse this for real, and only when its own allocation throws, which
+ *  is not schedulable from a test. Refusing on demand is what makes the wrapper's relay observable.
  */
 struct transaction_refusing_set_t : tree_trivial_set_t {
     using base_t = tree_trivial_set_t;
@@ -1627,7 +1626,7 @@ struct transaction_refusing_set_t : tree_trivial_set_t {
     [[nodiscard]] expected<transaction_t> transaction() noexcept { return status_t::out_of_memory_heap_k; }
 };
 
-/** @brief A store that cannot be built at all, so a wrapper's factory has a reason to carry outward. */
+/** A store that cannot be built at all, so a wrapper's factory has a reason to carry outward. */
 struct construction_refusing_set_t : tree_trivial_set_t {
     using base_t = tree_trivial_set_t;
     using transaction_t = typename base_t::transaction_t;
@@ -1641,7 +1640,7 @@ struct construction_refusing_set_t : tree_trivial_set_t {
     }
 };
 
-/** @brief A wrapper that cannot build its store reports why, rather than a default-constructed reason. */
+/** A wrapper that cannot build its store reports why, rather than a default-constructed reason. */
 template <typename wrapper_type_>
 static void test_make_reports_why_it_could_not_build() {
     expected<wrapper_type_> made = wrapper_type_::make();
@@ -1650,7 +1649,7 @@ static void test_make_reports_why_it_could_not_build() {
                   "the wrapper must relay the reason rather than lose it to a default");
 }
 
-/** @brief A wrapper that cannot open a transaction reports why, rather than a default-constructed reason. */
+/** A wrapper that cannot open a transaction reports why, rather than a default-constructed reason. */
 template <typename wrapper_type_>
 static void test_transaction_reports_why_it_could_not_open() {
 
@@ -1671,7 +1670,8 @@ static void sharded_ops_transaction_reports_its_reason() {
 }
 
 /**
- *  @brief A wrapper hands back the reason a read could not be recorded rather than answering success.
+ *  @brief A wrapper hands back the reason a read could not be recorded rather than
+ *      answering success.
  *
  *  A validated read is written down before it can be validated, and writing it down allocates. The
  *  wrapper sits between the caller and the engine that lost the record, so a wrapper answering

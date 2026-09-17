@@ -1,10 +1,10 @@
 /**
- *  @brief Template test functions for the transactional store's staging window and tombstone lifecycle.
- *      Covers what a direct write may do to a staged version, what an ordered read may show of a
- *      committed erase, and what @c vacuum reclaims afterwards.
- *  @author Ash Vardanian
  *  @file scripts/test_monotonic_store_defects.hpp
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Template test functions for the transactional store's staging window and tombstone
+ *      lifecycle. Covers what a direct write may do to a staged version, what an ordered read may
+ *      show of a committed erase, and what @c vacuum reclaims afterwards.
  */
 #pragma once
 #include <random>  // `std::mt19937`
@@ -16,10 +16,8 @@ namespace ashvardanian::smashtable::scripts {
 
 #pragma region Staging Window
 
-/**
- *  @brief A direct write lands on the published version and leaves the staged one for its own commit.
- *    The staged version wins at commit, since commit order decides and not generation order.
- */
+/** A direct write lands on the published version and leaves the staged one for its own commit. The staged version
+ *  wins at commit, since commit order decides and not generation order. */
 template <typename container_type_>
 void test_direct_write_spares_staged_version() {
 
@@ -49,7 +47,7 @@ void test_direct_write_spares_staged_version() {
     if constexpr (is_mapping<member_t>) st_verify_eq_(committed->mapped, typename member_t::mapped_type(100));
 }
 
-/** @brief A direct erase takes the published version only, so the staged one still commits. */
+/** A direct erase takes the published version only, so the staged one still commits. */
 template <typename container_type_>
 void test_direct_erase_spares_staged_version() {
 
@@ -76,7 +74,7 @@ void test_direct_erase_spares_staged_version() {
     if constexpr (is_mapping<member_t>) st_verify_eq_(committed->mapped, typename member_t::mapped_type(42));
 }
 
-/** @brief A ranged erase takes published versions only, so an overlapping staged write still commits. */
+/** A ranged erase takes published versions only, so an overlapping staged write still commits. */
 template <typename container_type_>
 void test_erase_range_spares_staged_versions() {
 
@@ -104,7 +102,7 @@ void test_erase_range_spares_staged_versions() {
     if constexpr (is_mapping<member_t>) st_verify_eq_(committed->mapped, typename member_t::mapped_type(400));
 }
 
-/** @brief Clearing keeps handing out fresh stamps, so a later transaction never reuses a live one. */
+/** Clearing keeps handing out fresh stamps, so a later transaction never reuses a live one. */
 template <typename container_type_>
 void test_clear_keeps_generations_moving() {
 
@@ -130,7 +128,7 @@ void test_clear_keeps_generations_moving() {
 
 #pragma region Tombstone Visibility
 
-/** @brief A committed erase is invisible to every point read, exactly as it is to @c find. */
+/** A committed erase is invisible to every point read, exactly as it is to @c find. */
 template <typename container_type_>
 void test_committed_erase_hidden_from_point_reads() {
 
@@ -159,7 +157,7 @@ void test_committed_erase_hidden_from_point_reads() {
     st_verify_eq_(matches, 0);
 }
 
-/** @brief A committed erase is invisible to every ordered read, not only to @c find. */
+/** A committed erase is invisible to every ordered read, not only to @c find. */
 template <typename container_type_>
 void test_committed_erase_hidden_from_ordered_reads() {
 
@@ -211,7 +209,7 @@ void test_committed_erase_hidden_from_ordered_reads() {
                                         }));
 }
 
-/** @brief A mutating ranged update never hands a caller the payload of a tombstone. */
+/** A mutating ranged update never hands a caller the payload of a tombstone. */
 template <typename container_type_>
 void test_committed_erase_hidden_from_update_range() {
 
@@ -246,7 +244,7 @@ void test_committed_erase_hidden_from_update_range() {
 
 #pragma region Vacuuming
 
-/** @brief A committed tombstone is reclaimable, and reclaiming it changes nothing observable. */
+/** A committed tombstone is reclaimable, and reclaiming it changes nothing observable. */
 template <typename container_type_>
 void test_vacuum_reclaims_committed_tombstones() {
 
@@ -281,7 +279,7 @@ void test_vacuum_reclaims_committed_tombstones() {
     st_verify_eq_(container.size(), 4);
 }
 
-/** @brief A staged version behind a tombstone keeps its entry, since a commit may still publish it. */
+/** A staged version behind a tombstone keeps its entry, since a commit may still publish it. */
 template <typename container_type_>
 void test_vacuum_spares_staged_versions() {
 
@@ -313,7 +311,7 @@ void test_vacuum_spares_staged_versions() {
     st_verify_eq_(container.contains(trivial_id_to_key<member_t>(5)), true);
 }
 
-/** @brief The windowed overload reclaims only its own slice, so a caller can walk the keyspace in steps. */
+/** The windowed overload reclaims only its own slice, so a caller can walk the keyspace in steps. */
 template <typename container_type_>
 void test_windowed_vacuum_reclaims_one_slice() {
 
@@ -351,10 +349,8 @@ void test_windowed_vacuum_reclaims_one_slice() {
 
 #pragma region Transaction Reads
 
-/**
- *  @brief A transaction's own range is one sorted sequence, however its staged keys interleave with
- *    the committed ones, and a staged tombstone hides the committed key underneath it.
- */
+/** A transaction's own range is one sorted sequence, however its staged keys interleave with the committed ones, and
+ *  a staged tombstone hides the committed key underneath it. */
 template <typename container_type_>
 void test_transaction_range_interleaves_staged_and_committed() {
 
@@ -395,7 +391,7 @@ void test_transaction_range_interleaves_staged_and_committed() {
     st_verify_eq_(walked, 3);
 }
 
-/** @brief A transaction's @c equal_range answers from its own staged writes as well as the store. */
+/** A transaction's @c equal_range answers from its own staged writes as well as the store. */
 template <typename container_type_>
 void test_transaction_equal_range_sees_staged_writes() {
 
@@ -434,7 +430,7 @@ void test_transaction_equal_range_sees_staged_writes() {
 
 #pragma region Status Reporting
 
-/** @brief A key collision reads the same at both levels, and from the bulk entry point too. */
+/** A key collision reads the same at both levels, and from the bulk entry point too. */
 template <typename container_type_>
 void test_insert_reports_key_already_exists() {
 
@@ -458,7 +454,7 @@ void test_insert_reports_key_already_exists() {
     }
 }
 
-/** @brief A lookup that found nothing says so, rather than reporting a reason it never established. */
+/** A lookup that found nothing says so, rather than reporting a reason it never established. */
 template <typename container_type_>
 void test_find_copy_reports_key_not_found() {
 
@@ -481,7 +477,7 @@ void test_find_copy_reports_key_not_found() {
     st_verify_eq_(missing_in_transaction.status(), status_t::key_not_found_k);
 }
 
-/** @brief Staging twice is refused, so a second pass cannot file the same keys again. */
+/** Staging twice is refused, so a second pass cannot file the same keys again. */
 template <typename container_type_>
 void test_second_stage_is_rejected() {
 
@@ -503,11 +499,13 @@ void test_second_stage_is_rejected() {
 }
 
 /**
- *  @brief A refused validation writes nothing, so a caller spanning several stores can still turn back.
+ *  @brief A refused validation writes nothing, so a caller spanning several stores can still
+ *      turn back.
  *
  *  The half a commit can refuse and the half that applies are separate calls, because a wrapper
- *  committing across partitions has to ask every one of them before any of them writes. Asking after
- *  the first has written is how a refusal ends up reported over writes a reader can already see.
+ *  committing across partitions has to ask every one of them before any of them writes. Asking
+ *  after the first has written is how a refusal ends up reported over writes a reader can
+ *  already see.
  */
 template <typename container_type_>
 void test_validate_refuses_before_publishing() {
@@ -578,7 +576,7 @@ void test_publish_cannot_refuse() {
         st_verify_eq_(container.contains(trivial_id_to_key<member_t>(identifier)), true);
 }
 
-/** @brief Emptying the store is refused while a transaction still has something staged to publish. */
+/** Emptying the store is refused while a transaction still has something staged to publish. */
 template <typename container_type_>
 void test_clear_refuses_while_staged() {
 

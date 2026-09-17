@@ -3,7 +3,7 @@
 # with the expected one: `pass` means no assertion fails, `fail` means the model admits the
 # outcome the assertion forbids - the variants that drop an order or hold a lock less long. The
 # memory models and the runner's functions live in ForkUnion's `verification/`, beside this
-# repository inside USearch and checked out beside it in CI.
+# repository in whichever superproject vendors both, and checked out beside it in CI.
 # Needs `spin` and a C compiler; a GenMC on the path, or named by `GENMC`, also runs the clients.
 
 set -u

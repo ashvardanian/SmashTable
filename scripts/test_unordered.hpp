@@ -1,9 +1,9 @@
 /**
+ *  @file scripts/test_unordered.hpp
+ *  @author Ash Vardanian
+ *  @date August 16, 2026
  *  @brief Template test functions for unordered containers, exercising the hash-specific surface -
  *      growth through rehashes, tombstone reuse, iteration, and the per-slot atomic operations.
- *  @author Ash Vardanian
- *  @file scripts/test_unordered.hpp
- *  @date August 16, 2026
  *
  *  @section test_unordered_scope Scope
  *
@@ -48,25 +48,25 @@ namespace ashvardanian::smashtable::scripts {
 
 #pragma region Fixture Helpers
 
-/** @brief True when the container stores values alongside keys, false for sets. */
+/** True when the container stores values alongside keys, false for sets. */
 template <typename container_type_>
 inline constexpr bool unordered_has_values = !std::is_void_v<typename container_type_::mapped_type>;
 
-/** @brief Builds a key of the container's key type from an integer identifier. */
+/** Builds a key of the container's key type from an integer identifier. */
 template <typename key_type_>
 key_type_ unordered_key_from(std::size_t identifier) noexcept {
     if constexpr (std::is_same_v<key_type_, std::string>) return std::string("key-") + std::to_string(identifier);
     else return key_type_(identifier);
 }
 
-/** @brief Builds a mapped value of the container's value type from an integer identifier. */
+/** Builds a mapped value of the container's value type from an integer identifier. */
 template <typename value_type_>
 value_type_ unordered_value_from(std::size_t identifier) noexcept {
     if constexpr (std::is_same_v<value_type_, std::string>) return std::string("value-") + std::to_string(identifier);
     else return value_type_(identifier);
 }
 
-/** @brief Inserts the element for @p identifier, choosing the set or map arity of @c emplace. */
+/** Inserts the element for @p identifier, choosing the set or map arity of @c emplace. */
 template <typename container_type_, typename... tags_types_>
 void unordered_emplace(container_type_ &container, std::size_t identifier, tags_types_... tags) noexcept {
     using key_t = typename container_type_::key_type;
@@ -77,7 +77,7 @@ void unordered_emplace(container_type_ &container, std::size_t identifier, tags_
     else { container.emplace(unordered_key_from<key_t>(identifier), tags...); }
 }
 
-/** @brief Inserts the key of @p identifier carrying the value of @p value_identifier, for maps only. */
+/** Inserts the key of @p identifier carrying the value of @p value_identifier, for maps only. */
 template <typename container_type_, typename... tags_types_>
 void unordered_emplace_valued(container_type_ &container, std::size_t identifier, std::size_t value_identifier,
                               tags_types_... tags) noexcept {
@@ -87,7 +87,7 @@ void unordered_emplace_valued(container_type_ &container, std::size_t identifier
     container.emplace(unordered_key_from<key_t>(identifier), unordered_value_from<mapped_t>(value_identifier), tags...);
 }
 
-/** @brief Files the element of @p identifier carrying @p value_identifier through @c upsert. */
+/** Files the element of @p identifier carrying @p value_identifier through @c upsert. */
 template <typename container_type_>
 [[nodiscard]] status_t unordered_upsert(container_type_ &container, std::size_t identifier,
                                         [[maybe_unused]] std::size_t value_identifier) noexcept {
@@ -101,7 +101,7 @@ template <typename container_type_>
     else return container.upsert(owned_t {unordered_key_from<key_t>(identifier)});
 }
 
-/** @brief Checks that @p identifier is present and, on maps, that it still carries @p value_identifier. */
+/** Checks that @p identifier is present and, on maps, that it still carries @p value_identifier. */
 template <typename container_type_>
 void unordered_verify_present(container_type_ &container, std::size_t identifier,
                               std::size_t value_identifier) noexcept {
@@ -118,7 +118,7 @@ void unordered_verify_present(container_type_ &container, std::size_t identifier
     }
 }
 
-/** @brief Checks that @p identifier is absent, both through @c contains and through @c find. */
+/** Checks that @p identifier is absent, both through @c contains and through @c find. */
 template <typename container_type_>
 void unordered_verify_absent(container_type_ &container, std::size_t identifier) noexcept {
     using key_t = typename container_type_::key_type;
@@ -132,7 +132,7 @@ void unordered_verify_absent(container_type_ &container, std::size_t identifier)
 /**
  *  @brief Collects the keys reachable by iteration, and how many visits it took to reach them.
  *  @note The set alone cannot catch a duplicate visit - it swallows one - so the count comes back
- *    with it, and a caller compares that against @c size() to pin one visit per element.
+ *      with it, and a caller compares that against @c size() to pin one visit per element.
  */
 template <typename container_type_>
 std::pair<std::set<typename container_type_::key_type>, std::size_t> unordered_keys_by_iteration(
@@ -160,7 +160,7 @@ std::pair<std::set<typename container_type_::key_type>, std::size_t> unordered_k
     return {std::move(collected), visits};
 }
 
-/** @brief The keys the container is expected to hold, built from the same identifiers. */
+/** The keys the container is expected to hold, built from the same identifiers. */
 template <typename container_type_>
 std::set<typename container_type_::key_type> unordered_expected_keys(
     std::unordered_map<std::size_t, std::size_t> const &oracle) noexcept {
@@ -170,7 +170,7 @@ std::set<typename container_type_::key_type> unordered_expected_keys(
     return expected;
 }
 
-/** @brief Re-checks the whole container against the oracle, in both directions. */
+/** Re-checks the whole container against the oracle, in both directions. */
 template <typename container_type_>
 void unordered_verify_against_oracle(container_type_ &container,
                                      std::unordered_map<std::size_t, std::size_t> const &oracle,
@@ -192,7 +192,7 @@ void unordered_verify_against_oracle(container_type_ &container,
 
 #pragma region Basic Unordered Operations
 
-/** @brief Tests that every read and every teardown path tolerates an empty container. */
+/** Tests that every read and every teardown path tolerates an empty container. */
 template <typename container_type_>
 void test_unordered_empty_container_operations() {
 
@@ -228,7 +228,7 @@ void test_unordered_empty_container_operations() {
     st_verify_(reserved.empty());
 }
 
-/** @brief Tests the insert, lookup, overwrite and erase cycle on a single element. */
+/** Tests the insert, lookup, overwrite and erase cycle on a single element. */
 template <typename container_type_>
 void test_unordered_single_element_operations() {
 
@@ -270,7 +270,7 @@ void test_unordered_single_element_operations() {
     unordered_verify_present(container, 42, 42);
 }
 
-/** @brief Tests that growth from an unallocated table preserves every element across many rehashes. */
+/** Tests that growth from an unallocated table preserves every element across many rehashes. */
 template <typename container_type_>
 void test_unordered_growth_through_rehashes(std::size_t size = 4000) {
 
@@ -298,7 +298,7 @@ void test_unordered_growth_through_rehashes(std::size_t size = 4000) {
     unordered_verify_against_oracle(container, oracle, size + 100);
 }
 
-/** @brief Tests that a tombstoned table still finds its survivors, then refills the tombstones. */
+/** Tests that a tombstoned table still finds its survivors, then refills the tombstones. */
 template <typename container_type_>
 void test_unordered_tombstone_reuse(std::size_t size = 2000) {
 
@@ -338,7 +338,7 @@ void test_unordered_tombstone_reuse(std::size_t size = 2000) {
     unordered_verify_against_oracle(container, oracle, size + 500);
 }
 
-/** @brief Tests that iteration and @c for_each each visit every live element exactly once. */
+/** Tests that iteration and @c for_each each visit every live element exactly once. */
 template <typename container_type_>
 void test_unordered_full_iteration(std::size_t size = 1500) {
 
@@ -393,7 +393,7 @@ void test_unordered_full_iteration(std::size_t size = 1500) {
     st_verify_eq_(seen_by_walk, survivors, "iteration must skip tombstones");
 }
 
-/** @brief Tests move construction, move assignment and @c swap against the oracle. */
+/** Tests move construction, move assignment and @c swap against the oracle. */
 template <typename container_type_>
 void test_unordered_moves_and_swaps(std::size_t size = 600) {
 
@@ -432,7 +432,7 @@ void test_unordered_moves_and_swaps(std::size_t size = 600) {
     unordered_verify_against_oracle(other, oracle, size + 200);
 }
 
-/** @brief Tests @c reserve idempotence, explicit @c rehash, @c clear and @c shrink_to_fit. */
+/** Tests @c reserve idempotence, explicit @c rehash, @c clear and @c shrink_to_fit. */
 template <typename container_type_>
 void test_unordered_capacity_management(std::size_t size = 800) {
 
@@ -486,7 +486,7 @@ void test_unordered_capacity_management(std::size_t size = 800) {
     unordered_verify_present(container, 5, 5);
 }
 
-/** @brief Tests that the load factor stays under the documented cap and the counters stay honest. */
+/** Tests that the load factor stays under the documented cap and the counters stay honest. */
 template <typename container_type_>
 void test_unordered_load_factor_consistency(std::size_t size = 3000) {
 
@@ -524,11 +524,9 @@ void test_unordered_load_factor_consistency(std::size_t size = 3000) {
 
 #pragma region Heterogeneous Lookup
 
-/**
- *  @brief Tests lookup by @c std::string_view against a container of @c std::string keys.
- *    Only meaningful where the equality predicate is transparent and the hash of a view matches
- *    the hash of the string it views, which the standard guarantees.
- */
+/** Tests lookup by @c std::string_view against a container of @c std::string keys. Only meaningful where the
+ *  equality predicate is transparent and the hash of a view matches the hash of the string it views, which the
+ *  standard guarantees. */
 template <typename container_type_>
 void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
 
@@ -573,10 +571,10 @@ void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
 
 /**
  *  @brief Tests that a table whose allocator stops supplying memory stops storing, rather than
- *    filling to the last slot and then probing a table with no free slot forever.
+ *      filling to the last slot and then probing a table with no free slot forever.
  *
  *  @note The hang this pins only exists where @c assert is compiled out, so the suite must be run
- *    from a release build to be worth anything.
+ *      from a release build to be worth anything.
  */
 template <typename container_type_>
 void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) {
@@ -611,7 +609,7 @@ void test_unordered_exhausted_allocator_insertions(std::size_t attempts = 4000) 
     ledger.verify_balanced();
 }
 
-/** @brief Inserts the element for @p identifier through the reporting overload of @c emplace. */
+/** Inserts the element for @p identifier through the reporting overload of @c emplace. */
 template <typename container_type_, typename... tags_types_>
 auto unordered_emplace_reporting(container_type_ &container, std::size_t identifier, tags_types_... tags) noexcept {
     using key_t = typename container_type_::key_type;
@@ -624,10 +622,8 @@ auto unordered_emplace_reporting(container_type_ &container, std::size_t identif
     else return container.template emplace<report_t::insert_result_k>(unordered_key_from<key_t>(identifier), tags...);
 }
 
-/**
- *  @brief Tests that a reporting insertion separates a fresh key from one already taken.
- *    Two of the three outcomes; the refusal is a table that cannot grow, tested separately.
- */
+/** Tests that a reporting insertion separates a fresh key from one already taken. Two of the three outcomes; the
+ *  refusal is a table that cannot grow, tested separately. */
 template <typename container_type_>
 void test_unordered_insert_reports_outcome() {
 
@@ -647,10 +643,8 @@ void test_unordered_insert_reports_outcome() {
     st_verify_eq_(container.size(), 1u);
 }
 
-/**
- *  @brief Tests that an insertion the table had no room for is distinguishable from a duplicate.
- *    Both leave the size alone, and only the reported outcome tells them apart.
- */
+/** Tests that an insertion the table had no room for is distinguishable from a duplicate. Both leave the size alone,
+ *  and only the reported outcome tells them apart. */
 template <typename container_type_>
 void test_unordered_insert_reports_refusal() {
 
@@ -685,12 +679,9 @@ void test_unordered_insert_reports_refusal() {
     ledger.verify_balanced();
 }
 
-/**
- *  @brief Tests that filing a key the table already holds never reaches the allocator.
- *    A table sitting exactly on its growth threshold has no headroom left, and asking for some
- *    before the probe has established the key is new turns a plain overwrite - which needs no slot
- *    of its own - into a refusal the caller cannot do anything about.
- */
+/** Tests that filing a key the table already holds never reaches the allocator. A table sitting exactly on its
+ *  growth threshold has no headroom left, and asking for some before the probe has established the key is new turns
+ *  a plain overwrite - which needs no slot of its own - into a refusal the caller cannot do anything about. */
 template <typename container_type_>
 void test_unordered_present_key_needs_no_room() {
 
@@ -749,10 +740,8 @@ void test_unordered_present_key_needs_no_room() {
     ledger.verify_balanced();
 }
 
-/**
- *  @brief Tests that a table with every slot taken refuses further keys, terminates while doing so,
- *    and does not count a store that never happened.
- */
+/** Tests that a table with every slot taken refuses further keys, terminates while doing so, and does not count a
+ *  store that never happened. */
 template <typename container_type_>
 void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
 
@@ -792,10 +781,8 @@ void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
     }
 }
 
-/**
- *  @brief Tests that a rehash asking for nothing compacts the table instead of emptying it into a
- *    layout with no slots at all.
- */
+/** Tests that a rehash asking for nothing compacts the table instead of emptying it into a layout with no slots at
+ *  all. */
 template <typename container_type_>
 void test_unordered_rehash_to_nothing(std::size_t size = 300) {
 
@@ -828,10 +815,8 @@ void test_unordered_rehash_to_nothing(std::size_t size = 300) {
     unordered_verify_absent(container, 0);
 }
 
-/**
- *  @brief Tests that an element count no power of two can cover fails instead of quietly yielding
- *    the smallest possible table.
- */
+/** Tests that an element count no power of two can cover fails instead of quietly yielding the smallest possible
+ *  table. */
 template <typename container_type_>
 void test_unordered_unrepresentable_capacity() {
 
@@ -860,10 +845,10 @@ void test_unordered_unrepresentable_capacity() {
 
 #pragma region Concurrency
 
-/** @brief The thread count the concurrent suites use, fixed so a failure reproduces. */
+/** The thread count the concurrent suites use, fixed so a failure reproduces. */
 inline constexpr std::size_t unordered_threads_count_k = 4;
 
-/** @brief The pinned table matching a growable one, since neither type names the other. */
+/** The pinned table matching a growable one, since neither type names the other. */
 template <typename container_type_>
 struct unordered_pinned_of;
 
@@ -872,7 +857,7 @@ struct unordered_pinned_of<basic_hash_table<element_type_, hasher_type_, equals_
     using type = atomic_hash_table<element_type_, hasher_type_, equals_type_, allocator_type_>;
 };
 
-/** @brief The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */
+/** The pinned counterpart of @p container_type_, reached through @c release and @c adopt. */
 template <typename container_type_>
 using unordered_pinned = typename unordered_pinned_of<container_type_>::type;
 
@@ -880,7 +865,8 @@ using unordered_pinned = typename unordered_pinned_of<container_type_>::type;
  *  @brief Tests that the pinned table answers a missing key with a status and a callback.
  *
  *  @c update and @c erase report @c key_not_found_k rather than a bare @c false, and @c find hands
- *  the miss to a second callback rather than returning one, which is the shape every store here uses.
+ *  the miss to a second callback rather than returning one, which is the shape every store
+ *  here uses.
  */
 template <typename container_type_>
 void test_unordered_pinned_reports_status() {
@@ -923,9 +909,7 @@ void test_unordered_pinned_reports_status() {
     st_verify_eq_(container.size(), 0u);
 }
 
-/**
- *  @brief Tests that a pinned table with no free slot reports the refusal instead of probing forever.
- */
+/** Tests that a pinned table with no free slot reports the refusal instead of probing forever. */
 template <typename container_type_>
 void test_unordered_pinned_saturation() {
 
@@ -977,12 +961,10 @@ void test_unordered_pinned_saturation() {
     }
 }
 
-/**
- *  @brief Tests that a pinned table left holding nothing but tombstones names a cause a caller can act on.
- *    The probe walks past a tombstone rather than reclaiming it, so such a table refuses every new
- *    key; reporting that as an allocation failure sends the caller to free memory that was never
- *    the problem, when the remedy is a rehash into fresh storage.
- */
+/** Tests that a pinned table left holding nothing but tombstones names a cause a caller can act on. The probe walks
+ *  past a tombstone rather than reclaiming it, so such a table refuses every new key; reporting that as an
+ *  allocation failure sends the caller to free memory that was never the problem, when the remedy is a rehash into
+ *  fresh storage. */
 template <typename container_type_>
 void test_unordered_pinned_tombstone_saturation() {
 
@@ -1019,10 +1001,8 @@ void test_unordered_pinned_tombstone_saturation() {
     st_verify_eq_(container.size(), 0u);
 }
 
-/**
- *  @brief Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen
- *    table, with each thread owning a disjoint range of keys.
- */
+/** Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen table, with each thread
+ *  owning a disjoint range of keys. */
 template <typename container_type_>
 void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 
@@ -1101,10 +1081,11 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 
 /**
  *  @brief Tests concurrent @c update over pre-populated keys and concurrent @c erase afterwards,
- *    each thread again confined to its own range.
+ *      each thread again confined to its own range.
  *
- *  The table is filled while it is still growable, pinned for the concurrent phases, and handed back
- *  to a growable table to verify - the whole lifecycle @c release and @c adopt exist to express.
+ *  The table is filled while it is still growable, pinned for the concurrent phases, and handed
+ *  back to a growable table to verify - the whole lifecycle @c release and @c adopt exist
+ *  to express.
  */
 template <typename container_type_>
 void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
@@ -1190,24 +1171,24 @@ void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
 
 #pragma region Multi Match Probe Walks
 
-/** @brief A key filed once per generation, so several versions of one identifier coexist. */
+/** A key filed once per generation, so several versions of one identifier coexist. */
 struct versioned_key_t {
     std::size_t identifier = 0;
     std::size_t generation = 0;
 };
 
-/** @brief A @c versioned_key_t without its generation, equal to every generation of it. */
+/** A @c versioned_key_t without its generation, equal to every generation of it. */
 struct unversioned_key_t {
     std::size_t identifier = 0;
 };
 
-/** @brief Peels both key shapes to the identifier, so every version shares one home slot. */
+/** Peels both key shapes to the identifier, so every version shares one home slot. */
 struct versioned_hash_t {
     std::size_t operator()(versioned_key_t const &key) const noexcept { return key.identifier; }
     std::size_t operator()(unversioned_key_t const &key) const noexcept { return key.identifier; }
 };
 
-/** @brief Separates generations of one identifier, unless the probe asks for the bare key. */
+/** Separates generations of one identifier, unless the probe asks for the bare key. */
 struct per_key_equals_t {
     using is_transparent = void;
     bool operator()(versioned_key_t const &first, versioned_key_t const &second) const noexcept {
@@ -1223,7 +1204,7 @@ struct per_key_equals_t {
 
 using versioned_set_t = hash_set<versioned_key_t, versioned_hash_t, per_key_equals_t>;
 
-/** @brief Collects the generations @c probe_to_visit reaches for @p bare, in probe order. */
+/** Collects the generations @c probe_to_visit reaches for @p bare, in probe order. */
 inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t const &container,
                                                             std::size_t bare) noexcept {
     std::vector<std::size_t> generations;
@@ -1234,10 +1215,8 @@ inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t cons
     return generations;
 }
 
-/**
- *  @brief Tests that @c probe_to_visit reaches every version of one key sharing a probe run, and
- *    none of the foreign keys sharing it.
- */
+/** Tests that @c probe_to_visit reaches every version of one key sharing a probe run, and none of the foreign keys
+ *  sharing it. */
 inline void test_unordered_visit_every_match(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
@@ -1265,7 +1244,7 @@ inline void test_unordered_visit_every_match(std::size_t versions = 5) {
     st_verify_eq_(unordered_visit_generations(container, 1 + slots * 2).size(), 0u);
 }
 
-/** @brief Tests that a @c halt_k reply stops the walk before the next slot is even read. */
+/** Tests that a @c halt_k reply stops the walk before the next slot is even read. */
 inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
@@ -1284,7 +1263,7 @@ inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
     }
 }
 
-/** @brief Tests that a tombstone between two matches does not truncate the walk. */
+/** Tests that a tombstone between two matches does not truncate the walk. */
 inline void test_unordered_visit_across_tombstones(std::size_t versions = 6) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
@@ -1303,7 +1282,7 @@ inline void test_unordered_visit_across_tombstones(std::size_t versions = 6) {
     for (std::size_t index = 0; index < survivors.size(); ++index) st_verify_eq_(survivors[index], index * 2 + 1);
 }
 
-/** @brief Tests that an empty table, and one holding no allocation at all, cost zero visits. */
+/** Tests that an empty table, and one holding no allocation at all, cost zero visits. */
 inline void test_unordered_visit_empty_table() {
 
     versioned_set_t unallocated;
@@ -1320,7 +1299,7 @@ inline void test_unordered_visit_empty_table() {
     st_verify_eq_(unordered_visit_generations(container, 1).size(), 0u);
 }
 
-/** @brief Tests that a run starting in the last slot wraps to the front instead of ending there. */
+/** Tests that a run starting in the last slot wraps to the front instead of ending there. */
 inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
@@ -1339,9 +1318,10 @@ inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
 }
 
 /**
- *  @brief Tests that a table with no free slot left terminates the walk instead of circling forever.
+ *  @brief Tests that a table with no free slot left terminates the walk instead of
+ *      circling forever.
  *  @note The bound must hold in a build where assertions are gone, which is why the harness runs
- *    this suite under a timeout in a release configuration too.
+ *      this suite under a timeout in a release configuration too.
  */
 inline void test_unordered_visit_full_table() {
 

@@ -1,20 +1,22 @@
 /**
- *  @brief Shared vocabulary of the open-addressed hash tables: bucket metadata, slot references, storage.
- *  @author Ash Vardanian
  *  @file include/smashtable/hash_layout.hpp
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Shared vocabulary of the open-addressed hash tables: bucket metadata, slot
+ *      references, storage.
  *
  *  @section hash_layout_overview Overview
  *
  *  Two tables are carved from the same memory layout - a growable single-threaded one and a pinned
- *  concurrently-readable one - and this header is everything they have in common. Neither table names the other,
- *  and the only thing that travels between them is a @c hash_storage, moved as a value.
+ *  concurrently-readable one - and this header is everything they have in common. Neither table
+ *  names the other, and the only thing that travels between them is a @c hash_storage, moved as
+ *  a value.
  *
  *  @section hash_layout_memory Memory Layout
  *
  *  One allocation, three regions at cache-line offsets, so compaction can keep the keys and values
  *  and drop the headers without copying:
- *  @code
+ *  @code{.cpp}
  *  // Layout: [keys_region | values_region | headers_region]
  *  key_t *keys = (key_t *)memory;                          // Direct indexing: keys[slot]
  *  value_t *values = (value_t *)(memory + keys_bytes);     // Direct indexing: values[slot]
@@ -52,16 +54,17 @@ namespace ashvardanian::smashtable {
 
 #pragma region Bucket Metadata
 
-/** @brief Platform cache line size in bytes, typically 64 on modern CPUs. */
+/** Platform cache line size in bytes, typically 64 on modern CPUs. */
 inline constexpr std::size_t cache_line_bytes_k = 64;
 
-/** @brief Number of slots sharing one bucket header, sized so the header fits a 64-bit atomic. */
+/** Number of slots sharing one bucket header, sized so the header fits a 64-bit atomic. */
 inline constexpr std::size_t hash_bucket_capacity_k = 32;
 
 /**
  *  @brief Bucket header containing metadata for @c hash_bucket_capacity_k slots.
  *
- *  Two parallel 32-bit bitmasks - population and deletion - give each slot two bits, and so four states.
+ *  Two parallel 32-bit bitmasks - population and deletion - give each slot two bits, and so
+ *  four states.
  *
  *  @section hash_layout_slot_state_encoding Slot State Encoding
  *
@@ -72,8 +75,8 @@ inline constexpr std::size_t hash_bucket_capacity_k = 32;
  *  - @c 11 (populations=1, deletions=1): Locked slot, temporarily held for atomic operations
  *
  *  @c lanes exposes the two 32-bit halves separately - @c populations has a set bit for every
- *  populated or locked slot, @c deletions one for every deleted or locked slot. @c u64 views both at
- *  once, which is what enables atomic operations on the entire header (2 × 32 bits = 64 bits).
+ *  populated or locked slot, @c deletions one for every deleted or locked slot. @c u64 views both
+ *  at once, which is what enables atomic operations on the entire header (2 × 32 bits = 64 bits).
  */
 union hash_bucket_head_t {
 
@@ -86,41 +89,45 @@ union hash_bucket_head_t {
 
 static_assert(sizeof(hash_bucket_head_t) == sizeof(std::uint64_t));
 
-/** @brief Bitmask selecting one slot within a bucket header lane. */
+/** Bitmask selecting one slot within a bucket header lane. */
 using hash_bucket_mask_t = std::uint32_t;
 
-/** @brief The four states a slot can be in, spelled out by the two header lanes. */
+/** The four states a slot can be in, spelled out by the two header lanes. */
 enum class hash_slot_state_t : std::uint8_t {
-    /** @brief Never used, or fully freed. */
+
+    /** Never used, or fully freed. */
     free_k = 0,
-    /** @brief Tombstone left behind by a lazy deletion. */
+
+    /** Tombstone left behind by a lazy deletion. */
     deleted_k = 1,
-    /** @brief Holds a live key, and a value when the table is a map. */
+
+    /** Holds a live key, and a value when the table is a map. */
     populated_k = 2,
-    /** @brief Temporarily held by a thread performing an atomic operation. */
+
+    /** Temporarily held by a thread performing an atomic operation. */
     locked_k = 3,
 };
 
-/** @brief Reads the state of the slot selected by @p mask out of both header lanes. */
+/** Reads the state of the slot selected by @p mask out of both header lanes. */
 constexpr hash_slot_state_t hash_slot_state_of(hash_bucket_head_t const &head, hash_bucket_mask_t mask) noexcept {
     std::uint32_t const populated = (head.lanes.populations & mask) != 0;
     std::uint32_t const deleted = (head.lanes.deletions & mask) != 0;
     return static_cast<hash_slot_state_t>(populated * 2u + deleted);
 }
 
-/** @brief Drives the slot selected by @p mask into the @c free_k state. */
+/** Drives the slot selected by @p mask into the @c free_k state. */
 constexpr void hash_mark_free(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
     head.lanes.populations &= ~mask;
     head.lanes.deletions &= ~mask;
 }
 
-/** @brief Drives the slot selected by @p mask into the @c populated_k state. */
+/** Drives the slot selected by @p mask into the @c populated_k state. */
 constexpr void hash_mark_populated(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
     head.lanes.populations |= mask;
     head.lanes.deletions &= ~mask;
 }
 
-/** @brief Drives the slot selected by @p mask into the @c deleted_k state. */
+/** Drives the slot selected by @p mask into the @c deleted_k state. */
 constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t mask) noexcept {
     head.lanes.populations &= ~mask;
     head.lanes.deletions |= mask;
@@ -129,27 +136,29 @@ constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t ma
 /**
  *  @brief Scaling schema that computes the required number of slots for a target element count.
  *
- *  Caps the load factor at 75%, through a 4/3 multiplier, so linear probing cannot degenerate, and rounds
- *  every slot count up to a power of two so the modulo is a bitwise AND.
+ *  Caps the load factor at 75%, through a 4/3 multiplier, so linear probing cannot degenerate, and
+ *  rounds every slot count up to a power of two so the modulo is a bitwise AND.
  *
  *  @note The 75% load factor strikes a balance between memory efficiency and probe length:
- *    - Too high (>85%): Linear probing degrades into long search chains
- *    - Too low (<60%): Wastes memory without significant performance gain
- *    - 75%: Industry standard, keeps average probe length under 2 hops
+ *  - Too high (>85%): Linear probing degrades into long search chains
+ *  - Too low (<60%): Wastes memory without significant performance gain
+ *  - 75%: Industry standard, keeps average probe length under 2 hops
  *
- *  @note The minimum slot count equals @c hash_bucket_capacity_k to ensure at least one full bucket.
+ *  @note The minimum slot count equals @c hash_bucket_capacity_k to ensure at least one
+ *      full bucket.
  *
  *  @c raw carries the widened count itself. The primary constructor budgets for a target @b element
- *  count and applies the load factor, while @c from_slots takes the slot count directly, for callers
- *  that already sized the storage. @c is_addressable reports whether the probe masks can address the
- *  count, which requires a power of two.
+ *  count and applies the load factor, while @c from_slots takes the slot count directly, for
+ *  callers that already sized the storage. @c is_addressable reports whether the probe masks can
+ *  address the count, which requires a power of two.
  *
- *  A request too large to round up to a power of two keeps @c unrepresentable_k, which is not a power
- *  of two and therefore not addressable, so the factories refuse it instead of silently handing back
- *  the smallest possible table.
+ *  A request too large to round up to a power of two keeps @c unrepresentable_k, which is not a
+ *  power of two and therefore not addressable, so the factories refuse it instead of silently
+ *  handing back the smallest possible table.
  */
 struct hash_slots_count_t {
-    /** @brief A count that no power of two covers, and which @c is_addressable therefore rejects. */
+
+    /** A count that no power of two covers, and which @c is_addressable therefore rejects. */
     inline static constexpr std::size_t unrepresentable_k = std::numeric_limits<std::size_t>::max();
 
     std::size_t raw = 0;
@@ -189,8 +198,8 @@ struct hash_slots_count_t {
 /**
  *  @brief Metadata extraction template that derives type information for hash table elements.
  *
- *  Computes element types, sizes and alignment requirements from the element and hasher parameters, and
- *  takes the hasher's return type as the @c offset_t that indexes slots.
+ *  Computes element types, sizes and alignment requirements from the element and hasher parameters,
+ *  and takes the hasher's return type as the @c offset_t that indexes slots.
  *
  *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, must be callable with the key type.
@@ -260,7 +269,7 @@ struct hash_layout_for<mapping<key_type_, value_type_>, hasher_type_> {
     static constexpr bool will_memcpy_vals() noexcept { return std::is_trivially_copy_constructible<value_t>(); }
 };
 
-/** @brief Const-qualified elements reuse the unqualified layout, adding @c const to every view. */
+/** Const-qualified elements reuse the unqualified layout, adding @c const to every view. */
 template <typename element_type_, typename hasher_type_>
 struct hash_layout_for<element_type_ const, hasher_type_> {
 
@@ -286,7 +295,7 @@ struct hash_layout_for<element_type_ const, hasher_type_> {
 static_assert(hash_layout_for<int, hash<int>>::will_memcpy_keys());
 static_assert(hash_layout_for<mapping<int, int>, hash<int>>::will_memcpy_keys());
 
-/** @brief Defers to @c hash for whatever key it is finally handed, rather than fixing one at declaration. */
+/** Defers to @c hash for whatever key it is finally handed, rather than fixing one at declaration. */
 struct default_hash_t {
 
     template <typename key_type_>
@@ -307,10 +316,10 @@ struct default_hash_t {
  *  Probing advances @c slot_ by one, so a step costs a single integer increment rather than three
  *  pointer recomputations. Sets carry no values region and leave @c values_ null.
  *
- *  @c keys_, @c values_ and @c headers_ are the bases of the three regions, the first two indexed by
- *  the absolute @c slot_ and the last by the bucket that owns it. The aliases restate the layout's
- *  own key, value, element and offset types, plus @c dereference_t, which is the element view for
- *  maps and a key reference for sets.
+ *  @c keys_, @c values_ and @c headers_ are the bases of the three regions, the first two indexed
+ *  by the absolute @c slot_ and the last by the bucket that owns it. The aliases restate the
+ *  layout's own key, value, element and offset types, plus @c dereference_t, which is the element
+ *  view for maps and a key reference for sets.
  *
  *  @c header_ref and @c mask_in_bucket resolve the owning header and the single bit inside it;
  *  @c key, @c key_ref, @c value and @c value_ref reach the two payload regions; the @c is_ and
@@ -377,36 +386,39 @@ struct hash_slot_ref {
  *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *
- *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots.
- *  On the locking path, we can use a @c fetch_or atomic operation to set both bits (populated + deleted)
- *  simultaneously and transition to the locked state. If the previous value indicates the slot was
- *  already locked, we retry until we acquire the lock.
+ *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots. On
+ *  the locking path, we can use a @c fetch_or atomic operation to set both bits (populated +
+ *  deleted) simultaneously and transition to the locked state. If the previous value indicates the
+ *  slot was already locked, we retry until we acquire the lock.
  *
- *  The intuition of using the @c fetch_and for the inverse operation, however, is wrong. When unlocking,
- *  we need to restore the previous state (populated/deleted) of the slot or transition to the new one,
- *  depending on the @c mark_populated()/mark_deleted()/mark_free() calls made while the slot was locked.
+ *  The intuition of using the @c fetch_and for the inverse operation, however, is wrong. When
+ *  unlocking, we need to restore the previous state (populated/deleted) of the slot or transition
+ *  to the new one, depending on the @c mark_populated()/mark_deleted()/mark_free() calls made while
+ *  the slot was locked.
  *
- *  The bits outside the active ones in each 32-bit word shouldn't be changed. The active ones may have
- *  to be flipped. Assuming the value of the relevant bits couldn't have changed, we can use @c fetch_xor
- *  to control the result with one more atomic and no compare-and-swap loop. @b XOR-is-all-you-need!
+ *  The bits outside the active ones in each 32-bit word shouldn't be changed. The active ones may
+ *  have to be flipped. Assuming the value of the relevant bits couldn't have changed, we can use
+ *  @c fetch_xor to control the result with one more atomic and no compare-and-swap loop.
+ *  @b XOR-is-all-you-need!
  *
  *  Neither path is lock-free in the technical sense: @c lock() spins until it wins the slot, so a
- *  thread stopped between @c lock() and @c unlock() blocks every prober that reaches that slot. What
- *  the pair buys is that the whole table is never locked, and that no slot state needs a CAS retry.
+ *  thread stopped between @c lock() and @c unlock() blocks every prober that reaches that slot.
+ *  What the pair buys is that the whole table is never locked, and that no slot state needs a
+ *  CAS retry.
  *
- *  This doesn't resolve @b false-sharing issues native to such a densely packed design, but still results
- *  in very low contention if the duration of atomic operations under the lock is comparable to CPU's
- *  memory latency.
+ *  This doesn't resolve @b false-sharing issues native to such a densely packed design, but still
+ *  results in very low contention if the duration of atomic operations under the lock is comparable
+ *  to CPU's memory latency.
  */
 template <typename element_type_, typename hasher_type_>
 class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
 
     using base_t = hash_slot_ref<element_type_, hasher_type_>;
 
-    /** @brief State the slot will be driven into once @c unlock() lands. */
+    /** State the slot will be driven into once @c unlock() lands. */
     hash_bucket_head_t mutable future_header_ {};
 
-    /** @brief Both lanes of this slot's bit, the exact footprint the lock owns. */
+    /** Both lanes of this slot's bit, the exact footprint the lock owns. */
     constexpr hash_bucket_head_t header_mask_() const noexcept {
         hash_bucket_head_t mask {};
         mask.lanes.populations = base_t::mask_in_bucket();
@@ -415,40 +427,45 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
     }
 
   public:
-    /** @brief The staged header, not the shared one, so reads under the lock stay private. */
+    /** The staged header, not the shared one, so reads under the lock stay private. */
     constexpr hash_bucket_head_t &header_ref() const noexcept { return future_header_; }
 
-    /** @brief Whether the staged state is @c free_k. */
+    /** Whether the staged state is @c free_k. */
     constexpr bool is_free() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::free_k;
     }
-    /** @brief Whether the staged state is @c deleted_k. */
+
+    /** Whether the staged state is @c deleted_k. */
     constexpr bool is_deleted() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::deleted_k;
     }
-    /** @brief Whether the staged state is @c populated_k. */
+
+    /** Whether the staged state is @c populated_k. */
     constexpr bool is_populated() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::populated_k;
     }
-    /** @brief Whether the staged state is @c locked_k. */
+
+    /** Whether the staged state is @c locked_k. */
     constexpr bool is_locked() const noexcept {
         return hash_slot_state_of(header_ref(), base_t::mask_in_bucket()) == hash_slot_state_t::locked_k;
     }
 
-    /** @brief Stages @c free_k, which @c unlock() then publishes. */
+    /** Stages @c free_k, which @c unlock() then publishes. */
     constexpr void mark_free() const noexcept { hash_mark_free(header_ref(), base_t::mask_in_bucket()); }
-    /** @brief Stages @c populated_k, which @c unlock() then publishes. */
+
+    /** Stages @c populated_k, which @c unlock() then publishes. */
     constexpr void mark_populated() const noexcept { hash_mark_populated(header_ref(), base_t::mask_in_bucket()); }
-    /** @brief Stages @c deleted_k, which @c unlock() then publishes. */
+
+    /** Stages @c deleted_k, which @c unlock() then publishes. */
     constexpr void mark_deleted() const noexcept { hash_mark_deleted(header_ref(), base_t::mask_in_bucket()); }
 
     /**
      *  @brief Spins on @c fetch_or until this thread is the one that observed a non-locked slot.
-     *  @warning On a device this spin only makes progress under independent thread scheduling, since
-     *    32 slots share one header and a warp probing one bucket serializes through here.
+     *  @warning On a device this spin only makes progress under independent thread scheduling,
+     *      since 32 slots share one header and a warp probing one bucket serializes through here.
      *  @note The reference is a temporary rather than a named variable because a @c constexpr function
-     *    may not define a variable of non-literal type before C++23. It costs nothing - the reference
-     *    only carries the address it was handed.
+     *      may not define a variable of non-literal type before C++23. It costs nothing - the reference
+     *      only carries the address it was handed.
      */
     constexpr void lock() const noexcept {
         hash_bucket_head_t const header_mask = header_mask_();
@@ -464,7 +481,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
         }
     }
 
-    /** @brief Drives the two owned bits from @c locked_k to whatever was staged, with one @c fetch_xor. */
+    /** Drives the two owned bits from @c locked_k to whatever was staged, with one @c fetch_xor. */
     constexpr void unlock() const noexcept {
         // The bits we care about are now set to 11 (locked).
         // After this procedure they must be set to either 00, 01, or 10, depending on the "future header".
@@ -496,8 +513,8 @@ class hash_atomic_slot_ref : public hash_slot_ref<element_type_, hasher_type_> {
  *
  *  Skips empty and deleted slots outright through @c countr_zero, rather than walking every one.
  *
- *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified
- *    during iteration to point to each populated slot sequentially.
+ *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified during
+ *      iteration to point to each populated slot sequentially.
  *  @param[in] callback Functor invoked for each populated slot, receiving @c hash_slot_ref.
  *  @return Whether the bucket ran out or a halting callback stopped the walk first.
  */
@@ -529,9 +546,9 @@ walk_control_t for_each_in_hash_bucket(hash_slot_ref<element_type_, hasher_type_
  *  @brief The one allocation a table is carved from, and the counters describing it.
  *
  *  Owns the buffer and the elements inside it, and frees both, so a table holding one needs no
- *  destructor of its own. This is also the only thing that passes between a growable table and a pinned
- *  one, which is what lets that hand-off be a move of a value rather than one type reaching into the
- *  other.
+ *  destructor of its own. This is also the only thing that passes between a growable table and a
+ *  pinned one, which is what lets that hand-off be a move of a value rather than one type reaching
+ *  into the other.
  *
  *  @tparam element_type_ Key type for sets, or @c mapping<K,V> for maps.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
@@ -547,34 +564,43 @@ struct hash_storage {
     using allocator_t = allocator_type_;
     using slot_ref_t = hash_slot_ref<element_type_, hasher_type_>;
 
-    /** @brief Whether the element carries a mapped value, making the table a map rather than a set. */
+    /** Whether the element carries a mapped value, making the table a map rather than a set. */
     inline static constexpr bool has_values_k = layout_t::has_values_k;
-    /** @brief Bytes one bucket occupies across all three regions, header included. */
+
+    /** Bytes one bucket occupies across all three regions, header included. */
     inline static constexpr std::size_t bytes_in_bucket_k = layout_t::bytes_in_bucket_k;
-    /** @brief Whether teardown must run a key destructor. */
+
+    /** Whether teardown must run a key destructor. */
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
-    /** @brief Whether teardown must run a value destructor. */
+
+    /** Whether teardown must run a value destructor. */
     inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
 
-    /** @brief Base of the single allocation the three regions are carved from. */
+    /** Base of the single allocation the three regions are carved from. */
     std::byte *memory {};
-    /** @brief Keys region, indexed by slot. */
+
+    /** Keys region, indexed by slot. */
     key_t *keys {};
-    /** @brief Values region, indexed by slot, null for sets. */
+
+    /** Values region, indexed by slot, null for sets. */
     value_storage_t *values {};
-    /** @brief Headers region, indexed by bucket. */
+
+    /** Headers region, indexed by bucket. */
     hash_bucket_head_t *headers {};
 
-    /** @brief Total number of slots, always a power of two. */
+    /** Total number of slots, always a power of two. */
     offset_t slots_count {};
-    /** @brief Rehash trigger at the 75% load factor. */
+
+    /** Rehash trigger at the 75% load factor. */
     offset_t growth_threshold {};
-    /** @brief Count of populated slots. */
+
+    /** Count of populated slots. */
     alignas(atomic_alignment<offset_t>) offset_t populated_count {};
-    /** @brief Count of deleted slots still holding tombstones. */
+
+    /** Count of deleted slots still holding tombstones. */
     alignas(atomic_alignment<offset_t>) offset_t deleted_count {};
 
-    /** @brief Supplies and reclaims the single byte buffer behind the three regions. */
+    /** Supplies and reclaims the single byte buffer behind the three regions. */
     ST_NO_UNIQUE_ADDRESS_ allocator_t allocator {};
 
     hash_storage() noexcept = default;
@@ -594,7 +620,7 @@ struct hash_storage {
     /**
      *  @brief Allocates and zeroes the buffer for @p slots, keeping @p allocator for its release.
      *  @return An empty storage when the request is unrepresentable or the allocation fails, which
-     *    @c is_allocated reports.
+     *      @c is_allocated reports.
      */
     [[nodiscard]] static hash_storage make(hash_slots_count_t slots, allocator_t allocator_state) noexcept {
 
@@ -622,18 +648,18 @@ struct hash_storage {
         return result;
     }
 
-    /** @brief Total memory needed for the three regions of a table this size. */
+    /** Total memory needed for the three regions of a table this size. */
     static constexpr std::size_t memory_usage(hash_slots_count_t slots) noexcept {
         return (slots.raw / hash_bucket_capacity_k) * bytes_in_bucket_k;
     }
 
-    /** @brief Whether a buffer is behind the three regions. */
+    /** Whether a buffer is behind the three regions. */
     bool is_allocated() const noexcept { return memory != nullptr; }
 
     offset_t bucket_count() const noexcept { return slots_count / hash_bucket_capacity_k; }
     std::size_t size_bytes() const noexcept { return bucket_count() * bytes_in_bucket_k; }
 
-    /** @brief Recomputes the three region pointers from @c memory and @c slots_count. */
+    /** Recomputes the three region pointers from @c memory and @c slots_count. */
     void retarget_regions() noexcept {
         std::size_t const buckets = static_cast<std::size_t>(slots_count) / hash_bucket_capacity_k;
         keys = reinterpret_cast<key_t *>(memory);
@@ -648,7 +674,7 @@ struct hash_storage {
         }
     }
 
-    /** @brief Points @p slot at the three regions and at @p slot_index within them. */
+    /** Points @p slot at the three regions and at @p slot_index within them. */
     template <typename slot_ref_type_>
     constexpr void retarget_slot(slot_ref_type_ &slot, offset_t slot_index) const noexcept {
         slot.keys_ = keys;
@@ -657,7 +683,7 @@ struct hash_storage {
         slot.slot_ = slot_index;
     }
 
-    /** @brief Runs the destructors of every live key and value, leaving the headers as they are. */
+    /** Runs the destructors of every live key and value, leaving the headers as they are. */
     void destroy_elements() noexcept {
         if constexpr (destruct_keys_k || destruct_values_k) {
             if (!memory) return;
@@ -674,7 +700,7 @@ struct hash_storage {
         }
     }
 
-    /** @brief Destroys every element and zeroes the headers, keeping the buffer. */
+    /** Destroys every element and zeroes the headers, keeping the buffer. */
     void clear() noexcept {
         if (!memory) return;
         destroy_elements();
@@ -699,7 +725,7 @@ struct hash_storage {
         deleted_count = 0;
     }
 
-    /** @brief A cheap copy-less exchange of the buffer, the counters and the allocator. */
+    /** A cheap copy-less exchange of the buffer, the counters and the allocator. */
     void swap(hash_storage &other) noexcept {
         std::swap(memory, other.memory);
         std::swap(keys, other.keys);

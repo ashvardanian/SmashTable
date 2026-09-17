@@ -56,6 +56,6 @@ The GenMC clients spell their mutexes as one exchanged word rather than `spin_sh
 ./check.sh
 ```
 
-Inside USearch the runner finds ForkUnion two directories up, as the forwarder does; standalone, check ForkUnion out beside this repository, which is what CI does.
+Inside a superproject the runner finds ForkUnion two directories up, as the forwarder does; standalone, check ForkUnion out beside this repository, which is what CI does.
 Every `verify` line names a model, the expected verdict and the defines, so a new variant is one line.
 The suite's 36 Spin verdicts and 5 GenMC verdicts take about forty seconds four at a time, which is the default.

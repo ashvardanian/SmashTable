@@ -1,10 +1,10 @@
 /**
- *  @brief Test instantiations for AVL tree containers. Covers basic_avl_tree (non-transactional) and
- *      monotonic_store<basic_avl_tree> (transactional). Includes AVL-specific algorithms
- *      (merge/split/join) and transaction architecture tests.
- *  @author Ash Vardanian
  *  @file scripts/test_avl_tree.cpp
+ *  @author Ash Vardanian
  *  @date October 25, 2025
+ *  @brief Test instantiations for AVL tree containers. Covers basic_avl_tree (non-transactional)
+ *      and monotonic_store<basic_avl_tree> (transactional). Includes AVL-specific algorithms
+ *      (merge/split/join) and transaction architecture tests.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -35,107 +35,76 @@ namespace {
 
 #pragma region Type Aliases
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✗
- *  Tests: Baseline non-transparent comparator path
- */
+/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✗
+ *  Tests: Baseline non-transparent comparator path */
 using trivial_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
-/**
- *  Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✗
- *  Tests: Resource accounting, allocation failure injection
- */
+/** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✗
+ *  Tests: Resource accounting, allocation failure injection */
 using tracking_set_t = avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
-/**
- *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✗
- *  Tests: Identifier extraction, composite_key_compare_t::value_type lookups
- */
+/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✗
+ *  Tests: Identifier extraction, composite_key_compare_t::value_type lookups */
 using composite_set_t = avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
-/**
- *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✗
- *  Tests: OOM during .copy(), string_view lookups without materialization
- */
+/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
+ *  Transaction: ✗ Tests: OOM during .copy(), string_view lookups without materialization */
 using heavy_set_t = avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✗
- *  Value: int | Tests: Baseline map operations, non-transparent path
- */
+/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✗
+ *  Value: int | Tests: Baseline map operations, non-transparent path */
 using trivial_map_t =
     avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/**
- *  Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✗
- *  Value: int | Tests: Map resource accounting, POCCA/POCMA on key-value pairs
- */
+/** Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✗
+ *  Value: int | Tests: Map resource accounting, POCCA/POCMA on key-value pairs */
 using tracking_map_t = avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
-/**
- *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✗
- *  Value: guarded_payload_t | Tests: Mixed trivial/non-trivial, value OOM scenarios
- */
+/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) |
+ *  Transaction: ✗ Value: guarded_payload_t | Tests: Mixed trivial/non-trivial, value OOM scenarios */
 using composite_map_t = avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
                                 std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
-/**
- *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✗
- *  Value: guarded_payload_t | Tests: Dual-heap OOM, worst-case complexity
- */
+/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
+ *  Transaction: ✗ Value: guarded_payload_t | Tests: Dual-heap OOM, worst-case complexity */
 using heavy_map_t =
     avl_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Baseline transactional correctness, isolation levels
- */
+/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
+ *  Tests: Baseline transactional correctness, isolation levels */
 using transactional_trivial_set_t =
     monotonic_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
-/**
- *  Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
- *  Tests: Transaction resource accounting, OOM during stage/commit
- */
+/** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
+ *  Tests: Transaction resource accounting, OOM during stage/commit */
 using transactional_tracking_set_t = monotonic_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
-/**
- *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Heterogeneous watch/find in transactions
- */
+/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
+ *  Tests: Heterogeneous watch/find in transactions */
 using transactional_composite_set_t =
     monotonic_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
-/**
- *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap | Transaction: ✓
- *  Tests: Watch copy OOM, transaction rollback with heap types
- */
+/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
+ *  Transaction: ✓ Tests: Watch copy OOM, transaction rollback with heap types */
 using transactional_heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
-/**
- *  Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
- *  Value: int | Tests: Transactional map operations, value overwrites
- */
+/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
+ *  Value: int | Tests: Transactional map operations, value overwrites */
 using transactional_trivial_map_t =
     monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/**
- *  Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
- *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA
- */
+/** Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
+ *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA */
 using transactional_tracking_map_t = monotonic_avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
-/**
- *  Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction: ✓
- *  Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values
- */
+/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) |
+ *  Transaction: ✓ Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values */
 using transactional_composite_map_t = monotonic_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
                                                         std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
-/**
- *  Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) | Transaction: ✓
- *  Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap rollback
- */
+/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
+ *  Transaction: ✓ Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap
+ *  rollback */
 using transactional_heavy_map_t = monotonic_avl_map<heavy_key_t, guarded_payload_t, std::less<void>,
                                                     std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
@@ -143,7 +112,7 @@ using transactional_heavy_map_t = monotonic_avl_map<heavy_key_t, guarded_payload
 
 #pragma region Basic Operations Tests
 
-/** @brief Tests operations on empty container don't crash */
+/** Tests operations on empty container don't crash */
 static void basic_ops_empty_container_operations() {
     test_empty_container_operations<trivial_set_t>();
     test_empty_container_operations<tracking_set_t>();
@@ -163,7 +132,7 @@ static void basic_ops_empty_container_operations() {
     test_empty_container_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests operations on single-element container */
+/** Tests operations on single-element container */
 static void basic_ops_single_element_operations() {
     test_single_element_operations<trivial_set_t>();
     test_single_element_operations<tracking_set_t>();
@@ -183,7 +152,7 @@ static void basic_ops_single_element_operations() {
     test_single_element_operations<transactional_heavy_map_t>();
 }
 
-/** @brief Tests ascending, descending, and random insertion patterns across every container here. */
+/** Tests ascending, descending, and random insertion patterns across every container here. */
 static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<trivial_set_t>();
     test_basic_insertion_patterns<tracking_set_t>();
@@ -203,7 +172,7 @@ static void basic_ops_insertion_patterns() {
     test_basic_insertion_patterns<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk insertion from iterators across every container here. */
+/** Tests bulk insertion from iterators across every container here. */
 static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<trivial_set_t>();
     test_bulk_insertion_from_iterators<tracking_set_t>();
@@ -223,7 +192,7 @@ static void basic_ops_bulk_insertion_iterators() {
     test_bulk_insertion_from_iterators<transactional_heavy_map_t>();
 }
 
-/** @brief Tests bulk upsert correctly overwrites duplicate keys */
+/** Tests bulk upsert correctly overwrites duplicate keys */
 static void basic_ops_bulk_upsert_with_duplicate_pairs() {
     // ! Only applies to maps with integral mapped values
     test_bulk_upsert_with_duplicates<trivial_map_t>();
@@ -232,7 +201,7 @@ static void basic_ops_bulk_upsert_with_duplicate_pairs() {
     test_bulk_upsert_with_duplicates<transactional_tracking_map_t>();
 }
 
-/** @brief Tests range queries on committed HEAD state */
+/** Tests range queries on committed HEAD state */
 static void basic_ops_range_query_head_state() {
     // ! Only applies to "non-heavy" keys to simplify the test implementation
     test_range_query_head_state<trivial_set_t>();
@@ -249,7 +218,7 @@ static void basic_ops_range_query_head_state() {
     test_range_query_head_state<transactional_composite_map_t>();
 }
 
-/** @brief Tests erase_range on committed HEAD state */
+/** Tests erase_range on committed HEAD state */
 static void basic_ops_erase_range_head_state() {
     // ! Only applies to "non-heavy" keys to simplify the test implementation
     test_erase_range_head_state<trivial_set_t>();
@@ -270,7 +239,7 @@ static void basic_ops_erase_range_head_state() {
     test_erase_range_head_state<transactional_heavy_map_t>();
 }
 
-/** @brief Tests heterogeneous lookup for composite and heavy key types */
+/** Tests heterogeneous lookup for composite and heavy key types */
 static void basic_ops_heterogeneous_lookups() {
     test_heterogeneous_composite_find<composite_set_t>();
     test_heterogeneous_heavy_string_view_find<heavy_set_t>();
@@ -419,7 +388,7 @@ static void transactional_consistency_sequential_updates_never_regress() {
     test_sequential_updates_never_regress<transactional_tracking_map_t>();
 }
 
-/** @brief Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
+/** Ordering of mapped values is only meaningful where they are numbers, so @c int maps only. */
 static void transactional_consistency_transaction_commits_maintain_order() {
     test_transaction_commits_maintain_order<transactional_trivial_map_t>();
     test_transaction_commits_maintain_order<transactional_tracking_map_t>();
@@ -563,13 +532,13 @@ static void transactional_consistency_stateful_comparator_is_consulted() {
 
 #pragma region Structural Invariants
 
-/** @brief Node count and height of a walked subtree. */
+/** Node count and height of a walked subtree. */
 struct subtree_shape_t {
     std::size_t count = 0;
     std::ptrdiff_t height = 0;
 };
 
-/** @brief Recursively checks parent back-pointers, stored heights, AVL balance, and key order. */
+/** Recursively checks parent back-pointers, stored heights, AVL balance, and key order. */
 template <typename tree_type_>
 static subtree_shape_t verify_subtree(typename tree_type_::node_t const *node,
                                       typename tree_type_::node_t const *parent,
@@ -595,7 +564,7 @@ static subtree_shape_t verify_subtree(typename tree_type_::node_t const *node,
     return {left.count + right.count + 1, height};
 }
 
-/** @brief Walks the whole tree, checking its shape and that the node count agrees with @c size(). */
+/** Walks the whole tree, checking its shape and that the node count agrees with @c size(). */
 template <typename tree_type_>
 static void verify_invariants(tree_type_ const &tree) {
     auto const *root = tree.root();
@@ -605,7 +574,7 @@ static void verify_invariants(tree_type_ const &tree) {
     st_verify_eq_(shape.count, tree.size());
 }
 
-/** @brief A copied tree must carry its own parent links, or the first @c ++it walks into garbage. */
+/** A copied tree must carry its own parent links, or the first @c ++it walks into garbage. */
 template <typename tree_type_>
 static void test_copy_preserves_parent_links() {
     using member_t = typename tree_type_::value_type;
@@ -619,7 +588,7 @@ static void test_copy_preserves_parent_links() {
     st_verify_eq_(std::distance(copied->begin(), copied->end()), tree.size());
 }
 
-/** @brief The perfectly balanced tree built from a sorted range must be linked both ways. */
+/** The perfectly balanced tree built from a sorted range must be linked both ways. */
 template <typename tree_type_>
 static void test_bulk_sorted_insert_links_parents() {
     using member_t = typename tree_type_::value_type;
@@ -638,7 +607,7 @@ static void test_bulk_sorted_insert_links_parents() {
     }
 }
 
-/** @brief Erasing a two-child root promotes its successor, which nobody above it can rebalance. */
+/** Erasing a two-child root promotes its successor, which nobody above it can rebalance. */
 template <typename tree_type_>
 static void test_erase_root_rebalances_promoted_node() {
     using member_t = typename tree_type_::value_type;
@@ -652,7 +621,7 @@ static void test_erase_root_rebalances_promoted_node() {
     st_verify_eq_(tree.size(), 4);
 }
 
-/** @brief The callback range is @c [lower, upper), matching what @c erase_range removes. */
+/** The callback range is @c [lower, upper), matching what @c erase_range removes. */
 template <typename tree_type_>
 static void test_range_excludes_upper_bound() {
     using member_t = typename tree_type_::value_type;
@@ -670,7 +639,7 @@ static void test_range_excludes_upper_bound() {
     st_verify_eq_(seen[1], 3);
 }
 
-/** @brief Splitting rebuilds two trees whose sides can differ in height by far more than one. */
+/** Splitting rebuilds two trees whose sides can differ in height by far more than one. */
 template <typename tree_type_>
 static void test_split_and_erase_range_stay_balanced() {
     using member_t = typename tree_type_::value_type;
@@ -693,7 +662,7 @@ static void test_split_and_erase_range_stay_balanced() {
     }
 }
 
-/** @brief The split-based union of two interleaved trees must come out balanced and fully linked. */
+/** The split-based union of two interleaved trees must come out balanced and fully linked. */
 template <typename tree_type_>
 static void test_merge_unique_stays_balanced() {
     using member_t = typename tree_type_::value_type;
@@ -721,7 +690,7 @@ static void test_merge_unique_stays_balanced() {
     }
 }
 
-/** @brief Randomized insert and erase sequence, re-checking every invariant after each mutation. */
+/** Randomized insert and erase sequence, re-checking every invariant after each mutation. */
 template <typename tree_type_>
 static void test_random_mutations_preserve_invariants() {
     using member_t = typename tree_type_::value_type;
@@ -748,7 +717,7 @@ static void test_random_mutations_preserve_invariants() {
     st_verify_(expected == oracle.end());
 }
 
-/** @brief Post-decrement must exist for the type to model @c std::bidirectional_iterator. */
+/** Post-decrement must exist for the type to model @c std::bidirectional_iterator. */
 template <typename tree_type_>
 static void test_iterator_post_decrement() {
     static_assert(std::bidirectional_iterator<typename tree_type_::iterator>, "iterator must be bidirectional");
@@ -768,7 +737,7 @@ static void test_iterator_post_decrement() {
     st_verify_eq_(mapping_key_or_itself(*position).unique_id, 2);
 }
 
-/** @brief The node-level @c equal_range reports the half-open bounds around a key. */
+/** The node-level @c equal_range reports the half-open bounds around a key. */
 template <typename tree_type_>
 static void test_node_equal_range() {
     using member_t = typename tree_type_::value_type;
@@ -788,7 +757,7 @@ static void test_node_equal_range() {
     st_verify_(!absent.lower_bound && !absent.upper_bound);
 }
 
-/** @brief A bulk upsert pays for its nodes while staging them, and the merge that follows cannot fail. */
+/** A bulk upsert pays for its nodes while staging them, and the merge that follows cannot fail. */
 static void structure_bulk_upsert_pays_only_while_staging() {
     using budget_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, stateful_allocator<trivial_key_t>>;
 
@@ -853,7 +822,7 @@ static void structure_upsert_reports_placement() {
     ledger.verify_balanced();
 }
 
-/** @brief Move-only entries must survive the assignment operator of an upsert result. */
+/** Move-only entries must survive the assignment operator of an upsert result. */
 static void structure_move_only_upsert_assignment() {
     struct move_only_key_t {
         trivial_id_t unique_id = 0;
@@ -924,7 +893,7 @@ static void structure_node_equal_range() {
     test_node_equal_range<trivial_map_t>();
 }
 
-/** @brief Erasing through a @c const_iterator must compile, unlink the node, and leave the tree balanced. */
+/** Erasing through a @c const_iterator must compile, unlink the node, and leave the tree balanced. */
 static void structure_erase_const_iterator() {
     trivial_set_t tree;
     for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(tree.upsert(trivial_key_t(identifier)));
@@ -1010,7 +979,7 @@ static void fixture_coverage_container_honours_over_alignment() {
 
 #pragma region Allocation Failure
 
-/** @brief A key that rewrites itself when moved from, so a consumed argument is visible to the oracle. */
+/** A key that rewrites itself when moved from, so a consumed argument is visible to the oracle. */
 struct traced_key_t {
     int value = 0;
     bool moved_from = false;
@@ -1035,7 +1004,7 @@ struct traced_less_t {
 
 using traced_set_t = avl_set<traced_key_t, traced_less_t, stateful_allocator<void>>;
 
-/** @brief A key already there costs no node, so it must report presence rather than exhaustion. */
+/** A key already there costs no node, so it must report presence rather than exhaustion. */
 static void allocation_failure_insert_probes_before_allocating() {
     allocation_ledger_t ledger;
     ledger.allow(1);
@@ -1059,7 +1028,7 @@ static void allocation_failure_insert_probes_before_allocating() {
 
 #pragma region Failure Policy
 
-/** @brief Every cause this store can produce, the refused heap included, reports a status of its own. */
+/** Every cause this store can produce, the refused heap included, reports a status of its own. */
 static void failure_policy_budgeted_distinct_causes() {
     test_budgeted_store_maps_causes_to_distinct_statuses<transactional_tracking_map_t>();
 }

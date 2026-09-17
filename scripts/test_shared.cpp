@@ -1,9 +1,9 @@
 /**
- *  @brief Tests for the primitives every container shares - the @c expected result type, the default
- *      allocator, the reader-writer lock, and the multi-store transaction group.
- *  @author Ash Vardanian
  *  @file scripts/test_shared.cpp
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Tests for the primitives every container shares - the @c expected result type, the
+ *      default allocator, the reader-writer lock, and the multi-store transaction group.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 
@@ -34,10 +34,8 @@ namespace {
 
 #pragma region Instrumented Value
 
-/**
- *  @brief A value that tallies every construction and destruction, so a leak or a double free shows
- *    up as an imbalance rather than as a sanitizer report alone.
- */
+/** A value that tallies every construction and destruction, so a leak or a double free shows up as an imbalance
+ *  rather than as a sanitizer report alone. */
 struct counted_t {
     static inline std::size_t constructions = 0;
     static inline std::size_t destructions = 0;
@@ -61,7 +59,7 @@ struct counted_t {
     static std::size_t alive() noexcept { return constructions - destructions; }
 };
 
-/** @brief A value with no copy at all, which is the shape a transaction has. */
+/** A value with no copy at all, which is the shape a transaction has. */
 struct move_only_t {
     int payload {0};
 
@@ -77,7 +75,7 @@ struct move_only_t {
 
 #pragma region Expected Tests
 
-/** @brief Every way of constructing an @c expected, checked for a discriminant that matches storage. */
+/** Every way of constructing an @c expected, checked for a discriminant that matches storage. */
 static void expected_construction_matrix() {
     std::size_t const alive_before = counted_t::alive();
 
@@ -151,7 +149,7 @@ static void expected_construction_matrix() {
     st_verify_eq_(counted_t::alive(), alive_before);
 }
 
-/** @brief Moves between all four combinations of full and empty, checked for balance. */
+/** Moves between all four combinations of full and empty, checked for balance. */
 static void expected_moves_stay_balanced() {
     std::size_t const alive_before = counted_t::alive();
 
@@ -207,7 +205,7 @@ static void expected_moves_stay_balanced() {
     st_verify_eq_(counted_t::alive(), alive_before);
 }
 
-/** @brief The tuple protocol behind @c auto @c [value, status], on both paths. */
+/** The tuple protocol behind @c auto @c [value, status], on both paths. */
 static void expected_decomposes() {
     std::size_t const alive_before = counted_t::alive();
     {
@@ -223,7 +221,7 @@ static void expected_decomposes() {
     st_verify_eq_(counted_t::alive(), alive_before);
 }
 
-/** @brief A move-only payload, which is the case @c std::optional could not cover. */
+/** A move-only payload, which is the case @c std::optional could not cover. */
 static void expected_carries_move_only() {
     expected<move_only_t> held {move_only_t {21}, success_k};
     st_verify_(held);
@@ -242,7 +240,7 @@ static void expected_carries_move_only() {
 
 #pragma region Allocator Tests
 
-/** @brief A byte count that would wrap must be refused rather than served a tiny block. */
+/** A byte count that would wrap must be refused rather than served a tiny block. */
 static void allocator_refuses_overflowing_counts() {
     default_allocator<std::uint64_t> wide_allocator;
 
@@ -270,7 +268,7 @@ static void allocator_refuses_overflowing_counts() {
 
 #pragma region Shared Mutex Tests
 
-/** @brief Exclusion holds: a writer never overlaps a reader or another writer. */
+/** Exclusion holds: a writer never overlaps a reader or another writer. */
 static void shared_mutex_excludes() {
     spin_shared_mutex_t mutex;
     std::atomic<int> readers_inside {0};
@@ -315,11 +313,9 @@ static void shared_mutex_excludes() {
     st_verify_eq_(guarded_right, guarded_left);
 }
 
-/**
- *  @brief Several writers under a steady read load all finish, which is what the waiting tally buys.
- *    One writer taking the lock must not erase the intent of the writers still queued, or a reader
- *    stream slips back in and parks them forever.
- */
+/** Several writers under a steady read load all finish, which is what the waiting tally buys. One writer taking the
+ *  lock must not erase the intent of the writers still queued, or a reader stream slips back in and parks them
+ *  forever. */
 static void shared_mutex_admits_every_writer() {
     // The readers re-enter fast enough that their count effectively never reaches zero, so a writer
     // only gets in by turning them away; the budget is fifty times the deepest run seen.
@@ -379,7 +375,7 @@ static void shared_mutex_admits_every_writer() {
 
 #pragma region Transaction Group Tests
 
-/** @brief The lifecycle step a logged entry names. */
+/** The lifecycle step a logged entry names. */
 enum class phase_t : std::uint8_t {
     open_k,
     stage_k,
@@ -390,22 +386,20 @@ enum class phase_t : std::uint8_t {
     reset_k,
 };
 
-/** @brief One lifecycle call a recording store logged, and where in the group that store sits. */
+/** One lifecycle call a recording store logged, and where in the group that store sits. */
 struct recorded_call_t {
     phase_t phase {phase_t::open_k};
     std::size_t position {0};
 };
 
-/** @brief Whether a store's transaction offers the two-step commit a group prefers over one call. */
+/** Whether a store's transaction offers the two-step commit a group prefers over one call. */
 enum class commit_shape_t : bool {
     one_call_k,
     split_k,
 };
 
-/**
- *  @brief What one store hands back from each step, so a group can be steered into any refusal.
- *    Every member is that step's own status, and @c success_k lets it through.
- */
+/** What one store hands back from each step, so a group can be steered into any refusal. Every member is that step's
+ *  own status, and @c success_k lets it through. */
 struct refusals_t {
     status_t opening {success_k};
     status_t stage {success_k};
@@ -415,7 +409,7 @@ struct refusals_t {
     status_t reset {success_k};
 };
 
-/** @brief A store that records the order its steps are visited in, and refuses where it is told to. */
+/** A store that records the order its steps are visited in, and refuses where it is told to. */
 template <commit_shape_t shape_ = commit_shape_t::one_call_k>
 struct recording_store {
     using is_transactional = std::true_type;
@@ -472,7 +466,7 @@ struct recording_store {
     }
 };
 
-/** @brief The stores @p log holds for @p phase by their position in the group, in visit order. */
+/** The stores @p log holds for @p phase by their position in the group, in visit order. */
 static std::vector<std::size_t> stores_visited(std::vector<recorded_call_t> const &log, phase_t phase) {
     std::vector<std::size_t> visited;
     for (recorded_call_t const &call : log)
@@ -480,7 +474,7 @@ static std::vector<std::size_t> stores_visited(std::vector<recorded_call_t> cons
     return visited;
 }
 
-/** @brief Every phase walks the participants in one address order, rollback included. */
+/** Every phase walks the participants in one address order, rollback included. */
 static void transaction_group_walks_one_order() {
     std::vector<recorded_call_t> log;
     recording_store<> first {log, 0}, second {log, 1}, third {log, 2};
@@ -516,7 +510,7 @@ static void transaction_group_walks_one_order() {
     st_verify_eq_(group.commit(), operation_not_permitted_k);
 }
 
-/** @brief A refused rollback stops where it was refused and leaves the group staged. */
+/** A refused rollback stops where it was refused and leaves the group staged. */
 static void transaction_group_rollback_stops_at_refusal() {
     std::vector<recorded_call_t> log;
     // Array members ascend in address, so the group visits these in the order they are named.
@@ -548,7 +542,7 @@ static void transaction_group_rollback_stops_at_refusal() {
     st_verify_eq_(group.staging(), staging_t::pending_k);
 }
 
-/** @brief One store named twice is refused before either participant is opened. */
+/** One store named twice is refused before either participant is opened. */
 static void transaction_group_refuses_a_duplicate_store() {
     std::vector<recorded_call_t> log;
     recording_store<> only {log, 0}, other {log, 1};
@@ -569,7 +563,7 @@ static void transaction_group_refuses_a_duplicate_store() {
     st_verify_(stores_visited(log, phase_t::open_k) == opened);
 }
 
-/** @brief A store refusing to open reports its own status, and the caller hears the first of them. */
+/** A store refusing to open reports its own status, and the caller hears the first of them. */
 static void transaction_group_reports_what_refused_to_open() {
     std::vector<recorded_call_t> log;
     recording_store<> first {log, 0}, second {log, 1};
@@ -584,7 +578,7 @@ static void transaction_group_reports_what_refused_to_open() {
     st_verify_eq_(both_refused.status(), capacity_exhausted_k);
 }
 
-/** @brief A commit that published nothing stays staged, and one that tore drops to pending. */
+/** A commit that published nothing stays staged, and one that tore drops to pending. */
 static void transaction_group_torn_commit_stops_claiming_staged() {
     using store_t = recording_store<>;
     static_assert(!transaction_group<store_t, store_t, store_t>::asks_before_writing_k,
@@ -623,7 +617,7 @@ static void transaction_group_torn_commit_stops_claiming_staged() {
     st_verify_(stores_visited(log, phase_t::reset_k) == every);
 }
 
-/** @brief Where every participant splits its commit, a refusal publishes nothing at all. */
+/** Where every participant splits its commit, a refusal publishes nothing at all. */
 static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     using store_t = recording_store<commit_shape_t::split_k>;
     static_assert(transaction_group<store_t, store_t>::asks_before_writing_k,
@@ -660,7 +654,7 @@ using versioning_t = versioning_for<std::size_t, less_t>;
 using versioned_t = versioning_t::versioned_t;
 using dated_identifier_t = versioning_t::dated_identifier_t;
 
-/** @brief A generation breaks ties only for operands that still name a key. */
+/** A generation breaks ties only for operands that still name a key. */
 static void versioned_comparator_orders_by_key_then_generation() {
     versioning_t::versioned_comparator_t comparator;
 
@@ -695,7 +689,7 @@ static void versioned_comparator_orders_by_key_then_generation() {
 
 #pragma region Optimistic Concurrency Tests
 
-/** @brief A stamp is visible to every snapshot at or past it, and an uncommitted one to none. */
+/** A stamp is visible to every snapshot at or past it, and an uncommitted one to none. */
 static void commit_stamp_visibility_matrix() {
     constexpr generation_t stamps_k[] = {0, 1, 2, 7, 1000};
     constexpr generation_t snapshots_k[] = {0, 1, 2, 7, 1000, 1001};
@@ -716,9 +710,9 @@ static void commit_stamp_visibility_matrix() {
 /**
  *  @brief The ladder weakest rung first, which is the order @c at_least is asked to agree with.
  *
- *  Written out rather than derived, because a walk generated from @c isolation_t could only confirm the
- *  enum agrees with itself. The count is pinned to the strongest rung so a new one cannot join the enum
- *  and skip the walk, which is how @c strict_serializable_k once went untested.
+ *  Written out rather than derived, because a walk generated from @c isolation_t could only confirm
+ *  the enum agrees with itself. The count is pinned to the strongest rung so a new one cannot join
+ *  the enum and skip the walk, which is how @c strict_serializable_k once went untested.
  */
 constexpr std::array<isolation_t, 5> isolation_ladder_k {
     isolation_t::read_committed_k, isolation_t::monotonic_atomic_view_k, isolation_t::snapshot_k,
@@ -727,7 +721,7 @@ constexpr std::array<isolation_t, 5> isolation_ladder_k {
 static_assert(isolation_ladder_k.size() == static_cast<std::size_t>(isolation_t::strict_serializable_k) + 1,
               "a rung joined or left `isolation_t` without joining the walk over it");
 
-/** @brief Every ordered pair of isolation levels, so the enum's order is load-bearing. */
+/** Every ordered pair of isolation levels, so the enum's order is load-bearing. */
 static void isolation_levels_compare_by_strength() {
     for (std::size_t stronger = 0; stronger != isolation_ladder_k.size(); ++stronger)
         for (std::size_t weaker = 0; weaker != isolation_ladder_k.size(); ++weaker)
@@ -740,7 +734,7 @@ static void isolation_levels_compare_by_strength() {
     static_assert(!at_least(isolation_t::serializable_k, isolation_t::strict_serializable_k));
 }
 
-/** @brief An entry standing in for what a store resolves a watched identifier to. */
+/** An entry standing in for what a store resolves a watched identifier to. */
 struct resolved_entry_t {
     generation_t generation {0};
     presence_t presence {presence_t::present_k};
@@ -750,7 +744,7 @@ struct resolved_entry_t {
     }
 };
 
-/** @brief Watches that still match pass, and the first that drifted reports a conflict. */
+/** Watches that still match pass, and the first that drifted reports a conflict. */
 static void validate_watches_catches_drift() {
     using watched_t = watched_identifier<int>;
     std::vector<watched_t> watches;
@@ -814,7 +808,7 @@ static void validate_watches_catches_drift() {
     st_verify_eq_(validate_watches(none, resolve(unchanged)), success_k);
 }
 
-/** @brief A bare key matches every version of it, while a dated identifier matches exactly one. */
+/** A bare key matches every version of it, while a dated identifier matches exactly one. */
 static void per_version_equals_separates_versions() {
     per_version_equals<std::equal_to<std::size_t>> const equals;
     per_key_hasher<std::hash<std::size_t>> const hasher;
@@ -856,19 +850,25 @@ static_assert(optimistically_concurrent_store<std_store_t>, "and so does the `st
 static_assert(!optimistically_concurrent_store<counted_t>, "a plain value is not a store");
 static_assert(at_least(avl_store_t::isolation_k, isolation_t::read_committed_k), "the floor the concept states");
 
-/** @brief A transaction whose commit refuses with a planned status a set number of times, counting every call. */
+/** A transaction whose commit refuses with a planned status a set number of times, counting every call. */
 struct conflicting_transaction_t {
-    /** @brief How many more commits refuse. */
+
+    /** How many more commits refuse. */
     std::size_t refusals_left = 0;
-    /** @brief What a refusing commit answers. */
+
+    /** What a refusing commit answers. */
     status_t refusal = status_t::write_conflict_k;
-    /** @brief How many more resets refuse, which is the fault a retry cannot unwind. */
+
+    /** How many more resets refuse, which is the fault a retry cannot unwind. */
     std::size_t reset_refusals_left = 0;
-    /** @brief How many times @c stage ran. */
+
+    /** How many times @c stage ran. */
     std::size_t stages = 0;
-    /** @brief How many times @c commit ran. */
+
+    /** How many times @c commit ran. */
     std::size_t commits = 0;
-    /** @brief How many times @c reset ran. */
+
+    /** How many times @c reset ran. */
     std::size_t resets = 0;
 
     [[nodiscard]] status_t stage() noexcept {
@@ -889,10 +889,8 @@ struct conflicting_transaction_t {
     }
 };
 
-/**
- *  @brief Tests that a bounded retry restages after every conflict, gives up once its attempts run out, and
- *    returns any other failure at once.
- */
+/** Tests that a bounded retry restages after every conflict, gives up once its attempts run out, and returns any
+ *  other failure at once. */
 static void commit_with_retries_is_bounded() {
     std::size_t restaged = 0;
     auto const stage_changes = [&](conflicting_transaction_t &) noexcept {
@@ -950,7 +948,7 @@ static void commit_with_retries_is_bounded() {
     st_verify_eq_(untouched.stages + untouched.commits + untouched.resets, 0u);
 }
 
-/** @brief Every status the vocabulary names, so a new one has to be classified here rather than fall through. */
+/** Every status the vocabulary names, so a new one has to be classified here rather than fall through. */
 constexpr status_t every_status_k[] = {
     status_t::success_k,
     status_t::unknown_k,
@@ -968,10 +966,8 @@ constexpr status_t every_status_k[] = {
     status_t::key_not_found_k,
 };
 
-/**
- *  @brief Tests that the conflict statuses are exactly the three a retry can overcome, over the whole
- *    vocabulary, and that the I/O status names and numbers itself.
- */
+/** Tests that the conflict statuses are exactly the three a retry can overcome, over the whole vocabulary, and that
+ *  the I/O status names and numbers itself. */
 static void status_vocabulary_names_conflicts_and_input_output() {
     for (status_t const status : every_status_k) {
         bool const retryable = status == status_t::write_conflict_k || status == status_t::read_conflict_k ||

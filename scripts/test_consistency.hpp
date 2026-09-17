@@ -1,9 +1,9 @@
 /**
- *  @brief Template test functions for advanced transactional consistency scenarios. Includes tests for isolation
- *      levels, visibility rules, and conflict resolution.
- *  @author Ash Vardanian
  *  @file scripts/test_consistency.hpp
+ *  @author Ash Vardanian
  *  @date January 12, 2023
+ *  @brief Template test functions for advanced transactional consistency scenarios. Includes tests
+ *      for isolation levels, visibility rules, and conflict resolution.
  */
 #pragma once
 #include <compare> // `std::compare_three_way`
@@ -54,32 +54,28 @@ static_assert(wrappers_honour_the_level<parity_serializable_map_t>,
 
 #pragma region Isolation Expectations
 
-/**
- *  @brief The level at which a read repeated inside one transaction must return what it first saw.
- *    Below it a container is free to show the newer committed value, and the suite asserts that it
- *    does - an anomaly a level permits is a promise that level makes, not an outcome left open.
- */
+/** The level at which a read repeated inside one transaction must return what it first saw. Below it a container is
+ *  free to show the newer committed value, and the suite asserts that it does - an anomaly a level permits is a
+ *  promise that level makes, not an outcome left open. */
 inline constexpr isolation_t repeatable_reads_from_k = isolation_t::snapshot_k;
 
-/** @brief The level at which a predicate repeated inside one transaction must see the same members. */
+/** The level at which a predicate repeated inside one transaction must see the same members. */
 inline constexpr isolation_t stable_predicates_from_k = isolation_t::snapshot_k;
 
-/**
- *  @brief The level at which one commit reaches a reader whole, rather than half of it at a time.
- *    Below it a walk spanning several partitions is free to meet two commits at once, and the suite
- *    asserts that it does - which is the anomaly Monotonic Atomic View is named for denying.
- */
+/** The level at which one commit reaches a reader whole, rather than half of it at a time. Below it a walk spanning
+ *  several partitions is free to meet two commits at once, and the suite asserts that it does - which is the anomaly
+ *  Monotonic Atomic View is named for denying. */
 inline constexpr isolation_t whole_commits_from_k = isolation_t::monotonic_atomic_view_k;
 
 /**
- *  @brief The level at which two blind writers to one key are separated, rather than one overwriting
- *    the other.
+ *  @brief The level at which two blind writers to one key are separated, rather than one
+ *      overwriting the other.
  *
- *  Below it the later commit wins and the earlier write is lost - the anomaly Berenson numbers P4 and
- *  Monotonic Atomic View licenses, since that level constrains what a reader observes rather than what
- *  two writers do to each other, and Bailis shows a totally available model provably cannot prevent it.
- *  From here up the write set is validated whether the caller asks or not, which is the first-committer
- *  -wins rule Snapshot Isolation is defined by.
+ *  Below it the later commit wins and the earlier write is lost - the anomaly Berenson numbers P4
+ *  and Monotonic Atomic View licenses, since that level constrains what a reader observes rather
+ *  than what two writers do to each other, and Bailis shows a totally available model provably
+ *  cannot prevent it. From here up the write set is validated whether the caller asks or not, which
+ *  is the first-committer -wins rule Snapshot Isolation is defined by.
  */
 inline constexpr isolation_t first_committer_wins_from_k = isolation_t::snapshot_k;
 
@@ -88,16 +84,15 @@ inline constexpr isolation_t first_committer_wins_from_k = isolation_t::snapshot
  *
  *  Below it only the write set is checked, so two transactions that each read what the other writes
  *  and then write disjointly both land - the anomaly Berenson numbers A5B, which Snapshot Isolation
- *  permits by construction because no two writes ever collide. From here up the read set is validated
- *  too, which is what separates a serializable history from a merely snapshot-isolated one.
+ *  permits by construction because no two writes ever collide. From here up the read set is
+ *  validated too, which is what separates a serializable history from a merely
+ *  snapshot-isolated one.
  */
 inline constexpr isolation_t validated_reads_from_k = isolation_t::serializable_k;
 
 #pragma endregion Isolation Expectations
 
-/**
- *  @brief Edge Case: Committing empty transaction succeeds
- */
+/** Edge Case: Committing empty transaction succeeds */
 template <typename container_type_>
 void test_empty_transaction_commit() {
 
@@ -154,9 +149,9 @@ void test_no_dirty_reads_multi_key() {
  *  @brief Read Committed: New transactions don't see staged (uncommitted) data
  *
  *  Timeline:
- *    T1:  upsert(1,100)  →  upsert(2,200)  →  stage()
+ *      T1:  upsert(1,100)  →  upsert(2,200)  →  stage()
  *
- *    T2:  transaction()  →  find(1,2)  →  sees nothing
+ *      T2:  transaction()  →  find(1,2)  →  sees nothing
  *
  *  Expected: T2 sees nothing (T1 not committed yet)
  */
@@ -189,9 +184,9 @@ void test_new_transaction_sees_nothing_staged() {
  *  @brief Read Committed: Committed transactions are immediately visible
  *
  *  Timeline:
- *    T1:  upsert(1,111)  →  upsert(2,222)  →  stage()  →  commit()
+ *      T1:  upsert(1,111)  →  upsert(2,222)  →  stage()  →  commit()
  *
- *    T2:  transaction()  →  find(1,2)  →  sees (1,111) and (2,222)
+ *      T2:  transaction()  →  find(1,2)  →  sees (1,111) and (2,222)
  *
  *  Expected: T2 sees committed data immediately
  */
@@ -228,17 +223,17 @@ void test_committed_immediately_visible() {
  *  @brief Atomic View: 10-key transaction visible as 0 or 10, never partial
  *
  *  Timeline:
- *    T.upsert(0..9)
- *    ─────────────────────────────────
- *    Observer sees: 0 keys
+ *      T.upsert(0..9)
+ *      ─────────────────────────────────
+ *      Observer sees: 0 keys
  *
- *    T.stage()
- *    ─────────────────────────────────
- *    Observer sees: 0 keys
+ *      T.stage()
+ *      ─────────────────────────────────
+ *      Observer sees: 0 keys
  *
- *    T.commit()
- *    ─────────────────────────────────
- *    Observer sees: 10 keys (atomic!)
+ *      T.commit()
+ *      ─────────────────────────────────
+ *      Observer sees: 10 keys (atomic!)
  *
  *  Expected: Never see 1-9 keys (all-or-nothing)
  */
@@ -291,13 +286,12 @@ void test_multi_key_atomicity_10_keys() {
 /**
  *  @brief Atomic View: Rollback atomically hides all staged changes
  *
- *  Setup:
- *    set.upsert(1,1)
+ *  Setup: set.upsert(1,1)
  *
  *  Timeline:
- *    T:  upsert(1,100)  →  upsert(2,200)  →  upsert(3,300)  →  stage()  →  rollback()
+ *      T:  upsert(1,100)  →  upsert(2,200)  →  upsert(3,300)  →  stage()  →  rollback()
  *
- *    Observer: ────────────────────────────────────────────────────────────────────────→
+ *      Observer: ────────────────────────────────────────────────────────────────────────→
  *              sees (1,1) only, NOT (2,3)
  *
  *  Expected: All staged changes rolled back atomically
@@ -337,17 +331,17 @@ void test_rollback_makes_all_invisible() {
  *  @brief Atomic View: Range queries see complete transactions
  *
  *  Timeline:
- *    T.upsert(10..19)
- *    ─────────────────────────────────
- *    range(10,20) sees: 0 elements
+ *      T.upsert(10..19)
+ *      ─────────────────────────────────
+ *      range(10,20) sees: 0 elements
  *
- *    T.stage()
- *    ─────────────────────────────────
- *    range(10,20) sees: 0 elements
+ *      T.stage()
+ *      ─────────────────────────────────
+ *      range(10,20) sees: 0 elements
  *
- *    T.commit()
- *    ─────────────────────────────────
- *    range(10,20) sees: 10 elements (atomic!)
+ *      T.commit()
+ *      ─────────────────────────────────
+ *      range(10,20) sees: 10 elements (atomic!)
  *
  *  Expected: Range sees 0 or 10, never partial
  */
@@ -383,18 +377,18 @@ void test_range_query_sees_atomic_boundaries() {
  *  @brief Atomic View: Interleaved commits don't create fractured reads
  *
  *  Timeline:
- *    T1.upsert(1,2,3)  →  T1.stage()
- *    T2.upsert(4,5,6)  →  T2.stage()
- *    ─────────────────────────────────
- *    Observer sees: 0 keys
+ *      T1.upsert(1,2,3)  →  T1.stage()
+ *      T2.upsert(4,5,6)  →  T2.stage()
+ *      ─────────────────────────────────
+ *      Observer sees: 0 keys
  *
- *    T1.commit()
- *    ─────────────────────────────────
- *    Observer sees: 3 keys (1,2,3 only)
+ *      T1.commit()
+ *      ─────────────────────────────────
+ *      Observer sees: 3 keys (1,2,3 only)
  *
- *    T2.commit()
- *    ─────────────────────────────────
- *    Observer sees: 6 keys (all)
+ *      T2.commit()
+ *      ─────────────────────────────────
+ *      Observer sees: 6 keys (all)
  *
  *  Expected: No partial views across transactions
  */
@@ -446,9 +440,7 @@ void test_fractured_read_prevention() {
     st_verify_eq_((count_both), (6), "a range must see both committed transactions");
 }
 
-/**
- *  @brief Monotonic View: Values never go backwards (10→20→30, never 30→20)
- */
+/** Monotonic View: Values never go backwards (10→20→30, never 30→20) */
 template <typename container_type_>
 void test_sequential_updates_never_regress() {
 
@@ -485,9 +477,7 @@ void test_sequential_updates_never_regress() {
     st_verify_eq_(observed_values[2], 30);
 }
 
-/**
- *  @brief Monotonic View: T1 commits v1, T2 commits v2 → always see v1→v2, never v2→v1
- */
+/** Monotonic View: T1 commits v1, T2 commits v2 → always see v1→v2, never v2→v1 */
 template <typename container_type_>
 void test_transaction_commits_maintain_order() {
 
@@ -525,9 +515,9 @@ void test_transaction_commits_maintain_order() {
  *  @brief Write Conflicts: Concurrent transactions on same key - first wins, second fails
  *
  *  Timeline:
- *    T1:  watch(1)  →  upsert(1,100)  →  stage()  →  commit()    ✓
+ *      T1:  watch(1)  →  upsert(1,100)  →  stage()  →  commit()    ✓
  *
- *    T2:  watch(1)  →  upsert(1,200)  →  stage()                 ✗ CONFLICT
+ *      T2:  watch(1)  →  upsert(1,200)  →  stage()                 ✗ CONFLICT
  *
  *  Expected: T1 succeeds, T2 fails with consistency_k
  */
@@ -573,11 +563,11 @@ void test_concurrent_transactions_on_same_key() {
  *  @brief Write Conflicts: ANY watched key conflict fails entire transaction
  *
  *  Timeline:
- *    T1:  watch(1,2,3)
+ *      T1:  watch(1,2,3)
  *
- *    External:  set.upsert(2,999)  ← modifies key 2
+ *      External:  set.upsert(2,999)  ← modifies key 2
  *
- *    T1:  upsert(1,2,3)  →  stage()    ✗ CONFLICT on key 2
+ *      T1:  upsert(1,2,3)  →  stage()    ✗ CONFLICT on key 2
  *
  *  Expected: Transaction fails if ANY watched key changed
  */
@@ -626,11 +616,11 @@ void test_multi_key_conflict_any_key_fails() {
  *  @brief Write Conflicts: Watches detect direct set.upsert() modifications
  *
  *  Timeline:
- *    T:  watch(1)
+ *      T:  watch(1)
  *
- *    External:  set.upsert(1,777)  ← direct modification
+ *      External:  set.upsert(1,777)  ← direct modification
  *
- *    T:  upsert(1,888)  →  stage()    ✗ CONFLICT
+ *      T:  upsert(1,888)  →  stage()    ✗ CONFLICT
  *
  *  Expected: Watch detects external change
  */
@@ -665,9 +655,9 @@ void test_watch_detects_external_direct_modification() {
  *  @brief Write Conflicts: Disjoint key sets allow both transactions to succeed
  *
  *  Timeline:
- *    T1:  upsert(1,2,3)  →  stage()  →  commit()    ✓
+ *      T1:  upsert(1,2,3)  →  stage()  →  commit()    ✓
  *
- *    T2:  upsert(4,5,6)  →  stage()  →  commit()    ✓
+ *      T2:  upsert(4,5,6)  →  stage()  →  commit()    ✓
  *
  *  Expected: Both succeed (no overlapping keys)
  */
@@ -713,15 +703,14 @@ void test_disjoint_keys_both_succeed() {
 /**
  *  @brief Allowed Anomaly: Non-repeatable reads are CORRECT for Read Committed
  *
- *  Setup:
- *    set.upsert(1,100)
+ *  Setup: set.upsert(1,100)
  *
  *  Timeline:
- *    T:  find(1)  →  sees 100
+ *      T:  find(1)  →  sees 100
  *
- *    External:  set.upsert(1,999)
+ *      External:  set.upsert(1,999)
  *
- *    T:  find(1)  →  sees 999    ← CORRECT! (not a bug)
+ *      T:  find(1)  →  sees 999    ← CORRECT! (not a bug)
  *
  *  Expected: Within transaction, reads CAN see different values
  */
@@ -764,15 +753,14 @@ void test_repeated_read_matches_isolation() {
 /**
  *  @brief Allowed Anomaly: Phantom reads are CORRECT for Read Committed
  *
- *  Setup:
- *    set.upsert(0..4)
+ *  Setup: set.upsert(0..4)
  *
  *  Timeline:
- *    T:  range(0,10)  →  counts 5
+ *      T:  range(0,10)  →  counts 5
  *
- *    External:  set.upsert(5,6)
+ *      External:  set.upsert(5,6)
  *
- *    T:  range(0,10)  →  counts 7    ← CORRECT! (not a bug)
+ *      T:  range(0,10)  →  counts 7    ← CORRECT! (not a bug)
  *
  *  Expected: Range counts can change within transaction
  */
@@ -821,19 +809,21 @@ void test_repeated_range_matches_isolation() {
 /**
  *  @brief Licensed Anomaly: a lost update is CORRECT below Snapshot.
  *
- *  Two transactions open together and each writes key 1 without reading it. The first commits, then the
- *  second. Whether the second is allowed to land is the whole of what separates the two levels here.
+ *  Two transactions open together and each writes key 1 without reading it. The first commits, then
+ *  the second. Whether the second is allowed to land is the whole of what separates the two
+ *  levels here.
  *
  *  Timeline:
- *    A, B open together
- *    A:  upsert(1, 10)
- *    B:  upsert(1, 20)
- *    A:  commit           → lands
- *    B:  commit           → lands below Snapshot, refused from Snapshot up
+ *      A, B open together
+ *      A:  upsert(1, 10)
+ *      B:  upsert(1, 20)
+ *      A:  commit           → lands
+ *      B:  commit           → lands below Snapshot, refused from Snapshot up
  *
- *  Below Snapshot nothing validates the write set, so B lands and A's write is gone. That is the lost
- *  update, and it is a promise this level makes rather than an outcome left open. From Snapshot up the
- *  write set is checked against everything published since B opened, so B is refused and A survives.
+ *  Below Snapshot nothing validates the write set, so B lands and A's write is gone. That is the
+ *  lost update, and it is a promise this level makes rather than an outcome left open. From
+ *  Snapshot up the write set is checked against everything published since B opened, so B is
+ *  refused and A survives.
  */
 template <typename container_type_>
 void test_lost_update_matches_isolation() {
@@ -880,20 +870,21 @@ void test_lost_update_matches_isolation() {
 /**
  *  @brief Write skew lands below the level that validates reads, and is refused from there up.
  *
- *  Two transactions open together over a pair of keys holding an invariant - here that at least one of
- *  them stays set. Each reads both, sees the other one covering the invariant, and clears its own. The
- *  write sets are disjoint, so nothing a write-set validator compares ever collides.
+ *  Two transactions open together over a pair of keys holding an invariant - here that at least one
+ *  of them stays set. Each reads both, sees the other one covering the invariant, and clears its
+ *  own. The write sets are disjoint, so nothing a write-set validator compares ever collides.
  *
  *  Timeline:
- *    A, B open together, both keys set
- *    A:  reads 1 and 2, sees the invariant held by 2
- *    B:  reads 1 and 2, sees the invariant held by 1
- *    A:  upsert(1, 0), commit    → lands
- *    B:  upsert(2, 0), commit    → lands below the threshold, refused from it up
+ *      A, B open together, both keys set
+ *      A:  reads 1 and 2, sees the invariant held by 2
+ *      B:  reads 1 and 2, sees the invariant held by 1
+ *      A:  upsert(1, 0), commit    → lands
+ *      B:  upsert(2, 0), commit    → lands below the threshold, refused from it up
  *
- *  Below the threshold both land and the invariant is broken with neither transaction at fault - the
- *  anomaly Snapshot Isolation permits, and a promise this level makes rather than an outcome left open.
- *  From the threshold up B's read of key 1 is validated against what A published, so B is refused.
+ *  Below the threshold both land and the invariant is broken with neither transaction at fault -
+ *  the anomaly Snapshot Isolation permits, and a promise this level makes rather than an outcome
+ *  left open. From the threshold up B's read of key 1 is validated against what A published, so B
+ *  is refused.
  */
 template <typename container_type_>
 void test_write_skew_matches_isolation() {
@@ -955,17 +946,18 @@ void test_write_skew_matches_isolation() {
 }
 
 /**
- *  @brief A key read by one transaction and written by another refuses only where reads are validated.
+ *  @brief A key read by one transaction and written by another refuses only where reads
+ *      are validated.
  *
- *  The narrower half of the same property. One transaction reads a key it never writes, another writes
- *  that key and commits, and the first then writes somewhere else entirely. Nothing the two of them
- *  wrote overlaps, so only a validator that remembers the read can object.
+ *  The narrower half of the same property. One transaction reads a key it never writes, another
+ *  writes that key and commits, and the first then writes somewhere else entirely. Nothing the two
+ *  of them wrote overlaps, so only a validator that remembers the read can object.
  *
  *  Timeline:
- *    A, B open together
- *    A:  find(1)                 → records the read where the level validates reads
- *    B:  upsert(1, 99), commit   → lands
- *    A:  upsert(2, 5), commit    → lands below the threshold, refused from it up
+ *      A, B open together
+ *      A:  find(1)                 → records the read where the level validates reads
+ *      B:  upsert(1, 99), commit   → lands
+ *      A:  upsert(2, 5), commit    → lands below the threshold, refused from it up
  */
 template <typename container_type_>
 void test_read_conflict_matches_isolation() {
@@ -1014,9 +1006,7 @@ void test_read_conflict_matches_isolation() {
     }
 }
 
-/**
- *  @brief Edge Case: Deleted entries are invisible to queries
- */
+/** Edge Case: Deleted entries are invisible to queries */
 template <typename container_type_>
 void test_delete_visibility() {
 
@@ -1037,9 +1027,7 @@ void test_delete_visibility() {
     st_verify_eq_(container.size(), 1);
 }
 
-/**
- *  @brief Edge Case: reset() clears watches and staged changes
- */
+/** Edge Case: reset() clears watches and staged changes */
 template <typename container_type_>
 void test_reset_clears_transaction_state() {
 
@@ -1080,18 +1068,18 @@ void test_reset_clears_transaction_state() {
  *  @brief Write Conflicts: Watch validation must detect staged (invisible) writes
  *
  *  This test verifies the fix for the bug where transactional_avl_tree used find() instead of
- *  find_latest_for_watch() during stage validation. The bug allowed two concurrent
- *  transactions to both stage successfully, violating Monotonic Atomic View consistency.
+ *  find_latest_for_watch() during stage validation. The bug allowed two concurrent transactions to
+ *  both stage successfully, violating Monotonic Atomic View consistency.
  *
  *  Timeline:
- *    T1:  watch(1)  →  ...
+ *      T1:  watch(1)  →  ...
  *
- *    T2:  watch(1)  →  upsert(1,999)  →  stage()    [now invisible but staged]
+ *      T2:  watch(1)  →  upsert(1,999)  →  stage()    [now invisible but staged]
  *
- *    T1:  ...  →  upsert(1,777)  →  stage()        ✗ MUST FAIL (T2 has staged change)
+ *      T1:  ...  →  upsert(1,777)  →  stage()        ✗ MUST FAIL (T2 has staged change)
  *
- *  Expected: T1's stage() fails with consistency_k because T2 has staged (but not committed)
- *            a conflicting write to the watched key.
+ *  Expected: T1's stage() fails with consistency_k because T2 has staged (but not committed) a
+ *  conflicting write to the watched key.
  */
 template <typename container_type_>
 void test_watch_detects_staged_invisible_writes() {
@@ -1186,11 +1174,9 @@ void test_watch_detects_staged_writes_of_older_generation() {
     st_verify_eq_((maybe_final->mapped), (102), "the accepted writer's value must be the one that lands");
 }
 
-/**
- *  @brief Builds a container around a given comparator, whichever factory shape its family offers.
- *    Partitioned collections pair the comparator with a hasher, trees with an allocator, and some
- *    take it alone. Only the arity differs, so the choice is made here rather than in every test.
- */
+/** Builds a container around a given comparator, whichever factory shape its family offers. Partitioned collections
+ *  pair the comparator with a hasher, trees with an allocator, and some take it alone. Only the arity differs, so
+ *  the choice is made here rather than in every test. */
 template <typename container_type_, typename comparator_type_>
 auto make_around_comparator(comparator_type_ const &comparator) noexcept {
     if constexpr (requires { container_type_::make(comparator, typename container_type_::hash_t {}); })
@@ -1283,11 +1269,8 @@ void test_abandoned_transaction_leaves_no_trace() {
     st_verify_eq_((maybe_final->mapped), (222), "the abandoned version must not shadow a later write");
 }
 
-/**
- *  @brief Moving a staged transaction must hand the claim over, not duplicate it.
- *    A defaulted move would leave both halves pointing at the store, and the destructor would then
- *    unstage the same versions twice.
- */
+/** Moving a staged transaction must hand the claim over, not duplicate it. A defaulted move would leave both halves
+ *  pointing at the store, and the destructor would then unstage the same versions twice. */
 template <typename container_type_>
 void test_moved_transaction_unwinds_once() {
 
@@ -1317,9 +1300,10 @@ void test_moved_transaction_unwinds_once() {
  *  @brief A plain read joins no read set, and the watching variant does.
  *
  *  The read set is opt-in because it is memory, and a read that allocates is a read that can fail -
- *  which the callback surface has no way to report. That makes the omission easy to walk into, so it
- *  is pinned here from both sides: reading a key and writing back over a concurrent commit is a lost
- *  update the store will accept, and the same shape through @c find_and_watch is one it refuses.
+ *  which the callback surface has no way to report. That makes the omission easy to walk into, so
+ *  it is pinned here from both sides: reading a key and writing back over a concurrent commit is a
+ *  lost update the store will accept, and the same shape through @c find_and_watch is one
+ *  it refuses.
  */
 template <typename container_type_>
 void test_find_does_not_watch() {
@@ -1397,12 +1381,13 @@ void test_watch_on_erased_key_can_commit() {
 /**
  *  @brief A watch on an absent key must refuse once that key is inserted and erased under it.
  *
- *  Both ends resolve to absence, so a watch comparing only presence matches itself across two commits
- *  it never saw. What separates them is the generation the committed tombstone carries, which is why
- *  absence is dated rather than spelled as one constant.
+ *  Both ends resolve to absence, so a watch comparing only presence matches itself across two
+ *  commits it never saw. What separates them is the generation the committed tombstone carries,
+ *  which is why absence is dated rather than spelled as one constant.
  *
- *  @warning An erase taken outside a transaction drops the entry rather than tombstoning it, so this
- *    schedule is invisible below @c snapshot_k when the outsider writes through the store directly.
+ *  @warning An erase taken outside a transaction drops the entry rather than tombstoning it, so
+ *      this schedule is invisible below @c snapshot_k when the outsider writes through the
+ *      store directly.
  */
 template <typename container_type_>
 void test_watch_catches_an_insert_and_erase_under_it() {
@@ -1434,11 +1419,9 @@ void test_watch_catches_an_insert_and_erase_under_it() {
                   "two commits landed under a watched absence, which it must not read as unchanged");
 }
 
-/**
- *  @brief A watch on an absent key must still match itself after a rollback.
- *    Rollback hands the transaction a new generation, so anchoring absence to the transaction's own
- *    generation would silently invalidate every absent watch it deliberately preserves.
- */
+/** A watch on an absent key must still match itself after a rollback. Rollback hands the transaction a new
+ *  generation, so anchoring absence to the transaction's own generation would silently invalidate every absent watch
+ *  it deliberately preserves. */
 template <typename container_type_>
 void test_absent_watch_survives_rollback() {
 
@@ -1466,11 +1449,9 @@ void test_absent_watch_survives_rollback() {
 
 #pragma region Transaction Groups
 
-/**
- *  @brief Two stores committed by one group become visible together, and neither before the commit.
- *    Both participants are the same type here, which is also the case a compile-time ordering could
- *    not have separated - the group orders by store address for exactly that reason.
- */
+/** Two stores committed by one group become visible together, and neither before the commit. Both participants are
+ *  the same type here, which is also the case a compile-time ordering could not have separated - the group orders by
+ *  store address for exactly that reason. */
 template <typename container_type_>
 void test_group_commits_participants_together() {
 
@@ -1498,11 +1479,12 @@ void test_group_commits_participants_together() {
 }
 
 /**
- *  @brief Drives one refused group stage, with @p refusing_index_ naming the participant that refuses.
+ *  @brief Drives one refused group stage, with @p refusing_index_ naming the participant
+ *      that refuses.
  *
- *  The caller picks that index from the store addresses rather than from the argument order, because
- *  the group stages ascending by address and only a refusal above the first one leaves a staged
- *  prefix for the undo to walk.
+ *  The caller picks that index from the store addresses rather than from the argument order,
+ *  because the group stages ascending by address and only a refusal above the first one leaves a
+ *  staged prefix for the undo to walk.
  */
 template <std::size_t refusing_index_, typename container_type_>
 void verify_group_unwind_refused_at(container_type_ &first, container_type_ &second) {
@@ -1557,8 +1539,8 @@ void verify_group_unwind_refused_at(container_type_ &first, container_type_ &sec
 /**
  *  @brief When one participant refuses to stage, no participant is left staged.
  *
- *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made are
- *  still pending afterwards and the group can be retried without rebuilding them.
+ *  The undo rolls the staged prefix back rather than resetting it, so the writes the caller made
+ *  are still pending afterwards and the group can be retried without rebuilding them.
  */
 template <typename container_type_>
 void test_group_unwinds_every_participant_on_conflict() {

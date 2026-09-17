@@ -196,10 +196,14 @@ The dialect to avoid restates the signature and never reaches the guarantee:
  */
 ```
 
+Prose wraps at 100 columns and code at 120, so a comment block stays a narrower column than the code beneath it; `.editorconfig` carries both.
+
 What falls out of the difference:
 
-- `@brief` on every symbol, and on most of them nothing else.
-  A one-liner is a whole docblock: `/** @brief What it does. */`.
+- `@brief` is a separator, not a label: it earns its place above a body paragraph or a tag section, and nowhere else.
+  A lone paragraph carries no tag and opens on its own brace — `/** What it does. */`, or `/** What it does, at length,
+  wrapping onto a second line. */` — which is what the hook's `check_lone_brief` and `check_docblock_brackets` ask for.
+  A summary runs at most three lines; past that the remainder is a body paragraph below a blank comment line.
 - Prose sits after the tags, below a blank line, and names the guarantee together with the scope it holds over.
   Write the scope in wherever a sibling path in the same file would make the sentence false — an isolation level, a partition, a phase of the commit.
 - `@param` only where a parameter carries a constraint the signature does not, such as a callback that must be `noexcept` or a bound that is exclusive.
@@ -207,10 +211,11 @@ What falls out of the difference:
 - `@return` names what the answer means rather than its type.
   `@retval` is unused here: a return with named outcomes is one `@return` sentence listing them.
 - `@warning` for the edge a caller can fall off, such as a lock held across a callback or a moved-from store whose open transactions land nowhere.
-  There is no `@note`: an attention point either belongs in the prose or does not belong.
+  `@note` for an aside a reader needs but can act on without alarm — the cost of a walk, what a callback answering `walk_control_t` may do, which isolation levels a sentence holds for.
 - `@tparam` for template parameters, `@p` to mention a parameter, `@c` for a type or method name, `@b` for bold and `@a` for italics.
   Backticks and Markdown emphasis print literally through Doxygen, and the hook rejects both inside a block.
 - `@see` for an external reference, `@sa` for one inside the repository, `@code` and `@endcode` around a multi-token snippet, and `@section` with an anchor before its title.
-- Continuation lines indent 4 spaces, and a tag keeps whitespace on both sides — `[ @p lower, @p upper )` rather than `[@p lower, @p upper)`.
-- Document every member of a type or none of them, and never with a trailing `//!<`.
+- A tag's continuation lines indent 6 spaces; a body paragraph's sit unindented at ` *  `.
+  A tag keeps whitespace on both sides — `[ @p lower, @p upper )` rather than `[@p lower, @p upper)` — and never glues to the character before it.
+- Document every member of a type or none of them, with a hovering `/** … */` and never a trailing `//!<` or a bare `//`.
   The shared explanation belongs in the type's own docblock, where one sentence covers what a column of markers would repeat.

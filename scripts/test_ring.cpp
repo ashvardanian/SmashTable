@@ -1,8 +1,9 @@
 /**
- *  @brief Tests for @c basic_ring: capacity rules, first-in first-out order across wraparound, eviction and lifetimes.
- *  @author Ash Vardanian
  *  @file scripts/test_ring.cpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief Tests for @c basic_ring: capacity rules, first-in first-out order across wraparound,
+ *      eviction and lifetimes.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1

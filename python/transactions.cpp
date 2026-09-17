@@ -1,25 +1,27 @@
 /**
- *  @brief @c Transaction and @c View - the transaction that makes one update span several containers.
- *  @author Ash Vardanian
  *  @file python/transactions.cpp
+ *  @author Ash Vardanian
  *  @date October 30, 2025
+ *  @brief @c Transaction and @c View - the transaction that makes one update span
+ *      several containers.
  *
  *  The unit of atomicity is the group, not the store: a @c with block opens one participant per
  *  container, and the block either publishes every change or abandons every one. Publication walks
- *  the participants in turn, so the group is all-or-nothing against failure rather than one instant.
+ *  the participants in turn, so the group is all-or-nothing against failure rather than
+ *  one instant.
  *
  *  @section transactions_alternatives Why the Participants Are Type-Erased
  *
  *  A transaction may mix maps and sets, whose store types differ. A participant holds its open
  *  transaction behind a @c void* beside the @c store_ops_t table that drives it, so every uniform
- *  operation is one indirect call with no vtable dispatch of its own and no arm to add when the store
- *  matrix grows.
+ *  operation is one indirect call with no vtable dispatch of its own and no arm to add when the
+ *  store matrix grows.
  *
  *  @section transactions_ordering Why the Order Is Canonical
  *
- *  Participants are sorted by a process-wide container ordinal before anything is staged, so two groups
- *  sharing containers acquire their partition locks in the same sequence and cannot deadlock on each
- *  other. The views handed back to Python stay in the caller's argument order regardless.
+ *  Participants are sorted by a process-wide container ordinal before anything is staged, so two
+ *  groups sharing containers acquire their partition locks in the same sequence and cannot deadlock
+ *  on each other. The views handed back to Python stay in the caller's argument order regardless.
  */
 #include <algorithm> // `std::sort`
 
@@ -29,7 +31,7 @@ namespace ashvardanian::smashtable::py {
 
 #pragma region View
 
-/** @brief The strictest mode across a group, since one object participant governs the whole pass. */
+/** The strictest mode across a group, since one object participant governs the whole pass. */
 static value_mode_t group_mode(transaction_object_t const *group) noexcept {
     for (auto const &participant : group->parts)
         if (participant.mode == value_mode_t::objects_k) return value_mode_t::objects_k;
@@ -39,9 +41,9 @@ static value_mode_t group_mode(transaction_object_t const *group) noexcept {
 /**
  *  @brief The participant this view speaks for, or null once the collector has cleared its owner.
  *
- *  Its layout and family are fixed for the transaction's life; whether the transaction is still open is
- *  not, so only the immutable parts - @c ops, @c mode and which alternative is engaged - may be read
- *  from it outside @c run_over_participant.
+ *  Its layout and family are fixed for the transaction's life; whether the transaction is still
+ *  open is not, so only the immutable parts - @c ops, @c mode and which alternative is engaged -
+ *  may be read from it outside @c run_over_participant.
  */
 static participant_t *part_of(view_object_t *view) noexcept {
     if (!view->owner) return nullptr;
@@ -62,12 +64,15 @@ static participant_t *part_of_or_raise(view_object_t *view, module_state_t *stat
 }
 
 /**
- *  @brief Runs one participant operation under its transaction's lock, refusing once the group has finished.
- *  @return 0 when @p operation ran; -1 with a @c StateError set when the transaction was already finished.
+ *  @brief Runs one participant operation under its transaction's lock, refusing once the group
+ *      has finished.
+ *  @return 0 when @p operation ran; -1 with a @c StateError set when the transaction was
+ *      already finished.
  *
  *  The state test and the operation are one span, so a concurrent commit either happens entirely
- *  before this or entirely after, never between the test and the write it guards. A write reaching a
- *  staged transaction is refused by the store itself, and its status travels back through @c raise_for.
+ *  before this or entirely after, never between the test and the write it guards. A write reaching
+ *  a staged transaction is refused by the store itself, and its status travels back through
+ *  @c raise_for.
  */
 template <typename operation_type_>
 static int run_over_participant(view_object_t *view, module_state_t *state, operation_type_ &&operation) noexcept {
@@ -143,7 +148,8 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
 }
 
 /**
- *  @brief Stages a tombstone for every member of a window named by a slice, with either end optional.
+ *  @brief Stages a tombstone for every member of a window named by a slice, with either
+ *      end optional.
  *
  *  Nothing is visible until the transaction commits, which is the whole difference from the store's
  *  own slice delete: a window erased here is a window this transaction read, so a key another
@@ -560,10 +566,8 @@ static int Transaction_clear(PyObject *self) noexcept {
     return 0;
 }
 
-/**
- *  @brief Discards every participant's staged and pending changes and closes the handle for good.
- *    Every participant is back to pending afterwards, which is what @c open_k says.
- */
+/** Discards every participant's staged and pending changes and closes the handle for good. Every participant is back
+ *  to pending afterwards, which is what @c open_k says. */
 static void transaction_finish(transaction_object_t *group) noexcept {
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
         for (auto &participant : group->parts) [[maybe_unused]]
@@ -573,13 +577,16 @@ static void transaction_finish(transaction_object_t *group) noexcept {
     });
 }
 
-/** @brief What a staging pass found when it took the lock, which decides what its caller may say. */
+/** What a staging pass found when it took the lock, which decides what its caller may say. */
 enum class stage_entry_t : std::uint8_t {
-    /** @brief The group was open, so the pass ran and its outcome is the status it wrote. */
+
+    /** The group was open, so the pass ran and its outcome is the status it wrote. */
     staged_here_k,
-    /** @brief Somebody had already staged it, so this pass did nothing. */
+
+    /** Somebody had already staged it, so this pass did nothing. */
     already_staged_k,
-    /** @brief The handle is closed, so nothing may be staged through it again. */
+
+    /** The handle is closed, so nothing may be staged through it again. */
     already_finished_k,
 };
 

@@ -1,24 +1,26 @@
 /**
- *  @brief Shared contract for the CPython extension - key layouts, stored values, module state, object layouts.
- *  @author Ash Vardanian
  *  @file python/shared.hpp
+ *  @author Ash Vardanian
  *  @date October 30, 2025
+ *  @brief Shared contract for the CPython extension - key layouts, stored values, module state,
+ *      object layouts.
  *
- *  Every translation unit includes this first and nothing else of ours. It exists so the per-domain files -
- *  @c shared.cpp, @c sorted_map.cpp and the rest - compile against one fixed contract instead
- *  of negotiating types with each other.
+ *  Every translation unit includes this first and nothing else of ours. It exists so the per-domain
+ *  files - @c shared.cpp, @c sorted_map.cpp and the rest - compile against one fixed contract
+ *  instead of negotiating types with each other.
  *
  *  @section lib_key_typing Key Typing
  *
- *  A container's key layout is fixed at construction and every key it stores has that layout. Only four are
- *  offered - signed and unsigned 64-bit integers, UTF-8 text, and opaque bytes. Floats and booleans are
- *  values, never keys: a float key would make ordering depend on a total order over NaN, and @c bool is a
- *  subtype of @c int in Python, so accepting it would silently alias two key spaces.
+ *  A container's key layout is fixed at construction and every key it stores has that layout. Only
+ *  four are offered - signed and unsigned 64-bit integers, UTF-8 text, and opaque bytes. Floats and
+ *  booleans are values, never keys: a float key would make ordering depend on a total order over
+ *  NaN, and @c bool is a subtype of @c int in Python, so accepting it would silently alias two
+ *  key spaces.
  *
- *  Because the layout is fixed, the comparison and hash functions are chosen once, at construction, and held
- *  as function pointers. Nothing re-examines a variant tag per comparison. @c key_less_t deliberately has no
- *  default constructor, so any container that tried to manufacture a comparator fails to compile rather than
- *  calling through a null pointer in a branch nobody exercises.
+ *  Because the layout is fixed, the comparison and hash functions are chosen once, at construction,
+ *  and held as function pointers. Nothing re-examines a variant tag per comparison. @c key_less_t
+ *  deliberately has no default constructor, so any container that tried to manufacture a comparator
+ *  fails to compile rather than calling through a null pointer in a branch nobody exercises.
  */
 #pragma once
 #define PY_SSIZE_T_CLEAN
@@ -41,12 +43,12 @@
 #include <smashtable/basic_vector.hpp>
 #include <smashtable/shared.hpp>
 
-namespace ashvardanian::smashtable::py {
-
-/** @brief Every method taking arguments uses the fast convention; keywords are walked by hand. */
+/** Every method taking arguments uses the fast convention; keywords are walked by hand. */
 #define ST_METHOD_FLAGS_ METH_FASTCALL | METH_KEYWORDS
 
-/** @brief Casts a fast-convention function into a method table's slot without tripping -Wcast-function-type. */
+namespace ashvardanian::smashtable::py {
+
+/** Casts a fast-convention function into a method table's slot without tripping -Wcast-function-type. */
 template <typename function_type_>
 PyCFunction as_pycfunction(function_type_ function) noexcept {
     return reinterpret_cast<PyCFunction>(reinterpret_cast<void (*)()>(function));
@@ -54,13 +56,13 @@ PyCFunction as_pycfunction(function_type_ function) noexcept {
 
 #pragma region Stored Values
 
-/** @brief UTF-8 text, kept distinct from bytes so a @c str never reads back as @c bytes. */
+/** UTF-8 text, kept distinct from bytes so a @c str never reads back as @c bytes. */
 struct utf8_t {
     std::string text;
     bool operator==(utf8_t const &other) const noexcept { return text == other.text; }
 };
 
-/** @brief An opaque byte string, never decoded. */
+/** An opaque byte string, never decoded. */
 struct bytes_t {
     std::string data;
     bool operator==(bytes_t const &other) const noexcept { return data == other.data; }
@@ -72,12 +74,13 @@ class releases_t;
  *  @brief One owned Python reference, for a store whose values may be arbitrary objects.
  *
  *  Copying and destroying this touches a refcount, which requires the GIL. That is why an object is
- *  only ever engaged in a store built with @c value_mode_t::objects_k, and why such a store
- *  never releases the GIL around anything that reads, writes, copies or destroys a value.
+ *  only ever engaged in a store built with @c value_mode_t::objects_k, and why such a store never
+ *  releases the GIL around anything that reads, writes, copies or destroys a value.
  */
 struct object_t {
     PyObject *held {nullptr};
-    /** @brief The container's ledger this reference reports its drop to, null once moved from. */
+
+    /** The container's ledger this reference reports its drop to, null once moved from. */
     releases_t *releases {nullptr};
 
     object_t() = default;
@@ -104,9 +107,9 @@ struct object_t {
     /**
      *  @brief Gives one reference back, now or once the store calls in flight have returned.
      *
-     *  Defined below @c releases_t, which it needs whole. Where the ledger cannot record the drop it
-     *  is released here and the deadlock it exists to avoid is back on the table - the better of two
-     *  answers, since a hang cannot be recovered from.
+     *  Defined below @c releases_t, which it needs whole. Where the ledger cannot record the drop
+     *  it is released here and the deadlock it exists to avoid is back on the table - the better of
+     *  two answers, since a hang cannot be recovered from.
      */
     static void give_back(PyObject *object, releases_t *ledger) noexcept;
 };
@@ -114,10 +117,10 @@ struct object_t {
 /**
  *  @brief What a key may be. Four alternatives, and the alternative index IS the layout.
  *
- *  Floats and booleans are absent by construction rather than by a boundary check: a total order over
- *  NaN is not one, and @c bool subclasses @c int in Python, so admitting it would alias two key
- *  spaces. Nothing here holds a @c PyObject, so a stored key outlives the object it came from and the
- *  GIL may be released around every operation that touches only keys.
+ *  Floats and booleans are absent by construction rather than by a boundary check: a total order
+ *  over NaN is not one, and @c bool subclasses @c int in Python, so admitting it would alias two
+ *  key spaces. Nothing here holds a @c PyObject, so a stored key outlives the object it came from
+ *  and the GIL may be released around every operation that touches only keys.
  */
 struct key_variant_t {
     std::variant<std::int64_t, std::uint64_t, utf8_t, bytes_t> value {std::int64_t {0}};
@@ -133,10 +136,8 @@ struct key_variant_t {
     explicit key_variant_t(utf8_t &&text) noexcept : value(std::move(text)) {}
     explicit key_variant_t(bytes_t &&data) noexcept : value(std::move(data)) {}
 
-    /**
-     *  @brief Deep copy that reports allocation failure instead of throwing.
-     *    Watches outlive the entry they refer to, so they need an owned identifier.
-     */
+    /** Deep copy that reports allocation failure instead of throwing. Watches outlive the entry they refer to, so
+     *  they need an owned identifier. */
     [[nodiscard]] expected<key_variant_t> copy() const noexcept {
         try {
             return expected<key_variant_t> {key_variant_t {*this}, success_k};
@@ -151,8 +152,8 @@ struct key_variant_t {
  *  @brief What a value may be: everything a key may be, plus the three things it may not.
  *
  *  The last alternative is only ever engaged in a store whose mode admits it - see @c value_mode_t.
- *  A scalar-mode container refuses an object at the boundary, which is what lets it keep releasing the
- *  GIL around store operations.
+ *  A scalar-mode container refuses an object at the boundary, which is what lets it keep releasing
+ *  the GIL around store operations.
  */
 struct value_variant_t {
     std::variant<std::int64_t, std::uint64_t, double, bool, utf8_t, bytes_t, object_t> value {std::int64_t {0}};
@@ -171,7 +172,7 @@ struct value_variant_t {
     explicit value_variant_t(bytes_t &&data) noexcept : value(std::move(data)) {}
     explicit value_variant_t(object_t &&object) noexcept : value(std::move(object)) {}
 
-    /** @brief Deep copy that reports allocation failure instead of throwing. */
+    /** Deep copy that reports allocation failure instead of throwing. */
     [[nodiscard]] expected<value_variant_t> copy() const noexcept {
         try {
             return expected<value_variant_t> {value_variant_t {*this}, success_k};
@@ -202,35 +203,39 @@ enum class value_mode_t : std::uint8_t { scalars_k, objects_k };
  *
  *  A stored value's destructor gives back a reference, and the last one runs @c __del__ - arbitrary
  *  Python. The store destroys what it displaces while holding its own lock, and that lock is not
- *  recursive, so a finalizer touching the store it was stored in blocks forever against the write that
- *  freed it. While a call is in flight the drop is therefore recorded rather than performed, and what
- *  was recorded is released once the last call has returned.
+ *  recursive, so a finalizer touching the store it was stored in blocks forever against the write
+ *  that freed it. While a call is in flight the drop is therefore recorded rather than performed,
+ *  and what was recorded is released once the last call has returned.
  *
  *  One of these belongs to each container, and every object that container stores names it, so the
- *  ledger a drop reports to is carried rather than looked up. It locks @b shared because several calls
- *  may be in flight at once and the last one out does the releasing, which is what a reader count is;
- *  @c shared_lock is therefore the guard, and the bridge needs no guard type of its own.
+ *  ledger a drop reports to is carried rather than looked up. It locks @b shared because several
+ *  calls may be in flight at once and the last one out does the releasing, which is what a reader
+ *  count is; @c shared_lock is therefore the guard, and the bridge needs no guard type of its own.
  *
- *  @warning A batch of finalizers runs at the moment the last call returns, so one @c __del__ can fire
- *    inside another's user code. A @c __del__ that takes a non-reentrant lock can deadlock against
- *    itself here where it would not against @c dict, which releases at assignment instead.
+ *  @warning A batch of finalizers runs at the moment the last call returns, so one @c __del__ can
+ *      fire inside another's user code. A @c __del__ that takes a non-reentrant lock can deadlock
+ *      against itself here where it would not against @c dict, which releases at
+ *      assignment instead.
  */
 class releases_t {
-    /** @brief How many store calls are in flight on this container, across every thread. */
+
+    /** How many store calls are in flight on this container, across every thread. */
     alignas(atomic_alignment<std::size_t>) std::size_t calls_in_flight_ {0};
-    /** @brief Guards @c recorded_, which a partitioned store appends to from several threads at once. */
+
+    /** Guards @c recorded_, which a partitioned store appends to from several threads at once. */
     spin_shared_mutex_t guard_;
-    /** @brief What has been dropped and not yet given back. */
+
+    /** What has been dropped and not yet given back. */
     basic_vector<PyObject *> recorded_;
 
     /**
      *  @brief Gives back one batch - what stood recorded on entry, and no more.
      *
-     *  Drains under the guard and releases outside it, because one @c Py_DECREF can run a finalizer that
-     *  enters the store and records more, which would deadlock against a guard still held and dangle a
-     *  vector appended to while walked. Draining only one batch is what guarantees progress: looping
-     *  until empty lets several writers feed one draining thread as fast as it drains, and every later
-     *  call releases again, so nothing is stranded.
+     *  Drains under the guard and releases outside it, because one @c Py_DECREF can run a finalizer
+     *  that enters the store and records more, which would deadlock against a guard still held and
+     *  dangle a vector appended to while walked. Draining only one batch is what guarantees
+     *  progress: looping until empty lets several writers feed one draining thread as fast as it
+     *  drains, and every later call releases again, so nothing is stranded.
      */
     void drain_() noexcept {
         basic_vector<PyObject *> draining;
@@ -248,32 +253,32 @@ class releases_t {
     releases_t(releases_t const &) = delete;
     releases_t &operator=(releases_t const &) = delete;
 
-    /** @brief Gives back whatever a finalizer recorded during the final drain, which would else leak. */
+    /** Gives back whatever a finalizer recorded during the final drain, which would else leak. */
     ~releases_t() noexcept {
         while (!recorded_.empty()) drain_();
     }
 
-    /** @brief Whether a store call is in flight, so a drop has to wait for it. */
+    /** Whether a store call is in flight, so a drop has to wait for it. */
     [[nodiscard]] bool armed() const noexcept { return atomic_load(calls_in_flight_) != 0; }
 
     /**
      *  @brief Records one dropped reference, reporting why it could not.
      *
-     *  @c basic_vector answers exhaustion rather than throwing, which is what a @c noexcept destructor
-     *  needs. Where it cannot record, the caller releases on the spot and the deadlock is back on the
-     *  table - the better of two answers, since a hang cannot be recovered from.
+     *  @c basic_vector answers exhaustion rather than throwing, which is what a @c noexcept
+     *  destructor needs. Where it cannot record, the caller releases on the spot and the deadlock
+     *  is back on the table - the better of two answers, since a hang cannot be recovered from.
      */
     [[nodiscard]] status_t record(PyObject *object) noexcept {
         unique_lock locked {guard_};
         return recorded_.push_back(std::move(object));
     }
 
-    /** @brief One store call arrives. Shared, because several may be in flight at once. */
+    /** One store call arrives. Shared, because several may be in flight at once. */
     void lock_shared() noexcept {
         [[maybe_unused]] std::size_t const arrived = atomic_add_fetch(calls_in_flight_, std::size_t {1});
     }
 
-    /** @brief One store call leaves, and the last one out gives back what the calls recorded. */
+    /** One store call leaves, and the last one out gives back what the calls recorded. */
     void unlock_shared() noexcept {
         if (atomic_sub_fetch(calls_in_flight_, std::size_t {1}) == 0) drain_();
     }
@@ -292,8 +297,8 @@ inline void object_t::give_back(PyObject *object, releases_t *ledger) noexcept {
  *
  *  A scalar-mode container holds nothing that refers to a Python object, so the whole operation is
  *  safe with the GIL released - which is what keeps writers from serializing on each other. An
- *  object-mode container may copy or destroy an owned reference anywhere inside the store, including
- *  in an MVCC version it makes on its own, so it keeps the GIL for the duration.
+ *  object-mode container may copy or destroy an owned reference anywhere inside the store,
+ *  including in an MVCC version it makes on its own, so it keeps the GIL for the duration.
  */
 template <typename operation_type_>
 void run_over_values(value_mode_t mode, operation_type_ &&operation) noexcept {
@@ -340,7 +345,7 @@ void run_over_values(value_mode_t mode, spin_shared_mutex_t &lock, operation_typ
  */
 enum class key_type_t : std::uint8_t { i64_k, u64_k, str_k, bytes_k };
 
-/** @brief Strict weak ordering over two keys of one layout. Never sees a mismatched pair. */
+/** Strict weak ordering over two keys of one layout. Never sees a mismatched pair. */
 using key_less_fn_t = bool (*)(key_variant_t const &, key_variant_t const &) noexcept;
 
 /**
@@ -350,8 +355,9 @@ using key_less_fn_t = bool (*)(key_variant_t const &, key_variant_t const &) noe
  *  pointer a store holds is to a cache-resident object it never writes.
  *
  *  @c type names the layout and @c name is what @c key_type reports back - @c "int", @c "uint",
- *  @c "str" or @c "bytes". @c less orders two keys of that layout, which is the one decision a store
- *  cannot make from the variant alone - hashing and equality both read the alternative directly.
+ *  @c "str" or @c "bytes". @c less orders two keys of that layout, which is the one decision a
+ *  store cannot make from the variant alone - hashing and equality both read the
+ *  alternative directly.
  */
 struct key_ops_t {
     key_type_t type;
@@ -365,7 +371,8 @@ extern key_ops_t const key_ops_str;
 extern key_ops_t const key_ops_bytes;
 
 /**
- *  @brief Resolves the @c key= argument, which accepts @c int, @c str, @c bytes and the four spellings.
+ *  @brief Resolves the @c key= argument, which accepts @c int, @c str, @c bytes and the
+ *      four spellings.
  *  @param[in] specification The object passed as @c key=, borrowed.
  *  @return The table to use, or @c nullptr with a @c TypeError or @c ValueError raised.
  */
@@ -382,8 +389,9 @@ bool value_mode_from_python(PyObject *specification, value_mode_t &mode) noexcep
 /**
  *  @brief Orders keys through the function chosen at construction, so no variant tag is examined.
  *
- *  Has no default constructor on purpose. A container that manufactured its own comparator would call
- *  through a null pointer, and the deletion turns every such site into a compile error instead.
+ *  Has no default constructor on purpose. A container that manufactured its own comparator would
+ *  call through a null pointer, and the deletion turns every such site into a compile
+ *  error instead.
  */
 struct key_less_t {
     using is_transparent = void;
@@ -404,8 +412,8 @@ struct key_less_t {
  *
  *  Stateless and default-constructible on purpose: an unordered core builds its hasher itself, with
  *  no seed passed in, so a function-pointer form could not be used there. The visit costs one
- *  predictable branch per operation rather than the per-comparison dispatch that @c key_ops_t exists
- *  to avoid, because a probe hashes once and then compares.
+ *  predictable branch per operation rather than the per-comparison dispatch that @c key_ops_t
+ *  exists to avoid, because a probe hashes once and then compares.
  */
 struct key_variant_hash_t {
     std::size_t operator()(key_variant_t const &key) const noexcept {
@@ -420,11 +428,8 @@ struct key_variant_hash_t {
     }
 };
 
-/**
- *  @brief Equality over two keys of one layout, which the variant already answers exactly.
- *    Stateless for the same reason as @c key_variant_hash_t, and seeded into an unordered core as
- *    the one policy that core does take from the caller.
- */
+/** Equality over two keys of one layout, which the variant already answers exactly. Stateless for the same reason as
+ *  @c key_variant_hash_t, and seeded into an unordered core as the one policy that core does take from the caller. */
 struct key_variant_equal_t {
     using is_transparent = void;
     bool operator()(key_variant_t const &first, key_variant_t const &second) const noexcept {
@@ -438,70 +443,77 @@ struct key_variant_equal_t {
 
 using entry_t = mapping<key_variant_t, value_variant_t>;
 
-/** @brief Whether a cursor step wrote an element, which a refusal is distinct from and not a kind of. */
+/** Whether a cursor step wrote an element, which a refusal is distinct from and not a kind of. */
 enum class cursor_step_t : bool { handed_k, exhausted_k };
 
 /**
  *  @brief One store instantiation reduced to a table of function pointers, resolved once.
  *
- *  The same shape as @c key_ops_t one level up: one @c constexpr table per instantiation, all shared by
- *  every container built on it, so the pointer a store holds is to an object it never writes. It is
- *  what lets one @c container.cpp serve every core, isolation level and sharing strategy without naming
- *  a concrete store, and what keeps the participant of a transaction group free of a variant whose arms
- *  would grow with the matrix.
+ *  The same shape as @c key_ops_t one level up: one @c constexpr table per instantiation, all
+ *  shared by every container built on it, so the pointer a store holds is to an object it never
+ *  writes. It is what lets one @c container.cpp serve every core, isolation level and sharing
+ *  strategy without naming a concrete store, and what keeps the participant of a transaction group
+ *  free of a variant whose arms would grow with the matrix.
  *
  *  @c store is always a pointer handed back by @c make and owned by exactly one container object.
  *
- *  A slot left null says the core does not carry that operation - a hash core supplies no ordering, so
- *  its bounds and range erase are absent. Null is never tested in a method body: the class that would
- *  have called it does not install the method, so the mismatch surfaces as @c AttributeError rather than
- *  as a refusal invented here.
+ *  A slot left null says the core does not carry that operation - a hash core supplies no ordering,
+ *  so its bounds and range erase are absent. Null is never tested in a method body: the class that
+ *  would have called it does not install the method, so the mismatch surfaces as @c AttributeError
+ *  rather than as a refusal invented here.
  *
  *  Reads answer through out-parameters rather than the callbacks the stores take, because a function
  *  pointer cannot carry a template-typed callback. Each returns whether anything was found, which
  *  collapses the found-and-missing pair the C++ side uses.
  */
 struct store_ops_t {
-    /** @brief What this instantiation promises, as the Jepsen name @c isolation reports back. */
+
+    /** What this instantiation promises, as the Jepsen name @c isolation reports back. */
     char const *isolation_name;
-    /** @brief How the store is shared, which @c sharing reports back verbatim. */
+
+    /** How the store is shared, which @c sharing reports back verbatim. */
     char const *sharing_name;
-    /** @brief Whether elements carry a mapped value, deciding map-versus-set at every shared site. */
+
+    /** Whether elements carry a mapped value, deciding map-versus-set at every shared site. */
     bool is_associative;
-    /** @brief Whether the core orders its keys, which is what the ordered surface rests on. */
+
+    /** Whether the core orders its keys, which is what the ordered surface rests on. */
     bool is_ordered;
 
-    /** @brief Builds an empty store of @p ops's layout, or reports why it could not. */
+    /** Builds an empty store of @p ops's layout, or reports why it could not. */
     expected<void *> (*make)(key_ops_t const *ops) noexcept;
-    /** @brief Destroys a store @c make handed back. Never called with null. */
+
+    /** Destroys a store @c make handed back. Never called with null. */
     void (*destroy)(releases_t &releases, void *store) noexcept;
 
-    /** @brief How many members the store holds, which it answers without a status because it cannot fail. */
+    /** How many members the store holds, which it answers without a status because it cannot fail. */
     std::size_t (*size)(void *store) noexcept;
-    /** @brief Drops every member, reporting whatever the store refused with. */
+
+    /** Drops every member, reporting whatever the store refused with. */
     status_t (*clear)(releases_t &releases, void *store) noexcept;
-    /**
-     *  @brief Whether @p key is held, or why that could not be answered.
-     *    Membership is a read, and from @c serializable_k up a read records itself and can refuse, so
-     *    "not held" and "could not be answered" stay different facts.
-     */
+
+    /** Whether @p key is held, or why that could not be answered. Membership is a read, and from @c serializable_k
+     *  up a read records itself and can refuse, so "not held" and "could not be answered" stay different facts. */
     expected<bool> (*contains)(void *store, key_variant_t const &key) noexcept;
-    /** @brief Reads a mapped value, or reports @c key_not_found_k. Null on a set, which has none. */
+
+    /** Reads a mapped value, or reports @c key_not_found_k. Null on a set, which has none. */
     expected<value_variant_t> (*find)(releases_t &releases, void *store, key_variant_t const &key) noexcept;
-    /** @brief Inserts or overwrites. @p value is null for a set, which stores the key alone. */
+
+    /** Inserts or overwrites. @p value is null for a set, which stores the key alone. */
     status_t (*upsert)(releases_t &releases, void *store, key_variant_t &&key, value_variant_t *value) noexcept;
 
     /**
      *  @brief Applies a whole batch, staged once and committed once rather than element by element.
      *
-     *  The store opens one transaction for the batch, so the batch lands whole or not at all. A loop
-     *  of single writes is neither: it takes the lock once per element and leaves a failure halfway
-     *  through half-applied.
+     *  The store opens one transaction for the batch, so the batch lands whole or not at all. A
+     *  loop of single writes is neither: it takes the lock once per element and leaves a failure
+     *  halfway through half-applied.
      */
     status_t (*upsert_entries)(releases_t &releases, void *store, entry_t *entries, std::size_t count) noexcept;
 
-    /** @brief The same for a set, whose elements are bare keys rather than pairs. Null on a map. */
+    /** The same for a set, whose elements are bare keys rather than pairs. Null on a map. */
     status_t (*upsert_members)(releases_t &releases, void *store, key_variant_t *members, std::size_t count) noexcept;
+
     /**
      *  @brief Removes a key, answering with what it held or with why it could not.
      *
@@ -510,7 +522,8 @@ struct store_ops_t {
      *  miss for a key this call did delete. Absence is @c key_not_found_k, which is how the store
      *  itself reports it, so nothing here repeats the answer in a second place.
      *
-     *  A set has no value to give back and answers with a default one; only its status means anything.
+     *  A set has no value to give back and answers with a default one; only its status
+     *  means anything.
      */
     expected<value_variant_t> (*erase)(releases_t &releases, void *store, key_variant_t const &key) noexcept;
 
@@ -534,53 +547,56 @@ struct store_ops_t {
      *  @brief Opens the store's own ordered walk, optionally bounded at either end.
      *
      *  Both ends are the store's business: it holds the comparator, so a bound tested anywhere else
-     *  would be ordering keys differently from the store that holds them. Null on an unordered core.
+     *  would be ordering keys differently from the store that holds them. Null on an
+     *  unordered core.
      */
     expected<void *> (*cursor_make)(void *store, key_variant_t const *from, key_variant_t const *upper) noexcept;
 
-    /** @brief Closes a walk opened by @c cursor_make. */
+    /** Closes a walk opened by @c cursor_make. */
     void (*cursor_destroy)(releases_t &releases, void *cursor) noexcept;
 
     /**
      *  @brief Takes one step, writing the key and, for a map, the value.
-     *  @return Whether a member was handed over; false once the walk is over; a status where the step
-     *    could not be answered at all, which is not the same fact as the walk having ended.
+     *  @return Whether a member was handed over; false once the walk is over; a status where the
+     *      step could not be answered at all, which is not the same fact as the walk having ended.
      *
-     *  The two halves are written into borrowed storage rather than returned, because a walk reuses one
-     *  key across every step and a text layout would otherwise allocate per element.
+     *  The two halves are written into borrowed storage rather than returned, because a walk reuses
+     *  one key across every step and a text layout would otherwise allocate per element.
      */
     expected<cursor_step_t> (*cursor_next)(void *cursor, key_variant_t &key, value_variant_t *value) noexcept;
 
-    /** @brief Whether every member of @p first is also in @p second, on the same terms. */
+    /** Whether every member of @p first is also in @p second, on the same terms. */
     expected<bool> (*is_subset)(void *first, void *second) noexcept;
 
-    /** @brief Whether @p first and @p second share no member, on the same terms. */
+    /** Whether @p first and @p second share no member, on the same terms. */
     expected<bool> (*is_disjoint)(void *first, void *second) noexcept;
+
     /**
      *  @brief Inserts only when absent, answering with the value that ended up stored.
      *
-     *  The winner rather than who wrote it, because that is all @c setdefault needs and it is the one
-     *  answer both stores can give: a key arriving concurrently keeps its own value, and reporting the
-     *  result is what makes two threads racing on one key agree on what it holds.
+     *  The winner rather than who wrote it, because that is all @c setdefault needs and it is the
+     *  one answer both stores can give: a key arriving concurrently keeps its own value, and
+     *  reporting the result is what makes two threads racing on one key agree on what it holds.
      */
     expected<value_variant_t> (*insert_if_missing)(releases_t &releases, void *store, key_variant_t const &key,
                                                    value_variant_t &&value) noexcept;
 
     /**
-     *  @brief Collects the half-open window into @p collected, in key order. Null on an unordered core.
+     *  @brief Collects the half-open window into @p collected, in key order. Null on an
+     *      unordered core.
      *
      *  One transaction for the whole window rather than a cursor re-locked per element, so the list
      *  holds the single committed state that transaction read - at @c monotonic_atomic_view_k and
      *  above, since @c read_committed_k promises no such thing.
      *
-     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements are
-     *  copied rather than referenced, because a Python object is built from them after the lock drops.
-     *  A set leaves every @c mapped default-constructed.
+     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements
+     *  are copied rather than referenced, because a Python object is built from them after the lock
+     *  drops. A set leaves every @c mapped default-constructed.
      */
     status_t (*store_scan)(releases_t &releases, void *store, key_variant_t const *lower, key_variant_t const *upper,
                            std::size_t limit, basic_vector<entry_t> &collected) noexcept;
 
-    /** @brief Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
+    /** Erases the half-open window; a null bound is unbounded on that side. Null on an unordered core. */
     status_t (*erase_range)(releases_t &releases, void *store, key_variant_t const *lower,
                             key_variant_t const *upper) noexcept;
 
@@ -593,72 +609,83 @@ struct store_ops_t {
      */
     int (*visit_values)(void *store, visitproc visit, void *arg) noexcept;
 
-    /** @brief Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
+    /** Opens a transaction over @p store, handing back a pointer @c transaction_destroy owns. */
     expected<void *> (*transaction_make)(void *store) noexcept;
-    /** @brief Unwinds and frees a transaction, whatever state it was left in. */
+
+    /** Unwinds and frees a transaction, whatever state it was left in. */
     void (*transaction_destroy)(releases_t &releases, void *transaction) noexcept;
-    /** @brief Whether this transaction reads @p key, its own staged writes included. */
+
+    /** Whether this transaction reads @p key, its own staged writes included. */
     expected<bool> (*transaction_contains)(void *transaction, key_variant_t const &key) noexcept;
-    /** @brief The value this transaction reads for @p key, or @c key_not_found_k. */
+
+    /** The value this transaction reads for @p key, or @c key_not_found_k. */
     expected<value_variant_t> (*transaction_find)(releases_t &releases, void *transaction,
                                                   key_variant_t const &key) noexcept;
-    /** @brief Stages an insert or overwrite. @p value is read, and null for a set, which stores the key alone. */
+
+    /** Stages an insert or overwrite. @p value is read, and null for a set, which stores the key alone. */
     status_t (*transaction_upsert)(releases_t &releases, void *transaction, key_variant_t &&key,
                                    value_variant_t *value) noexcept;
-    /** @brief Stages a tombstone for @p key, reporting @c key_not_found_k where it reads nothing there. */
+
+    /** Stages a tombstone for @p key, reporting @c key_not_found_k where it reads nothing there. */
     status_t (*transaction_erase)(releases_t &releases, void *transaction, key_variant_t const &key) noexcept;
-    /** @brief Records what @p key reads as now, so a commit refuses if anything published over it. */
+
+    /** Records what @p key reads as now, so a commit refuses if anything published over it. */
     status_t (*transaction_watch)(void *transaction, key_variant_t const &key) noexcept;
 
     /**
-     *  @brief Collects the half-open window into @p collected, in key order. Null on an unordered core.
+     *  @brief Collects the half-open window into @p collected, in key order. Null on an
+     *      unordered core.
      *
-     *  A whole window in one locked span rather than a resumable cursor: a cursor over a transaction
-     *  would have to stay open across arbitrary Python code, and the walk is what records the read
-     *  the level is validated against, so it may not be interleaved with anything else the caller does.
+     *  A whole window in one locked span rather than a resumable cursor: a cursor over a
+     *  transaction would have to stay open across arbitrary Python code, and the walk is what
+     *  records the read the level is validated against, so it may not be interleaved with anything
+     *  else the caller does.
      *
-     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements are
-     *  copied rather than referenced, because a Python object is built from them after the lock drops.
-     *  A set participant leaves every @c mapped default-constructed.
+     *  A null bound is unbounded on that side, and @p limit at its maximum is uncounted. Elements
+     *  are copied rather than referenced, because a Python object is built from them after the lock
+     *  drops. A set participant leaves every @c mapped default-constructed.
      */
     status_t (*transaction_scan)(releases_t &releases, void *transaction, key_variant_t const *lower,
                                  key_variant_t const *upper, std::size_t limit,
                                  basic_vector<entry_t> &collected) noexcept;
-    /** @brief Erases that same window, staging a tombstone per member. Null on an unordered core. */
+
+    /** Erases that same window, staging a tombstone per member. Null on an unordered core. */
     status_t (*transaction_erase_range)(releases_t &releases, void *transaction, key_variant_t const *lower,
                                         key_variant_t const *upper) noexcept;
 
-    /** @brief Reserves room for every staged change, so the commit that follows allocates nothing. */
+    /** Reserves room for every staged change, so the commit that follows allocates nothing. */
     status_t (*transaction_stage)(releases_t &releases, void *transaction) noexcept;
-    /** @brief Publishes every staged change under one stamp, or reports whichever check turned it away. */
+
+    /** Publishes every staged change under one stamp, or reports whichever check turned it away. */
     status_t (*transaction_commit)(releases_t &releases, void *transaction) noexcept;
-    /**
-     *  @brief The asking half of a split commit: answers whether publishing would be refused, writing nothing.
-     *    Null on a store whose commit cannot be split, which a group asks about before it uses either half.
-     */
+
+    /** The asking half of a split commit: answers whether publishing would be refused, writing nothing. Null on a
+     *  store whose commit cannot be split, which a group asks about before it uses either half. */
     status_t (*transaction_validate)(releases_t &releases, void *transaction) noexcept;
-    /** @brief The writing half, which returns nothing because a validated publish has nothing left to refuse. */
+
+    /** The writing half, which returns nothing because a validated publish has nothing left to refuse. */
     void (*transaction_publish)(releases_t &releases, void *transaction) noexcept;
-    /** @brief Pulls staged changes back into the transaction, which keeps them for a retry rather than dropping them.
-     */
+
+    /** Pulls staged changes back into the transaction, keeping them for a retry rather than dropping them. */
     status_t (*transaction_rollback)(releases_t &releases, void *transaction) noexcept;
-    /** @brief Abandons everything staged and pending, which is what separates it from a rollback. */
+
+    /** Abandons everything staged and pending, which is what separates it from a rollback. */
     status_t (*transaction_reset)(releases_t &releases, void *transaction) noexcept;
 };
 
 /**
  *  @brief Which core a store was built around, which is the axis that decides its method set.
  *
- *  A class per enumerator, because the core is what gates the ordered surface: a hash core supplies no
- *  ordering, so its class installs no iteration, no scan and no range erase, and the mismatch is an
- *  @c AttributeError rather than a runtime refusal.
+ *  A class per enumerator, because the core is what gates the ordered surface: a hash core supplies
+ *  no ordering, so its class installs no iteration, no scan and no range erase, and the mismatch is
+ *  an @c AttributeError rather than a runtime refusal.
  */
 enum class core_t : std::uint8_t { sorted_k, hashed_k };
 
-/** @brief What a reader is promised, as the constructor's @c isolation argument names it. */
+/** What a reader is promised, as the constructor's @c isolation argument names it. */
 enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k, serializable_k, strict_serializable_k };
 
-/** @brief How a store is shared between threads, as the constructor's @c sharing argument names it. */
+/** How a store is shared between threads, as the constructor's @c sharing argument names it. */
 enum class sharing_choice_t : std::uint8_t { locked_k, partitioned_k };
 
 /**
@@ -685,25 +712,25 @@ constexpr char const *isolation_name_of(isolation_t level) noexcept {
 store_ops_t const *store_ops_for(core_t core, isolation_choice_t isolation, sharing_choice_t sharing,
                                  bool associative) noexcept;
 
-/** @brief The ordered core's half of that resolution, defined beside the tables it names. */
+/** The ordered core's half of that resolution, defined beside the tables it names. */
 store_ops_t const *sorted_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
                                         bool associative) noexcept;
 
-/** @brief The unordered core's half, whose tables carry no ordered slot at all. */
+/** The unordered core's half, whose tables carry no ordered slot at all. */
 store_ops_t const *hashed_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
                                         bool associative) noexcept;
 
 #pragma endregion Stores
 
-/** @brief Declared here, defined under Module State below, so the cursor factories can name it. */
+/** Declared here, defined under Module State below, so the cursor factories can name it. */
 struct module_state_t;
 
 /**
  *  @brief Views a Python object as the layout it was allocated with.
  *
  *  Every slot is handed a @c PyObject and every body needs its own layout back, so the cast appears
- *  in almost every function here. Naming it once keeps the spelling out of the bodies, where it says
- *  nothing about what the code does. Only ever applied to an object this module allocated.
+ *  in almost every function here. Naming it once keeps the spelling out of the bodies, where it
+ *  says nothing about what the code does. Only ever applied to an object this module allocated.
  */
 template <typename object_type_>
 object_type_ *object_as(PyObject *object) noexcept {
@@ -713,42 +740,45 @@ object_type_ *object_as(PyObject *object) noexcept {
 #pragma region Object Layouts
 
 /**
- *  @brief The one layout every container class shares, so one cursor and one transaction serve all of them.
+ *  @brief The one layout every container class shares, so one cursor and one transaction serve all
+ *      of them.
  *
  *  @c ops is the key layout this store was built around and @c store_ops the store it was built on,
  *  both resolved at construction and never null after it. @c store is the type-erased store itself,
- *  owned by this object alone and destroyed through @c store_ops->destroy. @c mode says whether values
- *  may be arbitrary objects, which decides whether the GIL may be released around one.
+ *  owned by this object alone and destroyed through @c store_ops->destroy. @c mode says whether
+ *  values may be arbitrary objects, which decides whether the GIL may be released around one.
  *
  *  There is no per-class layout. The store used to sit inline, which forced one object type per
  *  instantiation; behind the table it is a pointer, so the four classes differ only in the method
  *  tables their types install.
  *
- *  @c ordinal is what stops two groups deadlocking on each other. A transaction stages its participants in
- *  ordinal order rather than argument order, so @c transaction(a, b) on one thread and @c transaction(b, a) on
- *  another acquire the same partition locks in the same sequence; without it each would hold what the
- *  other waits for. Any consistent total order would do - creation order is used because it is
- *  reproducible across runs, which an address is not, and a hang is the one failure worth being able
- *  to replay.
+ *  @c ordinal is what stops two groups deadlocking on each other. A transaction stages its
+ *  participants in ordinal order rather than argument order, so @c transaction(a, b) on one thread
+ *  and @c transaction(b, a) on another acquire the same partition locks in the same sequence;
+ *  without it each would hold what the other waits for. Any consistent total order would do -
+ *  creation order is used because it is reproducible across runs, which an address is not, and a
+ *  hang is the one failure worth being able to replay.
  */
 struct container_object_t {
     PyObject_HEAD key_ops_t const *ops;
     store_ops_t const *store_ops;
     void *store;
-    /** @brief Where values dropped under this store's lock wait; see @c releases_t. */
+
+    /** Where values dropped under this store's lock wait; see @c releases_t. */
     mutable releases_t releases;
     std::uint64_t ordinal;
     value_mode_t mode;
 };
 
-/** @brief The module state reached from a heap type, for the constructors that have no instance. */
+/** The module state reached from a heap type, for the constructors that have no instance. */
 module_state_t *state_of_heap_type(PyTypeObject *type) noexcept;
 
-/** @brief Whether @p object is one of this module's container classes. */
+/** Whether @p object is one of this module's container classes. */
 bool is_container(module_state_t *state, PyObject *object) noexcept;
 
 /**
- *  @brief Builds an empty container of one class and layout, without re-entering the type through Python.
+ *  @brief Builds an empty container of one class and layout, without re-entering the type
+ *      through Python.
  *  @param[in] state The module state, which hands out the staging ordinal.
  *  @param[in] type The heap type to allocate, borrowed.
  *  @param[in] ops The key layout the store is built around.
@@ -763,27 +793,29 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
 
 #pragma region Cursors
 
-/** @brief What a cursor hands back per step. */
+/** What a cursor hands back per step. */
 enum class cursor_yields_t : std::uint8_t { keys_k, values_k, items_k };
 
 /**
  *  @brief One lazy walk in key order, driven by the store's own cursor.
  *
  *  The walk itself belongs to the store: it holds the position, decides where a bound stops it, and
- *  survives a concurrent write by re-probing rather than by holding a node. This object owns only the
- *  Python side of it - the reference keeping the store alive, how many steps are left, and which half
- *  of each element to hand back.
+ *  survives a concurrent write by re-probing rather than by holding a node. This object owns only
+ *  the Python side of it - the reference keeping the store alive, how many steps are left, and
+ *  which half of each element to hand back.
  *
  *  @c owner is a strong reference keeping the store alive for the walk, and is the only place the
- *  layout and the family are recorded - both are read back from it per step rather than cached here,
- *  so a cache can never disagree with the store it describes.
+ *  layout and the family are recorded - both are read back from it per step rather than cached
+ *  here, so a cache can never disagree with the store it describes.
  */
 struct cursor_object_t {
     PyObject_HEAD PyObject *owner;
     spin_shared_mutex_t lock;
-    /** @brief The store's walk, closed through the same table that opened it. */
+
+    /** The store's walk, closed through the same table that opened it. */
     void *walk;
-    /** @brief How many steps are left, or negative when the walk is uncounted. */
+
+    /** How many steps are left, or negative when the walk is uncounted. */
     Py_ssize_t remaining;
     cursor_yields_t yields;
 };
@@ -812,7 +844,7 @@ struct mapping_view_object_t {
 PyObject *cursor_new(module_state_t *state, PyObject *container, cursor_yields_t yields, key_variant_t const *start,
                      key_variant_t const *stop, Py_ssize_t limit) noexcept;
 
-/** @brief Builds a lazy view. Same ownership rules as @c cursor_new. */
+/** Builds a lazy view. Same ownership rules as @c cursor_new. */
 PyObject *mapping_view_new(module_state_t *state, PyObject *container, cursor_yields_t yields) noexcept;
 
 extern PyType_Spec cursor_spec;
@@ -827,17 +859,17 @@ extern PyType_Spec hash_set_spec;
 /**
  *  @brief Visits every element once, in key order, stepping exactly as the Python cursor does.
  *
- *  For @c __eq__, which needs every element but has no reason to build a Python object per step. Same
- *  exclusive-successor stepping as the Python cursor, so the two cannot disagree about what "every
- *  element" means, and the same tolerance of concurrent change: a key erased under the walk is
- *  harmless, one inserted behind it is missed. @c scan reads through one transaction and tolerates
- *  neither.
+ *  For @c __eq__, which needs every element but has no reason to build a Python object per step.
+ *  Same exclusive-successor stepping as the Python cursor, so the two cannot disagree about what
+ *  "every element" means, and the same tolerance of concurrent change: a key erased under the walk
+ *  is harmless, one inserted behind it is missed. @c scan reads through one transaction and
+ *  tolerates neither.
  *
  *  Only ever called on an ordered container, whose table carries the two bounds. A set hands the
  *  callback a value nothing wrote, since it has none.
  *
- *  @return The first refusal a step reported, so a caller folding this into an answer can tell a walk
- *    that ended from one that stopped short.
+ *  @return The first refusal a step reported, so a caller folding this into an answer can tell a
+ *      walk that ended from one that stopped short.
  */
 template <typename callback_type_>
 [[nodiscard]] status_t for_each_in_order(container_object_t const *container, callback_type_ &&callback) noexcept {
@@ -870,21 +902,23 @@ template <typename callback_type_>
 /**
  *  @brief One participant in a transaction, whatever container it came from.
  *
- *  Holds the open transaction type-erased, beside the table that knows how to drive it. Every uniform
- *  operation - stage, commit, rollback, reset, erase, watch, contains - is one indirect call, with no
- *  vtable dispatch of its own, no per-participant heap allocation beyond the transaction itself, and
- *  no arm to add when the store matrix grows. The three operations that genuinely differ between a
- *  map and a set ask @c is_associative rather than which type is engaged.
+ *  Holds the open transaction type-erased, beside the table that knows how to drive it. Every
+ *  uniform operation - stage, commit, rollback, reset, erase, watch, contains - is one indirect
+ *  call, with no vtable dispatch of its own, no per-participant heap allocation beyond the
+ *  transaction itself, and no arm to add when the store matrix grows. The three operations that
+ *  genuinely differ between a map and a set ask @c is_associative rather than which type
+ *  is engaged.
  *
- *  @c mode is this participant's own, not the transaction's. Reading it from any other participant picks the
- *  wrong GIL policy for a transaction that mixes a scalar container with an object one, which is the path
- *  where a missed acquisition corrupts rather than fails.
+ *  @c mode is this participant's own, not the transaction's. Reading it from any other participant
+ *  picks the wrong GIL policy for a transaction that mixes a scalar container with an object one,
+ *  which is the path where a missed acquisition corrupts rather than fails.
  */
 struct participant_t {
     store_ops_t const *table;
     void *transaction;
     key_ops_t const *ops;
-    /** @brief The ledger of the container this participates in; see @c releases_t. */
+
+    /** The ledger of the container this participates in; see @c releases_t. */
     releases_t *releases;
     value_mode_t mode;
 
@@ -909,14 +943,14 @@ struct participant_t {
         if (transaction) table->transaction_destroy(*releases, transaction);
     }
 
-    /** @brief Whether this participant stores values as well as keys. */
+    /** Whether this participant stores values as well as keys. */
     [[nodiscard]] bool is_associative() const noexcept { return table->is_associative; }
 
     [[nodiscard]] expected<bool> contains(key_variant_t const &key) noexcept {
         return table->transaction_contains(transaction, key);
     }
 
-    /** @brief Reads a mapped value. Only ever called on a map; callers check @c is_associative first. */
+    /** Reads a mapped value. Only ever called on a map; callers check @c is_associative first. */
     [[nodiscard]] expected<value_variant_t> find(key_variant_t const &key) noexcept {
         assert(is_associative() && "find on a set participant; callers check is_associative first");
         return table->transaction_find(*releases, transaction, key);
@@ -926,8 +960,8 @@ struct participant_t {
      *  @brief Inserts or overwrites. @p value is null for a set, which stores the key alone.
      *
      *  One verb, because it is one operation: @c insert in this library is the strict form that
-     *  refuses an occupied key, and this never refuses. Only the element shape differs, and that
-     *  is what the null says.
+     *  refuses an occupied key, and this never refuses. Only the element shape differs, and that is
+     *  what the null says.
      */
     [[nodiscard]] status_t upsert(key_variant_t &&key, value_variant_t *value) noexcept {
         assert(is_associative() == (value != nullptr) && "a map upsert carries a value and a set's does not");
@@ -941,7 +975,7 @@ struct participant_t {
         return table->transaction_watch(transaction, key);
     }
 
-    /** @brief Whether this participant orders its keys, which is what the two windowed calls rest on. */
+    /** Whether this participant orders its keys, which is what the two windowed calls rest on. */
     [[nodiscard]] bool is_ordered() const noexcept { return table->is_ordered; }
 
     [[nodiscard]] status_t scan(key_variant_t const *lower, key_variant_t const *upper, std::size_t limit,
@@ -960,39 +994,40 @@ struct participant_t {
         return table->transaction_validate(*releases, transaction);
     }
     void publish_under() noexcept { table->transaction_publish(*releases, transaction); }
-    /**
-     *  @brief Whether this participant can be asked whether it may commit before any of them writes.
-     *    A store deciding and writing in one call leaves the pair null, and a group holding one falls
-     *    back to committing each participant in turn.
-     */
+
+    /** Whether this participant can be asked whether it may commit before any of them writes. A store deciding and
+     *  writing in one call leaves the pair null, and a group holding one falls back to committing each participant
+     *  in turn. */
     [[nodiscard]] bool splits_commit() const noexcept { return table->transaction_validate != nullptr; }
     [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(*releases, transaction); }
     [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(*releases, transaction); }
 };
 
 /**
- *  @brief Whether the Python object owning a transaction is still usable, which the engine never asks.
+ *  @brief Whether the Python object owning a transaction is still usable, which the engine
+ *      never asks.
  *
  *  A @c with block records here that it is over, so a @c Participant that escaped the block cannot
- *  keep writing through it. Kept apart from @c staging_t, which answers for the participants
- *  rather than for the handle.
+ *  keep writing through it. Kept apart from @c staging_t, which answers for the participants rather
+ *  than for the handle.
  */
 enum class group_lifetime_t : std::uint8_t { usable_k, finished_k };
 
 /**
  *  @brief A transaction of containers updated all-or-nothing.
  *
- *  @c containers holds the participants in the caller's order and @c views the per-container handles
- *  parallel to it, while @c parts holds the open transactions in canonical staging order. It lives
- *  inside the object, placement-constructed into @c PyObject_GC_New's storage, and reports a failed
- *  reservation as a status rather than throwing - an exception has nowhere to go inside a C-API frame.
+ *  @c containers holds the participants in the caller's order and @c views the per-container
+ *  handles parallel to it, while @c parts holds the open transactions in canonical staging order.
+ *  It lives inside the object, placement-constructed into @c PyObject_GC_New's storage, and reports
+ *  a failed reservation as a status rather than throwing - an exception has nowhere to go inside a
+ *  C-API frame.
  *
  *  @c state says whether the participants are staged and @c lifetime whether the handle is still
  *  usable, which are different questions - see both enums above.
  *
  *  @c lock makes the state test, the pass over @c parts and the state transition one span. Each of
- *  those passes drops the GIL, so without it two threads could both see an open group and both stage
- *  it, and a write through a view could land in a participant a commit was already draining.
+ *  those passes drops the GIL, so without it two threads could both see an open group and both
+ *  stage it, and a write through a view could land in a participant a commit was already draining.
  */
 struct transaction_object_t {
     PyObject_HEAD PyObject *containers;
@@ -1033,11 +1068,13 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
  *  @brief Everything this module owns, per interpreter.
  *
  *  Nothing here is a process-wide static. That is deliberate: the module declares
- *  @c Py_MOD_PER_INTERPRETER_GIL_SUPPORTED, and a hidden global would be shared by interpreters that
- *  are meant to share nothing - including @c next_ordinal, which is state rather than a constant.
+ *  @c Py_MOD_PER_INTERPRETER_GIL_SUPPORTED, and a hidden global would be shared by interpreters
+ *  that are meant to share nothing - including @c next_ordinal, which is state rather than
+ *  a constant.
  */
 struct module_state_t {
-    /** @brief Hands each container its staging rank. See @c container_object_t::ordinal. */
+
+    /** Hands each container its staging rank. See @c container_object_t::ordinal. */
     std::atomic<std::uint64_t> next_ordinal;
 
     PyTypeObject *sorted_map_type;
@@ -1059,7 +1096,7 @@ struct module_state_t {
     PyObject *state_error;
 };
 
-/** @brief Defined in @c module.cpp, once the tables it points at exist. */
+/** Defined in @c module.cpp, once the tables it points at exist. */
 PyModuleDef *smashtable_module_def() noexcept;
 
 module_state_t *state_of(PyObject *module) noexcept;
@@ -1070,8 +1107,8 @@ module_state_t *state_of_type(PyObject *self) noexcept;
 #pragma region Errors
 
 /**
- *  @brief Turns a @c status_t into a raised Python exception.
- *    The only place aware that @c status_t is truthy on success.
+ *  @brief Turns a @c status_t into a raised Python exception. The only place aware that @c status_t
+ *      is truthy on success.
  *  @param[in] state The module state holding the custom exception types.
  *  @param[in] status The outcome to translate.
  *  @param[in] key The key to attach to a lookup failure, borrowed, or @c nullptr.

@@ -1,8 +1,8 @@
 /**
- *  @brief Module definition, per-interpreter state, exception types and the @c atomic entry point.
- *  @author Ash Vardanian
  *  @file python/module.cpp
+ *  @author Ash Vardanian
  *  @date October 30, 2025
+ *  @brief Module definition, per-interpreter state, exception types and the @c atomic entry point.
  *
  *  Multi-phase initialization with heap types is required rather than stylistic: @c Py_mod_gil is
  *  reachable only through a module slot, and a static type cannot be shared safely between
@@ -66,7 +66,7 @@ static PyObject *module_transaction(PyObject *module, PyObject *const *args, Py_
     return group;
 }
 
-/** @brief Opens a transaction over one store alone, the single-participant case. */
+/** Opens a transaction over one store alone, the single-participant case. */
 static PyObject *container_transaction(PyObject *self, PyObject *) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
@@ -86,15 +86,15 @@ static PyMethodDef module_methods[] = {
 
 #pragma region Initialization
 
-/** @brief Outlives every descriptor built from it, which is why it cannot be a local. */
+/** Outlives every descriptor built from it, which is why it cannot be a local. */
 static PyMethodDef transaction_definition = {"transaction", container_transaction, METH_NOARGS,
                                              "Open a transaction over this store alone."};
 
 /**
  *  @brief Attaches @c transaction() to a store type after it is built from its spec.
  *
- *  Attached once here rather than repeated in four specs, since all four families want the identical
- *  method and a spec's method table is per-family.
+ *  Attached once here rather than repeated in four specs, since all four families want the
+ *  identical method and a spec's method table is per-family.
  */
 static int add_transaction_method(PyTypeObject *type) noexcept {
     PyObject *descriptor = PyDescr_NewMethod(type, &transaction_definition);

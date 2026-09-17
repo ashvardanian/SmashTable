@@ -1,11 +1,13 @@
 /**
- *  @brief Benchmark of the row kits per medium width, and of the static B-tree against the S+ tree and a binary search.
- *  @author Ash Vardanian
  *  @file scripts/bench_row_search.cpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief Benchmark of the row kits per medium width, and of the static B-tree against the S+ tree
+ *      and a binary search.
  *
- *  Prints a machine block, then one block per phase: the kits over single rows of each medium width, and both
- *  layouts over the same sorted keys. Flags are @c --rows, @c --keys and @c --queries, all counts.
+ *  Prints a machine block, then one block per phase: the kits over single rows of each medium
+ *  width, and both layouts over the same sorted keys. Flags are @c --rows, @c --keys and
+ *  @c --queries, all counts.
  */
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`

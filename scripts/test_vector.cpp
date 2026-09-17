@@ -1,8 +1,9 @@
 /**
- *  @brief Tests for @c basic_vector - the fallible-construction path, growth arithmetic, and rollback.
- *  @author Ash Vardanian
  *  @file scripts/test_vector.cpp
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Tests for @c basic_vector - the fallible-construction path, growth arithmetic,
+ *      and rollback.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -25,10 +26,8 @@ namespace {
 
 #pragma region Element Types
 
-/**
- *  @brief An element only constructible through @c make, which is what drives @c emplace_back's slow path.
- *    Its value constructor is deliberately throwing, so the nothrow branch cannot claim it.
- */
+/** An element only constructible through @c make, which is what drives @c emplace_back's slow path. Its value
+ *  constructor is deliberately throwing, so the nothrow branch cannot claim it. */
 struct fallible_element_t {
     int value {0};
 
@@ -38,10 +37,10 @@ struct fallible_element_t {
     fallible_element_t(fallible_element_t const &) = default;
     fallible_element_t &operator=(fallible_element_t const &) = default;
 
-    /** @brief Throwing on purpose, so @c std::is_nothrow_constructible_v rejects this path. */
+    /** Throwing on purpose, so @c std::is_nothrow_constructible_v rejects this path. */
     explicit fallible_element_t(int requested, int) : value(requested) {}
 
-    /** @brief Refuses negative values, which is the failure the caller must see as a status. */
+    /** Refuses negative values, which is the failure the caller must see as a status. */
     [[nodiscard]] static expected<fallible_element_t> make(int requested) noexcept {
         if (requested < 0) return status_t::invalid_argument_k;
         fallible_element_t made;
@@ -49,7 +48,7 @@ struct fallible_element_t {
         return expected<fallible_element_t>(std::move(made), success_k);
     }
 
-    /** @brief Deep copy that never fails, so @c copy_safely has a route for this type. */
+    /** Deep copy that never fails, so @c copy_safely has a route for this type. */
     [[nodiscard]] expected<fallible_element_t> copy() const noexcept {
         fallible_element_t made;
         made.value = value;
@@ -57,7 +56,7 @@ struct fallible_element_t {
     }
 };
 
-/** @brief An element whose copy fails past a budget, exercising the rollback paths. */
+/** An element whose copy fails past a budget, exercising the rollback paths. */
 struct budgeted_element_t {
     static inline std::size_t copies_left = 0;
 
@@ -78,11 +77,9 @@ struct budgeted_element_t {
     }
 };
 
-/**
- *  @brief An allocator that refuses every request and remembers the largest one it was asked for.
- *    A hand-written allocator that multiplies without checking would answer a wrapping byte count
- *    with a small block, so the vector must never put such a count in front of one.
- */
+/** An allocator that refuses every request and remembers the largest one it was asked for. A hand-written allocator
+ *  that multiplies without checking would answer a wrapping byte count with a small block, so the vector must never
+ *  put such a count in front of one. */
 template <typename value_type_>
 struct recording_allocator {
     // Read only for the instantiation a test names; the rebound ones only ever record.
@@ -115,7 +112,7 @@ struct recording_allocator {
 
 #pragma region Tests
 
-/** @brief The @c make branch of @c emplace_back must compile at all, and must report its failures. */
+/** The @c make branch of @c emplace_back must compile at all, and must report its failures. */
 static void vector_emplace_back_through_make() {
     static_assert(!std::is_nothrow_constructible_v<fallible_element_t, int>,
                   "the test element must not qualify for the nothrow branch");
@@ -145,7 +142,7 @@ static void vector_emplace_back_through_make() {
     st_verify_eq_(integers[0], 42);
 }
 
-/** @brief A capacity whose byte count cannot be addressed is refused rather than allocated small. */
+/** A capacity whose byte count cannot be addressed is refused rather than allocated small. */
 static void vector_reserve_refuses_wrapping_capacity() {
     constexpr std::size_t max_capacity = SIZE_MAX / sizeof(long long);
     using recorded_vector_t = basic_vector<long long, recording_allocator<long long>>;
@@ -178,7 +175,7 @@ static void vector_reserve_refuses_wrapping_capacity() {
     st_verify_eq_(heap_vector[0], 11);
 }
 
-/** @brief Growth amortizes: appending one at a time must double rather than grow by one. */
+/** Growth amortizes: appending one at a time must double rather than grow by one. */
 static void vector_growth_is_amortized() {
     basic_vector<int> vector;
     for (int value = 0; value < 100; ++value) st_verify_(vector.push_back(int {value}));
@@ -195,7 +192,7 @@ static void vector_growth_is_amortized() {
     st_verify_eq_(vector.capacity(), 128u);
 }
 
-/** @brief A failed @c resize leaves the elements alone, whatever it did to the capacity. */
+/** A failed @c resize leaves the elements alone, whatever it did to the capacity. */
 static void vector_resize_rolls_back_elements() {
     basic_vector<budgeted_element_t> vector;
     st_verify_(vector.push_back(budgeted_element_t {}));
@@ -219,7 +216,7 @@ static void vector_resize_rolls_back_elements() {
     st_verify_eq_(vector.size(), 2u);
 }
 
-/** @brief @c copy is all-or-nothing, and @c swap moves the storage across. */
+/** @c copy is all-or-nothing, and @c swap moves the storage across. */
 static void vector_copy_and_swap() {
     basic_vector<fallible_element_t> vector;
     for (int value = 0; value < 5; ++value) st_verify_(vector.emplace_back(value));
@@ -244,7 +241,7 @@ static void vector_copy_and_swap() {
     st_verify_eq_(budgeted.size(), 4u);
 }
 
-/** @brief Moves transfer ownership and leave the source empty rather than aliasing its storage. */
+/** Moves transfer ownership and leave the source empty rather than aliasing its storage. */
 static void vector_move_semantics() {
     auto made = basic_vector<int>::make(16);
     st_verify_(static_cast<bool>(made));

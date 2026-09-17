@@ -1,12 +1,13 @@
 /**
- *  @brief A fixed-capacity first-in first-out ring over one allocation, for batching and read-ahead queues.
- *  @author Ash Vardanian
  *  @file include/smashtable/basic_ring.hpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief A fixed-capacity first-in first-out ring over one allocation, for batching and
+ *      read-ahead queues.
  *
- *  Capacity is a power of two chosen at @c make, and the ring never grows. Two 32-bit counters of pushes and pops
- *  wrap together, so their difference is the size and their low bits are the slots, and a full ring is told apart
- *  from an empty one without a spare slot.
+ *  Capacity is a power of two chosen at @c make, and the ring never grows. Two 32-bit counters of
+ *  pushes and pops wrap together, so their difference is the size and their low bits are the slots,
+ *  and a full ring is told apart from an empty one without a spare slot.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -94,7 +95,7 @@ class basic_ring {
     /**
      *  An empty ring of @p capacity slots, where zero allocates nothing and holds nothing.
      *  @return The ring, @c invalid_argument_k for a capacity that is not a power of two up to
-     *    @c capacity_limit_k, or @c out_of_memory_heap_k.
+     *      @c capacity_limit_k, or @c out_of_memory_heap_k.
      */
     [[nodiscard]] static expected<basic_ring> make(std::size_t capacity, allocator_t allocator = {}) noexcept {
         if (capacity > capacity_limit_k || (capacity & (capacity - 1)) != 0) return invalid_argument_k;

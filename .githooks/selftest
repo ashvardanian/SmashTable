@@ -40,7 +40,19 @@ new_fixture() { # new_fixture <relative-path> <<< content
     git -C "$fixture_dir" commit --quiet --allow-empty -m "Chore: Seed the fixture"
     fixture_path="$fixture_dir/$1"
     mkdir -p "$(dirname "$fixture_path")"
-    cat > "$fixture_path"
+    # Every C and C++ file in the library carries a header, and `check_file_header` asks for one, so a
+    # fixture gets the same preamble rather than each case restating it.
+    case "$1" in
+    *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh)
+        {
+            printf '/**\n *  @file %s\n *  @author Selftest\n *  @date January 1, 2026\n' "$1"
+            printf ' *  @brief One staged fixture for one rule.\n *\n *  The case under test follows.\n */\n'
+            printf '#pragma once\n\n'
+            cat
+        } > "$fixture_path"
+        ;;
+    *) cat > "$fixture_path" ;;
+    esac
     git -C "$fixture_dir" add -- "$1"
 }
 
@@ -124,7 +136,7 @@ assert_message_accepts() { # assert_message_accepts <label> <<< message
 # region Pre-commit fixtures
 
 assert_rejects "ascii arrows" "writes an arrow as '->'" src/probe.hpp <<'FIXTURE'
-/** @brief Maps a key -> a value. */
+/** Maps a key -> a value. */
 int probe();
 FIXTURE
 
@@ -148,7 +160,7 @@ void probe() { auto *node = new node_t; }
 FIXTURE
 
 assert_accepts "placement new, and prose naming the new value" src/probe.hpp <<'FIXTURE'
-/** @brief Adds to a counter, returning the new value. */
+/** Adds to a counter, returning the new value. */
 void probe(void *storage) { new (storage) node_t {}; }
 FIXTURE
 
@@ -193,13 +205,15 @@ FIXTURE
 assert_rejects "orphaned docblock above a brace" "docblock with nothing to document" src/probe.hpp <<'FIXTURE'
 struct probe_t {
     int member;
-    /** @brief Hashes for the fixture keys. */
+
+    /** Hashes for the fixture keys. */
 };
 FIXTURE
 
 assert_rejects "orphaned docblock above another docblock" "docblock with nothing to document" src/probe.hpp <<'FIXTURE'
-/** @brief The older description, displaced by the one below. */
-/** @brief The newer description. */
+/** The older description, displaced by the one below. */
+
+/** The newer description. */
 void probe();
 FIXTURE
 
@@ -231,12 +245,15 @@ FIXTURE
 assert_rejects "bare @section" "@section without an anchor" src/probe.hpp <<'FIXTURE'
 /**
  *  @brief A probe.
+ *
  *  @section Overview
+ *
+ *  Body below the heading.
  */
 void probe();
 FIXTURE
 
-assert_rejects "@section run into its body" "runs an @section into its body" src/probe.hpp <<'FIXTURE'
+assert_rejects "@section run into its body" "crams an @section against its neighbors" src/probe.hpp <<'FIXTURE'
 /**
  *  @brief A probe.
  *
@@ -258,23 +275,17 @@ void probe();
 FIXTURE
 
 assert_rejects "markdown emphasis in a docblock" "Markdown emphasis in a Doxygen block" src/probe.hpp <<'FIXTURE'
-/**
- *  @brief A **probe**.
- */
+/** A **probe**. */
 void probe();
 FIXTURE
 
 assert_rejects "backticks in a docblock" "backticks inside a Doxygen block" src/probe.hpp <<'FIXTURE'
-/**
- *  @brief A `probe`.
- */
+/** A `probe`. */
 void probe();
 FIXTURE
 
 assert_accepts "@c markup in a docblock" src/probe.hpp <<'FIXTURE'
-/**
- *  @brief A @c probe.
- */
+/** A @c probe. */
 void probe();
 FIXTURE
 

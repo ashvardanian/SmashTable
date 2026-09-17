@@ -1,8 +1,8 @@
 /**
- *  @brief The container classes - @c SortedMap, @c SortedSet and their unordered siblings.
- *  @author Ash Vardanian
  *  @file python/container.cpp
+ *  @author Ash Vardanian
  *  @date August 18, 2026
+ *  @brief The container classes - @c SortedMap, @c SortedSet and their unordered siblings.
  *
  *  One file for every class, because behind @c store_ops_t they differ only in which methods their
  *  type installs. A file per class would be near-identical but for the element shape, and the core,
@@ -10,8 +10,8 @@
  *
  *  Parity with @c dict and @c set is the goal everywhere it costs nothing. The places it is
  *  deliberately broken are three: the key type is fixed at construction and every other type is
- *  refused, iteration never raises on mutation, and @c popitem removes the smallest pair rather than
- *  the most recent.
+ *  refused, iteration never raises on mutation, and @c popitem removes the smallest pair rather
+ *  than the most recent.
  */
 #include <cstring> // `std::strrchr`
 
@@ -58,7 +58,7 @@ PyObject *container_of(module_state_t *state, PyTypeObject *type, key_ops_t cons
     return reinterpret_cast<PyObject *>(self);
 }
 
-/** @brief Reads the @c isolation keyword, which names a promise rather than a mechanism. */
+/** Reads the @c isolation keyword, which names a promise rather than a mechanism. */
 static bool isolation_from_python(PyObject *specification, isolation_choice_t &choice) noexcept {
     if (!specification || specification == Py_None) return true;
     if (!PyUnicode_Check(specification)) {
@@ -93,7 +93,7 @@ static bool isolation_from_python(PyObject *specification, isolation_choice_t &c
     return false;
 }
 
-/** @brief Reads the @c sharing keyword, which decides how far the isolation level survives. */
+/** Reads the @c sharing keyword, which decides how far the isolation level survives. */
 static bool sharing_from_python(PyObject *specification, sharing_choice_t &choice) noexcept {
     if (!specification || specification == Py_None) return true;
     if (!PyUnicode_Check(specification)) {
@@ -113,10 +113,12 @@ static bool sharing_from_python(PyObject *specification, sharing_choice_t &choic
 }
 
 /**
- *  @brief The shared constructor body, which every class reaches with its own core and element shape.
+ *  @brief The shared constructor body, which every class reaches with its own core and
+ *      element shape.
  *
  *  Keywords are walked by hand rather than through @c PyArg_ParseTupleAndKeywords, which parses a
- *  format string at runtime and cannot express the fast calling convention the rest of this file uses.
+ *  format string at runtime and cannot express the fast calling convention the rest of this
+ *  file uses.
  */
 static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *keywords, core_t core,
                                bool associative) noexcept {
@@ -220,10 +222,9 @@ static int container_traverse(PyObject *self, visitproc visit, void *arg) noexce
 /**
  *  @brief Drops everything the store holds, which is how the collector breaks the cycle.
  *
- *  Emptying the store is the whole of it: the references it holds are the only ones a store
- *  owns. The drops go through the store call, so each is released after its lock is gone rather
- *  than inside it - a finalizer here would otherwise deadlock exactly as it did on an ordinary
- *  write.
+ *  Emptying the store is the whole of it: the references it holds are the only ones a store owns.
+ *  The drops go through the store call, so each is released after its lock is gone rather than
+ *  inside it - a finalizer here would otherwise deadlock exactly as it did on an ordinary write.
  */
 static int container_gc_clear(PyObject *self) noexcept {
     auto *container = object_as<container_object_t>(self);
@@ -316,7 +317,7 @@ static PyObject *Map_get(PyObject *self, PyObject *const *args, Py_ssize_t count
 
 #pragma region Writing
 
-/** @brief The class name without the module prefix, which every message and repr leads with. */
+/** The class name without the module prefix, which every message and repr leads with. */
 static char const *class_name_of(PyObject *self) noexcept;
 
 /**
@@ -640,7 +641,7 @@ static PyObject *Set_add(PyObject *self, PyObject *member) noexcept {
     Py_RETURN_NONE;
 }
 
-/** @brief The shared body of @c discard and @c remove, which differ only in the absent case. */
+/** The shared body of @c discard and @c remove, which differ only in the absent case. */
 static int set_erase(PyObject *self, PyObject *member, bool *was_present) noexcept {
     auto *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
@@ -786,7 +787,7 @@ static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
 
 #pragma region Algebra
 
-/** @brief Builds a fresh set of the same class, layout and store configuration, ready to receive results. */
+/** Builds a fresh set of the same class, layout and store configuration, ready to receive results. */
 static PyObject *set_like(PyObject *self) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
@@ -1014,7 +1015,7 @@ static char const doc_scan[] =                                                  
     "  TypeError: If a bound is not of this store's key type.\n"                          //
     "  ValueError: If limit is negative.\n";                                              //
 
-/** @brief Collects the window through one store call rather than a cursor stepped per element. */
+/** Collects the window through one store call rather than a cursor stepped per element. */
 static PyObject *container_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords,
                                 cursor_yields_t yields) noexcept {
     auto const *container = object_as<container_object_t>(self);
@@ -1069,7 +1070,7 @@ static PyObject *Set_scan(PyObject *self, PyObject *const *args, Py_ssize_t coun
 
 #pragma region Representation and Equality
 
-/** @brief How many elements @c repr spells out before eliding, so a huge container still prints. */
+/** How many elements @c repr spells out before eliding, so a huge container still prints. */
 static constexpr Py_ssize_t repr_limit_k = 64;
 
 static char const *class_name_of(PyObject *self) noexcept {
@@ -1151,19 +1152,22 @@ static PyObject *Unordered_repr(PyObject *self) noexcept {
 }
 
 /**
- *  @brief Compares against another map of this build or a @c dict, by content and never by arrival order.
+ *  @brief Compares against another map of this build or a @c dict, by content and never by
+ *      arrival order.
  *
  *  Walks this store's store once and probes the other side per key. Against another map of the same
- *  layout the key never becomes a Python object at all - it is compared as a stored scalar, through the
- *  same function pointer the tree orders by. Against a @c dict the key is built once and looked up
- *  through the C hash API. Neither path materializes a copy or dispatches through the interpreter.
+ *  layout the key never becomes a Python object at all - it is compared as a stored scalar, through
+ *  the same function pointer the tree orders by. Against a @c dict the key is built once and looked
+ *  up through the C hash API. Neither path materializes a copy or dispatches through
+ *  the interpreter.
  *
- *  Values do go through @c PyObject_RichCompareBool, deliberately: that is what keeps @c {k: 1} equal
- *  to @c {k: 1.0} as it is for @c dict, without reimplementing cross-type numeric comparison here.
+ *  Values do go through @c PyObject_RichCompareBool, deliberately: that is what keeps @c {k: 1}
+ *  equal to @c {k: 1.0} as it is for @c dict, without reimplementing cross-type numeric
+ *  comparison here.
  *
- *  @c dict itself answers @c NotImplemented against a foreign mapping and defers to the other operand,
- *  so implementing this is the convention rather than an extra - without it two containers holding
- *  identical data would compare unequal by identity, silently and in both directions.
+ *  @c dict itself answers @c NotImplemented against a foreign mapping and defers to the other
+ *  operand, so implementing this is the convention rather than an extra - without it two containers
+ *  holding identical data would compare unequal by identity, silently and in both directions.
  */
 static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation) noexcept {
     if (operation != Py_EQ && operation != Py_NE) Py_RETURN_NOTIMPLEMENTED;
@@ -1238,9 +1242,9 @@ static PyObject *Map_richcompare(PyObject *self, PyObject *other, int operation)
 /**
  *  @brief Whether every member of @p self is also in @p other.
  *
- *  Reached with either side first, since @c >= asks it the other way round, so @p self may be a plain
- *  @c set carrying no module state of ours. That is ordinary rather than a failure: the general path
- *  answers it, and the lookup's own exception is cleared with that in mind.
+ *  Reached with either side first, since @c >= asks it the other way round, so @p self may be a
+ *  plain @c set carrying no module state of ours. That is ordinary rather than a failure: the
+ *  general path answers it, and the lookup's own exception is cleared with that in mind.
  */
 static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept {
     module_state_t *state = state_of_type(self);
@@ -1278,7 +1282,7 @@ static int set_is_subset(PyObject *self, PyObject *other, bool *answer) noexcept
     return 0;
 }
 
-/** @brief The whole comparison surface a @c set carries, equality and containment alike. */
+/** The whole comparison surface a @c set carries, equality and containment alike. */
 static PyObject *Set_richcompare(PyObject *self, PyObject *other, int operation) noexcept {
     bool const other_is_set = Py_IS_TYPE(other, Py_TYPE(self));
     if (!other_is_set && !PyAnySet_Check(other)) Py_RETURN_NOTIMPLEMENTED;
@@ -1458,7 +1462,7 @@ static PyType_Slot sorted_map_slots[] = {
     {0, nullptr},
 };
 
-/** @brief A set has no values, so its only subscript duty is erasing a window. */
+/** A set has no values, so its only subscript duty is erasing a window. */
 static int Set_assign_subscript(PyObject *self, PyObject *key, PyObject *value) noexcept {
     if (!PySlice_Check(key)) {
         PyErr_SetString(PyExc_TypeError, "a set is subscripted only by a slice, to erase a window");

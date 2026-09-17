@@ -1,9 +1,9 @@
 /**
- *  @brief Tests for the row kits and the static layouts: every kit this processor runs against the serial kit, and
- *    both layouts against a sorted array.
- *  @author Ash Vardanian
  *  @file scripts/test_row_search.cpp
+ *  @author Ash Vardanian
  *  @date September 15, 2026
+ *  @brief Tests for the row kits and the static layouts: every kit this processor runs against the
+ *      serial kit, and both layouts against a sorted array.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1

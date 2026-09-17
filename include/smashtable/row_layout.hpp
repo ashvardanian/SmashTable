@@ -1,13 +1,13 @@
 /**
- *  @brief Shared vocabulary of the row-searched layouts: the wide key, the media a row is sized to, and
- *    where each key of a row sits.
- *  @author Ash Vardanian
  *  @file include/smashtable/row_layout.hpp
+ *  @author Ash Vardanian
  *  @date September 16, 2026
+ *  @brief Shared vocabulary of the row-searched layouts: the wide key, the media a row is sized to,
+ *      and where each key of a row sits.
  *
  *  A row is the unit every ordered layout here searches: a span of keys wide enough to be worth one
- *  vectorized pass. This header says what a key may be and how a row is laid out; @c row_search.hpp says
- *  how one is searched, and the layouts above both say what they do with the answer.
+ *  vectorized pass. This header says what a key may be and how a row is laid out; @c row_search.hpp
+ *  says how one is searched, and the layouts above both say what they do with the answer.
  */
 #pragma once
 #include <cstddef> // `std::size_t`, `offsetof`
@@ -22,10 +22,9 @@ namespace ashvardanian::smashtable {
 
 #pragma region Keys and Media
 
-/**
- *  A 16-byte key as two words, each holding eight bytes read big-endian, so ordering the words orders the bytes as
- *  @c memcmp would. An integer identity below 2^64 has a zero @c high and its value in @c low.
- */
+/** A 16-byte key as two words, each holding eight bytes read big-endian, so ordering the words
+ *  orders the bytes as
+ *  @c memcmp would. An integer identity below 2^64 has a zero @c high and its value in @c low. */
 struct key128_t {
     std::uint64_t high;
     std::uint64_t low;
@@ -63,9 +62,9 @@ concept row_searchable_key = std::same_as<key_type_, std::uint32_t> || std::same
 /**
  *  @brief The row width the ordered layouts take when a caller names none: a 512-byte block.
  *
- *  Sized rather than measured: a cache line is 64 bytes on most cores and 128 on others, and a page is
- *  4096 bytes until an operating system is configured otherwise, so neither is a constant this header
- *  could state. A block sits between them and divides evenly by every key width here.
+ *  Sized rather than measured: a cache line is 64 bytes on most cores and 128 on others, and a page
+ *  is 4096 bytes until an operating system is configured otherwise, so neither is a constant this
+ *  header could state. A block sits between them and divides evenly by every key width here.
  */
 inline constexpr std::size_t default_row_bytes_k = 512;
 
@@ -79,10 +78,9 @@ template <typename key_type_>
 
 #pragma region Row Format
 
-/**
- *  How a node of @p keys_per_row_ keys is stored as words: an integer row is one column of keys, and a 16-byte row
- *  is a column of high words followed by a column of low words, so both columns share one medium unit.
- */
+/** How a node of @p keys_per_row_ keys is stored as words: an integer row is one column of keys,
+ *  and a 16-byte row is a column of high words followed by a column of low words, so both columns
+ *  share one medium unit. */
 template <typename key_type_, std::size_t keys_per_row_>
     requires row_searchable_key<key_type_> && (keys_per_row_ >= 2)
 struct row_format {

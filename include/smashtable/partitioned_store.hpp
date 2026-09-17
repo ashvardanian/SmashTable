@@ -1,9 +1,9 @@
 /**
- *  @brief Shards a transactional store across independently locked partitions, so writers touching different keys
- *    rarely contend.
- *  @author Ash Vardanian
  *  @file include/smashtable/partitioned_store.hpp
+ *  @author Ash Vardanian
  *  @date October 16, 2022
+ *  @brief Shards a transactional store across independently locked partitions, so writers touching
+ *      different keys rarely contend.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -19,7 +19,7 @@
 
 namespace ashvardanian::smashtable {
 
-/** @brief Moves as many constructed objects out of @p from as @p sequence_ names, into a fixed-size array. */
+/** Moves as many constructed objects out of @p from as @p sequence_ names, into a fixed-size array. */
 template <typename type_, std::size_t... sequence_>
 constexpr std::array<type_, sizeof...(sequence_)> move_to_array(type_ *from,
                                                                 std::index_sequence<sequence_...>) noexcept {
@@ -30,9 +30,9 @@ constexpr std::array<type_, sizeof...(sequence_)> move_to_array(type_ *from,
  *  @brief Builds a fixed-size array from @p generator, or nothing at all if any element refuses.
  *
  *  The generator hands back an @c expected per element, and a single failure destroys the prefix
- *  already built, so no half-populated array is ever observable. The scratch buffer the elements are
- *  assembled in is raw storage this function owns, so every element it constructs it also destroys -
- *  a moved-from element still has a destructor to run.
+ *  already built, so no half-populated array is ever observable. The scratch buffer the elements
+ *  are assembled in is raw storage this function owns, so every element it constructs it also
+ *  destroys - a moved-from element still has a destructor to run.
  */
 template <typename type_, std::size_t count_, typename generator_type_>
 static expected<std::array<type_, count_>> generate_array_safely(generator_type_ &&generator) noexcept {
@@ -58,8 +58,8 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
 }
 
 /**
- *  @brief Hashes inputs to route them into separate sets, which can
- *    be concurrent, or have a separate state-full allocator attached.
+ *  @brief Hashes inputs to route them into separate sets, which can be concurrent, or have a
+ *      separate state-full allocator attached.
  *
  *  @tparam store_type_ Type of the wrapped store, like @c monotonic_store.
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
@@ -67,13 +67,13 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  @tparam partitions_count_ Number of partitions to split the store into, default 16.
  *
  *  @warning Every callback runs with at least one partition lock held - the walks that revise or
- *    erase a window hold every partition at once, while the enumerating and sampling walks hold one
- *    at a time, each saying which in its own docblock. The mutex is not recursive, so a callback that
- *    calls back into this store - or into anything that eventually does - deadlocks against itself.
- *    Copy out what a callback needs and do the rest after it returns.
+ *      erase a window hold every partition at once, while the enumerating and sampling walks hold
+ *      one at a time, each saying which in its own docblock. The mutex is not recursive, so a
+ *      callback that calls back into this store - or into anything that eventually does - deadlocks
+ *      against itself. Copy out what a callback needs and do the rest after it returns.
  *  @warning Moving a store leaves every open transaction pointing at the husk, whose partitions are
- *    empty and whose mutexes guard nothing, so commits land nowhere and report success. Move only a
- *    store no transaction is open on and no other thread is touching.
+ *      empty and whose mutexes guard nothing, so commits land nowhere and report success. Move only
+ *      a store no transaction is open on and no other thread is touching.
  */
 template <typename store_type_, typename hash_type_ = hash<typename store_type_::identifier_t>,
           typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16>
@@ -90,7 +90,8 @@ class partitioned_store {
     using unique_lock_t = unique_lock<mutex_t>;
 
     using mutexes_t = std::array<mutex_t, partitions_k>;
-    /** @brief How many times each partition has been written, so a cached read can be told it is stale. */
+
+    /** How many times each partition has been written, so a cached read can be told it is stale. */
     using epoch_t = std::size_t;
     using epochs_t = std::array<epoch_t, partitions_k>;
     using partitions_t = std::array<inner_store_t, partitions_k>;
@@ -103,19 +104,19 @@ class partitioned_store {
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
 
-    /** @brief The clock every partition draws its stamps from, or @c no_clock_t where there are none. */
+    /** The clock every partition draws its stamps from, or @c no_clock_t where there are none. */
     using clock_t = typename shared_clock_of<inner_store_t>::type;
 
     /**
      *  @brief A reader takes and releases one partition's lock at a time, so it can catch a commit
-     *    half-applied however the commit itself was written - unless what a reader sees is decided by
-     *    a stamp rather than by what happens to be published when it looks.
+     *      half-applied however the commit itself was written - unless what a reader sees is
+     *      decided by a stamp rather than by what happens to be published when it looks.
      *
      *  A part sharing a clock is stamped, and one stamp spans every partition of a commit: a reader
      *  that fixed its snapshot below that stamp sees none of the commit and one at or above it sees
      *  all of it, whatever order the partitions were written in. Such a part keeps its own promise
-     *  whole. A part deciding visibility any other way is capped at @c read_committed_k, which is the
-     *  weakest level named and so the floor a cap can reach.
+     *  whole. A part deciding visibility any other way is capped at @c read_committed_k, which is
+     *  the weakest level named and so the floor a cap can reach.
      */
     static constexpr isolation_t isolation_k = partitions_k == 1 || offers_shared_clock<inner_store_t, clock_t>
                                                    ? inner_store_t::isolation_k
@@ -125,18 +126,16 @@ class partitioned_store {
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
 
-    /** @brief Whether the wrapped transaction decides and writes in two steps rather than one. */
+    /** Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
 
-    /** @brief Whether a partition answers reads at a stamp somebody else pinned, registering nothing itself. */
+    /** Whether a partition answers reads at a stamp somebody else pinned, registering nothing itself. */
     static constexpr bool inner_reads_at_a_stamp_k =
         offers_shared_clock<inner_store_t, clock_t> &&
         requires(inner_store_t const &store, generation_t stamp) { store.reader_at(stamp); };
 
-    /**
-     *  @brief Whether a partition stages a window's writes invisibly and publishes them under a stamp it
-     *    is handed, which is what lets one stamp span every partition of a store-level window write.
-     */
+    /** Whether a partition stages a window's writes invisibly and publishes them under a stamp it is handed, which
+     *  is what lets one stamp span every partition of a store-level window write. */
     static constexpr bool inner_publishes_under_a_stamp_k =
         offers_shared_clock<inner_store_t, clock_t> &&
         requires(typename inner_store_t::publication_t &publication, commit_stamp_t stamp) {
@@ -145,11 +144,13 @@ class partitioned_store {
         };
 
     /**
-     *  @brief Whether an open transaction walks what it reads without recording it, and records a window
-     *    on demand, which is what lets a merged walk record only the prefix it handed over.
+     *  @brief Whether an open transaction walks what it reads without recording it, and records a
+     *      window on demand, which is what lets a merged walk record only the prefix it
+     *      handed over.
      *
-     *  One gate over several methods, unlike the surfaces in @c shared.hpp: a cursor without the watches
-     *  records nothing a commit can validate, so the pair is the capability rather than either half.
+     *  One gate over several methods, unlike the surfaces in @c shared.hpp: a cursor without the
+     *  watches records nothing a commit can validate, so the pair is the capability rather than
+     *  either half.
      */
     static constexpr bool inner_transaction_walks_unrecorded_k =
         requires(inner_transaction_t const &transaction, identifier_t const &key) {
@@ -160,22 +161,26 @@ class partitioned_store {
             transaction.watch_range_up_to(key);
         };
 
-    /** @brief What an all-partition walk does with a partition that refuses. */
+    /** What an all-partition walk does with a partition that refuses. */
     enum class refusal_policy_t : std::uint8_t {
-        /** @brief The walk returns the first refusal, leaving every partition after it untouched. */
+
+        /** The walk returns the first refusal, leaving every partition after it untouched. */
         stop_at_first_k,
-        /** @brief Every partition is attempted whatever its neighbours answered, and the last refusal is reported. */
+
+        /** Every partition is attempted whatever its neighbours answered, and the last refusal is reported. */
         attempt_every_k,
-        /** @brief Every partition stages before one stamp publishes them all, so a refusal publishes nothing. */
+
+        /** Every partition stages before one stamp publishes them all, so a refusal publishes nothing. */
         all_or_nothing_k,
     };
 
-    /** @brief What every store-level window write keeps, which one stamp across the partitions makes whole. */
+    /** What every store-level window write keeps, which one stamp across the partitions makes whole. */
     static constexpr refusal_policy_t window_writes_policy_k =
         inner_publishes_under_a_stamp_k ? refusal_policy_t::all_or_nothing_k : refusal_policy_t::attempt_every_k;
 
     /**
-     *  @brief What a refusal from each all-partition method says about the partitions it did not report on.
+     *  @brief What a refusal from each all-partition method says about the partitions it did not
+     *      report on.
      *
      *  Two behaviours live under one type, and the returned status cannot tell them apart: under
      *  @c stop_at_first_k the partitions after the refusal are untouched, while under
@@ -190,30 +195,30 @@ class partitioned_store {
     static constexpr refusal_policy_t update_range_policy_k = window_writes_policy_k;
 
   private:
-    /**
-     *  @brief Whether a scan over a set of partition indices stopped on a marked partition.
-     */
+    /** Whether a scan over a set of partition indices stopped on a marked partition. */
     enum class marked_presence_t : std::uint8_t {
-        /** @brief Nothing was marked at or above where the scan started, so the walk is over. */
+
+        /** Nothing was marked at or above where the scan started, so the walk is over. */
         none_marked_k,
-        /** @brief The scan stopped on the lowest marked partition at or above where it started. */
+
+        /** The scan stopped on the lowest marked partition at or above where it started. */
         one_marked_k,
     };
 
-    /**
-     *  @brief Where a scan over a set of partition indices stopped.
-     *    @c index is only meaningful once @c presence says a partition was found, which is why the two
-     *    travel together rather than as an index with a reserved value.
-     */
+    /** Where a scan over a set of partition indices stopped. @c index is only meaningful once @c presence says a
+     *  partition was found, which is why the two travel together rather than as an index with a reserved value. */
     struct marked_partition_t {
-        /** @brief Whether @c index names a partition at all. */
+
+        /** Whether @c index names a partition at all. */
         marked_presence_t presence = marked_presence_t::none_marked_k;
-        /** @brief The marked partition, meaningful only under @c one_marked_k. */
+
+        /** The marked partition, meaningful only under @c one_marked_k. */
         std::size_t index = 0;
     };
 
     /**
-     *  @brief A set of partition indices, one bit each, sized to @c partitions_k rather than capped by it.
+     *  @brief A set of partition indices, one bit each, sized to @c partitions_k rather than capped
+     *      by it.
      *
      *  Iterating set bits rather than scanning every partition is the point: a transaction usually
      *  reaches one or two of them, and only those may be locked.
@@ -229,10 +234,10 @@ class partitioned_store {
         }
         void clear() noexcept { words.fill(0); }
 
-        /** @brief The lowest marked partition, when any of them is marked. */
+        /** The lowest marked partition, when any of them is marked. */
         marked_partition_t first_marked() const noexcept { return scan_from_(0); }
 
-        /** @brief The lowest marked partition above @p partition_index, when there is one. */
+        /** The lowest marked partition above @p partition_index, when there is one. */
         marked_partition_t next_marked(std::size_t partition_index) const noexcept {
             return scan_from_(partition_index + 1);
         }
@@ -257,20 +262,23 @@ class partitioned_store {
     /**
      *  @brief Whether a merged walk can hold one key per partition between its steps.
      *
-     *  A walk answers in one order across sixteen independently ordered partitions, which it can only
-     *  do by remembering the smallest key each one is offering. That remembering is a copy, so a key
-     *  that refuses to be copied cannot be walked in merged order - it can still be written, read by
-     *  its own key, and enumerated in no particular order, none of which hold a key between steps.
+     *  A walk answers in one order across sixteen independently ordered partitions, which it can
+     *  only do by remembering the smallest key each one is offering. That remembering is a copy, so
+     *  a key that refuses to be copied cannot be walked in merged order - it can still be written,
+     *  read by its own key, and enumerated in no particular order, none of which hold a key
+     *  between steps.
      */
     static constexpr bool identifier_survives_a_walk_k = std::is_copy_constructible_v<identifier_t>;
 
     /**
-     *  @brief Which partition owns @p comparable, hashing what it is handed rather than a copy of it.
+     *  @brief Which partition owns @p comparable, hashing what it is handed rather than a copy
+     *      of it.
      *
-     *  A key that is already the identifier is hashed through the reference, so a move-only key reaches
-     *  a partition at all and a heavy one is not duplicated per lookup. A comparable of some other type
-     *  is converted first, since the hasher is only promised to answer for the identifier and a
-     *  differently-typed hash would send a lookup to a partition the key does not live in.
+     *  A key that is already the identifier is hashed through the reference, so a move-only key
+     *  reaches a partition at all and a heavy one is not duplicated per lookup. A comparable of
+     *  some other type is converted first, since the hasher is only promised to answer for the
+     *  identifier and a differently-typed hash would send a lookup to a partition the key does not
+     *  live in.
      */
     template <typename comparable_type_>
     std::size_t bucket_(comparable_type_ const &comparable) const noexcept {
@@ -283,13 +291,14 @@ class partitioned_store {
     /**
      *  @brief Holds every partition for its own lifetime, taking them in ascending index order.
      *
-     *  Order is the whole of the deadlock argument: every caller wants all of them, and every caller
-     *  asks in this same sequence, so two threads cannot each hold what the other is waiting for.
-     *  Acquiring what is available and spinning for the rest has no such argument - two threads that
-     *  win disjoint subsets wait on each other for good, since neither gives back what it holds.
+     *  Order is the whole of the deadlock argument: every caller wants all of them, and every
+     *  caller asks in this same sequence, so two threads cannot each hold what the other is waiting
+     *  for. Acquiring what is available and spinning for the rest has no such argument - two
+     *  threads that win disjoint subsets wait on each other for good, since neither gives back what
+     *  it holds.
      *
      *  @tparam lock_type_ Either @c unique_lock_t or @c shared_lock_t, naming which of the two the
-     *    whole array is taken under.
+     *      whole array is taken under.
      */
     template <typename lock_type_>
     class every_part_lock {
@@ -316,7 +325,8 @@ class partitioned_store {
     };
 
     /**
-     *  @brief Records that a partition changed, ordered so its new contents are visible with the count.
+     *  @brief Records that a partition changed, ordered so its new contents are visible with
+     *      the count.
      *
      *  A cursor caches one key per partition between steps, so comparing counts tells it which to
      *  re-read without locking all sixteen each time.
@@ -327,7 +337,7 @@ class partitioned_store {
         atomic_ref<epoch_t>(epoch).fetch_add(1, memory_order_release_k);
     }
 
-    /** @brief The count a reader last saw, paired with whatever it read under it. */
+    /** The count a reader last saw, paired with whatever it read under it. */
     static epoch_t epoch_seen_(epoch_t const &epoch) noexcept {
         return atomic_ref<epoch_t>(const_cast<epoch_t &>(epoch)).load(memory_order_acquire_k);
     }
@@ -336,8 +346,8 @@ class partitioned_store {
      *  @brief Holds one partition exclusively, and records that it changed when the write is done.
      *
      *  Taking this rather than the bare mutex is what keeps the write count honest: a writer cannot
-     *  forget to move it, because moving it is part of giving the lock back. A refused write moves it
-     *  too, which costs a reader one re-probe and never costs it a key.
+     *  forget to move it, because moving it is part of giving the lock back. A refused write moves
+     *  it too, which costs a reader one re-probe and never costs it a key.
      */
     class writing_part_lock_t {
         mutex_t &mutex_;
@@ -356,10 +366,11 @@ class partitioned_store {
     /**
      *  @brief Holds exactly the partitions a transaction reached, ascending, until told to let go.
      *
-     *  A commit spanning partitions has to ask all of them whether it may proceed before any of them
-     *  writes, or a refusal from the last one would be reported over writes the first one already
-     *  published. Ascending order is the same deadlock argument @c every_part_lock makes, and holding
-     *  a subset takes nothing from it: a thread only ever waits on an index above everything it holds.
+     *  A commit spanning partitions has to ask all of them whether it may proceed before any of
+     *  them writes, or a refusal from the last one would be reported over writes the first one
+     *  already published. Ascending order is the same deadlock argument @c every_part_lock makes,
+     *  and holding a subset takes nothing from it: a thread only ever waits on an index above
+     *  everything it holds.
      */
     class touched_parts_lock_t {
         mutexes_t *mutexes_;
@@ -377,7 +388,7 @@ class partitioned_store {
         touched_parts_lock_t(touched_parts_lock_t const &) = delete;
         touched_parts_lock_t &operator=(touched_parts_lock_t const &) = delete;
 
-        /** @brief Gives every held partition back early, so the work after a commit runs unlocked. */
+        /** Gives every held partition back early, so the work after a commit runs unlocked. */
         void release() noexcept {
             if (!mutexes_) return;
             for (marked_partition_t held = touched_.first_marked(); held.presence == marked_presence_t::one_marked_k;
@@ -389,15 +400,17 @@ class partitioned_store {
         }
     };
 
-    /** @brief How long an all-partition walk holds the partitions it visits. */
+    /** How long an all-partition walk holds the partitions it visits. */
     enum class locking_policy_t : std::uint8_t {
-        /** @brief One partition is held while it is visited and given back before the next one is taken. */
+
+        /** One partition is held while it is visited and given back before the next one is taken. */
         one_at_a_time_k,
-        /** @brief Every partition is held for the whole walk, so the visits are one write rather than many. */
+
+        /** Every partition is held for the whole walk, so the visits are one write rather than many. */
         all_at_once_k,
     };
 
-    /** @brief Visits every partition index in ascending order, reporting refusals as @p refusal_ says to. */
+    /** Visits every partition index in ascending order, reporting refusals as @p refusal_ says to. */
     template <refusal_policy_t refusal_, typename step_type_>
     static status_t for_all_indices_(step_type_ &&step) noexcept {
         status_t status = success_k;
@@ -411,11 +424,13 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Runs @p callable over every partition, under @p locking_, reporting refusals under @p refusal_.
+     *  @brief Runs @p callable over every partition, under @p locking_, reporting refusals under
+     *      @p refusal_.
      *
-     *  Ascending order either way, blocking. Taking whichever partitions happen to be free and retrying
-     *  the rest reads as politer, but it shares no order with @c every_part_lock, and two all-partition
-     *  operations without a common order are two operations that can wait on each other for good.
+     *  Ascending order either way, blocking. Taking whichever partitions happen to be free and
+     *  retrying the rest reads as politer, but it shares no order with @c every_part_lock, and two
+     *  all-partition operations without a common order are two operations that can wait on each
+     *  other for good.
      */
     template <typename lock_type_, locking_policy_t locking_, refusal_policy_t refusal_, typename partitions_type_,
               typename mutexes_type_, typename callable_type_>
@@ -448,13 +463,14 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Stages @p stage into every partition's publication, then publishes all of them under one stamp.
+     *  @brief Stages @p stage into every partition's publication, then publishes all of them under
+     *      one stamp.
      *
-     *  Every partition is held exclusively from the first staging to the last prune, and the stamp is
-     *  drawn only once all of them staged, so a snapshot either names that stamp and sees the write in
-     *  every partition or does not and sees it in none. A refusal while staging drops what every
-     *  partition filed and publishes nothing. At @c strict_serializable_k the call waits for its own
-     *  publication after releasing the partitions, as a sharded commit does.
+     *  Every partition is held exclusively from the first staging to the last prune, and the stamp
+     *  is drawn only once all of them staged, so a snapshot either names that stamp and sees the
+     *  write in every partition or does not and sees it in none. A refusal while staging drops what
+     *  every partition filed and publishes nothing. At @c strict_serializable_k the call waits for
+     *  its own publication after releasing the partitions, as a sharded commit does.
      */
     template <typename stage_type_>
     [[nodiscard]] status_t publish_every_part_(stage_type_ &&stage) noexcept
@@ -490,20 +506,23 @@ class partitioned_store {
         return published;
     }
 
-    /** @brief Whether a partition still has a key to contribute to a merged walk. */
+    /** Whether a partition still has a key to contribute to a merged walk. */
     enum class front_state_t : std::uint8_t {
-        /** @brief Every key this partition holds has already been handed to the step. */
+
+        /** Every key this partition holds has already been handed to the step. */
         exhausted_k,
-        /** @brief The partition's smallest unvisited key is waiting in the front. */
+
+        /** The partition's smallest unvisited key is waiting in the front. */
         holds_a_key_k,
     };
 
-    /** @brief One key per partition, the smallest each has left to contribute. */
+    /** One key per partition, the smallest each has left to contribute. */
     using fronts_t = std::array<identifier_t, partitions_k>;
-    /** @brief Whether each of those fronts holds anything. */
+
+    /** Whether each of those fronts holds anything. */
     using front_states_t = std::array<front_state_t, partitions_k>;
 
-    /** @brief Which partition's front is the smallest, when any of them still holds one. */
+    /** Which partition's front is the smallest, when any of them still holds one. */
     static marked_partition_t smallest_front_(comparator_t const &comparator, fronts_t const &fronts,
                                               front_states_t const &states) noexcept {
         marked_partition_t smallest;
@@ -520,21 +539,24 @@ class partitioned_store {
     /**
      *  @brief Walks the merged order of every partition, smallest key first, until @p step halts.
      *
-     *  A front per partition, refilled from that partition's own successor once its key is consumed.
-     *  Where the walk begins is @p seed_front's business and nothing else's, which is what lets one
-     *  walk answer a bound, a range and an ordinal without knowing which of them it is serving.
+     *  A front per partition, refilled from that partition's own successor once its key is
+     *  consumed. Where the walk begins is @p seed_front's business and nothing else's, which is
+     *  what lets one walk answer a bound, a range and an ordinal without knowing which of them it
+     *  is serving.
      *
      *  Static, so a transaction drives it over its own array of partition transactions rather than
      *  needing a second copy written against those.
      *
-     *  @param[in] seed_front Fills one partition's front with the first key that partition contributes.
+     *  @param[in] seed_front Fills one partition's front with the first key that
+     *      partition contributes.
      *  @param[in] step Receives the partition index and the key, and says whether to carry on.
-     *  @return Success, or the first refusal a refill met - a validated read has to be recorded before
-     *    it can be validated, and recording allocates, so a walk can fail without the keys running out.
-     *    What @p seed_front and @p step could not do is theirs to report; neither answers here.
+     *  @return Success, or the first refusal a refill met - a validated read has to be recorded
+     *      before it can be validated, and recording allocates, so a walk can fail without the keys
+     *      running out. What @p seed_front and @p step could not do is theirs to report; neither
+     *      answers here.
      *  @warning Every partition must already be held for the length of the walk, and @p step runs
-     *    under all of them - so a step reaching back into this store deadlocks against a mutex that
-     *    does not recurse.
+     *      under all of them - so a step reaching back into this store deadlocks against a mutex
+     *      that does not recurse.
      */
     template <typename parts_type_, typename seed_type_, typename step_type_>
     static status_t walk_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
@@ -568,11 +590,12 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Seeds every front with the smallest key its partition holds, for a walk with no lower bound.
+     *  @brief Seeds every front with the smallest key its partition holds, for a walk with no
+     *      lower bound.
      *
-     *  A store that names its smallest member answers straight away. One that does not, but counts its
-     *  members, reaches the same key through its zeroth ordinal - which is why an ordinal walk works at
-     *  all over a core that keeps subtree counts and nothing else.
+     *  A store that names its smallest member answers straight away. One that does not, but counts
+     *  its members, reaches the same key through its zeroth ordinal - which is why an ordinal walk
+     *  works at all over a core that keeps subtree counts and nothing else.
      */
     auto seed_from_the_start_() const noexcept
         requires offers_smallest<inner_store_t> || offers_select<inner_store_t>
@@ -588,11 +611,12 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Hands @p callback_found the first key of the merged order, wherever @p seed_front starts it.
+     *  @brief Hands @p callback_found the first key of the merged order, wherever @p seed_front
+     *      starts it.
      *
-     *  Every partition is taken once, for the one answer, so the bound is read against a single moment
-     *  rather than against sixteen. Under the held locks the winning key cannot be erased between being
-     *  chosen and being read, which is what leaves this with no retry to make.
+     *  Every partition is taken once, for the one answer, so the bound is read against a single
+     *  moment rather than against sixteen. Under the held locks the winning key cannot be erased
+     *  between being chosen and being read, which is what leaves this with no retry to make.
      */
     template <typename parts_type_, typename mutexes_type_, typename seed_type_, typename callback_found_type_,
               typename callback_missing_type_>
@@ -617,17 +641,17 @@ class partitioned_store {
     /**
      *  @brief A resumable walk of the merged order that holds no lock between its steps.
      *
-     *  The position is held by value rather than as an iterator, which is what makes erasing the key
-     *  the cursor stands on harmless: the next step asks for the first key at or after it and is
-     *  answered by the successor. Each partition's smallest unvisited key is cached beside the write
-     *  count it was read under, so a step re-probes only the partitions somebody has written since -
-     *  none of them, in a store nobody is writing, which is where the cost goes from sixteen probes
-     *  per element to one.
+     *  The position is held by value rather than as an iterator, which is what makes erasing the
+     *  key the cursor stands on harmless: the next step asks for the first key at or after it and
+     *  is answered by the successor. Each partition's smallest unvisited key is cached beside the
+     *  write count it was read under, so a step re-probes only the partitions somebody has written
+     *  since - none of them, in a store nobody is writing, which is where the cost goes from
+     *  sixteen probes per element to one.
      *
      *  What it promises: no key is handed over twice, nothing fails, and every key present for the
-     *  whole walk is handed over exactly once. A key inserted ahead of the cursor is seen, because the
-     *  insert moved the count its partition's front was cached under. A key inserted behind it is
-     *  missed, which is what walking without holding the store means.
+     *  whole walk is handed over exactly once. A key inserted ahead of the cursor is seen, because
+     *  the insert moved the count its partition's front was cached under. A key inserted behind it
+     *  is missed, which is what walking without holding the store means.
      */
     class ordered_cursor_t {
         static_assert(identifier_survives_a_walk_k,
@@ -636,42 +660,44 @@ class partitioned_store {
         friend class partitioned_store;
 
         partitioned_store const *store_ {nullptr};
-        /** @brief Each partition's smallest key not yet handed over. */
+
+        /** Each partition's smallest key not yet handed over. */
         fronts_t fronts_;
-        /** @brief Whether each of those fronts holds anything. */
+
+        /** Whether each of those fronts holds anything. */
         front_states_t states_ {};
-        /** @brief The write count each front was read under, which is what dates it. */
+
+        /** The write count each front was read under, which is what dates it. */
         epochs_t seen_epochs_ {};
-        /** @brief The bound every step is taken from - the one given, then the last key handed over. */
+
+        /** The bound every step is taken from - the one given, then the last key handed over. */
         identifier_t position_;
-        /** @brief Where the next step begins, which is not the same question before and after the first. */
+
+        /** Where the next step begins, which is not the same question before and after the first. */
         cursor_seed_t seed_ {cursor_seed_t::the_smallest_k};
-        /** @brief The key the walk stops before, meaningful only under @c up_to_the_bound_k. */
+
+        /** The key the walk stops before, meaningful only under @c up_to_the_bound_k. */
         identifier_t bound_;
         cursor_limit_t limit_ {cursor_limit_t::the_whole_keyspace_k};
-        /** @brief Latched by the step that reaches the bound, so later steps need not re-probe to say so. */
+
+        /** Latched by the step that reaches the bound, so later steps need not re-probe to say so. */
         cursor_reach_t reach_ {cursor_reach_t::walking_k};
 
-        /**
-         *  @brief Begins at the least key of the merged order.
-         *    Every front settles here rather than on the first step, so @c exhausted answers about the
-         *    store rather than about whether anybody has asked yet.
-         */
+        /** Begins at the least key of the merged order. Every front settles here rather than on the first step, so
+         *  @c exhausted answers about the store rather than about whether anybody has asked yet. */
         explicit ordered_cursor_t(partitioned_store const &store) noexcept
             : store_(&store), seed_(cursor_seed_t::the_smallest_k) {
             seed_every_front_();
         }
 
-        /**
-         *  @brief Begins at the first member ordered at or after @p from.
-         *    The bound is taken before the fronts settle, because each is read against it.
-         */
+        /** Begins at the first member ordered at or after @p from. The bound is taken before the fronts settle,
+         *  because each is read against it. */
         explicit ordered_cursor_t(partitioned_store const &store, identifier_t from) noexcept
             : store_(&store), position_(std::move(from)), seed_(cursor_seed_t::the_given_bound_k) {
             seed_every_front_();
         }
 
-        /** @brief Reads one partition's front at the seed this cursor is standing on. */
+        /** Reads one partition's front at the seed this cursor is standing on. */
         void seed_one_front_(std::size_t partition_index, epoch_t written) noexcept {
             states_[partition_index] = front_state_t::exhausted_k;
             shared_lock_t _ {store_->mutexes_[partition_index]};
@@ -694,17 +720,18 @@ class partitioned_store {
             seen_epochs_[partition_index] = written;
         }
 
-        /** @brief Reads every partition's front, which is how a cursor starts knowing anything. */
+        /** Reads every partition's front, which is how a cursor starts knowing anything. */
         void seed_every_front_() noexcept {
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
                 seed_one_front_(partition_index, epoch_seen_(store_->epochs_[partition_index]));
         }
 
         /**
-         *  @brief Re-reads the front of every partition written since this cursor last looked at it.
+         *  @brief Re-reads the front of every partition written since this cursor last looked
+         *      at it.
          *
-         *  A front is only stale if somebody wrote its partition, and the constructor has already read
-         *  every one of them - so an unchanged count means the cached key still stands.
+         *  A front is only stale if somebody wrote its partition, and the constructor has already
+         *  read every one of them - so an unchanged count means the cached key still stands.
          */
         void refresh_stale_fronts_() noexcept {
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
@@ -717,7 +744,7 @@ class partitioned_store {
       public:
         ordered_cursor_t() noexcept = default;
 
-        /** @brief Whether every partition is spent, so the walk has nothing left to hand over. */
+        /** Whether every partition is spent, so the walk has nothing left to hand over. */
         [[nodiscard]] bool exhausted() const noexcept {
             if (reach_ == cursor_reach_t::spent_k) return true;
             for (front_state_t state : states_)
@@ -726,11 +753,12 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Hands @p callback_found the next key of the merged order, or reports the walk is over.
+         *  @brief Hands @p callback_found the next key of the merged order, or reports the walk
+         *      is over.
          *
          *  One partition is held while its key is read, and none between calls - so a walk may be
-         *  suspended anywhere without holding the store, but @p callback_found itself runs under that
-         *  one partition's lock and must not write to it.
+         *  suspended anywhere without holding the store, but @p callback_found itself runs under
+         *  that one partition's lock and must not write to it.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         void next(callback_found_type_ &&callback_found, callback_missing_type_ &&callback_missing = {}) noexcept {
@@ -790,7 +818,7 @@ class partitioned_store {
         }
     };
 
-    /** @brief A walk of every member in ascending order, resumable and holding no lock between steps. */
+    /** A walk of every member in ascending order, resumable and holding no lock between steps. */
     [[nodiscard]] ordered_cursor_t cursor() const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
@@ -798,14 +826,14 @@ class partitioned_store {
         return ordered_cursor_t {*this};
     }
 
-    /** @brief The same walk, begun at the first member ordered at or after @p from. */
+    /** The same walk, begun at the first member ordered at or after @p from. */
     [[nodiscard]] ordered_cursor_t cursor_from(identifier_t from) const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t>
     {
         return ordered_cursor_t {*this, std::move(from)};
     }
 
-    /** @brief The same walk, stopping before @p upper. */
+    /** The same walk, stopping before @p upper. */
     [[nodiscard]] ordered_cursor_t cursor_up_to(identifier_t upper) const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
@@ -816,7 +844,7 @@ class partitioned_store {
         return walking;
     }
 
-    /** @brief The same walk over [ @p from, @p upper ). */
+    /** The same walk over [ @p from, @p upper ). */
     [[nodiscard]] ordered_cursor_t cursor_range(identifier_t from, identifier_t upper) const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t>
     {
@@ -827,7 +855,7 @@ class partitioned_store {
     }
 
   private:
-    /** @brief Every partition read at one stamp, each as a reader built on the spot and registering nothing. */
+    /** Every partition read at one stamp, each as a reader built on the spot and registering nothing. */
     struct partitions_at_t {
         partitions_t const &partitions;
         generation_t stamp;
@@ -839,34 +867,39 @@ class partitioned_store {
 
   public:
     /**
-     *  @brief A read-only view of every partition pinned at one stamp, which records nothing and settles nothing.
+     *  @brief A read-only view of every partition pinned at one stamp, which records nothing and
+     *      settles nothing.
      *
-     *  One claim on the shared clock pins the stamp for every partition, and each read asks the partition
-     *  owning its key at that stamp. No read writes to the reader, so any number of threads may read
-     *  through one reader at once with no lock of their own; the partition locks every read already takes
-     *  shared are what keep a writer out of the partition being read.
+     *  One claim on the shared clock pins the stamp for every partition, and each read asks the
+     *  partition owning its key at that stamp. No read writes to the reader, so any number of
+     *  threads may read through one reader at once with no lock of their own; the partition locks
+     *  every read already takes shared are what keep a writer out of the partition being read.
      *
      *  @section partitioned_store_reader_costs Costs
      *
-     *  Opening and closing take the clock's mutex once each. A point read takes one partition's lock
-     *  shared, which uncontended is one compare-exchange to acquire and one subtraction to release; a
-     *  range read takes every partition shared, ascending, for the length of its walk, as @c range does.
-     *  Neither touches the clock, marks a partition, allocates or validates anything.
+     *  Opening and closing take the clock's mutex once each. A point read takes one partition's
+     *  lock shared, which uncontended is one compare-exchange to acquire and one subtraction to
+     *  release; a range read takes every partition shared, ascending, for the length of its walk,
+     *  as @c range does. Neither touches the clock, marks a partition, allocates or
+     *  validates anything.
      *
      *  The claim holds the low-water mark at or below the stamp, so no partition prunes a version
-     *  published after it while the reader is open: retention grows by one entry per commit to a key for
-     *  as long as the reader lives, and commits pay for it in longer version runs to step over and
-     *  validate. Closing gives nothing back at once - a key's tail goes on the next commit touching it,
-     *  or on @c vacuum. A transaction adopting the stamp takes a claim of its own beside this one.
+     *  published after it while the reader is open: retention grows by one entry per commit to a
+     *  key for as long as the reader lives, and commits pay for it in longer version runs to step
+     *  over and validate. Closing gives nothing back at once - a key's tail goes on the next commit
+     *  touching it, or on @c vacuum. A transaction adopting the stamp takes a claim of its own
+     *  beside this one.
      */
     class reader_t {
         friend class partitioned_store;
 
-        /** @brief The shard set every read is answered from, null in a moved-from reader. */
+        /** The shard set every read is answered from, null in a moved-from reader. */
         partitioned_store const *store_ {nullptr};
-        /** @brief The one claim pinning the stamp for every partition. */
+
+        /** The one claim pinning the stamp for every partition. */
         mutable typename clock_t::snapshot_lease_t lease_ {};
-        /** @brief The stamp every read is answered at. */
+
+        /** The stamp every read is answered at. */
         generation_t snapshot_ {0};
 
         explicit reader_t(partitioned_store const &store) noexcept
@@ -888,10 +921,10 @@ class partitioned_store {
         reader_t(reader_t const &) = delete;
         reader_t &operator=(reader_t const &) = delete;
 
-        /** @brief The stamp every read through this reader is answered at. */
+        /** The stamp every read through this reader is answered at. */
         [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
 
-        /** @brief Finds the member equal to @p comparable at this reader's stamp, under its partition's shared lock. */
+        /** Finds the member equal to @p comparable at this reader's stamp, under its partition's shared lock. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -904,9 +937,11 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Hands @p callback every member of [ @p lower, @p upper ) at this reader's stamp, in merged order.
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ) at this reader's stamp,
+         *      in merged order.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
-         *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
+         *  @warning Every partition is held shared for the walk, and @p callback runs under all
+         *      of them.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -937,60 +972,57 @@ class partitioned_store {
 
     class transaction_t {
         friend class partitioned_store;
-        /**
-         *  @brief The shard set this transaction reaches through, held by pointer rather than reference.
-         *    A reference member deletes the defaulted move assignment, and a transaction that moves but
-         *    cannot be move-assigned is one no container can hold.
-         */
+
+        /** The shard set this transaction reaches through, held by pointer rather than reference. A reference member
+         *  deletes the defaulted move assignment, and a transaction that moves but cannot be move-assigned is one no
+         *  container can hold. */
         partitioned_store *store_;
-        /**
-         *  @brief One inner transaction per partition, opened on one snapshot and generation where
-         *    @c offers_shared_clock<inner_store_t, clock_t>, and otherwise each under its own lock at its own moment.
-         */
+
+        /** One inner transaction per partition, opened on one snapshot and generation where
+         *  @c offers_shared_clock<inner_store_t, clock_t>, and otherwise each under its own lock at its own moment. */
         partition_transactions_t partitions_;
+
         /**
          *  @brief Which partitions this transaction reached, by write or by read, so an untouched
-         *    one is never locked.
+         *      one is never locked.
          *
-         *  A partition read but not written is marked too, since a part nothing marked is a part the
-         *  commit never asks. One bit each, in as many words as @c partitions_k needs, and the walks
-         *  below visit only the bits that are set - a transaction touching two of a hundred pays for
-         *  two. @c mutable because a read marks it and a read is @c const.
+         *  A partition read but not written is marked too, since a part nothing marked is a part
+         *  the commit never asks. One bit each, in as many words as @c partitions_k needs, and the
+         *  walks below visit only the bits that are set - a transaction touching two of a hundred
+         *  pays for two. @c mutable because a read marks it and a read is @c const.
          */
         mutable touched_partitions_t touched_ {};
 
         /**
          *  @brief Whether this transaction's writes are sitting in their partitions, invisible.
          *
-         *  Carried here rather than read off a partition, because a partition this transaction never
-         *  reached is still @c pending_k - so a write landing in one after @c stage would be taken,
-         *  and the commit would then meet a marked partition that was never staged.
+         *  Carried here rather than read off a partition, because a partition this transaction
+         *  never reached is still @c pending_k - so a write landing in one after @c stage would be
+         *  taken, and the commit would then meet a marked partition that was never staged.
          */
         staging_t staging_ {staging_t::pending_k};
 
-        /**
-         *  @brief The one claim on the snapshot every partition of this transaction reads at.
-         *    A part registers nothing of its own, so the reader census counts this transaction once
-         *    rather than once per partition, and the low-water mark answers for all of them together.
-         */
+        /** The one claim on the snapshot every partition of this transaction reads at. A part registers nothing of
+         *  its own, so the reader census counts this transaction once rather than once per partition, and the
+         *  low-water mark answers for all of them together. */
         ST_NO_UNIQUE_ADDRESS_ mutable typename clock_t::snapshot_lease_t lease_ {};
 
-        /**
-         *  @brief The stamp this transaction's own commit published, which it may not read below.
-         *    Zero whenever this transaction is already reading at or above whatever it committed.
-         */
+        /** The stamp this transaction's own commit published, which it may not read below. Zero whenever this
+         *  transaction is already reading at or above whatever it committed. */
         mutable generation_t unsettled_stamp_ {0};
 
-        /** @brief The stamp this transaction's last successful commit published under, zero before its first. */
+        /** The stamp this transaction's last successful commit published under, zero before its first. */
         generation_t committed_stamp_ {0};
         static_assert(std::is_nothrow_move_constructible<inner_transaction_t>());
 
         /**
-         *  @brief Takes every staged write back out of the partitions it sits in, each under its own lock.
+         *  @brief Takes every staged write back out of the partitions it sits in, each under its
+         *      own lock.
          *
-         *  A staged version lives in a partition's core, which every other thread reaches under that
-         *  partition's lock, so dropping it has to take the lock too - and a partition transaction's own
-         *  destructor runs bare. A pending transaction holds nothing in any partition and returns at once.
+         *  A staged version lives in a partition's core, which every other thread reaches under
+         *  that partition's lock, so dropping it has to take the lock too - and a partition
+         *  transaction's own destructor runs bare. A pending transaction holds nothing in any
+         *  partition and returns at once.
          */
         void unwind_() noexcept {
             if (!store_ || staging_ != staging_t::staged_k) return;
@@ -1007,13 +1039,14 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Moves onto the snapshot this transaction's own commit created, once that commit is whole.
+         *  @brief Moves onto the snapshot this transaction's own commit created, once that commit
+         *      is whole.
          *
          *  Deferred rather than done inside the commit, because the watermark is held back by every
          *  commit drawn earlier and still writing itself out: waiting there would make each commit
-         *  wait for the slowest commit overlapping it, and a transaction that commits and goes away -
-         *  which is nearly every transaction - never wanted the new snapshot at all. So the wait is
-         *  paid by the next operation, and only when there is one.
+         *  wait for the slowest commit overlapping it, and a transaction that commits and goes away
+         *  - which is nearly every transaction - never wanted the new snapshot at all. So the wait
+         *    is paid by the next operation, and only when there is one.
          */
         void settle_snapshot_() const noexcept {
             if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
@@ -1030,19 +1063,23 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Walks the merged order of every partition's cursor, handing @p callback each member
-         *    @p within admits, then records in every partition only the window it handed over.
+         *  @brief Walks the merged order of every partition's cursor, handing @p callback each
+         *      member @p within admits, then records in every partition only the window it
+         *      handed over.
          *
-         *  The cursors look ahead in every partition to learn which key comes next, and record nothing
-         *  while they do. A walk the callback stops therefore records, from @c serializable_k up, the
-         *  window from its start to the key it stopped on in every partition and that key in its own, so
-         *  a commit past the stopping point refuses nothing; a walk that runs out records the whole window.
+         *  The cursors look ahead in every partition to learn which key comes next, and record
+         *  nothing while they do. A walk the callback stops therefore records, from
+         *  @c serializable_k up, the window from its start to the key it stopped on in every
+         *  partition and that key in its own, so a commit past the stopping point refuses nothing;
+         *  a walk that runs out records the whole window.
          *
          *  @param[in] seed Opens one partition's cursor where the window starts.
          *  @param[in] within Whether a key is still inside the window.
-         *  @param[in] record Records one partition's window, handed the key the walk stopped on, or null
-         *    when it ran out. Never called below @c serializable_k, where there is no read set to grow.
-         *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
+         *  @param[in] record Records one partition's window, handed the key the walk stopped on, or
+         *      null when it ran out. Never called below @c serializable_k, where there is no read
+         *      set to grow.
+         *  @warning Every partition is held shared for the walk, and @p callback runs under all
+         *      of them.
          */
         template <typename seed_type_, typename within_type_, typename record_type_, typename callback_type_>
         [[nodiscard]] status_t walk_window_(seed_type_ &&seed, within_type_ &&within,
@@ -1098,8 +1135,8 @@ class partitioned_store {
         /**
          *  @brief Marks every partition, which is what a read seeding all of them has reached.
          *
-         *  An ordered walk seeds each partition and files a read in each, so a commit asking only the
-         *  partitions a write happened to touch would validate none of them.
+         *  An ordered walk seeds each partition and files a read in each, so a commit asking only
+         *  the partitions a write happened to touch would validate none of them.
          */
         void mark_every_part_() const noexcept {
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
@@ -1109,10 +1146,10 @@ class partitioned_store {
         /**
          *  @brief Runs @p callable over every partition, in ascending order, and never stops early.
          *
-         *  Stopping on the first refusal would leave the partitions after it untouched while the ones
-         *  before it had already acted, and nothing would record which side each fell on. The last
-         *  refusal is reported. Marks each partition as it goes, since @c stage and @c commit walk
-         *  only the marked ones and would otherwise never publish what this staged.
+         *  Stopping on the first refusal would leave the partitions after it untouched while the
+         *  ones before it had already acted, and nothing would record which side each fell on. The
+         *  last refusal is reported. Marks each partition as it goes, since @c stage and @c commit
+         *  walk only the marked ones and would otherwise never publish what this staged.
          */
         template <typename callable_type_>
         status_t for_parts_(callable_type_ &&callable) noexcept {
@@ -1126,7 +1163,7 @@ class partitioned_store {
             return status;
         }
 
-        /** @brief The same walk, restricted to the partitions this transaction reached. */
+        /** The same walk, restricted to the partitions this transaction reached. */
         template <typename callable_type_>
         status_t for_touched_parts_(callable_type_ &&callable) noexcept {
             status_t status = success_k;
@@ -1142,10 +1179,10 @@ class partitioned_store {
         /**
          *  @brief Publishes every reached partition, having first learned that all of them may.
          *
-         *  The engines behind this path stamp their own versions, so there is no shared clock and no
-         *  one stamp to draw - but a partition can still refuse after its neighbours have written,
-         *  because each re-checks its watches as it commits. Asking all of them while holding all of
-         *  them is what keeps a refusal honest.
+         *  The engines behind this path stamp their own versions, so there is no shared clock and
+         *  no one stamp to draw - but a partition can still refuse after its neighbours have
+         *  written, because each re-checks its watches as it commits. Asking all of them while
+         *  holding all of them is what keeps a refusal honest.
          */
         status_t commit_together_() noexcept
             requires(!offers_shared_clock<inner_store_t, clock_t> && inner_transaction_splits_commit_k)
@@ -1169,18 +1206,18 @@ class partitioned_store {
          *  @brief Publishes every reached partition under one stamp drawn for the whole commit.
          *
          *  The stamp is drawn before the first partition is written and the watermark is only moved
-         *  once the last one has been, so a reader either names the stamp and sees the whole commit,
-         *  or does not name it and sees none of it - whatever order the partitions were written in,
-         *  and however long the walk took. Where this transaction itself reads follows in
-         *  @c settle_snapshot_, not here.
+         *  once the last one has been, so a reader either names the stamp and sees the whole
+         *  commit, or does not name it and sees none of it - whatever order the partitions were
+         *  written in, and however long the walk took. Where this transaction itself reads follows
+         *  in @c settle_snapshot_, not here.
          *
          *  Every reached partition is asked whether it may still commit before any of them writes,
          *  and all of them are held while it happens. Asking and writing one partition at a time
-         *  cannot report a refusal honestly: a partition refusing after its neighbours have published
-         *  would leave the caller retrying a transaction half of which already landed. So the walk
-         *  either refuses having written nothing, and the transaction stays staged and retryable, or
-         *  it publishes every partition. Only the reached partitions are held, ascending, which is
-         *  the order every other multi-partition walk here takes them in.
+         *  cannot report a refusal honestly: a partition refusing after its neighbours have
+         *  published would leave the caller retrying a transaction half of which already landed. So
+         *  the walk either refuses having written nothing, and the transaction stays staged and
+         *  retryable, or it publishes every partition. Only the reached partitions are held,
+         *  ascending, which is the order every other multi-partition walk here takes them in.
          */
         status_t commit_under_one_stamp_() noexcept
             requires offers_shared_clock<inner_store_t, clock_t>
@@ -1231,14 +1268,14 @@ class partitioned_store {
                       typename clock_t::snapshot_lease_t &&lease = {}) noexcept
             : store_(&db), partitions_(std::move(partition_transactions)), lease_(std::move(lease)) {}
 
-        /** @brief Takes over @p other entirely, leaving it holding nothing staged and reaching no store. */
+        /** Takes over @p other entirely, leaving it holding nothing staged and reaching no store. */
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), partitions_(std::move(other.partitions_)),
               touched_(other.touched_), staging_(std::exchange(other.staging_, staging_t::pending_k)),
               lease_(std::move(other.lease_)), unsettled_stamp_(other.unsettled_stamp_),
               committed_stamp_(other.committed_stamp_) {}
 
-        /** @brief Unwinds whatever this transaction staged, under its partition locks, then takes over @p other. */
+        /** Unwinds whatever this transaction staged, under its partition locks, then takes over @p other. */
         transaction_t &operator=(transaction_t &&other) noexcept {
             if (this == &other) return *this;
             unwind_();
@@ -1252,19 +1289,20 @@ class partitioned_store {
             return *this;
         }
 
-        /** @brief Unwinds whatever this transaction staged, under its partition locks. */
+        /** Unwinds whatever this transaction staged, under its partition locks. */
         ~transaction_t() noexcept { unwind_(); }
 
         transaction_t(transaction_t const &) = delete;
         transaction_t &operator=(transaction_t const &) = delete;
 
         /**
-         *  @brief The stamp this transaction's last successful commit published under, zero before its first.
+         *  @brief The stamp this transaction's last successful commit published under, zero before
+         *      its first.
          *
-         *  Drawn once every reached partition has validated under its lock, so a commit that returned
-         *  before another opened carries the smaller stamp, and two commits reaching a common partition
-         *  are stamped in the order they took it. The watermark publishes stamps in the same order, so a
-         *  caller may number commits by this.
+         *  Drawn once every reached partition has validated under its lock, so a commit that
+         *  returned before another opened carries the smaller stamp, and two commits reaching a
+         *  common partition are stamped in the order they took it. The watermark publishes stamps
+         *  in the same order, so a caller may number commits by this.
          */
         [[nodiscard]] generation_t commit_stamp() const noexcept
             requires offers_shared_clock<inner_store_t, clock_t>
@@ -1292,12 +1330,15 @@ class partitioned_store {
                 return status;
             }
         }
+
         /**
-         *  @brief Pulls every reached partition's staged writes back, leaving the transaction retryable.
+         *  @brief Pulls every reached partition's staged writes back, leaving the
+         *      transaction retryable.
          *
-         *  The marks say which partitions this transaction reached, not what it currently has staged,
-         *  so they survive - an inner rollback keeps its changes for the retry, and clearing the marks
-         *  would leave the next @c stage and @c commit walking nothing and reporting success.
+         *  The marks say which partitions this transaction reached, not what it currently has
+         *  staged, so they survive - an inner rollback keeps its changes for the retry, and
+         *  clearing the marks would leave the next @c stage and @c commit walking nothing and
+         *  reporting success.
          */
         [[nodiscard]] status_t rollback() noexcept {
             settle_snapshot_();
@@ -1310,11 +1351,12 @@ class partitioned_store {
 
         /**
          *  @brief Stages every reached partition, undoing the ones that already landed if a later
-         *    partition refuses.
+         *      partition refuses.
          *
-         *  A partial stage is never observable. Partitions are taken ascending, so a group racing for
-         *  the same set meets this one in a consistent order; the undo walks the staged prefix and
-         *  rolls it back rather than resetting it, which leaves the caller's writes intact for a retry.
+         *  A partial stage is never observable. Partitions are taken ascending, so a group racing
+         *  for the same set meets this one in a consistent order; the undo walks the staged prefix
+         *  and rolls it back rather than resetting it, which leaves the caller's writes intact for
+         *  a retry.
          */
         [[nodiscard]] status_t stage() noexcept {
             settle_snapshot_();
@@ -1339,13 +1381,14 @@ class partitioned_store {
             }
             return status;
         }
+
         /**
          *  @brief Publishes every reached partition, or none of them.
          *
-         *  Both paths ask every reached partition whether it may commit before any of them writes, so
-         *  a refusal is reported over nothing and the transaction stays staged and retryable. They
-         *  differ only in where the stamp comes from: one clock shared across the partitions, or each
-         *  engine stamping its own versions.
+         *  Both paths ask every reached partition whether it may commit before any of them writes,
+         *  so a refusal is reported over nothing and the transaction stays staged and retryable.
+         *  They differ only in where the stamp comes from: one clock shared across the partitions,
+         *  or each engine stamping its own versions.
          */
         [[nodiscard]] status_t commit() noexcept {
             settle_snapshot_();
@@ -1378,7 +1421,7 @@ class partitioned_store {
                                                      std::forward<callback_missing_type_>(callback_missing));
         }
 
-        /** @brief Copies out the member equal to @p comparable, including this transaction's writes. */
+        /** Copies out the member equal to @p comparable, including this transaction's writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
@@ -1389,7 +1432,7 @@ class partitioned_store {
             return result;
         }
 
-        /** @brief Whether @p comparable is there, including this transaction's own writes. */
+        /** Whether @p comparable is there, including this transaction's own writes. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             settle_snapshot_();
@@ -1399,10 +1442,8 @@ class partitioned_store {
             return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
         }
 
-        /**
-         *  @brief Finds the member equal to @p comparable and records what it saw into the read set.
-         *    The watching counterpart to @c find, and the one that can fail, because a read set is memory.
-         */
+        /** Finds the member equal to @p comparable and records what it saw into the read set. The watching
+         *  counterpart to @c find, and the one that can fail, because a read set is memory. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1416,7 +1457,7 @@ class partitioned_store {
                                                                std::forward<callback_missing_type_>(callback_missing));
         }
 
-        /** @brief The first member this transaction reads at or after @p comparable, from any partition. */
+        /** The first member this transaction reads at or after @p comparable, from any partition. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1437,7 +1478,7 @@ class partitioned_store {
             return first_failure(seeded, merged);
         }
 
-        /** @brief The first member this transaction reads strictly after @p comparable, from any partition. */
+        /** The first member this transaction reads strictly after @p comparable, from any partition. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1497,8 +1538,9 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower end.
-         *    Each partition is seeded from its own smallest, so no caller has to name a layout's floor.
+         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no lower
+         *      end. Each partition is seeded from its own smallest, so no caller has to name a
+         *      layout's floor.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          *  @warning Every partition is held shared for the walk, as @c range holds them.
          */
@@ -1539,8 +1581,8 @@ class partitioned_store {
         /**
          *  @brief Seeds every front with the smallest key its partition's transaction reads.
          *
-         *  The transaction-level twin of @c seed_from_the_start_ , reaching the same key through the
-         *  zeroth ordinal where a partition counts its members but does not name its smallest.
+         *  The transaction-level twin of @c seed_from_the_start_ , reaching the same key through
+         *  the zeroth ordinal where a partition counts its members but does not name its smallest.
          */
         auto seed_transactions_from_the_start_() const noexcept
             requires transaction_offers_smallest<inner_store_t> || transaction_offers_select<inner_store_t>
@@ -1558,8 +1600,8 @@ class partitioned_store {
         /**
          *  @brief The smallest member this transaction reads, which may live in any partition.
          *
-         *  Every partition is held shared for the one answer, so the minimum and the read of it happen
-         *  at the same moment rather than in two probes a writer can slip between.
+         *  Every partition is held shared for the one answer, so the minimum and the read of it
+         *  happen at the same moment rather than in two probes a writer can slip between.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
@@ -1587,8 +1629,8 @@ class partitioned_store {
         /**
          *  @brief The element at zero-based @p ordinal of the order this transaction reads.
          *
-         *  A partition counts only its own ordinals, so the global one is reached by merging rather than
-         *  by descending a subtree count - linear in @p ordinal, not logarithmic in the size.
+         *  A partition counts only its own ordinals, so the global one is reached by merging rather
+         *  than by descending a subtree count - linear in @p ordinal, not logarithmic in the size.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
@@ -1617,8 +1659,8 @@ class partitioned_store {
         /**
          *  @brief How many members this transaction orders before @p comparable.
          *
-         *  Counted through the merged order for the same reason @c select is, and under the same held
-         *  locks, so the count and the order it counts are one moment.
+         *  Counted through the merged order for the same reason @c select is, and under the same
+         *  held locks, so the count and the order it counts are one moment.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -1645,13 +1687,15 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Hands @p callback every member of [ @p lower, @p upper ) this transaction reads, in order.
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ) this transaction reads,
+         *      in order.
          *
-         *  Merged across the partitions rather than concatenated, so a transactional scan answers in the
-         *  order an ordered container promises.
+         *  Merged across the partitions rather than concatenated, so a transactional scan answers
+         *  in the order an ordered container promises.
          *
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
-         *  @warning Every partition is held shared for the walk, and @p callback runs under all of them.
+         *  @warning Every partition is held shared for the walk, and @p callback runs under all
+         *      of them.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1696,10 +1740,8 @@ class partitioned_store {
             return partitions_[partition_index].upsert(std::move(element));
         }
 
-        /**
-         *  @brief Stages an erase, reporting @c key_not_found_k when this transaction reads no such key.
-         *    The owning partition is held shared, because the staging now reads before it writes.
-         */
+        /** Stages an erase, reporting @c key_not_found_k when this transaction reads no such key. The owning
+         *  partition is held shared, because the staging now reads before it writes. */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         [[nodiscard]] status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
                                      callback_missing_type_ &&callback_missing = {}) noexcept {
@@ -1715,10 +1757,10 @@ class partitioned_store {
         /**
          *  @brief Stages @p element only if its key is free, refusing rather than writing over it.
          *
-         *  One key lives in one partition, so the refusal is decided by the one partition that owns it
-         *  and carries the inner store's promise whole - unlike a walk crossing partitions. The lock is
-         *  taken, unlike @c upsert: a strict insert reads its partition to learn whether the key is
-         *  already there.
+         *  One key lives in one partition, so the refusal is decided by the one partition that owns
+         *  it and carries the inner store's promise whole - unlike a walk crossing partitions. The
+         *  lock is taken, unlike @c upsert: a strict insert reads its partition to learn whether
+         *  the key is already there.
          */
         [[nodiscard]] status_t insert(value_t &&element) noexcept
             requires transaction_offers_insert<inner_store_t>
@@ -1734,7 +1776,8 @@ class partitioned_store {
         /**
          *  @brief Stages @p element only if its key is free, and says which branch was taken.
          *  @param[in] callback_inserted Receives the element once staged.
-         *  @param[in] callback_existing Receives the element already under the key, which refused the insert.
+         *  @param[in] callback_existing Receives the element already under the key, which refused
+         *      the insert.
          */
         template <typename callback_inserted_type_, typename callback_existing_type_>
         [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
@@ -1751,7 +1794,7 @@ class partitioned_store {
                                                        std::forward<callback_existing_type_>(callback_existing));
         }
 
-        /** @brief Stages @p element only if its key is already taken, refusing to create one. */
+        /** Stages @p element only if its key is already taken, refusing to create one. */
         [[nodiscard]] status_t update(value_t &&element) noexcept
             requires transaction_offers_update<inner_store_t>
         {
@@ -1763,7 +1806,7 @@ class partitioned_store {
             return partitions_[partition_index].update(std::move(element));
         }
 
-        /** @brief Stages @p element only if its key is free, leaving an incumbent untouched. */
+        /** Stages @p element only if its key is free, leaving an incumbent untouched. */
         [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept
             requires transaction_offers_insert_if_missing<inner_store_t>
         {
@@ -1775,7 +1818,7 @@ class partitioned_store {
             return partitions_[partition_index].insert_if_missing(std::move(element));
         }
 
-        /** @brief Hands @p callback every member equal to @p comparable, which one partition owns outright. */
+        /** Hands @p callback every member equal to @p comparable, which one partition owns outright. */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
             requires transaction_offers_equal_range<inner_store_t>
@@ -1790,7 +1833,7 @@ class partitioned_store {
 
 #pragma region Transaction Range Operations
 
-        /** @brief How many members equal @p comparable, which one partition alone can answer. */
+        /** How many members equal @p comparable, which one partition alone can answer. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept
             requires transaction_offers_count<inner_store_t>
@@ -1805,8 +1848,8 @@ class partitioned_store {
         /**
          *  @brief Copies out the first member at or after @p comparable in the merged order.
          *
-         *  Answered through this transaction's own bound rather than one partition's, since the smallest
-         *  successor may live in any of them.
+         *  Answered through this transaction's own bound rather than one partition's, since the
+         *  smallest successor may live in any of them.
          */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
@@ -1820,7 +1863,7 @@ class partitioned_store {
             return result;
         }
 
-        /** @brief Copies out the first member after @p comparable in the merged order. */
+        /** Copies out the first member after @p comparable in the merged order. */
         template <typename comparable_type_ = identifier_t>
         [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
             requires transaction_offers_lower_bound<inner_store_t> && transaction_offers_upper_bound<inner_store_t>
@@ -1834,10 +1877,11 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Stages a tombstone for every member in [ @p lower, @p upper ), in every partition.
+         *  @brief Stages a tombstone for every member in [ @p lower, @p upper ), in
+         *      every partition.
          *
-         *  The window spans the whole keyspace and a key's partition is its hash, so every partition is
-         *  asked. Each answers for its own share, and the union is the window.
+         *  The window spans the whole keyspace and a key's partition is its hash, so every
+         *  partition is asked. Each answers for its own share, and the union is the window.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1850,7 +1894,7 @@ class partitioned_store {
                 [&](inner_transaction_t &part) noexcept { return part.erase_range(lower, upper, callback); });
         }
 
-        /** @brief Stages a tombstone for every member at or after @p lower, in every partition. */
+        /** Stages a tombstone for every member at or after @p lower, in every partition. */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires transaction_offers_erase_from<inner_store_t>
@@ -1860,7 +1904,7 @@ class partitioned_store {
             return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_from(lower, callback); });
         }
 
-        /** @brief Stages a tombstone for every member before @p upper, in every partition. */
+        /** Stages a tombstone for every member before @p upper, in every partition. */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires transaction_offers_erase_up_to<inner_store_t>
@@ -1870,11 +1914,9 @@ class partitioned_store {
             return for_parts_([&](inner_transaction_t &part) noexcept { return part.erase_up_to(upper, callback); });
         }
 
-        /**
-         *  @brief Stages a tombstone for every member this transaction reads, in every partition.
-         *    Every partition is attempted whatever its neighbours answered, and the last refusal is
-         *    reported - the same as the bounded erases beside it, and unlike the store's own @c clear.
-         */
+        /** Stages a tombstone for every member this transaction reads, in every partition. Every partition is
+         *  attempted whatever its neighbours answered, and the last refusal is reported - the same as the bounded
+         *  erases beside it, and unlike the store's own @c clear. */
         [[nodiscard]] status_t clear() noexcept
             requires transaction_offers_clear<inner_store_t>
         {
@@ -1883,7 +1925,7 @@ class partitioned_store {
             return for_parts_([](inner_transaction_t &part) noexcept { return part.clear(); });
         }
 
-        /** @brief Hands @p callback each member in [ @p lower, @p upper ) to revise, in every partition. */
+        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, in every partition. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
@@ -1896,7 +1938,7 @@ class partitioned_store {
                 [&](inner_transaction_t &part) noexcept { return part.update_range(lower, upper, callback); });
         }
 
-        /** @brief Draws one member uniformly from [ @p lower, @p upper ) of the merged order. */
+        /** Draws one member uniformly from [ @p lower, @p upper ) of the merged order. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1921,7 +1963,7 @@ class partitioned_store {
             });
         }
 
-        /** @brief Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
+        /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
         [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1943,8 +1985,8 @@ class partitioned_store {
 
         /**
          *  @brief Hands @p callback every member this transaction reads, in no particular order.
-         *  @note A callback answering @c walk_control_t stops the walk where it says to, leaving the
-         *    partitions above the one it stopped in unvisited.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to, leaving
+         *      the partitions above the one it stopped in unvisited.
          */
         template <typename callback_type_ = no_op_t>
         [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
@@ -1968,13 +2010,13 @@ class partitioned_store {
         /**
          *  @brief The generation every part of this transaction was opened on.
          *
-         *  A shard set draws one generation and opens every partition on it, so any part answers for
-         *  all of them; a part keeping its own counter is read from the first partition, which is the
-         *  one every other single-answer query here consults.
+         *  A shard set draws one generation and opens every partition on it, so any part answers
+         *  for all of them; a part keeping its own counter is read from the first partition, which
+         *  is the one every other single-answer query here consults.
          */
         [[nodiscard]] generation_t generation() const noexcept { return partitions_[0].generation(); }
 
-        /** @brief Sizes every part's watch list, splitting @p size the way the store splits a reserve. */
+        /** Sizes every part's watch list, splitting @p size the way the store splits a reserve. */
         [[nodiscard]] status_t reserve(std::size_t size) noexcept
             requires transaction_offers_reserve<inner_store_t>
         {
@@ -1984,7 +2026,7 @@ class partitioned_store {
             return status;
         }
 
-        /** @brief Whether anything is staged in any part, which is transaction-local and needs no lock. */
+        /** Whether anything is staged in any part, which is transaction-local and needs no lock. */
         [[nodiscard]] bool has_changes() const noexcept
             requires transaction_offers_has_changes<inner_store_t>
         {
@@ -1993,7 +2035,7 @@ class partitioned_store {
             return false;
         }
 
-        /** @brief How many writes are staged across every part, which is transaction-local and needs no lock. */
+        /** How many writes are staged across every part, which is transaction-local and needs no lock. */
         [[nodiscard]] std::size_t changes_count() const noexcept
             requires transaction_offers_changes_count<inner_store_t>
         {
@@ -2005,15 +2047,14 @@ class partitioned_store {
 
   private:
     mutable mutexes_t mutexes_;
-    /** @brief One write count per partition, moved by every exclusive hold of the matching mutex. */
+
+    /** One write count per partition, moved by every exclusive hold of the matching mutex. */
     epochs_t epochs_ {};
     partitions_t partitions_;
 
-    /**
-     *  @brief The one clock every partition draws from, so a stamp means the same thing in each.
-     *    Empty, and free, for a part that keeps no stamps. Mutable because a reader of a const store
-     *    still joins the clock's census, which is bookkeeping rather than the store's contents.
-     */
+    /** The one clock every partition draws from, so a stamp means the same thing in each. Empty, and free, for a
+     *  part that keeps no stamps. Mutable because a reader of a const store still joins the clock's census, which is
+     *  bookkeeping rather than the store's contents. */
     ST_NO_UNIQUE_ADDRESS_ mutable clock_t clock_ {};
 
     // Held rather than default-constructed per call: a hasher or comparator carrying state answers
@@ -2027,6 +2068,7 @@ class partitioned_store {
         : partitions_(std::move(parts)), hasher_(hasher), comparator_(comparator) {
         share_clock_with_parts_();
     }
+
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     partitioned_store &operator=(partitioned_store &&other) noexcept {
         every_part_lock<unique_lock_t> _ {mutexes_};
@@ -2037,24 +2079,25 @@ class partitioned_store {
         return *this;
     }
 
-    /** @brief Points every partition at this store's clock, which is what makes them one snapshot. */
+    /** Points every partition at this store's clock, which is what makes them one snapshot. */
     void share_clock_with_parts_() noexcept {
         if constexpr (offers_shared_clock<inner_store_t, clock_t>)
             for (inner_store_t &part : partitions_) part.attach_clock(clock_);
     }
 
-    /** @brief Takes over @p other's stamps and readers, then re-points the partitions that came with them. */
+    /** Takes over @p other's stamps and readers, then re-points the partitions that came with them. */
     void adopt_clock_of_(partitioned_store &other) noexcept {
         if constexpr (offers_shared_clock<inner_store_t, clock_t>) clock_.adopt(other.clock_);
         share_clock_with_parts_();
     }
 
     /**
-     *  @brief Opens one transaction per partition at @p snapshot, which @p lease already pins, or none at all.
+     *  @brief Opens one transaction per partition at @p snapshot, which @p lease already pins, or
+     *      none at all.
      *
-     *  A stamped part opens on that one snapshot and on one generation drawn here: reading two partitions
-     *  at two stamps is what would make the snapshot a lie, and a commit landing between two of these
-     *  locks is exactly how that would happen.
+     *  A stamped part opens on that one snapshot and on one generation drawn here: reading two
+     *  partitions at two stamps is what would make the snapshot a lie, and a commit landing between
+     *  two of these locks is exactly how that would happen.
      */
     [[nodiscard]] expected<transaction_t> open_transaction_(typename clock_t::snapshot_lease_t &&lease,
                                                             [[maybe_unused]] generation_t snapshot) noexcept {
@@ -2089,6 +2132,7 @@ class partitioned_store {
 
   public:
     partitioned_store() noexcept { share_clock_with_parts_(); }
+
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     partitioned_store(partitioned_store &&other) noexcept
         : partitions_(std::move(other.partitions_)), hasher_(other.hasher_), comparator_(other.comparator_) {
@@ -2112,7 +2156,8 @@ class partitioned_store {
 
     /**
      *  @brief Builds a store whose every partition shares one comparator and one hasher.
-     *  @param[in] comparator The instance every comparison consults, in each partition and across them.
+     *  @param[in] comparator The instance every comparison consults, in each partition and
+     *      across them.
      *  @param[in] hasher The instance that maps an identifier to its partition.
      *  @return The store, or the status that refused to build one of its partitions.
      */
@@ -2123,11 +2168,8 @@ class partitioned_store {
         return partitioned_store {std::move(*parts), hasher, comparator};
     }
 
-    /**
-     *  @brief Opens one transaction per partition, or none at all.
-     *    Each partition is taken exclusively while its transaction is built, since opening one reads
-     *    the live container and draws a fresh generation from it.
-     */
+    /** Opens one transaction per partition, or none at all. Each partition is taken exclusively while its
+     *  transaction is built, since opening one reads the live container and draws a fresh generation from it. */
     [[nodiscard]] expected<transaction_t> transaction() noexcept {
         typename clock_t::snapshot_lease_t lease;
         [[maybe_unused]] generation_t snapshot = 0;
@@ -2136,12 +2178,13 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Opens a transaction reading every partition at @p reader's stamp rather than at the newest one.
+     *  @brief Opens a transaction reading every partition at @p reader's stamp rather than at the
+     *      newest one.
      *
-     *  The transaction takes a claim of its own beside the reader's, so either may close first. Its reads
-     *  and writes are validated at commit against everything published after that stamp, exactly as a
-     *  fresh transaction's are against its own: from @c serializable_k up every read, at @c snapshot_k
-     *  what it watched and wrote.
+     *  The transaction takes a claim of its own beside the reader's, so either may close first. Its
+     *  reads and writes are validated at commit against everything published after that stamp,
+     *  exactly as a fresh transaction's are against its own: from @c serializable_k up every read,
+     *  at @c snapshot_k what it watched and wrote.
      */
     [[nodiscard]] expected<transaction_t> transaction(reader_t const &reader) noexcept
         requires inner_reads_at_a_stamp_k
@@ -2152,7 +2195,7 @@ class partitioned_store {
         return open_transaction_(std::move(lease), snapshot);
     }
 
-    /** @brief Opens a reader pinned at the newest published stamp, which records and settles nothing. */
+    /** Opens a reader pinned at the newest published stamp, which records and settles nothing. */
     [[nodiscard]] reader_t reader() const noexcept
         requires inner_reads_at_a_stamp_k
     {
@@ -2166,9 +2209,10 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Removes one element, reporting whether it was there.
-     *    Touches only the partition that owns the key, so the rest stay unlocked.
-     *  @param[in] comparable Anything the inner store compares against, convertible to an identifier.
+     *  @brief Removes one element, reporting whether it was there. Touches only the partition that
+     *      owns the key, so the rest stay unlocked.
+     *  @param[in] comparable Anything the inner store compares against, convertible to
+     *      an identifier.
      *  @param[in] callback_found Receives the element that was removed.
      *  @param[in] callback_missing Fires when no such element existed.
      *  @return @c key_not_found_k when absent, so the answer is available without a second probe.
@@ -2209,7 +2253,7 @@ class partitioned_store {
                                                  std::forward<callback_missing_type_>(callback_missing));
     }
 
-    /** @brief Whether @p comparable is there, asking only the partition that owns it. */
+    /** Whether @p comparable is there, asking only the partition that owns it. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<bool> contains(comparable_type_ &&comparable) const noexcept {
         std::size_t partition_index = bucket_(comparable);
@@ -2217,7 +2261,7 @@ class partitioned_store {
         return partitions_[partition_index].contains(std::forward<comparable_type_>(comparable));
     }
 
-    /** @brief Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
+    /** Number of elements matching @p comparable, which is 0 or 1 for unique keys. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
         expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
@@ -2225,7 +2269,7 @@ class partitioned_store {
         return *present ? std::size_t {1} : std::size_t {0};
     }
 
-    /** @brief Inserts one element only if its key is absent, leaving an incumbent untouched. */
+    /** Inserts one element only if its key is absent, leaving an incumbent untouched. */
     [[nodiscard]] status_t insert_if_missing(value_t &&element) noexcept {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
@@ -2233,10 +2277,12 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Inserts one element, saying which of the two happened rather than leaving it inferred.
+     *  @brief Inserts one element, saying which of the two happened rather than leaving
+     *      it inferred.
      *  @param[in] element The element to insert.
      *  @param[in] callback_inserted Receives the element once stored.
-     *  @param[in] callback_existing Receives the element already present, which is what declined the insert.
+     *  @param[in] callback_existing Receives the element already present, which is what declined
+     *      the insert.
      */
     template <typename callback_inserted_type_, typename callback_existing_type_>
     [[nodiscard]] status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
@@ -2248,11 +2294,8 @@ class partitioned_store {
                                                               std::forward<callback_existing_type_>(callback_existing));
     }
 
-    /**
-     *  @brief Inserts one element, refusing with the inner store's own status when the key is taken.
-     *    One key lives in one partition, so the refusal is decided under a single lock and carries the
-     *    inner store's promise whole.
-     */
+    /** Inserts one element, refusing with the inner store's own status when the key is taken. One key lives in one
+     *  partition, so the refusal is decided under a single lock and carries the inner store's promise whole. */
     [[nodiscard]] status_t insert(value_t &&element) noexcept
         requires offers_insert<inner_store_t>
     {
@@ -2262,10 +2305,12 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Inserts one element, saying which of the two happened rather than leaving it inferred.
+     *  @brief Inserts one element, saying which of the two happened rather than leaving
+     *      it inferred.
      *  @param[in] element The element to insert.
      *  @param[in] callback_inserted Receives the element once stored.
-     *  @param[in] callback_existing Receives the element already under the key, which refused the insert.
+     *  @param[in] callback_existing Receives the element already under the key, which refused
+     *      the insert.
      */
     template <typename callback_inserted_type_, typename callback_existing_type_>
     [[nodiscard]] status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
@@ -2279,7 +2324,7 @@ class partitioned_store {
                                                    std::forward<callback_existing_type_>(callback_existing));
     }
 
-    /** @brief Writes one element only if its key is already taken, refusing to create one. */
+    /** Writes one element only if its key is already taken, refusing to create one. */
     [[nodiscard]] status_t update(value_t &&element) noexcept
         requires offers_update<inner_store_t>
     {
@@ -2288,7 +2333,7 @@ class partitioned_store {
         return partitions_[partition_index].update(std::move(element));
     }
 
-    /** @brief Inserts a batch, leaving already-present keys untouched. */
+    /** Inserts a batch, leaving already-present keys untouched. */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     [[nodiscard]] status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         for (; begin != end; ++begin) {
@@ -2301,7 +2346,7 @@ class partitioned_store {
         return success_k;
     }
 
-    /** @brief The first element ordered strictly after @p comparable, which may live in any partition. */
+    /** The first element ordered strictly after @p comparable, which may live in any partition. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -2321,8 +2366,8 @@ class partitioned_store {
     /**
      *  @brief The smallest member of the merged order, which may live in any partition.
      *
-     *  Every partition is held shared for the one answer, so the minimum and the read of it happen at
-     *  the same moment rather than in two probes a writer can slip between.
+     *  Every partition is held shared for the one answer, so the minimum and the read of it happen
+     *  at the same moment rather than in two probes a writer can slip between.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t smallest(callback_found_type_ &&callback_found,
@@ -2339,9 +2384,9 @@ class partitioned_store {
      *  @brief Removes the smallest member of the merged order and hands it over.
      *
      *  @warning Every partition is held @b exclusively for the one removal, because the winning
-     *    partition must not lose its front between being chosen and being popped. A pop-heavy
-     *    workload therefore serializes against every other writer, which is the one operation here
-     *    that sharding cannot make cheaper.
+     *      partition must not lose its front between being chosen and being popped. A pop-heavy
+     *      workload therefore serializes against every other writer, which is the one operation
+     *      here that sharding cannot make cheaper.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] status_t pop_smallest(callback_found_type_ &&callback_found = {},
@@ -2366,7 +2411,7 @@ class partitioned_store {
                                                 std::forward<callback_missing_type_>(callback_missing));
     }
 
-    /** @brief Copies out the smallest member and removes it, or reports @c key_not_found_k. */
+    /** Copies out the smallest member and removes it, or reports @c key_not_found_k. */
     [[nodiscard]] expected<value_t> pop_smallest_copy() noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  offers_pop_smallest<inner_store_t> && (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
@@ -2378,7 +2423,7 @@ class partitioned_store {
         return result;
     }
 
-    /** @brief Copies out the smallest member, or reports @c key_not_found_k. */
+    /** Copies out the smallest member, or reports @c key_not_found_k. */
     [[nodiscard]] expected<value_t> smallest_copy() const noexcept
         requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
                  (offers_smallest<inner_store_t> || offers_select<inner_store_t>)
@@ -2393,9 +2438,9 @@ class partitioned_store {
     /**
      *  @brief The first element at or after @p comparable, which may live in any partition.
      *
-     *  Every partition is asked for its own bound under one set of locks, so the exact match and the
-     *  cross-partition minimum are read at the same moment rather than in two probes a writer can slip
-     *  between.
+     *  Every partition is asked for its own bound under one set of locks, so the exact match and
+     *  the cross-partition minimum are read at the same moment rather than in two probes a writer
+     *  can slip between.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -2413,7 +2458,7 @@ class partitioned_store {
         return first_failure(seeded, merged);
     }
 
-    /** @brief Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
+    /** Copies out the member equal to @p comparable, or reports @c key_not_found_k. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
@@ -2424,7 +2469,7 @@ class partitioned_store {
         return result;
     }
 
-    /** @brief Copies out the first element ordered at or after @p comparable. */
+    /** Copies out the first element ordered at or after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
         requires offers_lower_bound<inner_store_t>
@@ -2437,7 +2482,7 @@ class partitioned_store {
         return result;
     }
 
-    /** @brief Copies out the first element ordered strictly after @p comparable. */
+    /** Copies out the first element ordered strictly after @p comparable. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
         requires offers_upper_bound<inner_store_t>
@@ -2454,13 +2499,14 @@ class partitioned_store {
      *  @brief Hands @p callback every member of [ @p lower, @p upper ) in one ascending order.
      *
      *  The partitions are merged rather than concatenated, so the sequence is the one an ordered
-     *  container promises whatever the key's hash happened to be. Each element costs a comparison per
-     *  partition and one descent to refill the front it came from, against the single iterator step a
-     *  concatenated walk would take - the price of the order being right.
+     *  container promises whatever the key's hash happened to be. Each element costs a comparison
+     *  per partition and one descent to refill the front it came from, against the single iterator
+     *  step a concatenated walk would take - the price of the order being right.
      *
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
-     *  @warning Every partition is held shared for the length of the walk, so every writer waits, and
-     *    @p callback runs under all of them: a callback reaching back into this store deadlocks.
+     *  @warning Every partition is held shared for the length of the walk, so every writer waits,
+     *      and @p callback runs under all of them: a callback reaching back into this
+     *      store deadlocks.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -2486,11 +2532,12 @@ class partitioned_store {
 
     /**
      *  @brief Erases the half-open range from every partition.
-     *  @return Success or a refusal, which @c erase_range_policy_k scopes: over parts that publish under a
-     *    stamp the first refusal, having published nothing; over any other part the last refusal, after
-     *    every partition was attempted and an unreported subset erased.
+     *  @return Success or a refusal, which @c erase_range_policy_k scopes: over parts that publish
+     *      under a stamp the first refusal, having published nothing; over any other part the last
+     *      refusal, after every partition was attempted and an unreported subset erased.
      *
-     *  Over parts sharing a clock the window goes out under one stamp, so no reader sees it half erased.
+     *  Over parts sharing a clock the window goes out under one stamp, so no reader sees it
+     *  half erased.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -2510,7 +2557,8 @@ class partitioned_store {
 
     /**
      *  @brief Erases every element at or after @p lower from every partition.
-     *  @return Success or a refusal, which @c erase_from_policy_k scopes exactly as @c erase_range scopes its own.
+     *  @return Success or a refusal, which @c erase_from_policy_k scopes exactly as @c erase_range
+     *      scopes its own.
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
@@ -2526,7 +2574,8 @@ class partitioned_store {
 
     /**
      *  @brief Erases every element before @p upper from every partition.
-     *  @return Success or a refusal, which @c erase_up_to_policy_k scopes exactly as @c erase_range scopes its own.
+     *  @return Success or a refusal, which @c erase_up_to_policy_k scopes exactly as @c erase_range
+     *      scopes its own.
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
@@ -2542,15 +2591,16 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Rewrites the mapped side of every element in [ @p lower, @p upper ), across all partitions.
+     *  @brief Rewrites the mapped side of every element in [ @p lower, @p upper ), across
+     *      all partitions.
      *
-     *  Every partition is held exclusively for the length of the walk, as @c erase_range holds them, so
-     *  the window is revised as one write rather than sixteen; over parts sharing a clock it also goes out
-     *  under one stamp, so no reader sees it half revised.
+     *  Every partition is held exclusively for the length of the walk, as @c erase_range holds
+     *  them, so the window is revised as one write rather than sixteen; over parts sharing a clock
+     *  it also goes out under one stamp, so no reader sees it half revised.
      *
      *  @param[in] callback Invoked with (key const &, mapped &) per element. Must be @c noexcept.
-     *  @return Success or a refusal, which @c update_range_policy_k scopes exactly as @c erase_range scopes
-     *    its own. A partition whose own walk cannot fail always succeeds.
+     *  @return Success or a refusal, which @c update_range_policy_k scopes exactly as
+     *      @c erase_range scopes its own. A partition whose own walk cannot fail always succeeds.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -2570,20 +2620,20 @@ class partitioned_store {
     /**
      *  @brief Hands @p callback every member the store holds, in no particular order.
      *
-     *  One partition is locked shared at a time, ascending, as @c sample_reservoir takes them - holding
-     *  all sixteen for the length of an enumeration would stall every writer in the store for as long
-     *  as the caller takes to consume it.
+     *  One partition is locked shared at a time, ascending, as @c sample_reservoir takes them -
+     *  holding all sixteen for the length of an enumeration would stall every writer in the store
+     *  for as long as the caller takes to consume it.
      *
-     *  What that buys and what it costs, stated rather than left to be inferred: a key's partition is
-     *  fixed by its hash and never changes, so an element present in the store for the whole walk is
-     *  visited @b exactly @b once - it cannot be missed by being moved ahead of the cursor, nor seen
-     *  twice by being moved behind it, and the partition holding it is locked while it is read. An
-     *  element inserted or erased during the walk @b may @b or @b may @b not be seen, according to
-     *  whether its partition had already been visited. The first guarantee is the one a caller
-     *  enumerating a container depends on; the second is the one it has to tolerate.
+     *  What that buys and what it costs, stated rather than left to be inferred: a key's partition
+     *  is fixed by its hash and never changes, so an element present in the store for the whole
+     *  walk is visited @b exactly @b once - it cannot be missed by being moved ahead of the cursor,
+     *  nor seen twice by being moved behind it, and the partition holding it is locked while it is
+     *  read. An element inserted or erased during the walk @b may @b or @b may @b not be seen,
+     *  according to whether its partition had already been visited. The first guarantee is the one
+     *  a caller enumerating a container depends on; the second is the one it has to tolerate.
      *
      *  @note A callback answering @c walk_control_t stops the walk where it says to, leaving the
-     *    partitions above the one it stopped in unvisited.
+     *      partitions above the one it stopped in unvisited.
      */
     template <typename callback_type_ = no_op_t>
     [[nodiscard]] status_t for_each(callback_type_ &&callback) const noexcept
@@ -2616,7 +2666,7 @@ class partitioned_store {
     /**
      *  @brief Frees every version no reader can still reach, one partition at a time.
      *  @return How many versions were reclaimed across all partitions, or why one of them refused.
-     *    A partition whose sweep cannot refuse always answers with a count.
+     *      A partition whose sweep cannot refuse always answers with a count.
      */
     [[nodiscard]] expected<std::size_t> vacuum() noexcept
         requires offers_vacuum<inner_store_t>
@@ -2636,7 +2686,8 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Frees the unreachable versions of every key in [ @p lower, @p upper ), one partition at a time.
+     *  @brief Frees the unreachable versions of every key in [ @p lower, @p upper ), one partition
+     *      at a time.
      *  @return How many versions were reclaimed across all partitions, or why one of them refused.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t>
@@ -2657,12 +2708,13 @@ class partitioned_store {
     }
 
     /**
-     *  @brief Hands @p callback_found the element at zero-based position @p ordinal of the merged order.
+     *  @brief Hands @p callback_found the element at zero-based position @p ordinal of the
+     *      merged order.
      *
-     *  A partition knows only its own ordinals, so the global one is reached by merging the partitions
-     *  rather than by descending a subtree count: linear in @p ordinal, not logarithmic in the size.
-     *  Every partition is held shared for the length of that merge, so the position is answered against
-     *  one order rather than sixteen probes.
+     *  A partition knows only its own ordinals, so the global one is reached by merging the
+     *  partitions rather than by descending a subtree count: linear in @p ordinal, not logarithmic
+     *  in the size. Every partition is held shared for the length of that merge, so the position is
+     *  answered against one order rather than sixteen probes.
      *
      *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
      */
@@ -2688,8 +2740,9 @@ class partitioned_store {
 
     /**
      *  @brief Hands @p callback_found how many elements the store orders before @p comparable.
-     *    Counted by the same merge @c select walks, so it costs the rank rather than a descent.
-     *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be @c noexcept.
+     *      Counted by the same merge @c select walks, so it costs the rank rather than a descent.
+     *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be
+     *      @c noexcept.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -2718,8 +2771,8 @@ class partitioned_store {
      *  @brief Hands one element of the range to @p callback, drawn from a single random partition.
      *
      *  @warning The draw is uniform only if every partition holds a similar number of in-range
-     *    entries, and it takes one lock. The reservoir overload below walks all of them instead, so a
-     *    call site that needs the whole range weighted correctly wants that one.
+     *      entries, and it takes one lock. The reservoir overload below walks all of them instead,
+     *      so a call site that needs the whole range weighted correctly wants that one.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -2735,10 +2788,10 @@ class partitioned_store {
 
     /**
      *  @brief Fills @p reservoir with up to @p reservoir_capacity elements of the range, weighting
-     *    every partition by how many in-range entries it actually holds.
+     *      every partition by how many in-range entries it actually holds.
      *
-     *  @warning One partition is locked at a time rather than all of them, so a writer moving an entry
-     *    between partitions can have it sampled twice or not at all.
+     *  @warning One partition is locked at a time rather than all of them, so a writer moving an
+     *      entry between partitions can have it sampled twice or not at all.
      */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     [[nodiscard]] status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -2758,12 +2811,12 @@ class partitioned_store {
     /**
      *  @brief Empties every partition in place, stopping where one refuses.
      *
-     *  Each partition clears itself rather than being replaced by a fresh one: a replacement leaves an
-     *  open transaction referring to contents that are gone, and it would have to rebuild the
+     *  Each partition clears itself rather than being replaced by a fresh one: a replacement leaves
+     *  an open transaction referring to contents that are gone, and it would have to rebuild the
      *  comparator and allocator the partition was given.
      *
      *  @return Success, or the refusal that stopped the walk - after which the partitions above the
-     *    refusing one still hold everything they held.
+     *      refusing one still hold everything they held.
      */
     [[nodiscard]] status_t clear() noexcept {
         return for_all<unique_lock_t, locking_policy_t::one_at_a_time_k, refusal_policy_t::stop_at_first_k>(
@@ -2773,14 +2826,14 @@ class partitioned_store {
     /**
      *  @brief Sizes every partition for its share of @p size, stopping where one refuses.
      *  @return Success, or the refusal that stopped the walk - after which the partitions above the
-     *    refusing one are sized as they were.
+     *      refusing one are sized as they were.
      */
     [[nodiscard]] status_t reserve(std::size_t size) noexcept {
         return for_all<unique_lock_t, locking_policy_t::one_at_a_time_k, refusal_policy_t::stop_at_first_k>(
             partitions_, mutexes_, [size](inner_store_t &part) noexcept { return part.reserve(size / partitions_k); });
     }
 
-    /** @brief Hands @p callback every member equal to @p comparable, which one partition owns outright. */
+    /** Hands @p callback every member equal to @p comparable, which one partition owns outright. */
     template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept
         requires offers_equal_range<inner_store_t>
@@ -2791,7 +2844,7 @@ class partitioned_store {
                                                         std::forward<callback_type_>(callback));
     }
 
-    /** @brief How many versions every partition holds together, published and staged alike. */
+    /** How many versions every partition holds together, published and staged alike. */
     [[nodiscard]] std::size_t versions_count() const noexcept
         requires offers_versions_count<inner_store_t>
     {
@@ -2801,7 +2854,7 @@ class partitioned_store {
         return counted;
     }
 
-    /** @brief How many versions of @p comparable are still held, by the one partition that owns it. */
+    /** How many versions of @p comparable are still held, by the one partition that owns it. */
     template <typename comparable_type_ = identifier_t>
     [[nodiscard]] std::size_t versions_count(comparable_type_ const &comparable) const noexcept
         requires offers_versions_count<inner_store_t>
@@ -2811,11 +2864,9 @@ class partitioned_store {
         return partitions_[partition_index].versions_count(comparable);
     }
 
-    /**
-     *  @brief The newest snapshot no open transaction sits below, which is what @c vacuum prunes to.
-     *    The oldest of the partitions' answers, so no partition prunes past a reader another still
-     *    counts - which for partitions sharing one clock is the single answer all of them give.
-     */
+    /** The newest snapshot no open transaction sits below, which is what @c vacuum prunes to. The oldest of the
+     *  partitions' answers, so no partition prunes past a reader another still counts - which for partitions sharing
+     *  one clock is the single answer all of them give. */
     [[nodiscard]] generation_t low_water_mark() const noexcept
         requires offers_low_water_mark<inner_store_t>
     {
@@ -2826,7 +2877,7 @@ class partitioned_store {
         return oldest;
     }
 
-    /** @brief Writes @p element whether or not its key is taken, spelled as a partition spells it. */
+    /** Writes @p element whether or not its key is taken, spelled as a partition spells it. */
     [[nodiscard]] status_t insert_or_assign(value_t &&element) noexcept
         requires offers_insert_or_assign<inner_store_t>
     {
@@ -2840,7 +2891,7 @@ class partitioned_store {
 
 /**
  *  @brief A set-shaped store sharded across independently locked partitions, spelled
- *    @c partitioned_set<monotonic_avl_set<key_t>>.
+ *      @c partitioned_set<monotonic_avl_set<key_t>>.
  *
  *  The wrapper is one class whichever shape it holds, so the shape is a constraint rather than a
  *  second spelling: naming the set alias over a store of mappings has no substitution, and neither
@@ -2851,10 +2902,8 @@ template <set_shaped_store set_store_type_, typename hash_type_ = hash<typename 
           typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16>
 using partitioned_set = partitioned_store<set_store_type_, hash_type_, shared_mutex_type_, partitions_count_>;
 
-/**
- *  @brief A map-shaped store sharded across independently locked partitions, spelled
- *    @c partitioned_map<monotonic_avl_map<key_t, value_t>>.
- */
+/** A map-shaped store sharded across independently locked partitions, spelled
+ *  @c partitioned_map<monotonic_avl_map<key_t, value_t>>. */
 template <map_shaped_store map_store_type_, typename hash_type_ = hash<typename map_store_type_::identifier_t>,
           typename shared_mutex_type_ = spin_shared_mutex_t, std::size_t partitions_count_ = 16>
 using partitioned_map = partitioned_store<map_store_type_, hash_type_, shared_mutex_type_, partitions_count_>;

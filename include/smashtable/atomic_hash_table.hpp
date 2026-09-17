@@ -1,8 +1,8 @@
 /**
- *  @brief A pinned open-addressed hash table: fixed capacity, per-slot atomicity, no iterators.
- *  @author Ash Vardanian
  *  @file include/smashtable/atomic_hash_table.hpp
+ *  @author Ash Vardanian
  *  @date December 21, 2021
+ *  @brief A pinned open-addressed hash table: fixed capacity, per-slot atomicity, no iterators.
  *
  *  @section atomic_hash_table_why_a_second_type Why a Second Type
  *
@@ -27,26 +27,27 @@
  *
  *  @section atomic_hash_table_what_is_absent What Is Absent, and Why
  *
- *  No @c begin, no @c end, no @c for_each: a snapshot of a table other threads are mutating is not a
- *  snapshot. No @c at: it hands out a reference that a concurrent erase invalidates. No @c reserve,
- *  @c rehash or @c shrink_to_fit: reallocation is the thing pinning forbids. Reads take a callback
- *  instead, which is the shape every other collection in this library already uses.
+ *  No @c begin, no @c end, no @c for_each: a snapshot of a table other threads are mutating is not
+ *  a snapshot. No @c at: it hands out a reference that a concurrent erase invalidates. No
+ *  @c reserve, @c rehash or @c shrink_to_fit: reallocation is the thing pinning forbids. Reads take
+ *  a callback instead, which is the shape every other collection in this library already uses.
  *
  *  Tombstones only accumulate while pinned, since compaction needs a rehash. @c deleted_count is
  *  what tells a caller it is time to hand the storage back to a growable table and compact it.
  *
  *  @section atomic_hash_table_gpu Portability to GPUs
  *
- *  The slot protocol underneath is one @c fetch_or to take a slot and one @c fetch_xor to release it,
- *  over a 64-bit bucket header shared by 32 slots - one warp. Those reach a device through the
+ *  The slot protocol underneath is one @c fetch_or to take a slot and one @c fetch_xor to release
+ *  it, over a 64-bit bucket header shared by 32 slots - one warp. Those reach a device through the
  *  @c atomic_ref alias in @c shared.hpp, and the fixed capacity is the same constraint device code
  *  wants anyway, so this type is the one that ports.
  *
- *  A kernel calls this table unchanged when built with @c nvcc @c --expt-relaxed-constexpr, which is
- *  what makes the @c constexpr surface here device-callable. What the caller must supply is a hasher,
- *  an equality and an allocator that are themselves device-usable: the defaults reach @c std::hash
- *  and @c std::allocator, neither of which exists on a device. The table object and its storage have
- *  to sit in memory the device can address, which in practice means @c cudaMallocManaged.
+ *  A kernel calls this table unchanged when built with @c nvcc @c --expt-relaxed-constexpr, which
+ *  is what makes the @c constexpr surface here device-callable. What the caller must supply is a
+ *  hasher, an equality and an allocator that are themselves device-usable: the defaults reach
+ *  @c std::hash and @c std::allocator, neither of which exists on a device. The table object and
+ *  its storage have to sit in memory the device can address, which in practice means
+ *  @c cudaMallocManaged.
  *
  *  Independent thread scheduling is required, so @c sm_70 and newer, because the slot protocol
  *  blocks: 32 slots share one header, so a warp probing one bucket serializes through @c lock, and
@@ -66,14 +67,14 @@ namespace ashvardanian::smashtable {
 #pragma region Atomic Table
 
 /**
- *  @brief A fixed-capacity open-addressed table whose operations are atomic over the slot they touch,
- *    through per-slot spin locks, and over nothing wider.
+ *  @brief A fixed-capacity open-addressed table whose operations are atomic over the slot they
+ *      touch, through per-slot spin locks, and over nothing wider.
  *
  *  Built by adopting an allocation someone else sized, which is what guarantees the capacity was
  *  reserved before any thread could observe the table.
  *
  *  @warning Not lock-free. A slot is held between @c lock and @c unlock, so a thread stopped in
- *    between blocks every other prober that reaches that slot; see the file header.
+ *      between blocks every other prober that reaches that slot; see the file header.
  *
  *  @tparam element_type_ Stored element - a bare key for a set, a @c mapping for a map.
  *  @tparam hasher_type_ Hashes a key to a slot index.
@@ -91,11 +92,13 @@ class atomic_hash_table {
     using element_t = typename layout_t::element_t;
     using offset_t = typename layout_t::offset_t;
 
-    /** @brief Whether the element carries a mapped value, making this table a map rather than a set. */
+    /** Whether the element carries a mapped value, making this table a map rather than a set. */
     inline static constexpr bool has_values_k = layout_t::has_values_k;
-    /** @brief Whether erasure and teardown must run a key destructor. */
+
+    /** Whether erasure and teardown must run a key destructor. */
     inline static constexpr bool destruct_keys_k = !std::is_trivially_destructible<key_t>();
-    /** @brief Whether erasure and teardown must run a value destructor. */
+
+    /** Whether erasure and teardown must run a value destructor. */
     inline static constexpr bool destruct_values_k = has_values_k && !std::is_trivially_destructible<value_storage_t>();
 
     using hasher_t = hasher_type_;
@@ -125,12 +128,13 @@ class atomic_hash_table {
     using is_transactional = std::false_type;
 
   private:
-    /** @brief The single allocation, the three regions carved from it, and the counters. */
+    /** The single allocation, the three regions carved from it, and the counters. */
     storage_t storage_;
 
-    /** @brief Hashes a key down to its initial probe offset. */
+    /** Hashes a key down to its initial probe offset. */
     ST_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
-    /** @brief Decides whether a probed key matches the wanted one. */
+
+    /** Decides whether a probed key matches the wanted one. */
     ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
   public:
@@ -145,10 +149,10 @@ class atomic_hash_table {
     atomic_hash_table(atomic_hash_table const &) = delete;
     atomic_hash_table &operator=(atomic_hash_table const &) = delete;
 
-    /** @brief Surrenders the allocation, leaving this table empty. */
+    /** Surrenders the allocation, leaving this table empty. */
     [[nodiscard]] storage_t release() && noexcept { return std::move(storage_); }
 
-    /** @brief Takes ownership of an allocation another table built. */
+    /** Takes ownership of an allocation another table built. */
     [[nodiscard]] static atomic_hash_table adopt(storage_t &&storage, hasher_t hasher = {},
                                                  equals_t equals = {}) noexcept {
         atomic_hash_table table(std::move(hasher), std::move(equals));
@@ -156,7 +160,7 @@ class atomic_hash_table {
         return table;
     }
 
-    /** @brief A cheap copy-less exchange of the allocation and the two functors. */
+    /** A cheap copy-less exchange of the allocation and the two functors. */
     void swap(atomic_hash_table &other) noexcept {
         storage_.swap(other.storage_);
         if constexpr (!std::is_empty<hasher_t>::value) std::swap(hasher_, other.hasher_);
@@ -165,21 +169,17 @@ class atomic_hash_table {
 
 #pragma region Metadata
 
-    /**
-     *  @brief Live elements. Read atomically but relaxed, so it may lag a concurrent writer - the
-     *    count is a statistic here, and other threads are moving it while this returns.
-     */
+    /** Live elements. Read atomically but relaxed, so it may lag a concurrent writer - the count is a statistic
+     *  here, and other threads are moving it while this returns. */
     constexpr offset_t size() const noexcept { return atomic_load(storage_.populated_count); }
     constexpr bool empty() const noexcept { return size() == 0; }
 
-    /** @brief Slots this table will never exceed, since it cannot grow. */
+    /** Slots this table will never exceed, since it cannot grow. */
     constexpr offset_t capacity() const noexcept { return larger_of(storage_.growth_threshold, size()); }
     constexpr offset_t slots_count() const noexcept { return storage_.slots_count; }
 
-    /**
-     *  @brief Tombstones left by @c erase, which only ever grow while the table is pinned.
-     *    Compaction needs a rehash, so this is the signal to hand the storage to a growable table.
-     */
+    /** Tombstones left by @c erase, which only ever grow while the table is pinned. Compaction needs a rehash, so
+     *  this is the signal to hand the storage to a growable table. */
     constexpr offset_t deleted_count() const noexcept { return atomic_load(storage_.deleted_count); }
 
     hasher hash_function() const noexcept { return hasher_; }
@@ -190,11 +190,8 @@ class atomic_hash_table {
 
 #pragma region Lookups
 
-    /**
-     *  @brief Invokes one of the two callbacks, the found one under the matching slot's lock.
-     *    Reads arrive through a callback rather than a reference, since a concurrent erase would
-     *    invalidate anything handed back.
-     */
+    /** Invokes one of the two callbacks, the found one under the matching slot's lock. Reads arrive through a
+     *  callback rather than a reference, since a concurrent erase would invalidate anything handed back. */
     template <typename comparable_key_type_, typename callback_found_type_, typename callback_missing_type_ = no_op_t>
     [[nodiscard]] constexpr status_t find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
                                           callback_missing_type_ &&callback_missing = {}) const noexcept {
@@ -207,18 +204,19 @@ class atomic_hash_table {
     /**
      *  @brief Reports whether a key equivalent to @p wanted is present.
      *  @param[in] wanted Key to probe for.
-     *  @return Whether the key is present. The probe takes each slot's lock and allocates nothing, so it never refuses.
+     *  @return Whether the key is present. The probe takes each slot's lock and allocates nothing,
+     *      so it never refuses.
      */
     template <typename comparable_key_type_>
     [[nodiscard]] expected<bool> contains(comparable_key_type_ &&wanted) const noexcept {
         return probe_to_find_<const_slot_ref_t>(std::forward<comparable_key_type_>(wanted), no_op_t {});
     }
 
-    /** @brief Deleted: a reference into a slot is invalid the moment another thread erases it. */
+    /** Deleted: a reference into a slot is invalid the moment another thread erases it. */
     template <typename comparable_key_type_ = key_t const &>
     void at(comparable_key_type_ &&) = delete;
 
-    /** @brief Deleted: a snapshot of a table other threads are mutating is not a snapshot. */
+    /** Deleted: a snapshot of a table other threads are mutating is not a snapshot. */
     void begin() = delete;
     void end() = delete;
 
@@ -228,8 +226,8 @@ class atomic_hash_table {
 
     /**
      *  @brief Inserts, or overwrites the value when the key is already present.
-     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence
-     *    was free. A pinned table can genuinely fill up, so this reports rather than asserts.
+     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence was
+     *      free. A pinned table can genuinely fill up, so this reports rather than asserts.
      */
     template <typename convertible_key_type_, typename convertible_value_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key, convertible_value_type_ &&value) noexcept {
@@ -248,7 +246,7 @@ class atomic_hash_table {
     /**
      *  @brief Inserts the key, doing nothing when an equal one is already present.
      *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence
-     *    was free.
+     *      was free.
      */
     template <typename convertible_key_type_>
     [[nodiscard]] constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
@@ -300,8 +298,10 @@ class atomic_hash_table {
 #pragma region Probes
 
     /**
-     *  @brief Walks the probe sequence of @p wanted, invoking @p callback under the matching slot's lock.
-     *  @tparam slot_ref_type_ The mutable or the read-only atomic reference, depending on the caller.
+     *  @brief Walks the probe sequence of @p wanted, invoking @p callback under the matching
+     *      slot's lock.
+     *  @tparam slot_ref_type_ The mutable or the read-only atomic reference, depending on
+     *      the caller.
      *  @return Whether a match was found. A free slot ends the sequence, a tombstone continues it.
      */
     template <typename slot_ref_type_, typename comparable_key_type_, typename callback_type_>
@@ -347,17 +347,18 @@ class atomic_hash_table {
     }
 
     /**
-     *  @brief Walks the probe sequence of @p wanted, building an element or overwriting the equal one.
+     *  @brief Walks the probe sequence of @p wanted, building an element or overwriting the
+     *      equal one.
      *  @return @c success_k, or @c capacity_exhausted_k when no slot along the sequence was free.
-     *    The heap is never touched here, so the refusal names the exhausted probe rather than an
-     *    allocation: a table saturated with tombstones needs a rehash, and no amount of free memory
-     *    changes its answer.
+     *      The heap is never touched here, so the refusal names the exhausted probe rather than an
+     *      allocation: a table saturated with tombstones needs a rehash, and no amount of free
+     *      memory changes its answer.
      *
-     *  Exactly one slot is locked at a time. A tombstone is walked past rather than held: probe order
-     *  is monotone only modulo the slot count, so a thread carrying a lock across the wrap would meet
-     *  its own bit and spin on itself, and two writers holding one tombstone each would deadlock on
-     *  the other's. Tombstones are therefore reclaimed only by a rehash, which is what pinning
-     *  already asks a caller to hand the storage back for.
+     *  Exactly one slot is locked at a time. A tombstone is walked past rather than held: probe
+     *  order is monotone only modulo the slot count, so a thread carrying a lock across the wrap
+     *  would meet its own bit and spin on itself, and two writers holding one tombstone each would
+     *  deadlock on the other's. Tombstones are therefore reclaimed only by a rehash, which is what
+     *  pinning already asks a caller to hand the storage back for.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_>
     constexpr status_t probe_to_upsert_(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,

@@ -1,15 +1,15 @@
 /**
- *  @brief Runs the accounting fixtures through every container family, so a leak or a severed probe run
- *      becomes arithmetic rather than something only a sanitizer might notice.
- *  @author Ash Vardanian
  *  @file scripts/test_fixture_coverage.hpp
+ *  @author Ash Vardanian
  *  @date August 18, 2026
+ *  @brief Runs the accounting fixtures through every container family, so a leak or a severed probe
+ *      run becomes arithmetic rather than something only a sanitizer might notice.
  *
- *  These suites exist because of what the fixtures can see that the containers' own tests cannot. A key
- *  that owns no heap leaks invisibly - the node around it is freed, so a sanitizer reports nothing, and
- *  only a construction/destruction tally catches it. A well-spread hash never builds a probe run, so the
- *  tombstone and chain handling of the open-addressed cores goes unexercised until a key is made to
- *  collide on purpose.
+ *  These suites exist because of what the fixtures can see that the containers' own tests cannot. A
+ *  key that owns no heap leaks invisibly - the node around it is freed, so a sanitizer reports
+ *  nothing, and only a construction/destruction tally catches it. A well-spread hash never builds a
+ *  probe run, so the tombstone and chain handling of the open-addressed cores goes unexercised
+ *  until a key is made to collide on purpose.
  */
 #pragma once
 #include <cstddef> // `std::size_t`
@@ -23,9 +23,10 @@ namespace ashvardanian::smashtable::scripts {
 /**
  *  @brief Every key a container constructs, it must destroy.
  *
- *  Drives the paths where a container moves elements around rather than merely holding them - growth,
- *  overwrite, erase, and teardown - and asserts the tally returns to zero. A defect count above zero
- *  means a key was read after destruction or destroyed twice, which the per-object magic word catches.
+ *  Drives the paths where a container moves elements around rather than merely holding them -
+ *  growth, overwrite, erase, and teardown - and asserts the tally returns to zero. A defect count
+ *  above zero means a key was read after destruction or destroyed twice, which the per-object magic
+ *  word catches.
  */
 template <typename container_type_>
 void test_container_balances_counted_keys(std::size_t size = 128) {
@@ -54,7 +55,7 @@ void test_container_balances_counted_keys(std::size_t size = 128) {
     counted_key_t::verify_balanced();
 }
 
-/** @brief A transaction that rolls back must destroy the keys it staged, exactly as a commit does. */
+/** A transaction that rolls back must destroy the keys it staged, exactly as a commit does. */
 template <typename container_type_>
 void test_rollback_balances_counted_keys(std::size_t size = 64) {
 
@@ -91,9 +92,9 @@ void test_rollback_balances_counted_keys(std::size_t size = 64) {
 /**
  *  @brief Every key stays reachable when a whole group shares one home slot.
  *
- *  The hash of @c colliding_key_t keeps only the group, so consecutive identifiers pile into one probe
- *  run. That is the shape in which a tombstone left by an erase can sever the run behind it and strand
- *  the keys past the gap - a well-spread hash never builds a run long enough to show it.
+ *  The hash of @c colliding_key_t keeps only the group, so consecutive identifiers pile into one
+ *  probe run. That is the shape in which a tombstone left by an erase can sever the run behind it
+ *  and strand the keys past the gap - a well-spread hash never builds a run long enough to show it.
  */
 template <typename container_type_>
 void test_container_walks_collision_runs(std::size_t groups = 4) {
@@ -124,7 +125,7 @@ void test_container_walks_collision_runs(std::size_t groups = 4) {
     }
 }
 
-/** @brief A staged write over a saturated probe run stays invisible until it commits, then is findable. */
+/** A staged write over a saturated probe run stays invisible until it commits, then is findable. */
 template <typename container_type_>
 void test_transaction_walks_collision_runs(std::size_t groups = 4) {
 
@@ -162,9 +163,10 @@ void test_transaction_walks_collision_runs(std::size_t groups = 4) {
 /**
  *  @brief A hash lookup compares a bounded number of candidates, however many keys are present.
  *
- *  A table's whole claim is that a probe run stays short. The defect that breaks it is one pathological
- *  run at one key, so every key is probed rather than a stride of them, and the worst run the table can
- *  produce at @p size is stated outright - it moves only when the hash, the load factor or @p size does.
+ *  A table's whole claim is that a probe run stays short. The defect that breaks it is one
+ *  pathological run at one key, so every key is probed rather than a stride of them, and the worst
+ *  run the table can produce at @p size is stated outright - it moves only when the hash, the load
+ *  factor or @p size does.
  */
 template <typename container_type_>
 void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
@@ -192,7 +194,7 @@ void test_hash_lookup_cost_is_bounded(std::size_t size = 4096) {
 
 #pragma region Hostile Element Types
 
-/** @brief A container over an over-aligned key must honour that alignment in the storage it hands out. */
+/** A container over an over-aligned key must honour that alignment in the storage it hands out. */
 template <typename container_type_>
 void test_container_honours_over_alignment(std::size_t size = 64) {
 
@@ -216,8 +218,9 @@ void test_container_honours_over_alignment(std::size_t size = 64) {
 /**
  *  @brief A copy that refuses must surface as a status, not as a silently truncated result.
  *
- *  @c find_copy is the one read that materializes a value, so it is the one read that can fail. A key
- *  whose @c copy() is refused on a schedule is what makes that path reachable without real exhaustion.
+ *  @c find_copy is the one read that materializes a value, so it is the one read that can fail. A
+ *  key whose @c copy() is refused on a schedule is what makes that path reachable without
+ *  real exhaustion.
  */
 template <typename container_type_>
 void test_find_copy_reports_a_refused_copy() {

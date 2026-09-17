@@ -1,10 +1,12 @@
 /**
- *  @brief Template tests for the rule that a commit stamp - and nothing else - decides which version of a key
- *      is current. Covers what that buys, which is a transaction validating through someone else's staging
- *      window, and what it must still refuse, which is a second writer publishing over a stale base.
- *  @author Ash Vardanian
  *  @file scripts/test_commit_stamp.hpp
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Template tests for the rule that a commit stamp - and nothing else - decides which
+ *      version of a key is current.
+ *
+ *  Covers what that buys, which is a transaction validating through someone else's staging window,
+ *  and what it must still refuse, which is a second writer publishing over a stale base.
  */
 #pragma once
 #include "test_basic.hpp"
@@ -114,11 +116,9 @@ void test_lost_update_is_refused() {
     st_verify_eq_(int(maybe_final->mapped), 101);
 }
 
-/**
- *  @brief A read recorded through @c find_and_watch on a key that is not there is still a read.
- *    Whoever creates that key afterwards invalidates it, which is what stops two transactions from
- *    both believing they are the one inserting it.
- */
+/** A read recorded through @c find_and_watch on a key that is not there is still a read. Whoever creates that key
+ *  afterwards invalidates it, which is what stops two transactions from both believing they are the one inserting
+ *  it. */
 template <typename container_type_>
 void test_find_and_watch_records_absence() {
 

@@ -1,21 +1,23 @@
 /**
- *  @brief The fixture library the whole tree draws on - keys, payloads, budgets, tallies, allocators and
- *      comparators - plus the suites for basic container operations written over them.
- *  @author Ash Vardanian
  *  @file scripts/test_basic.hpp
+ *  @author Ash Vardanian
  *  @date October 25, 2025
+ *  @brief The fixture library the whole tree draws on - keys, payloads, budgets, tallies,
+ *      allocators and comparators - plus the suites for basic container operations written
+ *      over them.
  *
  *  @section test_basic_fixtures Fixtures
  *
- *  Most of the file is fixtures rather than suites. Keys range from a trivial identifier to a heap-backed
- *  one whose copy can fail, values the same way, and the allocator, comparator and payload types carry
- *  budgets and tallies so a refusal can be aimed at one call. Every other test header includes this one
- *  for those types, so a change here is a change to every binary in the tree.
+ *  Most of the file is fixtures rather than suites. Keys range from a trivial identifier to a
+ *  heap-backed one whose copy can fail, values the same way, and the allocator, comparator and
+ *  payload types carry budgets and tallies so a refusal can be aimed at one call. Every other test
+ *  header includes this one for those types, so a change here is a change to every binary in
+ *  the tree.
  *
  *  @section test_basic_suites Suites
  *
- *  The suites cover insert, erase, find and range access plus heterogeneous lookup, and are templates any
- *  container answering the common interface can be instantiated with.
+ *  The suites cover insert, erase, find and range access plus heterogeneous lookup, and are
+ *  templates any container answering the common interface can be instantiated with.
  */
 #pragma once
 #include <cstdint> // `std::uintptr_t`
@@ -41,16 +43,12 @@ namespace ashvardanian::smashtable::scripts {
 
 #pragma region Keys and Associations
 
-/**
- *  @brief Even when testing some non-trivial keys, to make tests more uniform, they
- *    should be constructible from a single unsigned integer identifier and comparable to it,
- *    unless we are explicitly testing a non-heterogeneous comparator.
- */
+/** Even when testing some non-trivial keys, to make tests more uniform, they should be constructible from a single
+ *  unsigned integer identifier and comparable to it, unless we are explicitly testing a non-heterogeneous
+ *  comparator. */
 using trivial_id_t = std::size_t;
 
-/**
- *  @brief Strongly-typed trivial key @b without any payload or heterogenous comparisons.
- */
+/** Strongly-typed trivial key @b without any payload or heterogenous comparisons. */
 struct trivial_key_t {
     trivial_id_t unique_id = 0;
 
@@ -69,11 +67,9 @@ struct trivial_key_t {
     bool operator>=(trivial_key_t const &other) const noexcept { return unique_id >= other.unique_id; }
 };
 
-/**
- *  @brief Strongly-typed lightweight key that explicitly converts to the inner identifier.
- *    The identifier is inferred from comparator - @c composite_key_compare_t::value_type.
- *    Both the key and the underlying identifier are @c noexcept copyable.
- */
+/** Strongly-typed lightweight key that explicitly converts to the inner identifier. The identifier is inferred from
+ *  comparator - @c composite_key_compare_t::value_type. Both the key and the underlying identifier are @c noexcept
+ *  copyable. */
 struct composite_key_t {
     std::uint64_t some_metadata = 0;
     trivial_id_t unique_id = 0;
@@ -107,11 +103,11 @@ struct composite_key_compare_t {
 };
 
 /**
- *  @brief Strongly-typed key with heavy payload, that doesn't have a @c noexcept constructors,
- *    but provides @c ::make(...) and @c .copy() interfaces for safe construction and copying.
+ *  @brief Strongly-typed key with heavy payload, that doesn't have a @c noexcept constructors, but
+ *      provides @c ::make(...) and @c .copy() interfaces for safe construction and copying.
  *
- *  For compatibility with integer-based tests, provides @c ::make(trivial_id_t) that encodes
- *  the integer as a hexadecimal string and @c <=> and @c == operators for comparisons.
+ *  For compatibility with integer-based tests, provides @c ::make(trivial_id_t) that encodes the
+ *  integer as a hexadecimal string and @c <=> and @c == operators for comparisons.
  */
 struct heavy_key_t {
 
@@ -199,8 +195,8 @@ static_assert(std::is_same_v<versioning_for<heavy_key_t, std::less<void>>::value
 static_assert(std::is_same_v<versioning_for<heavy_key_t, std::less<void>>::identifier_type, heavy_key_t>);
 
 /**
- *  @brief Lifecycle-guarded payload that detects common anti-patterns.
- *    All state is self-contained - no globals, thread-safe.
+ *  @brief Lifecycle-guarded payload that detects common anti-patterns. All state is self-contained
+ *      - no globals, thread-safe.
  *
  *  Detects:
  *  - Double construction (constructor called twice)
@@ -369,17 +365,18 @@ class guarded_payload_t {
 
 #pragma region Budgets
 
-/** @brief How a budgeted resource answered one request, named so a log entry never reads as a bare flag. */
+/** How a budgeted resource answered one request, named so a log entry never reads as a bare flag. */
 enum class budget_outcome_t : bool { granted_k, refused_k };
 
-/** @brief The countdown that never runs out, as opposed to @c 0, which refuses the very next request. */
+/** The countdown that never runs out, as opposed to @c 0, which refuses the very next request. */
 inline constexpr std::size_t unlimited_budget_k = std::numeric_limits<std::size_t>::max();
 
 /**
- *  @brief Countdown arming @c budgeted_key_t::copy, so a rollback or a watch copy can be failed on demand.
+ *  @brief Countdown arming @c budgeted_key_t::copy, so a rollback or a watch copy can be failed
+ *      on demand.
  *
- *  The budget is process-wide because the key it governs is copied deep inside a container, where a test
- *  has no reference to hand it.
+ *  The budget is process-wide because the key it governs is copied deep inside a container, where a
+ *  test has no reference to hand it.
  */
 struct copy_budget_t {
     static inline std::size_t copies_till_fail {unlimited_budget_k};
@@ -390,10 +387,10 @@ struct copy_budget_t {
         refusals_count = 0;
     }
 
-    /** @brief Permits @p count more copies, refusing every one after them. */
+    /** Permits @p count more copies, refusing every one after them. */
     static void allow(std::size_t count) noexcept { copies_till_fail = count; }
 
-    /** @brief Spends one copy, reporting whether it was granted. */
+    /** Spends one copy, reporting whether it was granted. */
     static budget_outcome_t spend() noexcept {
         if (copies_till_fail == unlimited_budget_k) return budget_outcome_t::granted_k;
         if (copies_till_fail == 0) {
@@ -412,9 +409,9 @@ struct copy_budget_t {
 /**
  *  @brief Key and value tallying its own lifetime, so a leak or a double destruction is arithmetic.
  *
- *  A sanitizer sees a freed block, not the element left unconstructed-over or never destroyed inside one,
- *  which is exactly the defect a node allocator's own bookkeeping hides. The tallies are process-wide,
- *  because the objects live inside containers a test cannot reach into.
+ *  A sanitizer sees a freed block, not the element left unconstructed-over or never destroyed
+ *  inside one, which is exactly the defect a node allocator's own bookkeeping hides. The tallies
+ *  are process-wide, because the objects live inside containers a test cannot reach into.
  */
 struct counted_key_t {
     static constexpr std::uint32_t alive_magic_k = 0xA11FE000;
@@ -438,7 +435,7 @@ struct counted_key_t {
         note_construction();
     }
 
-    /** @brief Leaves the source alive, so its own destructor still balances the pair. */
+    /** Leaves the source alive, so its own destructor still balances the pair. */
     counted_key_t(counted_key_t &&other) noexcept : unique_id(other.unique_id) {
         other.verify_alive();
         moves.fetch_add(1, std::memory_order_relaxed);
@@ -503,12 +500,12 @@ struct counted_key_t {
     static std::size_t moves_count() noexcept { return moves.load(std::memory_order_relaxed); }
     static std::size_t defects_count() noexcept { return defects.load(std::memory_order_relaxed); }
 
-    /** @brief Objects built and not yet destroyed - negative when something was destroyed twice. */
+    /** Objects built and not yet destroyed - negative when something was destroyed twice. */
     static std::ptrdiff_t alive() noexcept {
         return static_cast<std::ptrdiff_t>(constructions_count()) - static_cast<std::ptrdiff_t>(destructions_count());
     }
 
-    /** @brief Aborts unless every object built has been destroyed exactly once, and none used after that. */
+    /** Aborts unless every object built has been destroyed exactly once, and none used after that. */
     static void verify_balanced() noexcept {
         st_verify_eq_(alive(), std::ptrdiff_t {0});
         st_verify_eq_(defects_count(), std::size_t {0});
@@ -520,7 +517,7 @@ struct counted_key_t {
         constructions.fetch_add(1, std::memory_order_relaxed);
     }
 
-    /** @brief Records, rather than asserts, a read of an object that was already destroyed. */
+    /** Records, rather than asserts, a read of an object that was already destroyed. */
     void verify_alive() const noexcept {
         if (magic != alive_magic_k) defects.fetch_add(1, std::memory_order_relaxed);
     }
@@ -531,11 +528,11 @@ struct counted_key_t {
 #pragma region Collisions and Alignment
 
 /**
- *  @brief Key hashing to its identifier's group index, so the identifiers sharing a group share one home
- *    slot and a probe run walks all of them.
+ *  @brief Key hashing to its identifier's group index, so the identifiers sharing a group share one
+ *      home slot and a probe run walks all of them.
  *
- *  Only the group survives hashing, so a table of at least @c collision_run_length_k slots is what makes
- *  the run long rather than merely crowded.
+ *  Only the group survives hashing, so a table of at least @c collision_run_length_k slots is what
+ *  makes the run long rather than merely crowded.
  */
 struct colliding_key_t {
     static constexpr trivial_id_t collision_run_length_k = 8;
@@ -544,7 +541,7 @@ struct colliding_key_t {
 
     explicit colliding_key_t(trivial_id_t identifier = 0) noexcept : unique_id(identifier) {}
 
-    /** @brief The home slot's identity - two keys collide exactly when this matches. */
+    /** The home slot's identity - two keys collide exactly when this matches. */
     static constexpr trivial_id_t group_of(trivial_id_t identifier) noexcept {
         return identifier / collision_run_length_k;
     }
@@ -555,19 +552,17 @@ struct colliding_key_t {
     bool operator==(colliding_key_t const &other) const noexcept { return unique_id == other.unique_id; }
 };
 
-/** @brief The alignment @c overaligned_key_t demands, wider than @c ::operator @c new promises. */
+/** The alignment @c overaligned_key_t demands, wider than @c ::operator @c new promises. */
 inline constexpr std::size_t overaligned_alignment_k = 64;
 
-/**
- *  @brief Element demanding cache-line alignment, which a node allocator over plain @c ::operator @c new
- *    cannot meet, so the misalignment shows up where the element sits rather than where it was asked for.
- */
+/** Element demanding cache-line alignment, which a node allocator over plain @c ::operator @c new cannot meet, so
+ *  the misalignment shows up where the element sits rather than where it was asked for. */
 struct alignas(overaligned_alignment_k) overaligned_key_t {
     trivial_id_t unique_id {0};
 
     explicit overaligned_key_t(trivial_id_t identifier = 0) noexcept : unique_id(identifier) {}
 
-    /** @brief Whether this object actually sits where its alignment demands. */
+    /** Whether this object actually sits where its alignment demands. */
     bool is_correctly_aligned() const noexcept {
         return reinterpret_cast<std::uintptr_t>(this) % overaligned_alignment_k == 0;
     }
@@ -584,10 +579,10 @@ struct alignas(overaligned_alignment_k) overaligned_key_t {
 
 /**
  *  @brief Heap-allocating key whose @c copy refuses on @c copy_budget_t, driving the rollback and
- *    watch-copy failure paths a key that always copies leaves untested.
+ *      watch-copy failure paths a key that always copies leaves untested.
  *
- *  Move-only, like the heavy key it wraps, so every duplication in a container goes through @c copy and
- *  is therefore schedulable.
+ *  Move-only, like the heavy key it wraps, so every duplication in a container goes through @c copy
+ *  and is therefore schedulable.
  */
 struct budgeted_key_t {
     heavy_key_t text;
@@ -638,13 +633,10 @@ struct budgeted_key_t {
 
 #pragma region Stateful Comparator
 
-/** @brief Which way a @c stateful_comparator orders, named so a call site never reads as a bare flag. */
+/** Which way a @c stateful_comparator orders, named so a call site never reads as a bare flag. */
 enum class stateful_comparator_ordering_t : bool { ascending_k, descending_k };
 
-/**
- *  @brief Stateful comparator with runtime configuration.
- *    Tests that comparators with member state work correctly.
- */
+/** Stateful comparator with runtime configuration. Tests that comparators with member state work correctly. */
 template <typename baseline_comparator_ = std::less<void>>
 struct stateful_comparator {
     using baseline_comparator_t = baseline_comparator_;
@@ -672,8 +664,9 @@ using stateful_comparator_t = stateful_comparator<>;
 /**
  *  @brief Process-wide tallies of ordering, equality and hashing invocations.
  *
- *  Reset immediately before the operation under test and read immediately after: a comparator is copied
- *  by value into every container that holds one, so there is nowhere else the count could live.
+ *  Reset immediately before the operation under test and read immediately after: a comparator is
+ *  copied by value into every container that holds one, so there is nowhere else the count
+ *  could live.
  */
 struct counting_call_tally_t {
     static inline std::atomic<std::size_t> comparisons {0};
@@ -695,9 +688,7 @@ struct counting_call_tally_t {
     static std::size_t hashes_count() noexcept { return hashes.load(std::memory_order_relaxed); }
 };
 
-/**
- *  @brief Transparent comparator counting every invocation, so a walk's cost becomes an assertion.
- */
+/** Transparent comparator counting every invocation, so a walk's cost becomes an assertion. */
 template <typename baseline_comparator_ = std::less<void>>
 struct counting_comparator {
     using baseline_comparator_t = baseline_comparator_;
@@ -714,9 +705,7 @@ struct counting_comparator {
 
 using counting_comparator_t = counting_comparator<>;
 
-/**
- *  @brief Transparent equality counting every invocation, for the cores that probe rather than descend.
- */
+/** Transparent equality counting every invocation, for the cores that probe rather than descend. */
 template <typename baseline_equals_ = std::equal_to<void>>
 struct counting_equals {
     using baseline_equals_t = baseline_equals_;
@@ -733,10 +722,8 @@ struct counting_equals {
 
 using counting_equals_t = counting_equals<>;
 
-/**
- *  @brief Transparent hasher counting every invocation, forwarding to the library's @c hash.
- *    Heterogeneous by construction, so a probe by a bare identifier is counted the same way.
- */
+/** Transparent hasher counting every invocation, forwarding to the library's @c hash. Heterogeneous by construction,
+ *  so a probe by a bare identifier is counted the same way. */
 struct counting_hash_t {
     using is_transparent = void;
 
@@ -751,9 +738,7 @@ struct counting_hash_t {
 
 #pragma region new_member Construction Helpers
 
-/**
- * @brief Helper to construct a new key matching the @c member_type_ from an integer value
- */
+/** Helper to construct a new key matching the @c member_type_ from an integer value */
 template <typename member_type_>
 auto trivial_id_to_key(trivial_id_t value) {
     if constexpr (has_make_method<member_type_, trivial_id_t>) {
@@ -765,9 +750,7 @@ auto trivial_id_to_key(trivial_id_t value) {
     else return member_type_ {value};
 }
 
-/**
- * @brief Helper to construct a new @c member_type_ from an integer value
- */
+/** Helper to construct a new @c member_type_ from an integer value */
 template <typename member_type_>
 auto trivial_id_to_member(trivial_id_t value) {
     if constexpr (has_make_method<member_type_, trivial_id_t>) {
@@ -780,9 +763,7 @@ auto trivial_id_to_member(trivial_id_t value) {
     else return member_type_ {value};
 }
 
-/**
- * @brief Helper to construct a new @c member_type_ from an integer value
- */
+/** Helper to construct a new @c member_type_ from an integer value */
 template <typename member_type_, typename value_type_>
 member_type_ trivial_id_to_member(trivial_id_t identifier, value_type_ value) {
     if constexpr (is_mapping<member_type_>)
@@ -794,7 +775,7 @@ member_type_ trivial_id_to_member(trivial_id_t identifier, value_type_ value) {
 
 #pragma region Stateful Allocator
 
-/** @brief One request an allocator was handed, kept in the order it arrived. */
+/** One request an allocator was handed, kept in the order it arrived. */
 struct allocation_request_t {
     std::size_t elements_count {0};
     std::size_t element_size {0};
@@ -804,8 +785,9 @@ struct allocation_request_t {
 /**
  *  @brief Shared state behind @c stateful_allocator - a budget, the tallies, and the request log.
  *
- *  Lives outside the allocator because a container rebinds and copies its allocator freely, and counts
- *  kept in the allocator itself would be scattered across those copies instead of accumulating.
+ *  Lives outside the allocator because a container rebinds and copies its allocator freely, and
+ *  counts kept in the allocator itself would be scattered across those copies instead
+ *  of accumulating.
  */
 struct allocation_ledger_t {
     std::size_t allocations_till_fail {unlimited_budget_k};
@@ -824,18 +806,18 @@ struct allocation_ledger_t {
         requests.clear();
     }
 
-    /** @brief Permits @p count more allocations, refusing every one after them. */
+    /** Permits @p count more allocations, refusing every one after them. */
     void allow(std::size_t count) noexcept { allocations_till_fail = count; }
 
-    /** @brief Answers @c nullptr from the very next request onwards. */
+    /** Answers @c nullptr from the very next request onwards. */
     void refuse_everything() noexcept { allocations_till_fail = 0; }
 
-    /** @brief Blocks granted and not yet returned - negative when something was freed twice. */
+    /** Blocks granted and not yet returned - negative when something was freed twice. */
     std::ptrdiff_t live_allocations() const noexcept {
         return static_cast<std::ptrdiff_t>(granted_count) - static_cast<std::ptrdiff_t>(deallocation_count);
     }
 
-    /** @brief The element count of the largest request seen, granted or refused. */
+    /** The element count of the largest request seen, granted or refused. */
     std::size_t largest_request_elements() const noexcept {
         std::size_t largest = 0;
         for (std::size_t index = 0; index != requests.size(); ++index)
@@ -843,13 +825,13 @@ struct allocation_ledger_t {
         return largest;
     }
 
-    /** @brief Aborts unless every granted block has been returned, and the log is complete. */
+    /** Aborts unless every granted block has been returned, and the log is complete. */
     void verify_balanced() const noexcept {
         st_verify_eq_(live_allocations(), std::ptrdiff_t {0});
         st_verify_eq_(unlogged_count, std::size_t {0});
     }
 
-    /** @brief Answers one request, spending the budget and appending to the log. */
+    /** Answers one request, spending the budget and appending to the log. */
     budget_outcome_t note_request(std::size_t elements_count, std::size_t element_size) noexcept {
         budget_outcome_t const outcome =
             allocations_till_fail == 0 ? budget_outcome_t::refused_k : budget_outcome_t::granted_k;
@@ -866,18 +848,18 @@ struct allocation_ledger_t {
 };
 
 /**
- *  @brief Allocator carrying an identity and, optionally, a shared @c allocation_ledger_t that budgets
- *    and records what it was asked for.
+ *  @brief Allocator carrying an identity and, optionally, a shared @c allocation_ledger_t that
+ *      budgets and records what it was asked for.
  *
- *  Refuses with @c nullptr rather than an exception, since the containers it feeds promise to throw none;
- *  an allocator with no ledger allocates freely and records nothing.
+ *  Refuses with @c nullptr rather than an exception, since the containers it feeds promise to throw
+ *  none; an allocator with no ledger allocates freely and records nothing.
  */
 template <typename element_type_>
 struct stateful_allocator {
     using value_type = element_type_;
     using propagate_on_container_move_assignment = std::true_type; // Required for AVL trees
 
-    /** @brief The byte width one element occupies, standing in for a @c void element with one byte. */
+    /** The byte width one element occupies, standing in for a @c void element with one byte. */
     static constexpr std::size_t element_size_k =
         sizeof(std::conditional_t<std::is_void_v<element_type_>, std::byte, element_type_>);
 
@@ -922,16 +904,14 @@ using stateful_allocator_t = stateful_allocator<std::byte>;
 
 #pragma region Basic Operation Test Templates
 
-/** @brief Erases a range whether or not the container reports a status for it. */
+/** Erases a range whether or not the container reports a status for it. */
 template <typename container_type_, typename lower_type_, typename upper_type_>
 void erase_range_of(container_type_ &container, lower_type_ const &lower, upper_type_ const &upper) {
     if constexpr (std::is_void_v<decltype(container.erase_range(lower, upper))>) container.erase_range(lower, upper);
     else { [[maybe_unused]] auto const status = container.erase_range(lower, upper); }
 }
 
-/**
- *  @brief Tests operations on empty container don't crash
- */
+/** Tests operations on empty container don't crash */
 template <typename container_type_>
 void test_empty_container_operations() {
 
@@ -946,9 +926,7 @@ void test_empty_container_operations() {
     st_verify_eq_(container.size(), 0);
 }
 
-/**
- *  @brief Tests operations on single-element container
- */
+/** Tests operations on single-element container */
 template <typename container_type_>
 void test_single_element_operations() {
 
@@ -965,9 +943,7 @@ void test_single_element_operations() {
     st_verify_eq_(container.size(), 0);
 }
 
-/**
- * @brief Tests insertion in ascending, descending, and random order
- */
+/** Tests insertion in ascending, descending, and random order */
 template <typename container_type_>
 void test_basic_insertion_patterns(std::size_t size = 100) {
 
@@ -1008,9 +984,7 @@ void test_basic_insertion_patterns(std::size_t size = 100) {
     }
 }
 
-/**
- *  @brief Tests bulk insertion via @b move iterators
- */
+/** Tests bulk insertion via @b move iterators */
 template <typename container_type_>
 void test_bulk_insertion_from_iterators(std::size_t size = 100) {
 
@@ -1047,9 +1021,8 @@ void test_bulk_insertion_from_iterators(std::size_t size = 100) {
 /**
  *  @brief Tests bulk upsert correctly overwrites duplicate keys
  *
- *  This test verifies that when bulk inserting elements with duplicate keys,
- *  the implementation uses upsert semantics (overwrite) rather than
- *  insert_if_missing semantics (skip).
+ *  This test verifies that when bulk inserting elements with duplicate keys, the implementation
+ *  uses upsert semantics (overwrite) rather than insert_if_missing semantics (skip).
  */
 template <typename container_type_>
 void test_bulk_upsert_with_duplicates() {
@@ -1104,9 +1077,7 @@ void test_bulk_upsert_with_duplicates() {
     }
 }
 
-/**
- *  @brief Tests range queries on committed HEAD state
- */
+/** Tests range queries on committed HEAD state */
 template <typename container_type_>
 void test_range_query_head_state(std::size_t size = 100) {
 
@@ -1152,9 +1123,7 @@ void test_range_query_head_state(std::size_t size = 100) {
     }
 }
 
-/**
- *  @brief Tests @c erase_range on committed HEAD state
- */
+/** Tests @c erase_range on committed HEAD state */
 template <typename container_type_>
 void test_erase_range_head_state(std::size_t size = 100) {
 
@@ -1180,11 +1149,9 @@ void test_erase_range_head_state(std::size_t size = 100) {
 
 #pragma region Heterogeneous Lookup Test Templates
 
-/**
- *  @brief Tests heterogeneous lookup for @c composite_key_t by @c trivial_id_t identifier.
- *    @c composite_key_t stores metadata + unique_id, but supports lookup by just the identifier.
- *    Verifies transparent comparator allows searching without materializing full key.
- */
+/** Tests heterogeneous lookup for @c composite_key_t by @c trivial_id_t identifier. @c composite_key_t stores
+ *  metadata + unique_id, but supports lookup by just the identifier. Verifies transparent comparator allows
+ *  searching without materializing full key. */
 template <typename container_type_>
 void test_heterogeneous_composite_find() {
 
@@ -1229,11 +1196,9 @@ void test_heterogeneous_composite_find() {
     }
 }
 
-/**
- *  @brief Tests heterogeneous lookup for @c heavy_key_t by @c std::string_view.
- *    @c heavy_key_t stores heap-allocated text, but supports lookup by @c string_view.
- *    Verifies transparent comparator allows searching without materializing full key.
- */
+/** Tests heterogeneous lookup for @c heavy_key_t by @c std::string_view. @c heavy_key_t stores heap-allocated text,
+ *  but supports lookup by @c string_view. Verifies transparent comparator allows searching without materializing
+ *  full key. */
 template <typename container_type_>
 void test_heterogeneous_heavy_string_view_find() {
 
@@ -1284,7 +1249,7 @@ void test_heterogeneous_heavy_string_view_find() {
 
 } // namespace ashvardanian::smashtable::scripts
 
-/** @brief Hashes for the fixture keys, so the partitioned collection can shard them. */
+/** Hashes for the fixture keys, so the partitioned collection can shard them. */
 namespace ashvardanian::smashtable {
 
 template <>
@@ -1329,7 +1294,7 @@ struct hash<scripts::overaligned_key_t> {
     }
 };
 
-/** @brief Only the group survives, so every identifier inside one shares a home slot. */
+/** Only the group survives, so every identifier inside one shares a home slot. */
 template <>
 struct hash<scripts::colliding_key_t> {
     std::size_t operator()(scripts::colliding_key_t const &key) const noexcept {

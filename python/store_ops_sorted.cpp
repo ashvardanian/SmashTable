@@ -1,12 +1,13 @@
 /**
- *  @brief The @c store_ops_t tables for the ordered cores, and the resolver every constructor goes through.
- *  @author Ash Vardanian
  *  @file python/store_ops_sorted.cpp
+ *  @author Ash Vardanian
  *  @date August 18, 2026
+ *  @brief The @c store_ops_t tables for the ordered cores, and the resolver every constructor
+ *      goes through.
  *
- *  One translation unit per core, because the cores are what pull in the heavy templates: an isolation
- *  level and a sharing strategy each double the instantiation count, and keeping both cores in one file
- *  would make every edit to the binding pay for all of them.
+ *  One translation unit per core, because the cores are what pull in the heavy templates: an
+ *  isolation level and a sharing strategy each double the instantiation count, and keeping both
+ *  cores in one file would make every edit to the binding pay for all of them.
  */
 #include "store_ops.hpp"
 
@@ -14,11 +15,11 @@ namespace ashvardanian::smashtable::py {
 
 #pragma region Instantiations
 
-/** @brief The ordered core every class here is built on, once per element shape. */
+/** The ordered core every class here is built on, once per element shape. */
 template <typename value_type_>
 using sorted_core = basic_avl_tree<value_type_, key_less_t, std::allocator<value_type_>>;
 
-/** @brief One isolation level over that core, then one sharing strategy over that. */
+/** One isolation level over that core, then one sharing strategy over that. */
 template <typename value_type_>
 using sorted_monotonic = monotonic_store<sorted_core<value_type_>>;
 template <typename value_type_>
@@ -37,8 +38,8 @@ using shared_by_partition = partitioned_store<store_type_, key_variant_hash_t>;
  *  @brief Every table this build carries for the ordered cores.
  *
  *  Spelled out one line per configuration rather than assembled from a loop over knobs, so a
- *  combination that does not exist cannot be named, and so each table is a distinct symbol a debugger
- *  and a profiler can tell apart.
+ *  combination that does not exist cannot be named, and so each table is a distinct symbol a
+ *  debugger and a profiler can tell apart.
  */
 constexpr store_ops_t sorted_map_monotonic_locked = store_bridge<shared_by_lock<sorted_monotonic<entry_t>>>::table();
 constexpr store_ops_t sorted_map_monotonic_partitioned =

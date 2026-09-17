@@ -1,17 +1,17 @@
 /**
- *  @brief Detectors for two defect classes the suites had no way of naming - a status that reports one
- *      cause as another, and two failure policies hiding under one return type.
- *  @author Ash Vardanian
  *  @file scripts/test_failure_policy.hpp
+ *  @author Ash Vardanian
  *  @date August 18, 2026
+ *  @brief Detectors for two defect classes the suites had no way of naming - a status that reports
+ *      one cause as another, and two failure policies hiding under one return type.
  *
  *  @section failure_policy_facade The Refusing Facade
  *
  *  @c refusing_store wraps a real store and refuses one named method on one chosen call, forwarding
- *  everything else untouched. Which call refuses is the point: a partitioned store walks its parts in
- *  ascending order, one call each, so "the fifth call to @c erase_range refuses" is exactly "the fifth
- *  partition refuses", and the tally of calls that still arrived afterwards is the observable footprint
- *  of the bulk policy.
+ *  everything else untouched. Which call refuses is the point: a partitioned store walks its parts
+ *  in ascending order, one call each, so "the fifth call to @c erase_range refuses" is exactly "the
+ *  fifth partition refuses", and the tally of calls that still arrived afterwards is the observable
+ *  footprint of the bulk policy.
  *
  *  @section failure_policy_causes Causes Against Statuses
  *
@@ -20,10 +20,10 @@
  *  @c failure_cause_t with no entry leaves an incomplete type rather than quietly aliasing onto a
  *  status another cause already owns.
  *
- *  The runtime half is the other property the table cannot state: a status meaning "nothing happened"
- *  must come with nothing having happened. Every driven refusal is bracketed by a footprint taken
- *  before and after, which is what a ghost commit - a refusal reported while its writes were already
- *  published - fails.
+ *  The runtime half is the other property the table cannot state: a status meaning "nothing
+ *  happened" must come with nothing having happened. Every driven refusal is bracketed by a
+ *  footprint taken before and after, which is what a ghost commit - a refusal reported while its
+ *  writes were already published - fails.
  */
 #pragma once
 #include <cstddef> // `std::size_t`
@@ -45,8 +45,8 @@ namespace ashvardanian::smashtable::scripts {
 /**
  *  @brief The methods @c refusing_store can be told to refuse, and the tallies it keeps per method.
  *
- *  @c none_k is the standing instruction that refuses nothing, and @c methods_count_k is one past the
- *  last method, sizing the tallies rather than naming a method of its own.
+ *  @c none_k is the standing instruction that refuses nothing, and @c methods_count_k is one past
+ *  the last method, sizing the tallies rather than naming a method of its own.
  */
 enum class refusable_method_t : std::uint8_t {
     none_k,
@@ -60,29 +60,34 @@ enum class refusable_method_t : std::uint8_t {
     methods_count_k,
 };
 
-/** @brief How many entries a per-method table needs. */
+/** How many entries a per-method table needs. */
 inline constexpr std::size_t refusable_methods_k = static_cast<std::size_t>(refusable_method_t::methods_count_k);
 
-/** @brief The call index no call ever carries, as opposed to @c 0, which refuses the very first one. */
+/** The call index no call ever carries, as opposed to @c 0, which refuses the very first one. */
 inline constexpr std::size_t no_refusal_k = std::numeric_limits<std::size_t>::max();
 
 /**
- *  @brief The standing instruction @c refusing_store consults, plus the tally of calls that reached it.
+ *  @brief The standing instruction @c refusing_store consults, plus the tally of calls that
+ *      reached it.
  *
- *  Process-wide for the same reason @c copy_budget_t is: a partitioned store builds its parts through
- *  @c inner_store_t::make(), so a test has no reference to hand each of the sixteen.
+ *  Process-wide for the same reason @c copy_budget_t is: a partitioned store builds its parts
+ *  through @c inner_store_t::make(), so a test has no reference to hand each of the sixteen.
  */
 struct refusal_plan_t {
-    /** @brief Which method refuses, or @c none_k while every call is forwarded. */
+
+    /** Which method refuses, or @c none_k while every call is forwarded. */
     static inline refusable_method_t refused_method {refusable_method_t::none_k};
-    /** @brief The zero-based index, among calls to that method, of the one call that refuses. */
+
+    /** The zero-based index, among calls to that method, of the one call that refuses. */
     static inline std::size_t refused_call {no_refusal_k};
-    /** @brief The status that refusal reports. */
+
+    /** The status that refusal reports. */
     static inline status_t refused_status {status_t::out_of_memory_heap_k};
-    /** @brief How many calls each method has received since the last reset. */
+
+    /** How many calls each method has received since the last reset. */
     static inline std::array<std::size_t, refusable_methods_k> calls {};
 
-    /** @brief Forgets the instruction and the tallies, so a fresh measurement starts from zero. */
+    /** Forgets the instruction and the tallies, so a fresh measurement starts from zero. */
     static void reset() noexcept {
         refused_method = refusable_method_t::none_k;
         refused_call = no_refusal_k;
@@ -90,19 +95,19 @@ struct refusal_plan_t {
         calls = {};
     }
 
-    /** @brief Arms the refusal of call @p call_index to @p method, reported as @p status. */
+    /** Arms the refusal of call @p call_index to @p method, reported as @p status. */
     static void refuse(refusable_method_t method, std::size_t call_index, status_t status) noexcept {
         refused_method = method;
         refused_call = call_index;
         refused_status = status;
     }
 
-    /** @brief How many calls @p method has received since the last reset - the observable footprint. */
+    /** How many calls @p method has received since the last reset - the observable footprint. */
     [[nodiscard]] static std::size_t calls_count(refusable_method_t method) noexcept {
         return calls[static_cast<std::size_t>(method)];
     }
 
-    /** @brief Records one call to @p method and reports whether the facade must refuse this one. */
+    /** Records one call to @p method and reports whether the facade must refuse this one. */
     [[nodiscard]] static budget_outcome_t spend(refusable_method_t method) noexcept {
         std::size_t const index = calls[static_cast<std::size_t>(method)]++;
         if (method != refused_method || index != refused_call) return budget_outcome_t::granted_k;
@@ -116,13 +121,13 @@ struct refusal_plan_t {
 
 /**
  *  @brief A store that refuses one named call and forwards the rest, so a wrapper's own failure
- *    handling can be driven without a single allocation going wrong.
+ *      handling can be driven without a single allocation going wrong.
  *
  *  Derives from the store it stands in for rather than forwarding its surface by hand: the wrappers
- *  detect what a part can do through requires-expressions over dozens of members, and a hand-written
- *  facade would answer those questions about itself rather than about the store underneath. Only the
- *  refusable methods are redeclared, each carrying the constraint its base declares so an inner store
- *  that never had the method does not appear to grow one.
+ *  detect what a part can do through requires-expressions over dozens of members, and a
+ *  hand-written facade would answer those questions about itself rather than about the store
+ *  underneath. Only the refusable methods are redeclared, each carrying the constraint its base
+ *  declares so an inner store that never had the method does not appear to grow one.
  *
  *  @tparam store_type_ The store standing behind the facade, such as @c monotonic_avl_map.
  */
@@ -190,10 +195,8 @@ class refusing_store : public store_type_ {
                            [&]() noexcept { return base_t::erase_up_to(upper, callback); });
     }
 
-    /**
-     *  @brief Reports a status where the base reports nothing, since a walk that cannot refuse cannot
-     *    be made to. The partitioned wrapper accepts either shape and widens to this one.
-     */
+    /** Reports a status where the base reports nothing, since a walk that cannot refuse cannot be made to. The
+     *  partitioned wrapper accepts either shape and widens to this one. */
     template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
     [[nodiscard]] status_t update_range(lower_type_ &&lower, upper_type_ &&upper,
                                         callback_type_ &&callback = {}) noexcept
@@ -204,7 +207,7 @@ class refusing_store : public store_type_ {
     }
 
   private:
-    /** @brief Spends one call of @p method, answering the standing refusal or forwarding to the base. */
+    /** Spends one call of @p method, answering the standing refusal or forwarding to the base. */
     template <typename forwarded_type_>
     [[nodiscard]] status_t refused_or_(refusable_method_t method, forwarded_type_ &&forwarded) noexcept {
         if (refusal_plan_t::spend(method) == budget_outcome_t::refused_k) return refusal_plan_t::refused_status;
@@ -221,31 +224,38 @@ class refusing_store : public store_type_ {
 #pragma region Failure Causes
 
 /**
- *  @brief The distinct reasons an operation can be refused, each of which must carry its own status.
+ *  @brief The distinct reasons an operation can be refused, each of which must carry its
+ *      own status.
  *
  *  The list is closed on purpose: a cause added here with no @c status_of_cause entry leaves an
- *  incomplete type at the first use, which is what turns "a new cause silently reuses someone else's
- *  status" from a review question into a build failure.
+ *  incomplete type at the first use, which is what turns "a new cause silently reuses someone
+ *  else's status" from a review question into a build failure.
  */
 enum class failure_cause_t : std::uint8_t {
-    /** @brief The allocator answered no room. */
+
+    /** The allocator answered no room. */
     heap_refused_k,
-    /** @brief A bounded probe sequence ran out of slots, which more memory would not fix. */
+
+    /** A bounded probe sequence ran out of slots, which more memory would not fix. */
     probe_exhausted_k,
-    /** @brief The key an operation demanded be there was not. */
+
+    /** The key an operation demanded be there was not. */
     key_absent_k,
-    /** @brief The key an operation demanded be free was taken. */
+
+    /** The key an operation demanded be free was taken. */
     key_present_k,
-    /** @brief Something a transaction watched moved under it. */
+
+    /** Something a transaction watched moved under it. */
     watch_conflicted_k,
-    /** @brief One past the last cause, sizing the table rather than naming a cause. */
+
+    /** One past the last cause, sizing the table rather than naming a cause. */
     causes_count_k,
 };
 
-/** @brief How many causes the table has to cover. */
+/** How many causes the table has to cover. */
 inline constexpr std::size_t failure_causes_k = static_cast<std::size_t>(failure_cause_t::causes_count_k);
 
-/** @brief The status one cause must be reported as. Declared with no definition: every cause specializes it. */
+/** The status one cause must be reported as. Declared with no definition: every cause specializes it. */
 template <failure_cause_t cause_>
 struct status_of_cause;
 
@@ -270,14 +280,14 @@ struct status_of_cause<failure_cause_t::watch_conflicted_k> {
     static constexpr status_t status_k = status_t::read_conflict_k;
 };
 
-/** @brief The table read as an array, which is what makes it checkable rather than merely readable. */
+/** The table read as an array, which is what makes it checkable rather than merely readable. */
 template <std::size_t... indices_>
 [[nodiscard]] constexpr std::array<status_t, sizeof...(indices_)> statuses_of_causes(
     std::index_sequence<indices_...>) noexcept {
     return {status_of_cause<static_cast<failure_cause_t>(indices_)>::status_k...};
 }
 
-/** @brief Whether no two causes name the same status, and none of them names success. */
+/** Whether no two causes name the same status, and none of them names success. */
 [[nodiscard]] constexpr bool causes_name_distinct_statuses() noexcept {
     auto const statuses = statuses_of_causes(std::make_index_sequence<failure_causes_k> {});
     for (std::size_t first = 0; first != failure_causes_k; ++first) {
@@ -290,26 +300,26 @@ template <std::size_t... indices_>
 
 static_assert(causes_name_distinct_statuses(), "two failure causes share one status, so no caller can tell them apart");
 
-/** @brief Whether a cause was driven against a given store at all, since not every store can produce every one. */
+/** Whether a cause was driven against a given store at all, since not every store can produce every one. */
 enum class failure_cause_driven_t : bool { skipped_k, driven_k };
 
-/** @brief One cause's outcome - the status it reported, and whether it was reachable to report one. */
+/** One cause's outcome - the status it reported, and whether it was reachable to report one. */
 struct observed_cause_t {
-    /** @brief The status the cause reported, meaningful only where @c drive says it was driven. */
+
+    /** The status the cause reported, meaningful only where @c drive says it was driven. */
     status_t status {};
-    /** @brief Whether the cause was reachable against the store under test. */
+
+    /** Whether the cause was reachable against the store under test. */
     failure_cause_driven_t drive {failure_cause_driven_t::skipped_k};
 };
 
-/**
- *  @brief What each cause was observed to report, so distinctness is asserted of the run and not only
- *    of the table.
- */
+/** What each cause was observed to report, so distinctness is asserted of the run and not only of the table. */
 struct observed_causes_t {
-    /** @brief One outcome per cause, subscripted by the cause's own value. */
+
+    /** One outcome per cause, subscripted by the cause's own value. */
     std::array<observed_cause_t, failure_causes_k> observations {};
 
-    /** @brief Records @p observed for @p cause, checking it against the table on the spot. */
+    /** Records @p observed for @p cause, checking it against the table on the spot. */
     void note(failure_cause_t cause, status_t observed) noexcept {
         std::size_t const index = static_cast<std::size_t>(cause);
         auto const expected_statuses = statuses_of_causes(std::make_index_sequence<failure_causes_k> {});
@@ -317,7 +327,7 @@ struct observed_causes_t {
         observations[index] = observed_cause_t {observed, failure_cause_driven_t::driven_k};
     }
 
-    /** @brief Aborts unless the causes actually driven reported statuses no two of them shared. */
+    /** Aborts unless the causes actually driven reported statuses no two of them shared. */
     void verify_distinct() const noexcept {
         std::size_t driven_count = 0;
         for (std::size_t first = 0; first != failure_causes_k; ++first) {
@@ -337,17 +347,19 @@ struct observed_causes_t {
 
 #pragma region Observable Footprint
 
-/** @brief What an outside observer can see of a store, so "nothing happened" becomes a comparison. */
+/** What an outside observer can see of a store, so "nothing happened" becomes a comparison. */
 struct store_footprint_t {
-    /** @brief How many members the store reports. */
+
+    /** How many members the store reports. */
     std::size_t size {0};
-    /** @brief An order-independent mix of every member, which a changed value moves and a walk does not. */
+
+    /** An order-independent mix of every member, which a changed value moves and a walk does not. */
     std::size_t checksum {0};
 
     bool operator==(store_footprint_t const &) const noexcept = default;
 };
 
-/** @brief Mixes one member into a footprint, folding in the mapped side wherever it is a number. */
+/** Mixes one member into a footprint, folding in the mapped side wherever it is a number. */
 template <typename member_type_>
 [[nodiscard]] std::size_t checksum_of_member(member_type_ const &member) noexcept {
     auto const &key = mapping_key_or_itself<member_type_>(member);
@@ -358,7 +370,7 @@ template <typename member_type_>
     return mixed;
 }
 
-/** @brief Takes the footprint of @p store, walking its members where it enumerates them. */
+/** Takes the footprint of @p store, walking its members where it enumerates them. */
 template <typename store_type_>
 [[nodiscard]] store_footprint_t footprint_of(store_type_ const &store) noexcept {
     store_footprint_t seen;
@@ -392,7 +404,7 @@ void drive_present_key_cause(store_type_ &store, observed_causes_t &observed, st
     }
 }
 
-/** @brief A refused strict update must name the absent key, and must not create it. */
+/** A refused strict update must name the absent key, and must not create it. */
 template <typename store_type_>
 void drive_absent_key_cause(store_type_ &store, observed_causes_t &observed, std::size_t size) {
 
@@ -410,9 +422,9 @@ void drive_absent_key_cause(store_type_ &store, observed_causes_t &observed, std
 /**
  *  @brief A commit whose watch drifted must say so, and must publish none of what it staged.
  *
- *  The second half is the ghost commit: a transaction that writes a key nobody else touched, watches a
- *  key somebody does, and is refused. Reporting the conflict while the untouched key's new value is
- *  already visible is a refusal that lies about having done nothing.
+ *  The second half is the ghost commit: a transaction that writes a key nobody else touched,
+ *  watches a key somebody does, and is refused. Reporting the conflict while the untouched key's
+ *  new value is already visible is a refusal that lies about having done nothing.
  */
 template <typename store_type_>
 void drive_watch_conflict_cause(store_type_ &store, observed_causes_t &observed, std::size_t size) {
@@ -462,7 +474,7 @@ void drive_heap_refusal_cause(store_type_ &store, allocation_ledger_t &ledger, o
 
 /**
  *  @brief Every failure cause this store can produce reports its own status, and none of them lies
- *    about having left the store alone.
+ *      about having left the store alone.
  *
  *  @param[in] size How many members to seed, which also spaces the keys the causes are driven with.
  */
@@ -486,7 +498,8 @@ void test_store_maps_causes_to_distinct_statuses(std::size_t size = 32) {
 }
 
 /**
- *  @brief The same detector for a store whose allocator can be told to refuse, which adds the heap cause.
+ *  @brief The same detector for a store whose allocator can be told to refuse, which adds the
+ *      heap cause.
  *  @param[in] size How many members to seed before the allocator is closed.
  */
 template <typename store_type_>
@@ -517,11 +530,13 @@ void test_budgeted_store_maps_causes_to_distinct_statuses(std::size_t size = 32)
 }
 
 /**
- *  @brief A wrapper must relay the cause its part named, verbatim, and publish nothing while doing it.
+ *  @brief A wrapper must relay the cause its part named, verbatim, and publish nothing while
+ *      doing it.
  *
- *  Every cause is driven through @c refusing_store rather than through a real failure, which is the only
- *  way to ask a wrapper about a cause its parts happen never to produce - an exhausted probe under a
- *  tree, say. A wrapper that folds several causes into one status fails on the first of them.
+ *  Every cause is driven through @c refusing_store rather than through a real failure, which is the
+ *  only way to ask a wrapper about a cause its parts happen never to produce - an exhausted probe
+ *  under a tree, say. A wrapper that folds several causes into one status fails on the first
+ *  of them.
  */
 template <typename store_type_, std::size_t... indices_>
 void drive_relayed_causes(store_type_ &store, std::size_t size, std::index_sequence<indices_...>) {
@@ -540,7 +555,7 @@ void drive_relayed_causes(store_type_ &store, std::size_t size, std::index_seque
     (drive_one(indices_, status_of_cause<static_cast<failure_cause_t>(indices_)>::status_k), ...);
 }
 
-/** @brief Runs every cause through @p store_type_, whose parts must be @c refusing_store. */
+/** Runs every cause through @p store_type_, whose parts must be @c refusing_store. */
 template <typename store_type_>
 void test_wrapper_relays_every_cause(std::size_t size = 64) {
 
@@ -564,15 +579,13 @@ void test_wrapper_relays_every_cause(std::size_t size = 64) {
  *  @brief What a partitioned bulk method does with the partitions after one of them refuses.
  *
  *  @c stop_at_first_k is what @c for_all does - the walk returns on the refusal and the partitions
- *  behind it are never touched. @c attempt_every_k is what the range erasures do - every partition is
- *  attempted and the last refusal is the one reported.
+ *  behind it are never touched. @c attempt_every_k is what the range erasures do - every partition
+ *  is attempted and the last refusal is the one reported.
  */
 enum class bulk_failure_policy_t : std::uint8_t { stop_at_first_k, attempt_every_k };
 
-/**
- *  @brief The partitioned methods that walk every partition, each of which must declare a policy.
- *    @c methods_count_k is one past the last of them, and sizes the sweep rather than naming a method.
- */
+/** The partitioned methods that walk every partition, each of which must declare a policy. @c methods_count_k is one
+ *  past the last of them, and sizes the sweep rather than naming a method. */
 enum class bulk_method_t : std::uint8_t {
     clear_k,
     reserve_k,
@@ -583,15 +596,16 @@ enum class bulk_method_t : std::uint8_t {
     methods_count_k,
 };
 
-/** @brief How many bulk methods the sweep has to cover. */
+/** How many bulk methods the sweep has to cover. */
 inline constexpr std::size_t bulk_methods_k = static_cast<std::size_t>(bulk_method_t::methods_count_k);
 
 /**
- *  @brief What one bulk method promises and how to drive it. Declared with no definition on purpose.
+ *  @brief What one bulk method promises and how to drive it. Declared with no definition
+ *      on purpose.
  *
- *  A method added to @c bulk_method_t without a specialization here leaves an incomplete type at the
- *  sweep below, so a new all-partition walk cannot join a policy by accident - it has to say which one
- *  it keeps, and hand the detector a way to run it.
+ *  A method added to @c bulk_method_t without a specialization here leaves an incomplete type at
+ *  the sweep below, so a new all-partition walk cannot join a policy by accident - it has to say
+ *  which one it keeps, and hand the detector a way to run it.
  */
 template <bulk_method_t method_>
 struct bulk_method_traits;
@@ -668,8 +682,8 @@ struct bulk_method_traits<bulk_method_t::update_range_k> {
 };
 
 /**
- *  @brief Whether the store itself declares the policy of @p method_, which the detector then checks
- *    its own table against rather than replacing it.
+ *  @brief Whether the store itself declares the policy of @p method_, which the detector then
+ *      checks its own table against rather than replacing it.
  *
  *  Until the wrapper carries the constants, the table above is the only statement of the policy and
  *  this answers @c false, which keeps the detector running against the behaviour as it stands.
@@ -684,7 +698,7 @@ template <typename store_type_, bulk_method_t method_>
     else return requires { store_type_::update_range_policy_k; };
 }
 
-/** @brief The constant the store declares for @p method_, in the store's own enumeration. */
+/** The constant the store declares for @p method_, in the store's own enumeration. */
 template <typename store_type_, bulk_method_t method_>
 [[nodiscard]] constexpr auto library_bulk_policy() noexcept {
     if constexpr (method_ == bulk_method_t::clear_k) return store_type_::clear_policy_k;
@@ -695,10 +709,8 @@ template <typename store_type_, bulk_method_t method_>
     else return store_type_::update_range_policy_k;
 }
 
-/**
- *  @brief The same policy read into this header's enumeration, matched by name rather than by value so
- *    the two enumerations stay free to order their enumerators differently.
- */
+/** The same policy read into this header's enumeration, matched by name rather than by value so the two enumerations
+ *  stay free to order their enumerators differently. */
 template <typename store_type_, bulk_method_t method_>
 [[nodiscard]] constexpr bulk_failure_policy_t declared_bulk_policy() noexcept {
     constexpr auto named = library_bulk_policy<store_type_, method_>();
@@ -708,13 +720,13 @@ template <typename store_type_, bulk_method_t method_>
 }
 
 /**
- *  @brief Drives one bulk method through a refusal at partition @p refusing_partition and asserts the
- *    footprint matches the policy the method declares.
+ *  @brief Drives one bulk method through a refusal at partition @p refusing_partition and asserts
+ *      the footprint matches the policy the method declares.
  *
  *  The footprint is the tally of calls that reached the partitions: a walk that stops at the first
- *  refusal leaves the tally at the refusing partition, and one that attempts every partition leaves it
- *  at the partition count. Nothing else distinguishes the two, which is why the wrappers could carry
- *  both under one return type unnoticed.
+ *  refusal leaves the tally at the refusing partition, and one that attempts every partition leaves
+ *  it at the partition count. Nothing else distinguishes the two, which is why the wrappers could
+ *  carry both under one return type unnoticed.
  */
 template <typename store_type_, bulk_method_t method_>
 void test_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing_partition) {
@@ -757,7 +769,7 @@ void test_one_bulk_method_matches_policy(std::size_t size, std::size_t refusing_
     }
 }
 
-/** @brief Sweeps every enumerator, which is where a method with no declared policy fails to compile. */
+/** Sweeps every enumerator, which is where a method with no declared policy fails to compile. */
 template <typename store_type_, std::size_t... indices_>
 void sweep_bulk_methods(std::size_t size, std::size_t refusing_partition, std::index_sequence<indices_...>) {
     (test_one_bulk_method_matches_policy<store_type_, static_cast<bulk_method_t>(indices_)>(size, refusing_partition),
@@ -765,12 +777,14 @@ void sweep_bulk_methods(std::size_t size, std::size_t refusing_partition, std::i
 }
 
 /**
- *  @brief Every all-partition method keeps the failure policy it declares, driven at one chosen partition.
- *  @warning The partitions have to be @c refusing_store, since that is what the refusal is armed on; a
- *    store built over a plain part never refuses and the detector says so rather than passing quietly.
+ *  @brief Every all-partition method keeps the failure policy it declares, driven at one
+ *      chosen partition.
+ *  @warning The partitions have to be @c refusing_store, since that is what the refusal is armed
+ *      on; a store built over a plain part never refuses and the detector says so rather than
+ *      passing quietly.
  *  @param[in] size How many members to seed, spread across the partitions by their hashes.
- *  @param[in] refusing_partition Which partition refuses, zero-based - the fifth by default, so a walk
- *    that stopped and one that carried on leave measurably different tallies.
+ *  @param[in] refusing_partition Which partition refuses, zero-based - the fifth by default, so a
+ *      walk that stopped and one that carried on leave measurably different tallies.
  */
 template <typename store_type_>
 void test_bulk_methods_match_declared_policy(std::size_t size = 256, std::size_t refusing_partition = 4) {

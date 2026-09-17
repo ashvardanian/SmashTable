@@ -1,26 +1,28 @@
 /**
- *  @brief Randomized differential suites - one engine against the oracle, and groups against tearing.
- *  @author Ash Vardanian
  *  @file scripts/test_fuzz.hpp
+ *  @author Ash Vardanian
  *  @date August 20, 2026
+ *  @brief Randomized differential suites - one engine against the oracle, and groups
+ *      against tearing.
  *
- *  Included by @c scripts/test_snapshot_store.cpp and by no other binary, so a suite added here runs
- *  exactly once.
+ *  Included by @c scripts/test_snapshot_store.cpp and by no other binary, so a suite added here
+ *  runs exactly once.
  *
  *  @section fuzz_oracle The Oracle
  *
- *  One Engine Against the Oracle steps a @c reference_store through the same operation sequence as the
- *  engine under test and compares the two after every step rather than at the end - so a divergence
- *  names the operation that caused it instead of the walk that noticed. Groups Against Tearing compares
- *  each participant against what its round intended instead: the snapshot taken before a refused
- *  commit, and a @c reference_store advanced by the same write after an accepted one. Never one
- *  participant against the other, which two stores that published nothing would satisfy.
+ *  One Engine Against the Oracle steps a @c reference_store through the same operation sequence as
+ *  the engine under test and compares the two after every step rather than at the end - so a
+ *  divergence names the operation that caused it instead of the walk that noticed. Groups Against
+ *  Tearing compares each participant against what its round intended instead: the snapshot taken
+ *  before a refused commit, and a @c reference_store advanced by the same write after an accepted
+ *  one. Never one participant against the other, which two stores that published nothing
+ *  would satisfy.
  *
  *  @section fuzz_seed Reproducing a Failure
  *
- *  Every sequence is drawn from @c test_seed(), which reads @c SMASHTABLE_SEED and otherwise answers
- *  @c default_seed_k. A failing run is reproduced by exporting the seed it printed, and a sweep is a
- *  loop over the variable rather than an edit to the source.
+ *  Every sequence is drawn from @c test_seed(), which reads @c SMASHTABLE_SEED and otherwise
+ *  answers @c default_seed_k. A failing run is reproduced by exporting the seed it printed, and a
+ *  sweep is a loop over the variable rather than an edit to the source.
  */
 #pragma once
 #include <compare> // `std::compare_three_way`
@@ -35,14 +37,14 @@ namespace ashvardanian::smashtable::scripts {
 
 #pragma region Shared Fixtures
 
-/** @brief How many keys a fuzz round draws from, kept small so collisions and reuse are the common case. */
+/** How many keys a fuzz round draws from, kept small so collisions and reuse are the common case. */
 inline constexpr trivial_id_t fuzz_keyspace_k = 24;
 
-/** @brief The oracle every engine here is checked against, over the same key and mapped types. */
+/** The oracle every engine here is checked against, over the same key and mapped types. */
 using fuzz_oracle_t =
     reference_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** @brief What one engine and the oracle both hold, so a divergence is one comparison rather than a walk. */
+/** What one engine and the oracle both hold, so a divergence is one comparison rather than a walk. */
 struct fuzz_snapshot_t {
     std::size_t size {0};
     std::size_t checksum {0};
@@ -71,7 +73,8 @@ fuzz_snapshot_t fuzz_snapshot_of(store_type_ &store) noexcept {
 #pragma region One Engine Against the Oracle
 
 /**
- *  @brief Drives a random write sequence through an engine and the oracle, comparing after every step.
+ *  @brief Drives a random write sequence through an engine and the oracle, comparing after
+ *      every step.
  *
  *  The strict writers are the point rather than @c upsert: @c insert, @c insert_if_missing and
  *  @c update each answer a question about what the caller can already see, and an engine consulting
@@ -149,7 +152,8 @@ void test_random_writes_match_the_oracle(std::size_t rounds = 400) {
 }
 
 /**
- *  @brief Drives whole-window mutators, which reach every partition where a store has more than one.
+ *  @brief Drives whole-window mutators, which reach every partition where a store has more
+ *      than one.
  *
  *  A sharded store answers these by walking every partition rather than the one a key hashes to, so
  *  a window mutator that never records which partitions it reached stages tombstones the commit
@@ -208,9 +212,9 @@ void test_random_windows_match_the_oracle(std::size_t rounds = 120) {
  *  @brief Refuses a random group commit and checks that no participant moved.
  *
  *  A group that publishes one participant and is then turned away by the next leaves the two
- *  disagreeing about whether the update happened, and no retry can reconcile them. So the refusal is
- *  forced rather than raced - a watched key is published over while the group sits staged - and both
- *  participants are compared against the snapshot taken before the commit was attempted.
+ *  disagreeing about whether the update happened, and no retry can reconcile them. So the refusal
+ *  is forced rather than raced - a watched key is published over while the group sits staged - and
+ *  both participants are compared against the snapshot taken before the commit was attempted.
  */
 template <typename first_store_type_, typename second_store_type_>
 void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
@@ -276,10 +280,11 @@ void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
 }
 
 /**
- *  @brief Commits random groups that nothing refuses, and checks every participant advanced together.
+ *  @brief Commits random groups that nothing refuses, and checks every participant
+ *      advanced together.
  *
- *  The mirror of the refusal case: a group that publishes must publish all of itself, so the pair is
- *  compared against a model advanced only when the commit answered success.
+ *  The mirror of the refusal case: a group that publishes must publish all of itself, so the pair
+ *  is compared against a model advanced only when the commit answered success.
  */
 template <typename first_store_type_, typename second_store_type_>
 void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
