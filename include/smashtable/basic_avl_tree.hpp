@@ -81,6 +81,8 @@
 #include <cassert> // `assert`
 #include <cstdint> // `std::uint64_t`
 
+#include <iterator> // `std::forward_iterator`, `std::advance`
+
 #include <limits>  // `std::numeric_limits`
 #include <memory>  // `std::allocator`
 #include <utility> // `std::exchange`
@@ -585,6 +587,16 @@ class basic_avl_node {
         return find_or_make(node, new_child->payload, comparator, [](node_t *) noexcept {}, new_child);
     }
 
+    /** What a bulk build produced, and why it stopped where it did. */
+    struct built_subtree_t {
+
+        /** Everything that was built, which the owner frees whether the build finished or not. */
+        node_t *root = nullptr;
+
+        /** Why the build stopped: a refused node, a refused element copy, or @c success_k. */
+        status_t status = success_k;
+    };
+
     /**
      *  @brief Builds a balanced AVL tree from sorted range in O(n) time. Precondition: Range
      *      [first, first+count) must be sorted according to comparator.
@@ -593,43 +605,49 @@ class basic_avl_node {
      *  @param[in] count Number of elements in range.
      *  @param[in] allocate_node Allocator function that returns new node pointer or nullptr
      *      on failure.
-     *  @return The root of the balanced tree, or @c nullptr if an allocation failed.
+     *  @return What was built and why the build stopped, which is @c success_k for the whole range.
      *
      *  @note Complexity: O(n) time, O(log n) recursion depth. Builds perfectly balanced tree by
      *      recursively picking middle element as root.
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
      */
     template <typename iterator_type_, typename allocator_func_>
-    static node_t *build_from_sorted(iterator_type_ first, std::size_t count,
-                                     allocator_func_ &&allocate_node) noexcept {
-        if (count == 0) return nullptr;
+    static built_subtree_t build_from_sorted(iterator_type_ first, std::size_t count,
+                                             allocator_func_ &&allocate_node) noexcept {
+        if (count == 0) return {};
 
-        // Find middle element
-        std::size_t mid = count / 2;
-        auto mid_iter = first;
-        std::advance(mid_iter, mid);
+        std::size_t const middle = count / 2;
+        iterator_type_ middle_iterator = first;
+        std::advance(middle_iterator, middle);
 
-        // Allocate root node
+        // Duplicated before a node is asked for, so an element refusing its own copy strands nothing.
+        expected<value_t> duplicated = copy_safely(*middle_iterator);
+        if (!duplicated) return {nullptr, duplicated.status()};
+
         node_t *root = allocate_node();
-        if (!root) return nullptr;
-        new (&root->payload) value_t(*mid_iter);
+        if (!root) return {nullptr, status_t::out_of_memory_heap_k};
+        new (&root->payload) value_t(*std::move(duplicated));
         // Raw memory, so the link to the parent is only correct once the caller overwrites it.
         root->parent = nullptr;
+        root->left = nullptr;
+        root->right = nullptr;
 
-        // Build left subtree from [first, mid)
-        root->left = build_from_sorted(first, mid, allocate_node);
+        // A refused subtree still hangs off this root, so whoever owns the root frees all of it.
+        built_subtree_t const left = build_from_sorted(first, middle, allocate_node);
+        root->left = left.root;
         if (root->left) root->left->parent = root;
+        if (failed(left.status)) return {root, left.status};
 
-        // Build right subtree from (mid, last)
-        auto right_first = mid_iter;
+        iterator_type_ right_first = middle_iterator;
         ++right_first;
-        root->right = build_from_sorted(right_first, count - mid - 1, allocate_node);
+        built_subtree_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
+        root->right = right.root;
         if (root->right) root->right->parent = root;
+        if (failed(right.status)) return {root, right.status};
 
         // Set height (no balancing needed for perfectly balanced construction)
         root->height = 1 + larger_of(get_height(root->left), get_height(root->right));
-
-        return root;
+        return {root, success_k};
     }
 
 #pragma endregion Insertions
@@ -2110,6 +2128,47 @@ class basic_avl_tree {
      *  unused hints is misleading. Use @c insert_if_missing(value) instead. */
     iterator insert(const_iterator, value_t &&) noexcept = delete;
 
+  private:
+    /**
+     *  @brief A tree ordered and allocated exactly as this one is, for a batch to be built in.
+     *
+     *  A staging tree that default-constructed its comparator would order its nodes one way while
+     *  the merge absorbing them walks another, so a stateful comparator has to travel too.
+     */
+    basic_avl_tree stage_alike() const noexcept {
+        basic_avl_tree staged(allocator_);
+        staged.comparator_ = comparator_;
+        return staged;
+    }
+
+    /**
+     *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element outside this tree.
+     *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
+     *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
+     */
+    template <typename input_iterator_type_, typename... tags_types_>
+    static status_t stage_range_(basic_avl_tree &staged, input_iterator_type_ first, input_iterator_type_ last,
+                                 tags_types_...) noexcept {
+        if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
+            static_assert(std::forward_iterator<input_iterator_type_>,
+                          "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
+            std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
+            typename node_t::built_subtree_t const built =
+                node_t::build_from_sorted(first, count, [&]() noexcept { return staged.allocator_.allocate(1); });
+            // Hooked up even on a refusal, so the staging tree frees whatever was built.
+            staged.root_ = built.root;
+            if (failed(built.status)) return built.status;
+            staged.size_ = count;
+            return success_k;
+        }
+        else
+            return stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept {
+                return staged.insert_if_missing(std::move(candidate)).failed() ? status_t::out_of_memory_heap_k
+                                                                               : success_k;
+            });
+    }
+
+  public:
     /**
      *  @brief Inserts a range of entries only if ALL keys are new, all-or-nothing on failure.
      *      Builds a temporary tree from the range, validates no conflicts, then merges it in one
@@ -2132,33 +2191,11 @@ class basic_avl_tree {
      *      destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
 
-        auto count = std::distance(first, last);
-        if (count == 0) return success_k;
-
-        // Build temporary tree, then merge it in one step
-        basic_avl_tree temp_tree(allocator_);
-
-        // O(n): Build perfectly balanced tree from sorted range
-        if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            temp_tree.root_ =
-                node_t::build_from_sorted(first, count, [&]() noexcept { return temp_tree.allocator_.allocate(1); });
-
-            if (!temp_tree.root_) return status_t::out_of_memory_heap_k;
-
-            // Verify complete allocation
-            std::size_t actual_count = 0;
-            node_t::for_each_left_right(temp_tree.root_, [&](node_t *) noexcept { ++actual_count; });
-            if (actual_count != static_cast<std::size_t>(count)) return status_t::out_of_memory_heap_k;
-
-            temp_tree.size_ = count;
-        }
-        // O(n log n): Build tree from unsorted range
-        else {
-            for (; first != last; ++first)
-                if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
-        }
+        if (first == last) return success_k;
+        basic_avl_tree temp_tree = stage_alike();
+        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
 
         // Check if ANY key already exists - O(m+n)
         if (has_any_key(temp_tree))
@@ -2208,33 +2245,11 @@ class basic_avl_tree {
      *      keys are UPDATED during the merge, not skipped.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
 
-        auto count = std::distance(first, last);
-        if (count == 0) return success_k;
-
-        // Build temporary tree from range
-        basic_avl_tree temp_tree(allocator_);
-
-        // O(n): Build perfectly balanced tree from sorted range
-        if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            temp_tree.root_ =
-                node_t::build_from_sorted(first, count, [&]() noexcept { return temp_tree.allocator_.allocate(1); });
-
-            if (!temp_tree.root_) return status_t::out_of_memory_heap_k;
-
-            // Verify complete allocation (detect partial tree from mid-construction failure)
-            std::size_t actual_count = 0;
-            node_t::for_each_left_right(temp_tree.root_, [&](node_t *) noexcept { ++actual_count; });
-            if (actual_count != static_cast<std::size_t>(count)) return status_t::out_of_memory_heap_k;
-
-            temp_tree.size_ = count;
-        }
-        // O(n log n): Build tree from unsorted range
-        else {
-            for (; first != last; ++first)
-                if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
-        }
+        if (first == last) return success_k;
+        basic_avl_tree temp_tree = stage_alike();
+        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
 
         // Choose merge strategy based on uniqueness guarantee
         if constexpr (contains_type<assume_unique_t, tags_types_...>()) {
@@ -2279,33 +2294,11 @@ class basic_avl_tree {
      *      destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+    status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
 
-        auto count = std::distance(first, last);
-        if (count == 0) return success_k;
-
-        // Build temporary tree from range
-        basic_avl_tree temp_tree(allocator_);
-
-        // O(n): Build perfectly balanced tree from sorted range
-        if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            temp_tree.root_ =
-                node_t::build_from_sorted(first, count, [&]() noexcept { return temp_tree.allocator_.allocate(1); });
-
-            if (!temp_tree.root_) return status_t::out_of_memory_heap_k;
-
-            // Verify complete allocation (detect partial tree from mid-construction failure)
-            std::size_t actual_count = 0;
-            node_t::for_each_left_right(temp_tree.root_, [&](node_t *) noexcept { ++actual_count; });
-            if (actual_count != static_cast<std::size_t>(count)) return status_t::out_of_memory_heap_k;
-
-            temp_tree.size_ = count;
-        }
-        // O(n log n): Build tree from unsorted range
-        else {
-            for (; first != last; ++first)
-                if (temp_tree.insert_if_missing(value_t(*first)).failed()) return status_t::out_of_memory_heap_k;
-        }
+        if (first == last) return success_k;
+        basic_avl_tree temp_tree = stage_alike();
+        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
 
         // Check if ALL keys exist - O(m+n)
         if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
