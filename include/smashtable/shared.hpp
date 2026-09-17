@@ -772,6 +772,32 @@ expected<object_type_> copy_safely(object_type_ const &object) noexcept {
     }
 }
 
+/**
+ *  @brief Hands @p stage_one every element of [ @p first, @p last ), duplicated outside the destination.
+ *
+ *  @param[in] stage_one Receives one element by rvalue and reports where it landed. Must be @c noexcept.
+ *  @return The first refusal @p stage_one or a duplication reported, or @c success_k for the whole range.
+ *
+ *  A range handing over lvalues duplicates through @c copy_safely, so an element refusing its own copy
+ *  stops the batch with that reason rather than with the allocator's; a range handing over rvalues moves,
+ *  which is what a move iterator asks for. Nothing here reaches the destination - what @p stage_one does
+ *  with an element is where a batch decides whether it can still be undone.
+ */
+template <typename value_type_, typename input_iterator_type_, typename stage_one_type_>
+status_t stage_each(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
+    for (; first != last; ++first) {
+        if constexpr (!std::is_lvalue_reference_v<decltype(*first)>) {
+            if (status_t const staged = stage_one(value_type_(*first)); failed(staged)) return staged;
+        }
+        else {
+            expected<std::remove_cvref_t<decltype(*first)>> duplicated = copy_safely(*first);
+            if (!duplicated) return duplicated.status();
+            if (status_t const staged = stage_one(value_type_(*std::move(duplicated))); failed(staged)) return staged;
+        }
+    }
+    return success_k;
+}
+
 #pragma endregion Copying and Construction
 
 #pragma region Key Extraction

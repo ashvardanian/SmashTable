@@ -1705,9 +1705,11 @@ class reference_store {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
         auto &transaction = *maybe_txn;
-        for (; begin != end; ++begin)
-            if (auto status = transaction.insert_if_missing(value_t(*begin)); failed(status)) return status;
-        if (auto status = transaction.stage(); failed(status)) return status;
+        status_t const staged = stage_each<value_t>(begin, end, [&](value_t &&candidate) noexcept {
+            return transaction.insert_if_missing(std::move(candidate));
+        });
+        if (failed(staged)) return staged;
+        if (status_t const sealed = transaction.stage(); failed(sealed)) return sealed;
         return transaction.commit();
     }
 

@@ -1729,9 +1729,10 @@ class monotonic_store {
         auto opened = transaction();
         if (!opened) return out_of_memory_heap_k;
 
-        for (; first != last; ++first)
-            if (status_t const staged = stage_one(*opened, value_t(*first)); failed(staged)) return staged;
-        if (status_t const staged = opened->stage(); failed(staged)) return staged;
+        status_t const staged = stage_each<value_t>(
+            first, last, [&](value_t &&candidate) noexcept { return stage_one(*opened, std::move(candidate)); });
+        if (failed(staged)) return staged;
+        if (status_t const sealed = opened->stage(); failed(sealed)) return sealed;
         return opened->commit();
     }
 

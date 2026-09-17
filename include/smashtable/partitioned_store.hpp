@@ -2233,9 +2233,10 @@ class partitioned_store {
         // A transaction that cannot open failed to allocate its per-partition state; nothing was
         // compared against anything, so this is not a serialization conflict.
         if (!opened) return out_of_memory_heap_k;
-        for (; begin != end; ++begin)
-            if (auto status = opened->upsert(*begin); failed(status)) return status;
-        if (auto status = opened->stage(); failed(status)) return status;
+        status_t const staged = stage_each<value_t>(
+            begin, end, [&](value_t &&candidate) noexcept { return opened->upsert(std::move(candidate)); });
+        if (failed(staged)) return staged;
+        if (status_t const sealed = opened->stage(); failed(sealed)) return sealed;
         return opened->commit();
     }
 
