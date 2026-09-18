@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_std_set.cpp
+ *  @file test/std_set.cpp
  *  @author Ash Vardanian
  *  @date August 16, 2026
  *  @brief Test instantiations for the @c std::set-backed transactional store. The baseline
@@ -10,15 +10,15 @@
 
 #include <smashtable/reference_store.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
-#include "test_commit_stamp.hpp"
-#include "test_consistency.hpp"
-#include "test_reference_store_defects.hpp"
-#include "test_monotonic_store_defects.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
+#include "commit_stamp.hpp"
+#include "consistency.hpp"
+#include "reference_store_defects.hpp"
+#include "monotonic_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

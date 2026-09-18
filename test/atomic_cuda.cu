@@ -1,7 +1,7 @@
 /**
  *  @brief Device-side suites for the pinned atomic hash table, over one table in managed memory.
  *  @author Ash Vardanian
- *  @file scripts/test_atomic_cuda.cu
+ *  @file test/atomic_cuda.cu
  *  @date August 17, 2026
  *
  *  @section test_atomic_cuda_what_is_tested What Is Tested
@@ -32,10 +32,10 @@
 
 #include <smashtable/atomic_hash_table.hpp>
 
-#include "test.hpp"
+#include "harness.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 #pragma region Device Helpers
 

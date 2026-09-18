@@ -1,11 +1,11 @@
 /**
- *  @file scripts/test_fuzz.hpp
+ *  @file test/fuzz.hpp
  *  @author Ash Vardanian
  *  @date August 20, 2026
  *  @brief Randomized differential suites - one engine against the oracle, and groups
  *      against tearing.
  *
- *  Included by @c scripts/test_snapshot_store.cpp and by no other binary, so a suite added here
+ *  Included by @c test/snapshot_store.cpp and by no other binary, so a suite added here
  *  runs exactly once.
  *
  *  @section fuzz_oracle The Oracle
@@ -30,10 +30,10 @@
 
 #include <smashtable/reference_store.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Shared Fixtures
 
@@ -331,4 +331,4 @@ void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
 
 #pragma endregion Groups Against Tearing
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

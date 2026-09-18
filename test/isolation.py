@@ -6,7 +6,7 @@ Baselines:
     the one place a container promises less than it was asked for.
 
 Matches C++ suite:
-    scripts/test_consistency.hpp, which checks the same repeated-read guarantee one layer down.
+    test/consistency.hpp, which checks the same repeated-read guarantee one layer down.
 
 Run:
     python -m pytest test/isolation.py -v

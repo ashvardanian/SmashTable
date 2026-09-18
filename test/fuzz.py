@@ -6,7 +6,7 @@ Baselines:
     participant, since all-or-nothing is a statement about the set of them rather than about one.
 
 Matches C++ suite:
-    scripts/test_fuzz.hpp. Its single-engine half answers against `reference_store` as this one
+    test/fuzz.hpp. Its single-engine half answers against `reference_store` as this one
     answers against dict and set; its group half has no oracle and asserts all-or-nothing across
     the participants instead, which is the shape no single-container model can express.
 

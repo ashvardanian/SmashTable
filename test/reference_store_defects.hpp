@@ -1,15 +1,15 @@
 /**
- *  @file scripts/test_reference_store_defects.hpp
+ *  @file test/reference_store_defects.hpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Regressions for the reclamation and reporting defects of the @c std::set-backed oracle.
  *      Templated on the container so the chain-backed store can be held to the same behaviour.
  */
 #pragma once
-#include "test.hpp"
-#include "test_basic.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Tombstone Reclamation
 
@@ -445,4 +445,4 @@ void test_transaction_bounds_skip_locally_erased() {
 
 #pragma endregion Ordered Walks
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

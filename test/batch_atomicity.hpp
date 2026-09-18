@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_batch_atomicity.hpp
+ *  @file test/batch_atomicity.hpp
  *  @author Ash Vardanian
  *  @date September 17, 2026
  *  @brief The suite every container with a range modifier answers: a batch refused part-way leaves
@@ -25,10 +25,10 @@
 
 #include <vector> // `std::vector`
 
-#include "test.hpp"
-#include "test_basic.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Batch Atomicity Test Templates
 
@@ -158,4 +158,4 @@ void test_batch_contracts() {
 
 #pragma endregion Batch Atomicity Test Templates
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

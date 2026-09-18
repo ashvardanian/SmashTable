@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_ordered_readonly.hpp
+ *  @file test/ordered_readonly.hpp
  *  @author Ash Vardanian
  *  @date September 17, 2026
  *  @brief The suite every build-once ordered container answers: its type tags, its ranks against
@@ -15,9 +15,9 @@
 #include <algorithm> // `std::lower_bound`
 #include <span>      // `std::span`
 
-#include "test.hpp"
+#include "harness.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Ordered Readonly Test Templates
 
@@ -131,4 +131,4 @@ void test_ordered_readonly_mapping(std::size_t size = 300) {
 
 #pragma endregion Ordered Readonly Test Templates
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

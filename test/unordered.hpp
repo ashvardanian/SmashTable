@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_unordered.hpp
+ *  @file test/unordered.hpp
  *  @author Ash Vardanian
  *  @date August 16, 2026
  *  @brief Template test functions for unordered containers, exercising the hash-specific surface -
@@ -42,9 +42,9 @@
 #include <smashtable/basic_hash_table.hpp>
 #include <smashtable/atomic_hash_table.hpp>
 
-#include "test_basic.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Fixture Helpers
 
@@ -1354,4 +1354,4 @@ inline void test_unordered_visit_full_table() {
 
 #pragma endregion Multi Match Probe Walks
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

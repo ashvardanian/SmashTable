@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_sharded_concurrency.hpp
+ *  @file test/sharded_concurrency.hpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Suites for the thread-safety wrappers, each naming a defect that went on passing every
@@ -55,10 +55,10 @@
 
 #include <smashtable/locked_store.hpp>
 
-#include "test.hpp"
-#include "test_consistency.hpp"
+#include "harness.hpp"
+#include "consistency.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Sharded Concurrency
 
@@ -1004,4 +1004,4 @@ void test_sharded_window_read_is_validated() {
 }
 
 #pragma endregion Sharded Concurrency
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

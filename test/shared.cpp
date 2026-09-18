@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_shared.cpp
+ *  @file test/shared.cpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Tests for the primitives every container shares - the @c expected result type, the
@@ -25,10 +25,10 @@
 #include <smashtable/shared.hpp>
 #include <smashtable/monotonic_store.hpp>
 
-#include "test.hpp"
+#include "harness.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

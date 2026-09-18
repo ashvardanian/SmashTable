@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test.hpp
+ *  @file test/harness.hpp
  *  @author Ash Vardanian
  *  @date August 15, 2026
  *  @brief Harness for the C++ suites - assertions, a named test runner, and crash localization.
@@ -203,7 +203,7 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
 
 #pragma endregion Assertions
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Randomization
 
@@ -429,4 +429,4 @@ void clear_container(container_type_ &container) noexcept {
 
 #pragma endregion Container Helpers
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

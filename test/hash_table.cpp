@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_hash_table.cpp
+ *  @file test/hash_table.cpp
  *  @author Ash Vardanian
  *  @date August 16, 2026
  *  @brief Test instantiations for the open-addressing hash table. Covers sets and maps over trivial
@@ -11,13 +11,13 @@
 #include <smashtable/basic_hash_table.hpp>
 #include <smashtable/atomic_hash_table.hpp>
 
-#include "test.hpp"
-#include "test_fixture_coverage.hpp"
-#include "test_surfaces.hpp"
-#include "test_unordered.hpp"
+#include "harness.hpp"
+#include "fixture_coverage.hpp"
+#include "surfaces.hpp"
+#include "unordered.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_wb_tree.cpp
+ *  @file test/wb_tree.cpp
  *  @author Ash Vardanian
  *  @date August 16, 2026
  *  @brief Test instantiations for weight-balanced tree containers. Covers basic_wb_tree
@@ -18,16 +18,16 @@
 #include <smashtable/reference_store.hpp>
 #include <smashtable/monotonic_store.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
-#include "test_surfaces.hpp"
-#include "test_commit_stamp.hpp"
-#include "test_consistency.hpp"
-#include "test_fixture_coverage.hpp"
-#include "test_monotonic_store_defects.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
+#include "surfaces.hpp"
+#include "commit_stamp.hpp"
+#include "consistency.hpp"
+#include "fixture_coverage.hpp"
+#include "monotonic_store_defects.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_flat_set.cpp
+ *  @file test/flat_set.cpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
  *  @brief Tests for @c basic_flat_set: random operations against a presence oracle, through every
@@ -17,12 +17,12 @@
 
 #include <smashtable/basic_flat_set.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
-#include "test_surfaces.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
+#include "surfaces.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

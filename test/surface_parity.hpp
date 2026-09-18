@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_surface_parity.hpp
+ *  @file test/surface_parity.hpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Makes "a wrapper dropped a surface its inner store offers" a compile error that names the
@@ -11,7 +11,7 @@
 #include <smashtable/locked_store.hpp>
 #include <smashtable/partitioned_store.hpp>
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 /** A key type no store's identifier is constructible from, so only a genuinely heterogeneous entry point accepts it.
  *  A surface narrowed to @c identifier_t refuses it at the declaration. */
@@ -577,4 +577,4 @@ constexpr bool wrappers_honour_the_level = level_surface_witness<store_type_, lo
 
 #pragma endregion Level Parity Fold
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

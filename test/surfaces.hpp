@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_surfaces.hpp
+ *  @file test/surfaces.hpp
  *  @author Ash Vardanian
  *  @date September 18, 2026
  *  @brief One entry point per container, running every suite whose surface that container offers.
@@ -23,11 +23,11 @@
 
 #include <smashtable/shared.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
-#include "test_batch_atomicity.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
+#include "batch_atomicity.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Surface Dispatch
 
@@ -71,4 +71,4 @@ void test_every_offered_surface(factory_type_ &&make_container) {
 
 #pragma endregion Surface Dispatch
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

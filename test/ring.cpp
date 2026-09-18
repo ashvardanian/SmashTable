@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_ring.cpp
+ *  @file test/ring.cpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
  *  @brief Tests for @c basic_ring: capacity rules, first-in first-out order across wraparound,
@@ -18,11 +18,11 @@
 
 #include <smashtable/basic_ring.hpp>
 
-#include "test.hpp"
-#include "test_sequence.hpp"
+#include "harness.hpp"
+#include "sequence.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

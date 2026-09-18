@@ -5,7 +5,7 @@ Baselines:
     rather than by repr, since only the sorted pair has a defined order.
 
 Matches C++ suite:
-    the fixture half of scripts/test_basic.hpp, which builds the same matrices for the layer
+    the fixture half of test/fixtures.hpp, which builds the same matrices for the layer
     below. This module declares no test of its own; the suites that import it hold those.
 
 Run:

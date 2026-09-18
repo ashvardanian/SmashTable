@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_consistency.hpp
+ *  @file test/consistency.hpp
  *  @author Ash Vardanian
  *  @date January 12, 2023
  *  @brief Template test functions for advanced transactional consistency scenarios. Includes tests
@@ -13,11 +13,11 @@
 #include <smashtable/monotonic_store.hpp> // `monotonic_avl_map`
 #include <smashtable/snapshot_store.hpp>  // `snapshot_avl_map`, `serializable_avl_map`
 
-#include "test_basic.hpp"
-#include "test_failure_policy.hpp"
-#include "test_surface_parity.hpp"
+#include "fixtures.hpp"
+#include "failure_policy.hpp"
+#include "surface_parity.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Level Parity
 
@@ -1581,4 +1581,4 @@ void test_group_unwinds_every_participant_on_conflict() {
 
 #pragma endregion Transaction Groups
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_vector.cpp
+ *  @file test/vector.cpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Tests for @c basic_vector - the fallible-construction path, growth arithmetic,
@@ -17,11 +17,11 @@
 
 #include <smashtable/basic_vector.hpp>
 
-#include "test.hpp"
-#include "test_sequence.hpp"
+#include "harness.hpp"
+#include "sequence.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

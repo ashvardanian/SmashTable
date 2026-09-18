@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_partitioned.cpp
+ *  @file test/partitioned.cpp
  *  @author Ash Vardanian
  *  @date August 16, 2026
  *  @brief Test instantiations for the thread-safety wrappers, over every core and every isolation
@@ -24,14 +24,14 @@
 #include <smashtable/monotonic_store.hpp>
 #include <smashtable/snapshot_store.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
-#include "test_surface_parity.hpp"
-#include "test_consistency.hpp"
-#include "test_sharded_concurrency.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
+#include "surface_parity.hpp"
+#include "consistency.hpp"
+#include "sharded_concurrency.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

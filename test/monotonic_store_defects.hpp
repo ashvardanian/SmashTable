@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_monotonic_store_defects.hpp
+ *  @file test/monotonic_store_defects.hpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Template test functions for the transactional store's staging window and tombstone
@@ -10,9 +10,9 @@
 #include <random>  // `std::mt19937`
 #include <utility> // `std::move`
 
-#include "test_basic.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Staging Window
 
@@ -597,4 +597,4 @@ void test_clear_refuses_while_staged() {
 
 #pragma endregion Status Reporting
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

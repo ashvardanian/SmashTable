@@ -150,7 +150,7 @@ Format the C++ sources — the headers, the CPython bindings, the suites and the
 
 ```bash
 clang-format -i include/smashtable/*.hpp python/*.hpp python/*.cpp
-clang-format -i scripts/*.hpp scripts/*.cpp scripts/*.cu example.cpp
+clang-format -i test/*.hpp test/*.cpp test/*.cu bench/*.cpp example.cpp
 ```
 
 Format CMake files:
@@ -163,7 +163,7 @@ Check formatting without modifying, which is what the pre-commit hook does to th
 
 ```bash
 clang-format --dry-run --Werror include/smashtable/*.hpp python/*.hpp python/*.cpp \
-    scripts/*.hpp scripts/*.cpp scripts/*.cu example.cpp
+    test/*.hpp test/*.cpp test/*.cu bench/*.cpp example.cpp
 ```
 
 Python sources are `black` and `ruff` clean at the 120-column width `pyproject.toml` sets:

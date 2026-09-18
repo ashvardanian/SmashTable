@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_snapshot_store.cpp
+ *  @file test/snapshot_store.cpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Test instantiations for @c snapshot_store.
@@ -29,15 +29,15 @@
 #include <smashtable/partitioned_store.hpp>
 #include <smashtable/reference_store.hpp>
 
-#include "test.hpp"
-#include "test_basic.hpp"
-#include "test_consistency.hpp"
-#include "test_fuzz.hpp"
-#include "test_sharded_concurrency.hpp"
-#include "test_surface_parity.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
+#include "consistency.hpp"
+#include "fuzz.hpp"
+#include "sharded_concurrency.hpp"
+#include "surface_parity.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

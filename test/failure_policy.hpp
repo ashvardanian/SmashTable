@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_failure_policy.hpp
+ *  @file test/failure_policy.hpp
  *  @author Ash Vardanian
  *  @date August 18, 2026
  *  @brief Detectors for two defect classes the suites had no way of naming - a status that reports
@@ -36,9 +36,9 @@
 
 #include <smashtable/shared.hpp>
 
-#include "test_basic.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Refusal Plan
 
@@ -795,4 +795,4 @@ void test_bulk_methods_match_declared_policy(std::size_t size = 256, std::size_t
 
 #pragma endregion Bulk Failure Policy
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

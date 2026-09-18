@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_commit_stamp.hpp
+ *  @file test/commit_stamp.hpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
  *  @brief Template tests for the rule that a commit stamp - and nothing else - decides which
@@ -9,9 +9,9 @@
  *  and what it must still refuse, which is a second writer publishing over a stale base.
  */
 #pragma once
-#include "test_basic.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 /**
  *  @brief A staged write that is later rolled back must abort nobody.
@@ -144,4 +144,4 @@ void test_find_and_watch_records_absence() {
     st_verify_eq_(refused, status_t::read_conflict_k);
 }
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

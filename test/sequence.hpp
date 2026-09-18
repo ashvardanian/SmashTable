@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_sequence.hpp
+ *  @file test/sequence.hpp
  *  @author Ash Vardanian
  *  @date September 17, 2026
  *  @brief The suite every sequence container answers: its type tags, the order it keeps, the
@@ -14,10 +14,10 @@
 
 #include <utility> // `std::move`
 
-#include "test.hpp"
-#include "test_basic.hpp"
+#include "harness.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Sequence Test Templates
 
@@ -148,4 +148,4 @@ void test_sequence_allocator_ledger(std::size_t size = 16) {
 
 #pragma endregion Sequence Test Templates
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

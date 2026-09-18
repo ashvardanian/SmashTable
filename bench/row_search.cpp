@@ -1,5 +1,5 @@
 /**
- *  @file scripts/bench_row_search.cpp
+ *  @file bench/row_search.cpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
  *  @brief Benchmark of the row kits per medium width, and of the static B-tree against the S+ tree
@@ -28,10 +28,10 @@
 #include <smashtable/immutable_b_tree.hpp>
 #include <smashtable/immutable_splus_tree.hpp>
 
-#include "test.hpp"
+#include "harness.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

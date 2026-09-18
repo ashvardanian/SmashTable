@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_row_search.cpp
+ *  @file test/row_search.cpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
  *  @brief Tests for the row kits and the static layouts: every kit this processor runs against the
@@ -23,11 +23,11 @@
 #include <smashtable/immutable_splus_tree.hpp>
 #include <smashtable/row_search.hpp>
 
-#include "test.hpp"
-#include "test_ordered_readonly.hpp"
+#include "harness.hpp"
+#include "ordered_readonly.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::scripts;
+using namespace ashvardanian::smashtable::test;
 
 namespace {
 

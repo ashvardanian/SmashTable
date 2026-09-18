@@ -12,6 +12,7 @@
 #   -D SMASHTABLE_INSTALL=<ON|OFF>                      (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_WERROR=<ON|OFF>                       (default: OFF)
 #   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: ON as the main project, else OFF)
+#   -D SMASHTABLE_BUILD_BENCH=<ON|OFF>                  (default: OFF; CTest never runs the benchmarks)
 #   -D CMAKE_CUDA_ARCHITECTURES=<list>                  (default: native; name a list when building GPU-less)
 #
 # Targets:
@@ -25,14 +26,15 @@
 #     failure. Registered with CTest under the shorter `test_*` names, and each honors
 #     `SMASHTABLE_FILTER`.
 #   * smashtable_test_hash_table - the unordered family, running the hash-specific suites of
-#     `scripts/test_unordered.hpp` instead, including the threaded ones.
+#     `test/unordered.hpp` instead, including the threaded ones.
 #   * smashtable_test_monotonic_hash - the transactional store over the open-addressed table,
 #     running only the point-access suites an unordered core can answer.
 #   * smashtable_test_row_search, _flat_set, _ring - the ordered kits: every compiled row kit the processor
 #     runs against the serial kit, the static B-tree and S+ tree against a sorted array, the micro-set
 #     through each kit, and the ring.
-#   * smashtable_bench_row_search - row kits per medium width, and both static layouts against a binary
-#     search, printing a machine block. Built with the tests and never registered with CTest.
+#   * smashtable_bench_row_search - row kits per row width, and both immutable layouts against a binary
+#     search, printing a machine block. Needs `-D SMASHTABLE_BUILD_BENCH=ON` and is never registered
+#     with CTest, so no suite pays for compiling it.
 #   * smashtable_test_concurrent_cuda - the pinned lock-free table driven from kernels and from the
 #     host over one managed allocation. Built only where `nvcc` is visible, and skipping at runtime
 #     when no device is, so a GPU-less machine still configures and tests green.
@@ -142,63 +144,45 @@ endif ()
 # Tests and examples
 option(SMASHTABLE_BUILD_TESTS "Build tests and examples" ${SMASHTABLE_IS_MAIN_PROJECT})
 option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" ${SMASHTABLE_IS_MAIN_PROJECT})
+option(SMASHTABLE_BUILD_BENCH "Compile the native benchmarks, which CTest never runs" OFF)
 
 if (SMASHTABLE_BUILD_TESTS)
     add_executable(smashtable_example example.cpp)
     target_link_libraries(smashtable_example PRIVATE smashtable::header smashtable_warnings)
 
-    # Individual test executables for faster incremental builds
-    add_executable(smashtable_test_std_set scripts/test_std_set.cpp)
-    target_include_directories(smashtable_test_std_set PRIVATE scripts/)
-    target_link_libraries(smashtable_test_std_set PRIVATE smashtable::header smashtable_warnings)
+    enable_testing()
 
-    add_executable(smashtable_test_avl_tree scripts/test_avl_tree.cpp)
-    target_include_directories(smashtable_test_avl_tree PRIVATE scripts/)
-    target_link_libraries(smashtable_test_avl_tree PRIVATE smashtable::header smashtable_warnings)
+    # One target per entry point, each its own translation unit so an incremental build stays small.
+    foreach (
+        subject IN
+        ITEMS std_set
+              avl_tree
+              wb_tree
+              partitioned
+              hash_table
+              monotonic_hash
+              snapshot_store
+              shared
+              vector
+              row_search
+              flat_set
+              ring
+    )
+        add_executable(smashtable_test_${subject} test/${subject}.cpp)
+        target_include_directories(smashtable_test_${subject} PRIVATE test/)
+        target_link_libraries(smashtable_test_${subject} PRIVATE smashtable::header smashtable_warnings)
+        add_test(NAME test_${subject} COMMAND smashtable_test_${subject})
+    endforeach ()
 
-    add_executable(smashtable_test_wb_tree scripts/test_wb_tree.cpp)
-    target_include_directories(smashtable_test_wb_tree PRIVATE scripts/)
-    target_link_libraries(smashtable_test_wb_tree PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_partitioned scripts/test_partitioned.cpp)
-    target_include_directories(smashtable_test_partitioned PRIVATE scripts/)
-    target_link_libraries(smashtable_test_partitioned PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_hash_table scripts/test_hash_table.cpp)
-    target_include_directories(smashtable_test_hash_table PRIVATE scripts/)
-    target_link_libraries(smashtable_test_hash_table PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_monotonic_hash scripts/test_monotonic_hash.cpp)
-    target_include_directories(smashtable_test_monotonic_hash PRIVATE scripts/)
-    target_link_libraries(smashtable_test_monotonic_hash PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_snapshot_store scripts/test_snapshot_store.cpp)
-    target_include_directories(smashtable_test_snapshot_store PRIVATE scripts/)
-    target_link_libraries(smashtable_test_snapshot_store PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_shared scripts/test_shared.cpp)
-    target_include_directories(smashtable_test_shared PRIVATE scripts/)
-    target_link_libraries(smashtable_test_shared PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_vector scripts/test_vector.cpp)
-    target_include_directories(smashtable_test_vector PRIVATE scripts/)
-    target_link_libraries(smashtable_test_vector PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_row_search scripts/test_row_search.cpp)
-    target_include_directories(smashtable_test_row_search PRIVATE scripts/)
-    target_link_libraries(smashtable_test_row_search PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_flat_set scripts/test_flat_set.cpp)
-    target_include_directories(smashtable_test_flat_set PRIVATE scripts/)
-    target_link_libraries(smashtable_test_flat_set PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_test_ring scripts/test_ring.cpp)
-    target_include_directories(smashtable_test_ring PRIVATE scripts/)
-    target_link_libraries(smashtable_test_ring PRIVATE smashtable::header smashtable_warnings)
-
-    add_executable(smashtable_bench_row_search scripts/bench_row_search.cpp)
-    target_include_directories(smashtable_bench_row_search PRIVATE scripts/)
-    target_link_libraries(smashtable_bench_row_search PRIVATE smashtable::header smashtable_warnings)
+    # Benchmarks reach the test fixtures for their keys and their allocation ledger, so `test/` is on
+    # their include path too. None is registered with CTest, so no suite pays for one.
+    if (SMASHTABLE_BUILD_BENCH)
+        foreach (subject IN ITEMS row_search)
+            add_executable(smashtable_bench_${subject} bench/${subject}.cpp)
+            target_include_directories(smashtable_bench_${subject} PRIVATE bench/ test/)
+            target_link_libraries(smashtable_bench_${subject} PRIVATE smashtable::header smashtable_warnings)
+        endforeach ()
+    endif ()
 
     # The CUDA leg is opt-out rather than opt-in, but only materializes where a device compiler exists.
     # `check_language` finding one says nothing about a device being present, so the binary itself
@@ -219,8 +203,8 @@ if (SMASHTABLE_BUILD_TESTS)
         set(CMAKE_CUDA_STANDARD 20)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 
-        add_executable(smashtable_test_concurrent_cuda scripts/test_atomic_cuda.cu)
-        target_include_directories(smashtable_test_concurrent_cuda PRIVATE scripts/)
+        add_executable(smashtable_test_concurrent_cuda test/atomic_cuda.cu)
+        target_include_directories(smashtable_test_concurrent_cuda PRIVATE test/)
         target_link_libraries(smashtable_test_concurrent_cuda PRIVATE smashtable::header)
 
         # `--expt-relaxed-constexpr` is what makes the library's `constexpr` surface device-callable;
@@ -231,19 +215,6 @@ if (SMASHTABLE_BUILD_TESTS)
         message(STATUS "smashtable: CUDA test enabled for ${CMAKE_CUDA_ARCHITECTURES}")
     endif ()
 
-    enable_testing()
-    add_test(NAME test_std_set COMMAND smashtable_test_std_set)
-    add_test(NAME test_avl_tree COMMAND smashtable_test_avl_tree)
-    add_test(NAME test_wb_tree COMMAND smashtable_test_wb_tree)
-    add_test(NAME test_partitioned COMMAND smashtable_test_partitioned)
-    add_test(NAME test_hash_table COMMAND smashtable_test_hash_table)
-    add_test(NAME test_monotonic_hash COMMAND smashtable_test_monotonic_hash)
-    add_test(NAME test_snapshot_store COMMAND smashtable_test_snapshot_store)
-    add_test(NAME test_shared COMMAND smashtable_test_shared)
-    add_test(NAME test_vector COMMAND smashtable_test_vector)
-    add_test(NAME test_row_search COMMAND smashtable_test_row_search)
-    add_test(NAME test_flat_set COMMAND smashtable_test_flat_set)
-    add_test(NAME test_ring COMMAND smashtable_test_ring)
     if (TARGET smashtable_test_concurrent_cuda)
         add_test(NAME test_atomic_cuda COMMAND smashtable_test_concurrent_cuda)
     endif ()

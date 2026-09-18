@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_fixture_coverage.hpp
+ *  @file test/fixture_coverage.hpp
  *  @author Ash Vardanian
  *  @date August 18, 2026
  *  @brief Runs the accounting fixtures through every container family, so a leak or a severed probe
@@ -14,9 +14,9 @@
 #pragma once
 #include <cstddef> // `std::size_t`
 
-#include "test_basic.hpp"
+#include "fixtures.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Element Accounting
 
@@ -244,4 +244,4 @@ void test_find_copy_reports_a_refused_copy() {
 
 #pragma endregion Hostile Element Types
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test

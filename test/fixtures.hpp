@@ -1,5 +1,5 @@
 /**
- *  @file scripts/test_basic.hpp
+ *  @file test/fixtures.hpp
  *  @author Ash Vardanian
  *  @date October 25, 2025
  *  @brief The fixture library the whole tree draws on - keys, payloads, budgets, tallies,
@@ -37,9 +37,9 @@
 
 #include <smashtable/basic_vector.hpp>
 
-#include "test.hpp"
+#include "harness.hpp"
 
-namespace ashvardanian::smashtable::scripts {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Keys and Associations
 
@@ -1267,58 +1267,58 @@ void test_heterogeneous_heavy_string_view_find() {
 
 #pragma endregion Heterogeneous Lookup Test Templates
 
-} // namespace ashvardanian::smashtable::scripts
+} // namespace ashvardanian::smashtable::test
 
 /** Hashes for the fixture keys, so the partitioned collection can shard them. */
 namespace ashvardanian::smashtable {
 
 template <>
-struct hash<scripts::trivial_key_t> {
-    std::size_t operator()(scripts::trivial_key_t const &key) const noexcept {
-        return hash<scripts::trivial_id_t> {}(key.unique_id);
+struct hash<test::trivial_key_t> {
+    std::size_t operator()(test::trivial_key_t const &key) const noexcept {
+        return hash<test::trivial_id_t> {}(key.unique_id);
     }
 };
 
 template <>
-struct hash<scripts::composite_key_t> {
-    std::size_t operator()(scripts::composite_key_t const &key) const noexcept {
-        return hash<scripts::trivial_id_t> {}(key.unique_id);
+struct hash<test::composite_key_t> {
+    std::size_t operator()(test::composite_key_t const &key) const noexcept {
+        return hash<test::trivial_id_t> {}(key.unique_id);
     }
 };
 
 template <>
-struct hash<scripts::heavy_key_t> {
-    std::size_t operator()(scripts::heavy_key_t const &key) const noexcept {
+struct hash<test::heavy_key_t> {
+    std::size_t operator()(test::heavy_key_t const &key) const noexcept {
         return hash<std::string_view> {}(key.view());
     }
 };
 
 template <>
-struct hash<scripts::budgeted_key_t> {
-    std::size_t operator()(scripts::budgeted_key_t const &key) const noexcept {
+struct hash<test::budgeted_key_t> {
+    std::size_t operator()(test::budgeted_key_t const &key) const noexcept {
         return hash<std::string_view> {}(key.view());
     }
 };
 
 template <>
-struct hash<scripts::counted_key_t> {
-    std::size_t operator()(scripts::counted_key_t const &key) const noexcept {
-        return hash<scripts::trivial_id_t> {}(key.unique_id);
+struct hash<test::counted_key_t> {
+    std::size_t operator()(test::counted_key_t const &key) const noexcept {
+        return hash<test::trivial_id_t> {}(key.unique_id);
     }
 };
 
 template <>
-struct hash<scripts::overaligned_key_t> {
-    std::size_t operator()(scripts::overaligned_key_t const &key) const noexcept {
-        return hash<scripts::trivial_id_t> {}(key.unique_id);
+struct hash<test::overaligned_key_t> {
+    std::size_t operator()(test::overaligned_key_t const &key) const noexcept {
+        return hash<test::trivial_id_t> {}(key.unique_id);
     }
 };
 
 /** Only the group survives, so every identifier inside one shares a home slot. */
 template <>
-struct hash<scripts::colliding_key_t> {
-    std::size_t operator()(scripts::colliding_key_t const &key) const noexcept {
-        return scripts::colliding_key_t::group_of(key.unique_id);
+struct hash<test::colliding_key_t> {
+    std::size_t operator()(test::colliding_key_t const &key) const noexcept {
+        return test::colliding_key_t::group_of(key.unique_id);
     }
 };
 
