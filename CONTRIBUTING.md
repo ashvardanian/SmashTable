@@ -101,6 +101,12 @@ SMASHTABLE_TESTS_SEED=42 pytest test/
 
 ## Code Styling Guidelines
 
+A batch operation applies wholly or not at all.
+That holds against a refused allocation and against an element refusing its own copy alike, so a range modifier builds every element outside the destination and absorbs them in one step that cannot fail part-way.
+A method that cannot honour this says so in its own docblock, the way a bounded ring says it takes what fits.
+Never duplicate a batch element with `value_t(*first)`: that expression cannot report a refusal and will not compile over a move-only element, so route it through `stage_each`, which copies through `copy_safely` and moves an rvalue.
+The `batches_atomically` concept checks the shape; the rollback itself is pinned by `test_batch_atomicity.hpp`, which refuses the allocator at every point a batch asks for memory.
+
 Internal `private` data and functions should be suffixed with an underscore (`_`).
 Avoid obvious inline comments.
 Prefer full words over abbreviations (e.g., `iterator` instead of `iter`, `element` instead of `elem`, `transaction` instead of `tx`, etc.).

@@ -270,6 +270,23 @@ check_doxygen_backticks() {
         "$file uses backticks inside a Doxygen block - mark code tokens with @c:"
 }
 
+# `_t` marks a materialized type. A concept names a requirement rather than a type, and a class
+# template names a family rather than one member of it, so neither wears the suffix - the alias that
+# instantiates the template is what carries it.
+check_type_suffixes() {
+    local concepts templates
+    concepts=$(printf '%s\n' "$added" | grep -E '^\+[[:space:]]*concept[[:space:]]+[A-Za-z_]+_t\b' || true)
+    [ -z "$concepts" ] || fail "$concepts" \
+        "$file suffixes a concept with '_t' - a concept names a requirement, not a type, so it takes no suffix:"
+    templates=$(printf '%s\n' "$added" | awk '
+        /^\+[[:space:]]*template[[:space:]]*</ { pending = 1; next }
+        pending && /^\+[[:space:]]*(struct|class)[[:space:]]+[A-Za-z_]+_t[[:space:]:{]/ { print; pending = 0; next }
+        pending && /^\+[[:space:]]*(typename|class |std::|requires|[A-Za-z_]+ [A-Za-z_]+_|>)/ { next }
+        { pending = 0 }')
+    [ -z "$templates" ] || fail "$templates" \
+        "$file suffixes a class template with '_t' - the template stays bare and the alias that materializes it carries the suffix:"
+}
+
 # clang-format's `BreakStringLiterals` splits an overlong literal in place, and a hand-broken literal
 # never leaves two fragments on one line, so same-line adjacency is the mangle's exact signature. A
 # trailing `//` pins a deliberate split, as when stopping `"\x9F" "e"` from parsing as one escape.
@@ -558,6 +575,7 @@ while IFS= read -r -d '' file; do
         check_backward_references
         check_banner_rules
         check_region_names
+        check_type_suffixes
         check_pragma_mark
         check_allocating_new
         check_virtual_dispatch
