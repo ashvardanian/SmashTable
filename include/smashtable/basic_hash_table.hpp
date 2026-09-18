@@ -81,10 +81,12 @@
 #include <cstdlib> // `std::abort`
 #include <cstring> // `std::memcpy`
 
+#include <iterator>    // `std::make_move_iterator`
 #include <limits>      // `std::numeric_limits`
 #include <type_traits> // `std::is_same`, `std::enable_if`
 #include <utility>     // `std::move`, `std::swap`
 
+#include "basic_vector.hpp"
 #include "hash_layout.hpp"
 
 namespace ashvardanian::smashtable {
@@ -224,6 +226,8 @@ class basic_hash_table {
     using equals_t = equals_type_;
     using allocator_t = allocator_type_;
     using storage_t = hash_storage<value_type_, hasher_type_, allocator_type_>;
+    using staged_allocator_t =
+        typename std::allocator_traits<allocator_type_>::template rebind_alloc<typename layout_t::value_copy_t>;
     using iterator_t = hash_table_iterator<value_type_, hasher_t>;
     using const_iterator_t = hash_table_iterator<value_type_ const, hasher_t>;
     using slot_ref_t = hash_slot_ref<value_type_, hasher_t>;
@@ -414,15 +418,19 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Builds a table pre-sized for the range and fills it.
-     *  @return An empty-status @c expected if the allocation has failed.
+     *  @brief Builds a table pre-sized for [ @p begin, @p end ) and fills it.
+     *  @return A table holding the whole range, or the reason it could not be built.
+     *
+     *  A refusal leaves nothing allocated: the table is new and empty, so there is no earlier state
+     *  for a half-filled one to be told apart from.
      */
     template <typename begin_iterator_type_, typename end_iterator_type_,
               typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
     static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end) noexcept {
         auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))});
         if (!table) return table;
-        table->insert(begin, end, assume_reserved_t {});
+        if (status_t const filled = table->upsert(begin, end, assume_reserved_t {}); failed(filled))
+            return expected<basic_hash_table>(filled);
         return table;
     }
 
@@ -1091,13 +1099,63 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Inserts elements from the range [begin, end), keeping the first of equivalent keys.
-     *  @see https://en.cppreference.com/w/cpp/container/unordered_map/insert
+     *  @brief Writes every element of [ @p begin, @p end ), replacing the keys already here.
+     *
+     *  @tparam tags_types_ @c assume_reserved_t asserts the room is already secured, which a caller
+     *      who has reserved for the range may pass to skip both the reservation and the staging.
+     *  @return The first refusal, or @c success_k for the whole range.
+     *
+     *  All-or-nothing over this table from the first element on. Growth is secured before any slot
+     *  is written, and after it a bounded probe cannot run out: @c reserve_more leaves at least a
+     *  quarter of the slots free, and both probes walk every slot before giving up. An element that
+     *  can refuse its own copy is duplicated in full before the first of them lands, because a slot
+     *  once written cannot be un-written without leaving a tombstone that moves later probes.
      */
     template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
               typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
-    void insert(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept {
-        for (; begin != end; ++begin) insert(*begin, tags...);
+    status_t upsert(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
+        requires(promises_about_the_room<tags_types_> && ...)
+    {
+        return absorb_range_<incumbent_policy_t::takes_the_newcomer_k>(begin, end, tags...);
+    }
+
+    /**
+     *  @brief Inserts every element of [ @p begin, @p end ) whose key is free, leaving incumbents alone.
+     *  @return @c success_k however many keys were already here, or the first refusal.
+     *
+     *  All-or-nothing over this table from the first element on, on the same terms as @c upsert.
+     */
+    template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
+              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    status_t insert_if_missing(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
+        requires(promises_about_the_room<tags_types_> && ...)
+    {
+        return absorb_range_<incumbent_policy_t::keeps_the_incumbent_k>(begin, end, tags...);
+    }
+
+    /**
+     *  @brief Inserts every element of [ @p begin, @p end ), refusing the batch over a key already here.
+     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the staging.
+     *
+     *  All-or-nothing over this table from the first element on, a taken key included: every key is
+     *  checked against the table before the first of them is written.
+     */
+    template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
+              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    status_t insert(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
+        requires(promises_about_the_room<tags_types_> && ...)
+    {
+        if (begin == end) return success_k;
+        for (begin_iterator_type_ probe = begin; probe != end; ++probe)
+            if (find(mapping_key_or_itself(*probe)) != end_sentinel_t {}) return key_already_exists_k;
+
+        // A key repeated inside the range collides exactly as one already here does, and an open
+        // table cannot see the repeat without counting the distinct keys against the range length.
+        expected<basic_hash_table> distinct = make(begin, end);
+        if (!distinct) return distinct.status();
+        if (distinct->size() != static_cast<std::size_t>(distance_between(begin, end))) return key_already_exists_k;
+
+        return absorb_range_<incumbent_policy_t::keeps_the_incumbent_k>(begin, end, tags...);
     }
 
     /**
@@ -1146,6 +1204,56 @@ class basic_hash_table {
      */
     template <typename other_type_>
     void merge(other_type_ &&) = delete;
+
+    /**
+     *  @brief Writes every element of [ @p begin, @p end ) into room this table already holds.
+     *  @return The first refusal, which only a caller that did not secure the room can provoke.
+     */
+    template <incumbent_policy_t policy_, typename begin_iterator_type_, typename end_iterator_type_,
+              typename... tags_types_>
+    status_t apply_each_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept {
+        for (; begin != end; ++begin) {
+            if constexpr (policy_ == incumbent_policy_t::keeps_the_incumbent_k)
+                if (find(mapping_key_or_itself(*begin)) != end_sentinel_t {}) continue;
+            insert_result_t const placed = insert<emplace_report_t::insert_result_k>(*begin, tags...);
+            if (placed.failed())
+                return placed.outcome == upsert_result_t::no_memory_k ? out_of_memory_heap_k : capacity_exhausted_k;
+        }
+        return success_k;
+    }
+
+    /**
+     *  @brief Stages [ @p begin, @p end ) where an element's duplication can refuse, then writes it in.
+     *  @tparam policy_ What a key already here does to the element arriving over it.
+     *  @return The first refusal, or @c success_k for the whole range.
+     */
+    template <incumbent_policy_t policy_, typename begin_iterator_type_, typename end_iterator_type_,
+              typename... tags_types_>
+    status_t absorb_range_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept {
+        if (begin == end) return success_k;
+        if constexpr (contains_type<assume_reserved_t, tags_types_...>())
+            return apply_each_<policy_>(begin, end, tags...);
+        else {
+            offset_t const count = static_cast<offset_t>(distance_between(begin, end));
+            if constexpr (duplication_can_refuse<owned_value_type>) {
+                basic_vector<owned_value_type, staged_allocator_t> staged {staged_allocator_t(get_allocator())};
+                if (status_t const room = staged.reserve(count); failed(room)) return room;
+                status_t const built =
+                    stage_each<owned_value_type>(begin, end, [&](owned_value_type &&candidate) noexcept {
+                        return staged.push_back(assume_reserved, std::move(candidate));
+                    });
+                if (failed(built)) return built;
+                if (reserve_more(static_cast<offset_t>(staged.size())) == reserve_result_t::failed_k)
+                    return out_of_memory_heap_k;
+                return apply_each_<policy_>(std::make_move_iterator(staged.begin()),
+                                            std::make_move_iterator(staged.end()), assume_reserved_t {}, tags...);
+            }
+            else {
+                if (reserve_more(count) == reserve_result_t::failed_k) return out_of_memory_heap_k;
+                return apply_each_<policy_>(begin, end, assume_reserved_t {}, tags...);
+            }
+        }
+    }
 
 #pragma endregion Insertions
 
@@ -1378,6 +1486,8 @@ static_assert(key_addressable_collection<hash_set<std::uint64_t>> &&
               "a hash table answers a key the way every addressable collection does");
 static_assert(set_shaped_store<hash_set<std::uint64_t>> && map_shaped_store<hash_map<std::uint64_t, double>>,
               "the set and map aliases of one table must not resolve to the same shape");
+static_assert(batches_atomically<hash_set<std::uint64_t>> && batches_atomically<hash_map<std::uint64_t, double>>,
+              "a hash table takes a whole batch or none of it");
 
 #pragma endregion Aliases
 

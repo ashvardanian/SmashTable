@@ -606,6 +606,14 @@ consteval bool contains_type() {
     return (std::is_same_v<needle_type_, haystack_types_> || ...);
 }
 
+/** A promise about the range itself, which a staged bulk write reads before it builds. */
+template <typename type_>
+concept promises_about_the_range = std::same_as<type_, assume_sorted_t> || std::same_as<type_, assume_unique_t>;
+
+/** A promise that the room is already secured, which a write into that room reads. */
+template <typename type_>
+concept promises_about_the_room = std::same_as<type_, assume_reserved_t>;
+
 #pragma endregion Tag Dispatch Types
 
 #pragma region Copying and Construction
@@ -771,6 +779,17 @@ expected<object_type_> copy_safely(object_type_ const &object) noexcept {
         return status_t::unknown_k;
     }
 }
+
+/**
+ *  @brief Whether duplicating this type can refuse, which is the whole reason a batch stages.
+ *
+ *  A type that copies without throwing duplicates by copy construction and cannot report anything,
+ *  so a batch over it needs no staging - securing the room is the only failure it has left. Declaring
+ *  @c copy is not the question: @c mapping declares one unconditionally, and a mapping of two trivial
+ *  halves still cannot refuse.
+ */
+template <typename type_>
+concept duplication_can_refuse = !std::is_nothrow_copy_constructible_v<type_>;
 
 /**
  *  @brief Hands @p stage_one every element of [ @p first, @p last ), duplicated outside the destination.
@@ -1752,6 +1771,54 @@ concept tagged_collection = requires {
     { collection_type_::is_associative::value } -> std::convertible_to<bool>;
 };
 
+/**
+ *  @brief What an absorbed batch does with a key the destination already holds.
+ *
+ *  Implementation vocabulary rather than a tag: a caller picks between these by naming a verb, and
+ *  the three verbs share one staging helper that this tells apart.
+ */
+enum class incumbent_policy_t : std::uint8_t {
+
+    /** The element already stored stays, and the newcomer is dropped. */
+    keeps_the_incumbent_k,
+
+    /** The newcomer takes the key, overwriting what was stored under it. */
+    takes_the_newcomer_k,
+
+    /** Neither is stored: a key arriving over one already there refuses the whole batch. */
+    refuses_the_newcomer_k,
+};
+
+/** Whether the collection writes a whole range, overwriting the keys already there. */
+template <typename collection_type_>
+concept offers_batch_upsert = requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
+    { collection.upsert(cursor, cursor) } -> std::same_as<status_t>;
+};
+
+/** Whether the collection writes a whole range, refusing it over a key already there. */
+template <typename collection_type_>
+concept offers_batch_insert = requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
+    { collection.insert(cursor, cursor) } -> std::same_as<status_t>;
+};
+
+/** Whether the collection writes a whole range, leaving the keys already there alone. */
+template <typename collection_type_>
+concept offers_batch_insert_if_missing =
+    requires(collection_type_ &collection, typename collection_type_::value_type *cursor) {
+        { collection.insert_if_missing(cursor, cursor) } -> std::same_as<status_t>;
+    };
+
+/**
+ *  @brief Whether a container takes a whole batch or none of it, under every verb that writes one.
+ *
+ *  Checks only the shape the promise needs - three range modifiers, each reporting through a status
+ *  so a refusal has somewhere to go. The rollback itself no concept can see; that is what a suite
+ *  refusing the allocator at every point of a batch is for.
+ */
+template <typename collection_type_>
+concept batches_atomically = offers_batch_upsert<collection_type_> && offers_batch_insert<collection_type_> &&
+                             offers_batch_insert_if_missing<collection_type_>;
+
 #pragma endregion Container Traits
 
 #pragma region Store Tiers
@@ -1817,6 +1884,11 @@ concept offers_versions_count = requires(store_type_ const &store, typename stor
 template <typename store_type_>
 concept offers_for_each = requires(store_type_ const &store, no_op_t callback) { store.for_each(callback); };
 
+/** Whether the store hands an element back by value rather than to a callback. */
+template <typename store_type_>
+concept offers_find_copy =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &key) { store.find_copy(key); };
+
 /** Whether the store erases every key at or after a bound. */
 template <typename store_type_>
 concept offers_erase_from = requires(store_type_ &store, typename store_type_::identifier_t const &key,
@@ -1829,19 +1901,18 @@ concept offers_erase_up_to = requires(store_type_ &store, typename store_type_::
 
 /** Whether the store answers the first member at or after a key. */
 template <typename store_type_>
-concept offers_lower_bound = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+concept offers_lower_bound = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
                                       no_op_t callback) { store.lower_bound(key, callback, callback); };
 
 /** Whether the store answers the first member strictly after a key. */
 template <typename store_type_>
-concept offers_upper_bound = requires(store_type_ &store, typename store_type_::identifier_t const &key,
+concept offers_upper_bound = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
                                       no_op_t callback) { store.upper_bound(key, callback, callback); };
 
 /** Whether the store walks a half-open window of the keyspace. */
 template <typename store_type_>
-concept offers_range = requires(store_type_ &store, typename store_type_::identifier_t const &key, no_op_t callback) {
-    store.range(key, key, callback);
-};
+concept offers_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                no_op_t callback) { store.range(key, key, callback); };
 
 /** Whether the store erases a half-open window of the keyspace. */
 template <typename store_type_>
@@ -1894,6 +1965,20 @@ concept offers_update =
 template <typename store_type_>
 concept offers_insert =
     requires(store_type_ &store, typename store_type_::value_t &&element) { store.insert(std::move(element)); };
+
+/** Whether the store answers both ends of a window, which is less than the whole ordered surface. */
+template <typename store_type_>
+concept offers_both_bounds = offers_lower_bound<store_type_> && offers_upper_bound<store_type_>;
+
+/** Whether the store can open a merged walk at all, from either end it knows how to name. */
+template <typename store_type_>
+concept offers_a_merged_walk = offers_smallest<store_type_> || offers_select<store_type_>;
+
+/** Whether the store carries @c insert_if_missing, which leaves a key already there alone. */
+template <typename store_type_>
+concept offers_insert_if_missing = requires(store_type_ &store, typename store_type_::value_t &&element) {
+    store.insert_if_missing(std::move(element));
+};
 
 /** Whether the three-argument @c insert also hands over the element already holding the key. */
 template <typename store_type_>
@@ -2010,6 +2095,23 @@ concept transaction_offers_insert_if_missing =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
         transaction.insert_if_missing(std::move(element));
     };
+
+/** Whether the transaction hands an element back by value rather than to a callback. */
+template <typename store_type_>
+concept transaction_offers_find_copy =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key) {
+        transaction.find_copy(key);
+    };
+
+/** Whether the transaction names the generation it writes under. */
+template <typename store_type_>
+concept transaction_offers_generation =
+    requires(typename store_type_::transaction_t const &transaction) { transaction.generation(); };
+
+/** Whether an open transaction answers both ends of a window. */
+template <typename store_type_>
+concept transaction_offers_both_bounds =
+    transaction_offers_lower_bound<store_type_> && transaction_offers_upper_bound<store_type_>;
 
 /** Whether an open transaction walks a half-open window of the keyspace. */
 template <typename store_type_>

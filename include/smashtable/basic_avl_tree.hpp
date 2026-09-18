@@ -2151,7 +2151,7 @@ class basic_avl_tree {
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <incumbent_policy_t policy_, typename input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(basic_avl_tree &staged, input_iterator_type_ first, input_iterator_type_ last,
                                  tags_types_...) noexcept {
         if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
@@ -2167,9 +2167,17 @@ class basic_avl_tree {
             return success_k;
         }
         else
-            return stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept {
-                return staged.insert_if_missing(std::move(candidate)).failed() ? status_t::out_of_memory_heap_k
-                                                                               : success_k;
+            return stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept -> status_t {
+                // Each verb collapses a key repeated inside the range the way its own name reads.
+                if constexpr (policy_ == incumbent_policy_t::takes_the_newcomer_k)
+                    return staged.upsert(std::move(candidate)).failed() ? status_t::out_of_memory_heap_k : success_k;
+                else {
+                    inserted_iterator_t const placed = staged.insert_if_missing(std::move(candidate));
+                    if constexpr (policy_ == incumbent_policy_t::refuses_the_newcomer_k)
+                        if (placed.placement == node_t::node_placement_t::matched_k)
+                            return status_t::key_already_exists_k;
+                    return placed.failed() ? status_t::out_of_memory_heap_k : success_k;
+                }
             });
     }
 
@@ -2190,11 +2198,16 @@ class basic_avl_tree {
      *  @note Complexity: O(n log n) to build, or O(n) under @c assume_sorted_t, then O(merge).
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
+    status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
+        requires(promises_about_the_range<tags_types_> && ...)
+    {
 
         if (first == last) return success_k;
         basic_avl_tree temp_tree = stage_alike();
-        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
+        if (status_t const staged =
+                stage_range_<incumbent_policy_t::keeps_the_incumbent_k>(temp_tree, first, last, tags...);
+            failed(staged))
+            return staged;
 
         // Keeps the incumbent wherever both trees hold the key, and frees the traveller.
         merge(temp_tree);
@@ -2215,11 +2228,16 @@ class basic_avl_tree {
      *  @note Complexity: O(n log n) to build, or O(n) under @c assume_sorted_t, plus O(m+n) to check.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
+    status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
+        requires(promises_about_the_range<tags_types_> && ...)
+    {
 
         if (first == last) return success_k;
         basic_avl_tree temp_tree = stage_alike();
-        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
+        if (status_t const staged =
+                stage_range_<incumbent_policy_t::refuses_the_newcomer_k>(temp_tree, first, last, tags...);
+            failed(staged))
+            return staged;
 
         // The staging tree auto-destructs, leaving this one exactly as it was.
         if (has_any_key(temp_tree)) return status_t::key_already_exists_k;
@@ -2267,11 +2285,16 @@ class basic_avl_tree {
      *      keys are UPDATED during the merge, not skipped.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
+    status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
+        requires(promises_about_the_range<tags_types_> && ...)
+    {
 
         if (first == last) return success_k;
         basic_avl_tree temp_tree = stage_alike();
-        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
+        if (status_t const staged =
+                stage_range_<incumbent_policy_t::takes_the_newcomer_k>(temp_tree, first, last, tags...);
+            failed(staged))
+            return staged;
 
         // Choose merge strategy based on uniqueness guarantee
         if constexpr (contains_type<assume_unique_t, tags_types_...>()) {
@@ -2316,11 +2339,16 @@ class basic_avl_tree {
      *      destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
-    status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept {
+    status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
+        requires(promises_about_the_range<tags_types_> && ...)
+    {
 
         if (first == last) return success_k;
         basic_avl_tree temp_tree = stage_alike();
-        if (status_t const staged = stage_range_(temp_tree, first, last, tags...); failed(staged)) return staged;
+        if (status_t const staged =
+                stage_range_<incumbent_policy_t::takes_the_newcomer_k>(temp_tree, first, last, tags...);
+            failed(staged))
+            return staged;
 
         // Check if ALL keys exist - O(m+n)
         if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
@@ -2761,6 +2789,8 @@ using avl_map = basic_avl_tree<mapping<key_type_, mapped_type_>, comparator_type
 
 static_assert(ordered_collection<avl_set<std::uint64_t>> && ordered_collection<avl_map<std::uint64_t, double>>,
               "an AVL tree answers a key, a bound and a range the way every ordered collection does");
+static_assert(batches_atomically<avl_set<std::uint64_t>> && batches_atomically<avl_map<std::uint64_t, double>>,
+              "an AVL tree takes a whole batch or none of it");
 static_assert(set_shaped_store<avl_set<std::uint64_t>> && map_shaped_store<avl_map<std::uint64_t, double>>,
               "the set and map aliases of one tree must not resolve to the same shape");
 

@@ -32,6 +32,8 @@ template <typename value_type_, typename comparator_type_ = less_t, row_kit row_
           typename allocator_type_ = default_allocator<value_type_>>
 class basic_flat_set {
   public:
+#pragma region Type Vocabulary
+
     using value_t = value_type_;
     using value_type = value_t; // ? STL compatibility
 
@@ -71,6 +73,10 @@ class basic_flat_set {
         : elements_(std::move(elements)), comparator_(std::move(comparator)) {}
 
   public:
+#pragma endregion Type Vocabulary
+
+#pragma region Constructors and Assignment
+
     basic_flat_set() noexcept = default;
 
     explicit basic_flat_set(comparator_t comparator, allocator_t allocator = {}) noexcept
@@ -96,6 +102,10 @@ class basic_flat_set {
         return expected<basic_flat_set>(basic_flat_set(std::move(*copied), comparator_), success_k);
     }
 
+#pragma endregion Constructors and Assignment
+
+#pragma region Capacity
+
     status_t reserve(std::size_t capacity) noexcept { return elements_.reserve(capacity); }
     void clear() noexcept { elements_.clear(); }
 
@@ -103,12 +113,20 @@ class basic_flat_set {
     [[nodiscard]] std::size_t capacity() const noexcept { return elements_.capacity(); }
     [[nodiscard]] bool empty() const noexcept { return elements_.empty(); }
 
+#pragma endregion Capacity
+
+#pragma region Element Access
+
     [[nodiscard]] value_t const *data() const noexcept { return elements_.data(); }
     [[nodiscard]] value_t const *begin() const noexcept { return elements_.begin(); }
     [[nodiscard]] value_t const *end() const noexcept { return elements_.end(); }
 
     /** The element at position @p ordinal in sorted order. */
     [[nodiscard]] value_t const &operator[](std::size_t ordinal) const noexcept { return elements_[ordinal]; }
+
+#pragma endregion Element Access
+
+#pragma region Lookup
 
     /** How many elements order below @p wanted, which is also where it is or would be inserted. */
     template <typename comparable_type_>
@@ -193,6 +211,10 @@ class basic_flat_set {
         return success_k;
     }
 
+#pragma endregion Lookup
+
+#pragma region Modifiers
+
     /** Adds @p element, or answers @c key_already_exists_k and leaves the set alone. */
     status_t insert(value_t element) noexcept {
         std::size_t const offset = rank(element);
@@ -210,31 +232,57 @@ class basic_flat_set {
         return insert_at_(offset, std::move(element));
     }
 
-    /** Adds every element of [first, last) the set lacks, reserving once when the range knows its length. */
+    /**
+     *  @brief Adds every element of [ @p first, @p last ) this set lacks, leaving incumbents alone.
+     *  @return @c success_k however many keys were already here, or the first refusal.
+     *
+     *  All-or-nothing over this set from the first element on: the staging set holds every element
+     *  before the merge begins, and the merge makes its one allocation before it moves anything.
+     */
     template <typename input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        status_t const reserved = reserve_for_range_(first, last);
-        if (failed(reserved)) return reserved;
-        for (; first != last; ++first) {
-            value_t element(*first);
-            std::size_t const offset = rank(element);
-            if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) continue;
-            status_t const inserted = insert_at_(offset, std::move(element));
-            if (failed(inserted)) return inserted;
-        }
-        return success_k;
+        if (first == last) return success_k;
+        basic_flat_set staged = stage_alike();
+        if (status_t const built = stage_range_<incumbent_policy_t::keeps_the_incumbent_k>(staged, first, last);
+            failed(built))
+            return built;
+        return absorb<incumbent_policy_t::keeps_the_incumbent_k>(staged);
     }
 
-    /** Adds every element of [first, last), replacing the equivalent ones the set already holds. */
+    /**
+     *  @brief Adds every element of [ @p first, @p last ), refusing the batch over a key already here.
+     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
+     *
+     *  All-or-nothing over this set from the first element on, a taken key included: the whole range
+     *  is staged and checked before the merge absorbing it allocates anything.
+     */
+    template <typename input_iterator_type_>
+    status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
+        if (first == last) return success_k;
+        basic_flat_set staged = stage_alike();
+        if (status_t const built = stage_range_<incumbent_policy_t::refuses_the_newcomer_k>(staged, first, last);
+            failed(built))
+            return built;
+        for (value_t const &candidate : staged)
+            if (find(candidate)) return key_already_exists_k;
+        return absorb<incumbent_policy_t::keeps_the_incumbent_k>(staged);
+    }
+
+    /**
+     *  @brief Writes every element of [ @p first, @p last ), replacing the equivalent ones held here.
+     *  @return The first refusal from the build or the merge, or @c success_k for the whole range.
+     *
+     *  All-or-nothing over this set from the first element on; an element already here is overwritten
+     *  by the merge, which moves rather than copies once its buffer is secured.
+     */
     template <typename input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        status_t const reserved = reserve_for_range_(first, last);
-        if (failed(reserved)) return reserved;
-        for (; first != last; ++first) {
-            status_t const written = upsert(value_t(*first));
-            if (failed(written)) return written;
-        }
-        return success_k;
+        if (first == last) return success_k;
+        basic_flat_set staged = stage_alike();
+        if (status_t const built = stage_range_<incumbent_policy_t::takes_the_newcomer_k>(staged, first, last);
+            failed(built))
+            return built;
+        return absorb<incumbent_policy_t::takes_the_newcomer_k>(staged);
     }
 
     /** Removes the element equivalent to @p wanted, or answers @c key_not_found_k. */
@@ -262,14 +310,94 @@ class basic_flat_set {
         for (std::size_t removed = last - first; removed > 0; --removed) elements_.pop_back();
     }
 
+#pragma endregion Modifiers
+
   private:
-    /** Reserves room for a whole range up front, so only sized ranges pay one growth rather than several. */
-    template <typename input_iterator_type_>
-    status_t reserve_for_range_(input_iterator_type_ first, input_iterator_type_ last) noexcept {
-        if constexpr (std::forward_iterator<input_iterator_type_>)
-            return elements_.reserve(elements_.size() + static_cast<std::size_t>(std::distance(first, last)));
-        else return success_k;
+#pragma region Staging
+
+    /** A set ordered and allocated exactly as this one is, for a batch to be built in. */
+    basic_flat_set stage_alike() const noexcept {
+        return basic_flat_set(elements_t(elements_.get_allocator()), comparator_);
     }
+
+    /**
+     *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element outside this set.
+     *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
+     */
+    template <incumbent_policy_t policy_, typename input_iterator_type_>
+    static status_t stage_range_(basic_flat_set &staged, input_iterator_type_ first,
+                                 input_iterator_type_ last) noexcept {
+        if constexpr (std::forward_iterator<input_iterator_type_>)
+            if (status_t const room = staged.elements_.reserve(static_cast<std::size_t>(std::distance(first, last)));
+                failed(room))
+                return room;
+        return stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept -> status_t {
+            // Each verb collapses a key repeated inside the range the way its own name reads.
+            if constexpr (policy_ == incumbent_policy_t::takes_the_newcomer_k)
+                return staged.upsert(std::move(candidate));
+            else {
+                std::size_t const offset = staged.rank(candidate);
+                bool const repeated =
+                    offset < staged.size() && !staged.comparator_(candidate, staged.elements_[offset]);
+                if constexpr (policy_ == incumbent_policy_t::refuses_the_newcomer_k)
+                    if (repeated) return key_already_exists_k;
+                return repeated ? success_k : staged.insert_at_(offset, std::move(candidate));
+            }
+        });
+    }
+
+    /**
+     *  @brief Merges @p staged into this set, which afterwards holds the union of the two.
+     *  @tparam policy_ Which side keeps a key both sets hold.
+     *  @return @c out_of_memory_heap_k when the replacement array is refused, which happens before
+     *      any element moves, so this set is untouched either way.
+     */
+    template <incumbent_policy_t policy_>
+    status_t absorb(basic_flat_set &staged) noexcept {
+        if (staged.empty()) return success_k;
+        if (empty()) {
+            elements_ = std::move(staged.elements_);
+            return success_k;
+        }
+
+        // Both runs are sorted, so one walk counts the overlap and the union follows by arithmetic.
+        std::size_t shared = 0;
+        for (std::size_t here = 0, there = 0; here != elements_.size() && there != staged.elements_.size();) {
+            if (comparator_(elements_[here], staged.elements_[there])) ++here;
+            else if (comparator_(staged.elements_[there], elements_[here])) ++there;
+            else {
+                ++here;
+                ++there;
+                ++shared;
+            }
+        }
+
+        expected<elements_t> merged =
+            elements_t::make(elements_.size() + staged.elements_.size() - shared, elements_.get_allocator());
+        if (!merged) return merged.status();
+
+        // Every write below moves into room already secured, so none of them can refuse.
+        auto take = [&](value_t &&element) noexcept {
+            [[maybe_unused]] status_t const placed = merged->push_back(assume_reserved, std::move(element));
+        };
+        std::size_t here = 0, there = 0;
+        while (here != elements_.size() || there != staged.elements_.size()) {
+            if (there == staged.elements_.size()) take(std::move(elements_[here++]));
+            else if (here == elements_.size()) take(std::move(staged.elements_[there++]));
+            else if (comparator_(elements_[here], staged.elements_[there])) take(std::move(elements_[here++]));
+            else if (comparator_(staged.elements_[there], elements_[here])) take(std::move(staged.elements_[there++]));
+            else {
+                if constexpr (policy_ == incumbent_policy_t::keeps_the_incumbent_k) take(std::move(elements_[here]));
+                else take(std::move(staged.elements_[there]));
+                ++here;
+                ++there;
+            }
+        }
+        elements_ = *std::move(merged);
+        return success_k;
+    }
+
+#pragma endregion Staging
 
     status_t insert_at_(std::size_t offset, value_t &&element) noexcept {
         status_t const status = elements_.push_back(std::move(element));
@@ -286,6 +414,7 @@ class basic_flat_set {
 
 static_assert(ordered_collection<basic_flat_set<std::uint64_t>>,
               "a flat set answers a key, a bound and a range the way every ordered collection does");
+static_assert(batches_atomically<basic_flat_set<std::uint64_t>>, "a flat set takes a whole batch or none of it");
 static_assert(!basic_flat_set<std::uint64_t>::is_associative::value, "a flat set stores bare keys");
 
 } // namespace ashvardanian::smashtable

@@ -711,7 +711,7 @@ class locked_store {
         return *present ? std::size_t {1} : std::size_t {0};
     }
 
-    /** Inserts a batch, leaving already-present keys untouched. */
+    /** Inherits the inner store's all-or-nothing batch, held under this store's write lock throughout. */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         unique_lock _ {mutex_};
@@ -800,15 +800,14 @@ class locked_store {
 
     /** A walk of every member in ascending order, resumable and holding no lock between steps. */
     [[nodiscard]] ordered_cursor_t cursor() const noexcept
-        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
-                 offers_smallest<inner_store_t>
+        requires offers_both_bounds<inner_store_t> && offers_smallest<inner_store_t>
     {
         return ordered_cursor_t {*this, cursor_seed_t::the_smallest_k, cursor_limit_t::the_whole_keyspace_k};
     }
 
     /** The same walk, begun at the first member ordered at or after @p from. */
     [[nodiscard]] ordered_cursor_t cursor_from(identifier_t from) const noexcept
-        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t>
+        requires offers_both_bounds<inner_store_t>
     {
         ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k, cursor_limit_t::the_whole_keyspace_k};
         walking.position_ = std::move(from);
@@ -817,8 +816,7 @@ class locked_store {
 
     /** The same walk, stopping before @p upper. */
     [[nodiscard]] ordered_cursor_t cursor_up_to(identifier_t upper) const noexcept
-        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t> &&
-                 offers_smallest<inner_store_t>
+        requires offers_both_bounds<inner_store_t> && offers_smallest<inner_store_t>
     {
         ordered_cursor_t walking {*this, cursor_seed_t::the_smallest_k, cursor_limit_t::up_to_the_bound_k};
         walking.bound_ = std::move(upper);
@@ -827,7 +825,7 @@ class locked_store {
 
     /** The same walk over [ @p from, @p upper ). */
     [[nodiscard]] ordered_cursor_t cursor_range(identifier_t from, identifier_t upper) const noexcept
-        requires offers_lower_bound<inner_store_t> && offers_upper_bound<inner_store_t>
+        requires offers_both_bounds<inner_store_t>
     {
         ordered_cursor_t walking {*this, cursor_seed_t::the_given_bound_k, cursor_limit_t::up_to_the_bound_k};
         walking.position_ = std::move(from);

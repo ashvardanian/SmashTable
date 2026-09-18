@@ -508,6 +508,9 @@ class basic_vector {
      */
     std::size_t capacity() const noexcept { return capacity_; }
 
+    /** A copy of the allocator this vector holds, for building a sibling that allocates the same way. */
+    [[nodiscard]] allocator_t get_allocator() const noexcept { return allocator_; }
+
 #pragma endregion Capacity
 
 #pragma region Iterators
