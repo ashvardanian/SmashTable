@@ -20,6 +20,7 @@
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_surfaces.hpp"
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
 #include "test_fixture_coverage.hpp"
@@ -1141,6 +1142,13 @@ static void fixture_coverage_rollback_balances_counted_keys() {
     test_rollback_balances_counted_keys<monotonic_wb_map<counted_key_t, int>>();
 }
 
+/** Every range modifier refused at every point it asks for memory leaves the tree as it was. */
+void weight_balance_batch_is_all_or_nothing() {
+    using ledger_set_t = wb_set<trivial_key_t, less_t, stateful_allocator_t>;
+    test_every_offered_surface<ledger_set_t>(
+        [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
+}
+
 #pragma endregion Fixture Coverage
 
 } // namespace
@@ -1283,6 +1291,8 @@ int main() {
                          fixture_coverage_container_balances_counted_keys);
     failures += run_test(filter, "fixture_coverage.rollback_balances_counted_keys",
                          fixture_coverage_rollback_balances_counted_keys);
+
+    failures += run_test(filter, "weight_balance.batch_is_all_or_nothing", weight_balance_batch_is_all_or_nothing);
 
     return report_test_failures(failures);
 }

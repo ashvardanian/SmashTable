@@ -19,6 +19,7 @@
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_surfaces.hpp"
 
 using namespace ashvardanian::smashtable;
 using namespace ashvardanian::smashtable::scripts;
@@ -210,6 +211,13 @@ void flat_set_shared_suites() {
     test_heterogeneous_heavy_string_view_find<heavy_set_t>();
 }
 
+/** Every range modifier refused at every point it asks for memory leaves the set as it was. */
+void flat_set_batch_is_all_or_nothing() {
+    using ledger_set_t = basic_flat_set<trivial_key_t, less_t, serial_row_kit_t, stateful_allocator_t>;
+    test_every_offered_surface<ledger_set_t>(
+        [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
+}
+
 #pragma endregion Tests
 
 } // namespace
@@ -227,6 +235,8 @@ int main() {
     failures += run_test(filter, "flat_set.rvv_kit", flat_set_rvv_kit);
     failures += run_test(filter, "flat_set.refused_allocation", flat_set_refused_allocation);
     failures += run_test(filter, "flat_set.shared_suites", flat_set_shared_suites);
+
+    failures += run_test(filter, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
 
     return report_test_failures(failures);
 }

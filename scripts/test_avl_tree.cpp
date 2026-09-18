@@ -23,6 +23,7 @@
 
 #include "test.hpp"
 #include "test_basic.hpp"
+#include "test_surfaces.hpp"
 #include "test_commit_stamp.hpp"
 #include "test_consistency.hpp"
 #include "test_fixture_coverage.hpp"
@@ -1024,6 +1025,13 @@ static void allocation_failure_insert_probes_before_allocating() {
     ledger.verify_balanced();
 }
 
+/** Every range modifier refused at every point it asks for memory leaves the tree as it was. */
+void allocation_failure_batch_is_all_or_nothing() {
+    using ledger_set_t = avl_set<trivial_key_t, less_t, stateful_allocator_t>;
+    test_every_offered_surface<ledger_set_t>(
+        [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
+}
+
 #pragma endregion Allocation Failure
 
 #pragma region Failure Policy
@@ -1184,6 +1192,9 @@ int main() {
                          fixture_coverage_container_honours_over_alignment);
 
     failures += run_test(filter, "failure_policy.budgeted_distinct_causes", failure_policy_budgeted_distinct_causes);
+
+    failures +=
+        run_test(filter, "allocation_failure.batch_is_all_or_nothing", allocation_failure_batch_is_all_or_nothing);
 
     return report_test_failures(failures);
 }

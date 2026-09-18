@@ -13,6 +13,7 @@
 
 #include "test.hpp"
 #include "test_fixture_coverage.hpp"
+#include "test_surfaces.hpp"
 #include "test_unordered.hpp"
 
 using namespace ashvardanian::smashtable;
@@ -267,6 +268,18 @@ static void unordered_concurrency_update_and_erase() {
 
 #pragma endregion Concurrency Tests
 
+#pragma region Batch Atomicity Tests
+
+/** Every range modifier refused at every point it asks for memory leaves the table as it was. */
+void hash_table_batch_is_all_or_nothing() {
+    using ledger_set_t = hash_set<trivial_key_t, default_hash_t, equal_to_t, stateful_allocator_t>;
+    test_every_offered_surface<ledger_set_t>([](allocation_ledger_t &ledger) noexcept {
+        return ledger_set_t(default_hash_t {}, equal_to_t {}, stateful_allocator_t(1, ledger));
+    });
+}
+
+#pragma endregion Batch Atomicity Tests
+
 using counting_set_t = hash_set<trivial_key_t, counting_hash_t, counting_equals_t>;
 
 static void fixture_coverage_hash_lookup_cost_is_bounded() { test_hash_lookup_cost_is_bounded<counting_set_t>(); }
@@ -313,6 +326,8 @@ int main() {
 
     failures +=
         run_test(filter, "fixture_coverage.hash_lookup_cost_is_bounded", fixture_coverage_hash_lookup_cost_is_bounded);
+
+    failures += run_test(filter, "hash_table.batch_is_all_or_nothing", hash_table_batch_is_all_or_nothing);
 
     return report_test_failures(failures);
 }

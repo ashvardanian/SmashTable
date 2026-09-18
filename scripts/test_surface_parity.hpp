@@ -29,120 +29,95 @@ struct alien_key_t {};
  */
 struct sample_one_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.sample_one(key, key, callback, callback); };
+    static constexpr bool offered = offers_sample_one<store_type_>;
 };
 struct sample_reservoir_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ const &store, typename store_type_::identifier_t const &key, no_op_t callback,
-                 std::size_t seen) { store.sample_reservoir(key, key, callback, seen, seen, callback); };
+    static constexpr bool offered = offers_sample_reservoir<store_type_>;
 };
 struct equal_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.equal_range(key, callback); };
+    static constexpr bool offered = offers_equal_range<store_type_>;
 };
 struct select_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, std::size_t ordinal, no_op_t callback) {
-        store.select(ordinal, callback, callback);
-    };
+    static constexpr bool offered = offers_select<store_type_>;
 };
 struct rank_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.rank(key, callback, callback); };
+    static constexpr bool offered = offers_rank<store_type_>;
 };
 struct ranked_size_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store) { store.ranked_size(); };
+    static constexpr bool offered = offers_ranked_size<store_type_>;
 };
 struct for_each_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, no_op_t callback) { store.for_each(callback); };
+    static constexpr bool offered = offers_for_each<store_type_>;
 };
 struct lower_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.lower_bound(key, callback, callback); };
+    static constexpr bool offered = offers_lower_bound<store_type_>;
 };
 struct upper_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.upper_bound(key, callback, callback); };
+    static constexpr bool offered = offers_upper_bound<store_type_>;
 };
 struct range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.range(key, key, callback); };
+    static constexpr bool offered = offers_range<store_type_>;
 };
 struct erase_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.erase_range(key, key, callback); };
+    static constexpr bool offered = offers_erase_range<store_type_>;
 };
 struct erase_from_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.erase_from(key, callback); };
+    static constexpr bool offered = offers_erase_from<store_type_>;
 };
 struct erase_up_to_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.erase_up_to(key, callback); };
+    static constexpr bool offered = offers_erase_up_to<store_type_>;
 };
 struct update_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename store_type_::identifier_t const &key,
-                                             no_op_t callback) { store.update_range(key, key, callback); };
+    static constexpr bool offered = offers_update_range<store_type_>;
 };
 struct insert_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ &store, typename store_type_::value_t &&element) { store.insert(std::move(element)); };
+    static constexpr bool offered = offers_insert<store_type_>;
 };
 struct insert_if_missing_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename store_type_::value_t &&element) {
-        store.insert_if_missing(std::move(element));
-    };
+    static constexpr bool offered = offers_insert_if_missing<store_type_>;
 };
 struct insert_or_assign_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename store_type_::value_t &&element) {
-        store.insert_or_assign(std::move(element));
-    };
+    static constexpr bool offered = offers_insert_or_assign<store_type_>;
 };
 struct update_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ &store, typename store_type_::value_t &&element) { store.update(std::move(element)); };
+    static constexpr bool offered = offers_update<store_type_>;
 };
 struct find_copy_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ const &store, typename store_type_::identifier_t const &key) { store.find_copy(key); };
+    static constexpr bool offered = offers_find_copy<store_type_>;
 };
 struct vacuum_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store) { store.vacuum(); };
+    static constexpr bool offered = offers_vacuum<store_type_>;
 };
 struct vacuum_window_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ &store, typename store_type_::identifier_t const &key) { store.vacuum(key, key); };
+    static constexpr bool offered = offers_vacuum_window<store_type_>;
 };
 struct versions_count_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store, typename store_type_::identifier_t const &key) {
-        store.versions_count();
-        store.versions_count(key);
-    };
+    static constexpr bool offered = offers_versions_count<store_type_>;
 };
 struct low_water_mark_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ const &store) { store.low_water_mark(); };
+    static constexpr bool offered = offers_low_water_mark<store_type_>;
 };
 struct visible_cursor_surface_t {
     template <typename store_type_>
@@ -153,21 +128,15 @@ struct visible_cursor_surface_t {
 };
 struct shard_protocol_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(store_type_ &store, typename shared_clock_of<store_type_>::type &clock,
-                                             typename store_type_::generation_t stamp) {
-        store.attach_clock(clock);
-        store.transaction_at(stamp, stamp);
-    };
+    static constexpr bool offered = offers_shared_clock<store_type_, typename shared_clock_of<store_type_>::type>;
 };
 struct smallest_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ const &store, no_op_t callback) { store.smallest(callback, callback); };
+    static constexpr bool offered = offers_smallest<store_type_>;
 };
 struct pop_smallest_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(store_type_ &store, no_op_t callback) { store.pop_smallest(callback, callback); };
+    static constexpr bool offered = offers_pop_smallest<store_type_>;
 };
 struct heterogeneous_erase_surface_t {
     template <typename store_type_>
@@ -184,82 +153,55 @@ struct heterogeneous_erase_surface_t {
  *  whose method is. */
 struct transaction_insert_if_missing_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
-            transaction.insert_if_missing(std::move(element));
-        };
+    static constexpr bool offered = transaction_offers_insert_if_missing<store_type_>;
 };
 struct transaction_changes_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(typename store_type_::transaction_t const &transaction) {
-        transaction.has_changes();
-        transaction.changes_count();
-    };
+    static constexpr bool offered = transaction_offers_change_report<store_type_>;
 };
 struct transaction_for_each_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(typename store_type_::transaction_t const &transaction, no_op_t callback) {
-        transaction.for_each(callback);
-    };
+    static constexpr bool offered = transaction_offers_for_each<store_type_>;
 };
 struct transaction_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-                 no_op_t callback) { transaction.range(key, key, callback); };
+    static constexpr bool offered = transaction_offers_range<store_type_>;
 };
 struct transaction_equal_range_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-                 no_op_t callback) { transaction.equal_range(key, callback); };
+    static constexpr bool offered = transaction_offers_equal_range<store_type_>;
 };
 struct transaction_lower_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-                 no_op_t callback) { transaction.lower_bound(key, callback, callback); };
+    static constexpr bool offered = transaction_offers_lower_bound<store_type_>;
 };
 struct transaction_upper_bound_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-                 no_op_t callback) { transaction.upper_bound(key, callback, callback); };
+    static constexpr bool offered = transaction_offers_upper_bound<store_type_>;
 };
 struct transaction_find_copy_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction,
-                 typename store_type_::identifier_t const &key) { transaction.find_copy(key); };
+    static constexpr bool offered = transaction_offers_find_copy<store_type_>;
 };
 struct transaction_generation_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction) { transaction.generation(); };
+    static constexpr bool offered = transaction_offers_generation<store_type_>;
 };
 struct transaction_reserve_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t &transaction, std::size_t size) { transaction.reserve(size); };
+    static constexpr bool offered = transaction_offers_reserve<store_type_>;
 };
 struct transaction_select_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction, std::size_t ordinal, no_op_t callback) {
-            transaction.select(ordinal, callback, callback);
-        };
+    static constexpr bool offered = transaction_offers_select<store_type_>;
 };
 struct transaction_rank_surface_t {
     template <typename store_type_>
-    static constexpr bool offered =
-        requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-                 no_op_t callback) { transaction.rank(key, callback, callback); };
+    static constexpr bool offered = transaction_offers_rank<store_type_>;
 };
 struct transaction_smallest_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = requires(typename store_type_::transaction_t const &transaction, no_op_t callback) {
-        transaction.smallest(callback, callback);
-    };
+    static constexpr bool offered = transaction_offers_smallest<store_type_>;
 };
 
 #pragma endregion Transaction Surfaces
