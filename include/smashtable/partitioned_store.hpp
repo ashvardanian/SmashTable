@@ -89,11 +89,23 @@ class partitioned_store {
     using shared_lock_t = shared_lock<mutex_t>;
     using unique_lock_t = unique_lock<mutex_t>;
 
-    using mutexes_t = std::array<mutex_t, partitions_k>;
+    /** One partition's lock, alone on its cache line so taking it does not invalidate the other partitions'. */
+    struct alignas(cache_line_bytes_k) padded_mutex_t : mutex_t {};
+
+    using mutexes_t = std::array<padded_mutex_t, partitions_k>;
 
     /** How many times each partition has been written, so a cached read can be told it is stale. */
     using epoch_t = std::size_t;
-    using epochs_t = std::array<epoch_t, partitions_k>;
+
+    /** One partition's write count, alone on its cache line for the same reason its lock is. */
+    struct alignas(cache_line_bytes_k) padded_epoch_t {
+        epoch_t writes = 0;
+    };
+
+    using epochs_t = std::array<padded_epoch_t, partitions_k>;
+
+    /** A cursor's own copy of every partition's write count, which it alone reads and so needs no padding. */
+    using epoch_counts_t = std::array<epoch_t, partitions_k>;
     using partitions_t = std::array<inner_store_t, partitions_k>;
     using partition_transactions_t = std::array<inner_transaction_t, partitions_k>;
 
@@ -393,7 +405,7 @@ class partitioned_store {
             if (!mutexes_) return;
             for (marked_partition_t held = touched_.first_marked(); held.presence == marked_presence_t::one_marked_k;
                  held = touched_.next_marked(held.index)) {
-                note_written_(epochs_[held.index]);
+                note_written_(epochs_[held.index].writes);
                 (*mutexes_)[held.index].unlock();
             }
             mutexes_ = nullptr;
@@ -446,13 +458,13 @@ class partitioned_store {
             // Counted after the whole hold rather than per partition, since nothing may read a front
             // while every partition is held anyway.
             if constexpr (writing_k)
-                for (epoch_t &epoch : epochs_) note_written_(epoch);
+                for (padded_epoch_t &epoch : epochs_) note_written_(epoch.writes);
             return answered;
         }
         else
             return for_all_indices_<refusal_>([&](std::size_t partition_index) noexcept {
                 if constexpr (writing_k) {
-                    writing_part_lock_t lock {mutexes[partition_index], epochs_[partition_index]};
+                    writing_part_lock_t lock {mutexes[partition_index], epochs_[partition_index].writes};
                     return callable(parts[partition_index]);
                 }
                 else {
@@ -500,7 +512,7 @@ class partitioned_store {
                 stamp = in_flight.stamp();
             }
         }
-        for (epoch_t &epoch : epochs_) note_written_(epoch);
+        for (padded_epoch_t &epoch : epochs_) note_written_(epoch.writes);
         if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
             if (succeeded(published) && staged != 0) clock_.await_published(stamp);
         return published;
@@ -668,7 +680,7 @@ class partitioned_store {
         front_states_t states_ {};
 
         /** The write count each front was read under, which is what dates it. */
-        epochs_t seen_epochs_ {};
+        epoch_counts_t seen_epochs_ {};
 
         /** The bound every step is taken from - the one given, then the last key handed over. */
         identifier_t position_;
@@ -723,7 +735,7 @@ class partitioned_store {
         /** Reads every partition's front, which is how a cursor starts knowing anything. */
         void seed_every_front_() noexcept {
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
-                seed_one_front_(partition_index, epoch_seen_(store_->epochs_[partition_index]));
+                seed_one_front_(partition_index, epoch_seen_(store_->epochs_[partition_index].writes));
         }
 
         /**
@@ -735,7 +747,7 @@ class partitioned_store {
          */
         void refresh_stale_fronts_() noexcept {
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-                epoch_t const written = epoch_seen_(store_->epochs_[partition_index]);
+                epoch_t const written = epoch_seen_(store_->epochs_[partition_index].writes);
                 if (written == seen_epochs_[partition_index]) continue;
                 seed_one_front_(partition_index, written);
             }
@@ -797,7 +809,7 @@ class partitioned_store {
                             delivered = true;
                         },
                         [&]() noexcept { states_[smallest.index] = front_state_t::exhausted_k; });
-                    seen_epochs_[smallest.index] = epoch_seen_(store_->epochs_[smallest.index]);
+                    seen_epochs_[smallest.index] = epoch_seen_(store_->epochs_[smallest.index].writes);
 
                     if (delivered) {
                         states_[smallest.index] = front_state_t::exhausted_k;
@@ -1026,7 +1038,7 @@ class partitioned_store {
             if (!store_ || staging_ != staging_t::staged_k) return;
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
+                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
                 inner_transaction_t &part = partitions_[reached.index];
                 if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
                     [[maybe_unused]] status_t const unwound = part.reset_at(lease_.snapshot());
@@ -1153,7 +1165,7 @@ class partitioned_store {
             status_t status = success_k;
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 touched_.mark(partition_index);
-                writing_part_lock_t lock {store_->mutexes_[partition_index], store_->epochs_[partition_index]};
+                writing_part_lock_t lock {store_->mutexes_[partition_index], store_->epochs_[partition_index].writes};
                 status_t const one = callable(partitions_[partition_index]);
                 if (failed(one)) status = one;
             }
@@ -1166,7 +1178,7 @@ class partitioned_store {
             status_t status = success_k;
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
+                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
                 status_t const one = callable(partitions_[reached.index]);
                 if (failed(one)) status = one;
             }
@@ -1253,7 +1265,7 @@ class partitioned_store {
             // superseded is freed rather than pinned by the claim it has already given up.
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
+                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
                 partitions_[reached.index].prune_committed();
             }
             touched_.clear();
@@ -1361,7 +1373,7 @@ class partitioned_store {
             status_t status = success_k;
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index]};
+                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
                 status = partitions_[reached.index].stage();
                 if (failed(status)) break;
                 staged.mark(reached.index);
@@ -1373,7 +1385,7 @@ class partitioned_store {
 
             for (marked_partition_t landed = staged.first_marked(); landed.presence == marked_presence_t::one_marked_k;
                  landed = staged.next_marked(landed.index)) {
-                writing_part_lock_t lock {store_->mutexes_[landed.index], store_->epochs_[landed.index]};
+                writing_part_lock_t lock {store_->mutexes_[landed.index], store_->epochs_[landed.index].writes};
                 [[maybe_unused]] status_t const unwound = partitions_[landed.index].rollback();
             }
             return status;
@@ -2102,7 +2114,7 @@ class partitioned_store {
 
         // Ascending order, one lock at a time, like every other all-partition walk here.
         auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
-            writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
+            writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
             if constexpr (offers_shared_clock<inner_store_t, clock_t>)
                 return partitions_[partition_index].transaction_at(snapshot, generation);
             else return partitions_[partition_index].transaction();
@@ -2124,6 +2136,18 @@ class partitioned_store {
                 return inner_store_t::make(comparator, typename inner_store_t::allocator_t {});
             else return inner_store_t::make(comparator);
         });
+    }
+
+    template <typename allocator_type_>
+    static expected<partitions_t> new_parts(comparator_t const &comparator, allocator_type_ const &allocator) noexcept {
+        return generate_array_safely<inner_store_t, partitions_k>(
+            [&](std::size_t) { return inner_store_t::make(comparator, allocator); });
+    }
+
+    template <typename allocator_type_>
+    static expected<partitions_t> new_parts_sharing(allocator_type_ const &allocator) noexcept {
+        return generate_array_safely<inner_store_t, partitions_k>(
+            [&](std::size_t) { return inner_store_t::make(allocator); });
     }
 
   public:
@@ -2159,6 +2183,35 @@ class partitioned_store {
      */
     static expected<partitioned_store> make(comparator_t const &comparator, hash_t const &hasher) noexcept {
         expected<partitions_t> parts = new_parts(comparator);
+        if (!parts) return parts.status();
+        return partitioned_store {std::move(*parts), hasher, comparator};
+    }
+
+    /**
+     *  @brief Builds a store whose every partition allocates through a copy of @p allocator.
+     *  @param[in] allocator Copied once per partition, so a stateful one accounts for each partition apart.
+     *  @return The store, or the status that refused to build one of its partitions.
+     */
+    template <typename allocator_type_>
+        requires requires(allocator_type_ const &allocator) { inner_store_t::make(allocator); }
+    static expected<partitioned_store> make(allocator_type_ const &allocator) noexcept {
+        expected<partitions_t> parts = new_parts_sharing(allocator);
+        if (!parts) return parts.status();
+        return partitioned_store {std::move(*parts)};
+    }
+
+    /**
+     *  @brief Builds a store whose partitions share one comparator, one hasher and a copy of one allocator.
+     *  @param[in] allocator Copied once per partition, so a stateful one accounts for each partition apart.
+     *  @return The store, or the status that refused to build one of its partitions.
+     */
+    template <typename allocator_type_>
+        requires requires(comparator_t const &comparator, allocator_type_ const &allocator) {
+            inner_store_t::make(comparator, allocator);
+        }
+    static expected<partitioned_store> make(comparator_t const &comparator, hash_t const &hasher,
+                                            allocator_type_ const &allocator) noexcept {
+        expected<partitions_t> parts = new_parts(comparator, allocator);
         if (!parts) return parts.status();
         return partitioned_store {std::move(*parts), hasher, comparator};
     }
@@ -2199,7 +2252,7 @@ class partitioned_store {
 
     status_t upsert(value_t &&element) noexcept {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].upsert(std::move(element));
     }
 
@@ -2217,7 +2270,7 @@ class partitioned_store {
     status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
                    callback_missing_type_ &&callback_missing = {}) noexcept {
         std::size_t partition_index = bucket_(comparable);
-        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].erase(std::forward<comparable_type_>(comparable),
                                                   std::forward<callback_found_type_>(callback_found),
                                                   std::forward<callback_missing_type_>(callback_missing));
@@ -2268,7 +2321,7 @@ class partitioned_store {
     /** Inserts one element only if its key is absent, leaving an incumbent untouched. */
     status_t insert_if_missing(value_t &&element) noexcept {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].insert_if_missing(std::move(element));
     }
 
@@ -2284,7 +2337,7 @@ class partitioned_store {
     status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
                                callback_existing_type_ &&callback_existing) noexcept {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].insert_if_missing(std::move(element),
                                                               std::forward<callback_inserted_type_>(callback_inserted),
                                                               std::forward<callback_existing_type_>(callback_existing));
@@ -2296,7 +2349,7 @@ class partitioned_store {
         requires offers_insert<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].insert(std::move(element));
     }
 
@@ -2314,7 +2367,7 @@ class partitioned_store {
         requires offers_insert_naming_occupant<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].insert(std::move(element),
                                                    std::forward<callback_inserted_type_>(callback_inserted),
                                                    std::forward<callback_existing_type_>(callback_existing));
@@ -2325,7 +2378,7 @@ class partitioned_store {
         requires offers_update<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].update(std::move(element));
     }
 
@@ -2673,7 +2726,7 @@ class partitioned_store {
         std::size_t reclaimed = 0;
         // Ascending order, one partition at a time, like every other all-partition walk here.
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-            writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
+            writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
             auto one = partitions_[partition_index].vacuum();
             if constexpr (std::is_same<decltype(one), std::size_t>()) reclaimed += one;
             else {
@@ -2695,7 +2748,7 @@ class partitioned_store {
     {
         std::size_t reclaimed = 0;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
-            writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index]};
+            writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
             auto one = partitions_[partition_index].vacuum(lower, upper);
             if constexpr (std::is_same<decltype(one), std::size_t>()) reclaimed += one;
             else {
@@ -2884,7 +2937,7 @@ class partitioned_store {
         requires offers_insert_or_assign<inner_store_t>
     {
         std::size_t partition_index = bucket_(element);
-        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index]};
+        writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
         return partitions_[partition_index].insert_or_assign(std::move(element));
     }
 };

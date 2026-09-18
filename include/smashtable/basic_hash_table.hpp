@@ -426,8 +426,10 @@ class basic_hash_table {
      */
     template <typename begin_iterator_type_, typename end_iterator_type_,
               typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
-    static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end) noexcept {
-        auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))});
+    static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end, hasher_t hasher = {},
+                                           equals_t equals = {}, allocator_t allocator = {}) noexcept {
+        auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))},
+                          std::move(hasher), std::move(equals), std::move(allocator));
         if (!table) return table;
         if (status_t const filled = table->upsert(begin, end, assume_reserved_t {}); failed(filled))
             return expected<basic_hash_table>(filled);
@@ -510,7 +512,9 @@ class basic_hash_table {
      *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
+    void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
@@ -559,7 +563,9 @@ class basic_hash_table {
      *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void probe_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept {
+    void probe_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
@@ -606,7 +612,9 @@ class basic_hash_table {
      *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
+    void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
@@ -650,7 +658,9 @@ class basic_hash_table {
      *  @return Whether a slot took the element; the counters only move when one did.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
-    upsert_result_t probe_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept {
+    upsert_result_t probe_to_insert(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t offset = hasher_(wanted) & offset_mask;
@@ -692,7 +702,9 @@ class basic_hash_table {
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_,
               typename... tags_types_>
     upsert_result_t probe_to_upsert(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,
-                                    callback_equal_type_ &&call_equal, tags_types_...) noexcept {
+                                    callback_equal_type_ &&call_equal, tags_types_...) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t offset = hasher_(wanted) & offset_mask;
@@ -778,7 +790,9 @@ class basic_hash_table {
      *      never refuses.
      */
     template <typename comparable_key_type_, typename... tags_types_>
-    expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept {
+    expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
         bool present = false;
         probe_to_find(
             std::forward<comparable_key_type_>(wanted), [&present](auto const &) noexcept { present = true; }, tags...);
@@ -981,7 +995,9 @@ class basic_hash_table {
         typename convertible_mapped_type_, typename... tags_types_,
         typename std::enable_if<can_use_map_emplace<convertible_key_type_, convertible_mapped_type_>(), int>::type = 0>
     std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> emplace(
-        convertible_key_type_ &&key, convertible_mapped_type_ &&value, tags_types_... tags) noexcept {
+        convertible_key_type_ &&key, convertible_mapped_type_ &&value, tags_types_... tags) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
         // fills it to the last slot and then has nowhere left to go. A key already present takes no
@@ -1039,7 +1055,9 @@ class basic_hash_table {
               typename... tags_types_,
               typename std::enable_if<can_use_set_emplace<convertible_key_type_>(), int>::type = 0>
     std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> emplace(
-        convertible_key_type_ &&key, tags_types_... tags) noexcept {
+        convertible_key_type_ &&key, tags_types_... tags) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         // A refused allocation must stop the insertion here: probing a table that could not grow
         // fills it to the last slot and then has nowhere left to go. A key already present takes no
@@ -1091,7 +1109,9 @@ class basic_hash_table {
     template <emplace_report_t report_ = emplace_report_t::no_result_k, typename temporary_pack_type_,
               typename... tags_types_, typename std::enable_if<!is_iterator<temporary_pack_type_>(), int>::type = 0>
     std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> insert(
-        temporary_pack_type_ &&pack, tags_types_... tags) noexcept {
+        temporary_pack_type_ &&pack, tags_types_... tags) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
         if constexpr (has_values_k)
             return emplace<report_>(std::forward<temporary_pack_type_>(pack).key,
                                     std::forward<temporary_pack_type_>(pack).mapped, tags...);
@@ -1151,7 +1171,7 @@ class basic_hash_table {
 
         // A key repeated inside the range collides exactly as one already here does, and an open
         // table cannot see the repeat without counting the distinct keys against the range length.
-        expected<basic_hash_table> distinct = make(begin, end);
+        expected<basic_hash_table> distinct = make(begin, end, hasher_, equals_, get_allocator());
         if (!distinct) return distinct.status();
         if (distinct->size() != static_cast<std::size_t>(distance_between(begin, end))) return key_already_exists_k;
 
@@ -1211,7 +1231,9 @@ class basic_hash_table {
      */
     template <incumbent_policy_t policy_, typename begin_iterator_type_, typename end_iterator_type_,
               typename... tags_types_>
-    status_t apply_each_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept {
+    status_t apply_each_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
         for (; begin != end; ++begin) {
             if constexpr (policy_ == incumbent_policy_t::keeps_the_incumbent_k)
                 if (find(mapping_key_or_itself(*begin)) != end_sentinel_t {}) continue;
@@ -1229,7 +1251,9 @@ class basic_hash_table {
      */
     template <incumbent_policy_t policy_, typename begin_iterator_type_, typename end_iterator_type_,
               typename... tags_types_>
-    status_t absorb_range_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept {
+    status_t absorb_range_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
         if (begin == end) return success_k;
         if constexpr (contains_type<assume_reserved_t, tags_types_...>())
             return apply_each_<policy_>(begin, end, tags...);
@@ -1288,7 +1312,9 @@ class basic_hash_table {
      *  @note Erasures never deallocate; memory stays cluttered until the next @c force_resize().
      */
     template <typename comparable_key_type_, typename... tags_types_>
-    bool erase(comparable_key_type_ &&key, tags_types_... tags) noexcept {
+    bool erase(comparable_key_type_ &&key, tags_types_... tags) noexcept
+        requires(promises_something<tags_types_> && ...)
+    {
 
         bool result = false;
         probe_to_find(

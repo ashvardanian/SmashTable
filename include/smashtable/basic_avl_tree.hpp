@@ -600,6 +600,9 @@ class basic_avl_node {
 
         /** Why the build stopped: a refused node, a refused element copy, or @c success_k. */
         status_t status = success_k;
+
+        /** How many nodes hang off @c root, which a partial build leaves short of the range length. */
+        std::size_t count = 0;
     };
 
     /**
@@ -641,18 +644,18 @@ class basic_avl_node {
         build_result_t const left = build_from_sorted(first, middle, allocate_node);
         root->left = left.root;
         if (root->left) root->left->parent = root;
-        if (failed(left.status)) return {root, left.status};
+        if (failed(left.status)) return {root, left.status, 1 + left.count};
 
         iterator_type_ right_first = middle_iterator;
         ++right_first;
         build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
         root->right = right.root;
         if (root->right) root->right->parent = root;
-        if (failed(right.status)) return {root, right.status};
+        if (failed(right.status)) return {root, right.status, 1 + left.count + right.count};
 
         // Set height (no balancing needed for perfectly balanced construction)
         root->height = 1 + larger_of(get_height(root->left), get_height(root->right));
-        return {root, success_k};
+        return {root, success_k, count};
     }
 
 #pragma endregion Insertions
@@ -2160,10 +2163,11 @@ class basic_avl_tree {
             std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
             typename node_t::build_result_t const built =
                 node_t::build_from_sorted(first, count, [&]() noexcept { return staged.allocator_.allocate(1); });
-            // Hooked up even on a refusal, so the staging tree frees whatever was built.
+            // Hooked up even on a refusal, so the staging tree frees whatever was built and its
+            // size never disagrees with its root.
             staged.root_ = built.root;
+            staged.size_ = built.count;
             if (failed(built.status)) return built.status;
-            staged.size_ = count;
             return success_k;
         }
         else

@@ -486,6 +486,9 @@ class basic_wb_node {
 
         /** Why the build stopped: a refused node, a refused element copy, or @c success_k. */
         status_t status = success_k;
+
+        /** How many nodes hang off @c root, which a partial build leaves short of the range length. */
+        std::size_t count = 0;
     };
 
     /**
@@ -519,7 +522,7 @@ class basic_wb_node {
         root->left = left.root;
         if (failed(left.status)) {
             update_size(root);
-            return {root, left.status};
+            return {root, left.status, 1 + left.count};
         }
 
         iterator_type_ right_first = middle_iterator;
@@ -527,8 +530,8 @@ class basic_wb_node {
         build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
         root->right = right.root;
         update_size(root);
-        if (failed(right.status)) return {root, right.status};
-        return {root, success_k};
+        if (failed(right.status)) return {root, right.status, 1 + left.count + right.count};
+        return {root, success_k, count};
     }
 
     /**
@@ -1659,10 +1662,11 @@ class basic_wb_tree {
             std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
             typename node_t::build_result_t const built =
                 node_t::build_from_sorted(first, count, [&]() noexcept { return staged.allocator_.allocate(1); });
-            // Hooked up even on a refusal, so the staging tree frees whatever was built.
+            // Hooked up even on a refusal, so the staging tree frees whatever was built and its
+            // size never disagrees with its root.
             staged.root_ = built.root;
+            staged.size_ = built.count;
             if (failed(built.status)) return built.status;
-            staged.size_ = count;
             return success_k;
         }
         else

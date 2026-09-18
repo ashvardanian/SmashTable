@@ -54,9 +54,6 @@ namespace ashvardanian::smashtable {
 
 #pragma region Bucket Metadata
 
-/** Platform cache line size in bytes, typically 64 on modern CPUs. */
-inline constexpr std::size_t cache_line_bytes_k = 64;
-
 /** Number of slots sharing one bucket header, sized so the header fits a 64-bit atomic. */
 inline constexpr std::size_t hash_bucket_capacity_k = 32;
 

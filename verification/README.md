@@ -1,6 +1,6 @@
 # Verification
 
-Model checking for the protocols the stores promise: the two-phase group commit, the partitioned commit under one stamp, the snapshot clock, the slot lock of the atomic hash table, and the shared mutex every locked store takes.
+Model checking for the protocols the stores promise: the two-phase group commit, the partitioned commit under one stamp, the snapshot clock, the slot lock of the atomic hash table, the shared mutex every locked store takes, and the staged batch every range modifier runs.
 [Spin](https://spinroot.com) checks each as a Promela model under the memory models of [ForkUnion's `verification/`](https://github.com/ashvardanian/ForkUnion), which sits beside this repository in whichever superproject vendors both, and is checked out beside it in CI; `./check.sh` runs everything here and compares each verdict with the expected one.
 
 - `weak_memory.pml` — the forwarder to ForkUnion's memory module.
@@ -18,6 +18,8 @@ Model checking for the protocols the stores promise: the two-phase group commit,
 - `snapshot_reader.pml` — `snapshot_store::reader_t`: its claim joining the census under the clock's mutex, reads at its stamp while commits prune the key's version run, and a transaction adopting the stamp.
   `-Dscenario=adoption` for the adoption.
 - `partitioned_erase.pml` — `partitioned_store`'s store-level window writes: every partition held, one stamp drawn once all of them staged, stamped into each, and the watermark moved after the last.
+- `staged_batch.pml` — the range modifiers of `basic_avl_tree`, `basic_flat_set` and `basic_hash_table`: the range staged in a container of the destination's own kind, the two causes that can refuse met there, and the absorb that asks the allocator at most once.
+  `-Dscenario=tree`, the default, for the merge that relinks and asks for nothing; `-Dscenario=flat` for the merged array; `-Dscenario=table` for `reserve_more`.
 - `snapshot_reader.cpp` — the pinned reader and its adoption as a GenMC client over `std::atomic`.
 - `partitioned_erase.cpp` — the one-stamp window write as a GenMC client over `std::atomic`.
 
@@ -46,12 +48,26 @@ A reader drawing between two of those publications named the first partition's s
 `snapshot_reader.pml` found nothing to change.
 It confirms that the claim a pinned reader holds, and the claim an adopting transaction links beside it, are what keep a prune off the version each reads, and its two variants without a claim show the prune that would land otherwise.
 
+`staged_batch.pml` found nothing to change either.
+It confirms that both causes a batch has to survive, the allocator refusing a request and an element refusing its own duplication, are met while the range is still outside the destination, and that the absorb past them asks for room once or not at all.
+Spin reports the tree's refusal branch as unreachable under `-Dscenario=tree`, which is the merge relinking rather than allocating, stated as a verdict rather than as a docblock.
+Its three variants are the batch before it staged, a merge that copied rather than relinked, and the key check moved past the absorb.
+The last is the sharpest: with the absorb ahead of it, `update`'s check for a key that is not here finds the key the absorb has just written, so the batch answers success over a destination it should never have touched.
+
 ## What is not covered
 
 The in-turn commit of stores that do not split theirs is documented as a tear when a later participant refuses, and `-Dwhole_across_stores` is the assertion that shows it rather than a fix.
 The stage's unwind discards each rollback's status; an inner rollback fails only with a store-level fault the participant reports again on its next call, and the stage already returns the refusal that matters.
-The trees, the vectors and the single-writer stores are documented one-thread cores and have no model.
+The trees, the vectors and the single-writer stores are documented one-thread cores, and only their staged batch has a model.
 The GenMC clients spell their mutexes as one exchanged word rather than `spin_shared_mutex_t`, whose shape `spin_shared_mutex.pml` already checks, and they run only where GenMC is installed.
+
+`staged_batch.pml` runs three keys and a range of three, which is enough for a key already there, a key that is free and a key the range repeats, and not enough for the probe of an open table.
+That `apply_each_` cannot refuse once `reserve_more` has returned rests on the growth threshold leaving a quarter of the slots free and on a bounded probe walking all of them, which is `hash_layout.hpp`'s property and has no model of its own.
+A table whose element duplicates without refusing stages nothing and writes the caller's range straight in; `-Dscenario=table` covers that path as the same one allocation, since the two differ in what they duplicate rather than in what a refusal leaves behind.
+Only `basic_avl_tree` spells `update` over a range, so the model's fourth verb stands for the tree alone.
+
+The waiting policies run over `locked_store.pml` and `atomic_hash_table.pml`, the smallest model over each of the two locks; the models that layer a store protocol on the same mutex run under the default, since a policy admitting more interleavings for the lock admits them for everything above it.
+A policy that sleeps on a notification of its own, rather than on the word the lock lives in, is covered only for when it retries: the wake lives in the word's own history here, so a wake-up lost between a waiter deciding to sleep and a releaser looking for waiters is not a shape these models can express.
 
 ## Running
 
@@ -61,4 +77,4 @@ The GenMC clients spell their mutexes as one exchanged word rather than `spin_sh
 
 Inside a superproject the runner finds ForkUnion two directories up, as the forwarder does; standalone, check ForkUnion out beside this repository, which is what CI does.
 Every `verify` line names a model, the expected verdict and the defines, so a new variant is one line.
-The suite's 36 Spin verdicts and 5 GenMC verdicts take about forty seconds four at a time, which is the default.
+The suite's 54 Spin verdicts and 5 GenMC verdicts take about a minute four at a time, which is the default.

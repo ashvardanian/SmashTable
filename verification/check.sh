@@ -66,6 +66,20 @@ verify partitioned_erase.pml pass -Dmemory=sequential
 verify partitioned_erase.pml pass
 verify partitioned_erase.pml fail -Dmemory=sequential -Dwithout_one_stamp
 
+section "staged_batch.pml: the range built beside the destination, and the refusal that leaves it as it was"
+verify staged_batch.pml pass -Dscenario=tree
+verify staged_batch.pml fail -Dscenario=tree -Dwithout_staging
+verify staged_batch.pml fail -Dscenario=tree -Dwithout_secured_room
+verify staged_batch.pml fail -Dscenario=tree -Dwithout_prior_check
+verify staged_batch.pml pass -Dscenario=flat
+verify staged_batch.pml fail -Dscenario=flat -Dwithout_staging
+verify staged_batch.pml fail -Dscenario=flat -Dwithout_secured_room
+verify staged_batch.pml fail -Dscenario=flat -Dwithout_prior_check
+verify staged_batch.pml pass -Dscenario=table
+verify staged_batch.pml fail -Dscenario=table -Dwithout_staging
+verify staged_batch.pml fail -Dscenario=table -Dwithout_secured_room
+verify staged_batch.pml fail -Dscenario=table -Dwithout_prior_check
+
 section "snapshot_reader.cpp and partitioned_erase.cpp: the same two protocols under GenMC"
 if genmc_ready; then
     verify_client snapshot_reader.cpp pass

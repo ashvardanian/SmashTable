@@ -614,6 +614,10 @@ concept promises_about_the_range = std::same_as<type_, assume_sorted_t> || std::
 template <typename type_>
 concept promises_about_the_room = std::same_as<type_, assume_reserved_t>;
 
+/** Any promise this library reads, which is what an open tag pack admits - a foreign type is refused there. */
+template <typename type_>
+concept promises_something = promises_about_the_range<type_> || promises_about_the_room<type_>;
+
 #pragma endregion Tag Dispatch Types
 
 #pragma region Copying and Construction
@@ -1513,6 +1517,9 @@ concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::
 #pragma endregion Optimistic Concurrency
 
 #pragma region Device Portability
+
+/** Platform cache line size in bytes, typically 64 on modern CPUs. */
+inline constexpr std::size_t cache_line_bytes_k = 64;
 
 /**
  *  @brief The bit intrinsics every container here counts slots with.
