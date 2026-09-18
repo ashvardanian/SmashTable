@@ -382,7 +382,7 @@ The standard library has loose ends around failure.
 ```cpp
 struct budget_t { std::size_t used = 0, limit = 0; };
 
-template <typename value_type_> // ? rebind, converting constructor and `deallocate` elided
+template <typename value_type_> // ? rebind, converting constructor, `deallocate` and the move-propagation trait elided
 struct failing_allocator {
     using value_type = value_type_;
     budget_t *budget {};
@@ -414,6 +414,27 @@ std::bad_alloc after 3 allocations
 set contains 3 elements:
 0 1 2
 ```
+
+The same range through a container here answers with a `status_t`, and the destination is untouched:
+
+```cpp
+using set_t = st::avl_set<int, std::less<>, failing_allocator<int>>;
+set_t values(std::less<> {}, failing_allocator<int> {&budget});
+
+int const range[] = {0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+st::status_t const inserted = values.insert(std::begin(range), std::end(range));
+```
+
+Against the same three-allocation budget that prints:
+
+```
+insert(first, last) returned out_of_memory_heap_k
+set contains 0 elements
+```
+
+A range modifier builds the whole range beside the destination and absorbs it in one step, so the allocation that fails has nothing to undo: it fails while the destination is still untouched.
+`insert` refuses over a key already there, `insert_if_missing` skips one and takes the rest, `upsert` overwrites — and all three refuse the whole range or take it.
+The one way out of the promise is `assume_reserved_t`, which writes in place against room you have already secured, so a capacity it exhausts leaves the prefix written.
 
 Where this matters is secondary-index consistency inside a storage engine — an `id → slot` map, a `slot → vector` map and a deleted set that have to move together, and where "the crash left index B disagreeing with index A" is a corruption bug someone has already debugged.
 
@@ -455,6 +476,29 @@ Headers group as:
 
   transaction_group<Stores...>  → One 2-phase commit spanning several stores
 ```
+
+### Choosing a Container for a Concurrency Shape
+
+The __Writers__ column of the table in [What's Inside](#whats-inside) names how many threads may write, and the reader rule follows from it rather than standing beside it: a core's `const` methods are safe from any number of threads only while no thread is writing, since a probe reads slot metadata and node links a write is midway through changing.
+The shape that gets this wrong most often is a cache behind a `mutable` member, filled on what its caller calls a read — a reader-writer lock held in shared mode admits several such calls at once, and each of them is a writer as far as the container is concerned.
+
+Growth is the other half of the rule.
+A core that can grow repoints the regions every live slot reference and every node pointer has already cached, so a container a second thread can reach must either be pinned at a capacity nobody exceeds, or reached through a wrapper that excludes.
+
+|                                             | Reach for                                                | Wrap in                              |
+| :------------------------------------------ | :------------------------------------------------------- | :----------------------------------- |
+| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set`          | …                                    |
+| The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                        | …                                    |
+| The same, and keyed                         | `basic_hash_table`                                        | …                                    |
+| Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`               | …                                    |
+| Many threads, capacity fixed up front       | `atomic_hash_table`                                       | …                                    |
+| Many threads, and the container still grows | any core above                                            | `locked_store` · `partitioned_store` |
+| Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store`  | either wrapper                       |
+| One commit spanning several stores          | `transaction_group`                                       | inherits its participants'           |
+
+Both wrappers take their mutex as a template parameter, and that mutex takes two of its own: the reference its word is owned through, and the policy a waiting core follows.
+A deployment that knows its hardware names both: a reference whose conditional add decides an acquire in one instruction, and a stall its cores actually have.
+One that does not pays nothing for the question.
 
 Transactions and thread-safety are two independent axes, not one ladder.
 A wrapper takes its mutex per __call__, not across a transaction: `stage` and `commit` each take it and drop it in between.
@@ -502,16 +546,34 @@ That is what pagination, percentiles and quantiles need, and it is the one thing
 
 Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amortized rotations per update.
 
-### Row-Searched Layouts
+### Flat Sets and Rings
 
-> `smashtable/row_layout.hpp` · `smashtable/row_search.hpp`
+> `smashtable/basic_flat_set.hpp` · `smashtable/basic_ring.hpp`
 
-Four containers search sorted keys a __row__ at a time rather than a key at a time.
-A row is a span wide enough to be worth one vectorized pass — 512 bytes by default, which is `default_row_bytes_k`.
+`basic_flat_set` is an ordered set in one contiguous allocation, growable and allocator-aware like `basic_avl_tree`, differing only in where elements live.
+Inserting and erasing shift the tail, so it suits a few hundred elements rather than millions, in exchange for a search that reads adjacent memory and allocates nothing.
+That search is the same row search the immutable trees below use, wherever the element is a `row_searchable_key` ordered by `less_t`, and a plain binary search otherwise — `basic_flat_set` takes the kit as its third template argument.
+It answers the same `ordered_collection` surface the trees do — bounds, ranges and half-open erasure — so the shared suites hold it to the same contract.
+
+`basic_ring` is a first-in first-out queue over one allocation whose capacity is a power of two fixed at `make`, for batching and read-ahead.
+Two 32-bit counters of pushes and pops wrap together, so their difference is the size and a full ring is told from an empty one without a spare slot.
+
+### Immutable B and S+ Trees
+
+> `smashtable/immutable_b_tree.hpp` · `smashtable/immutable_splus_tree.hpp` · `smashtable/row_layout.hpp` · `smashtable/row_search.hpp`
+
+Both are built once from a sorted span and never written again, so any number of threads may read one at once with no synchronization at all.
+Both search a __row__ at a time rather than a key at a time — a row being a span wide enough to be worth one vectorized pass, 512 bytes by default, which is `default_row_bytes_k`.
 `row_layout.hpp` says what a key may be and where each one sits in a row; `row_search.hpp` says how a row is searched.
 
+`immutable_b_tree` stores nodes breadth-first with implicit children: node `i` holds one row of `B` keys and its children are nodes `i*(B+1)+j+1`.
+A lookup reads one row per level and the rank adds up as the descent goes, with no subtree sizes stored.
+
+`immutable_splus_tree` keeps every key in sorted leaves and copies separators onto the levels above.
+A lookup lands on the leaf whose position __is__ the rank, so `select` is an index into the leaves.
+
 Every kit the compiler can emit is compiled into the same artifact, each under its own target attributes, so no global instruction-set flag is needed.
-`detect_row_kit()` probes the processor once and `visit_row_kit` hands the answer over as a __type__, so a container instantiated over it calls its kit with no table and no branch per key.
+`detect_row_kit()` probes the processor once and `visit_row_kit` hands the answer over as a __type__, so a tree instantiated over it calls its kit with no table and no branch per key.
 
 ```cpp
 visit_row_kit(detect_row_kit(), [&](auto kit) {
@@ -522,30 +584,6 @@ visit_row_kit(detect_row_kit(), [&](auto kit) {
 
 Keys may be 32- or 64-bit of either signedness, or 16 bytes ordered as `memcmp`.
 A 16-byte key is stored either interleaved or split into a column of high words and a column of low words, the low column read only where a high word ties.
-Whatever rides beside a key never enters a row, so a map form searches exactly what its set form does.
-
-### Flat Sets and Rings
-
-> `smashtable/basic_flat_set.hpp` · `smashtable/basic_ring.hpp`
-
-`basic_flat_set` is an ordered set in one contiguous allocation, growable and allocator-aware like `basic_avl_tree`, differing only in where elements live.
-Inserting and erasing shift the tail, so it suits a few hundred elements rather than millions, in exchange for a search that reads adjacent memory and allocates nothing.
-It answers the same `ordered_collection` surface the trees do — bounds, ranges and half-open erasure — so the shared suites hold it to the same contract.
-
-`basic_ring` is a first-in first-out queue over one allocation whose capacity is a power of two fixed at `make`, for batching and read-ahead.
-Two 32-bit counters of pushes and pops wrap together, so their difference is the size and a full ring is told from an empty one without a spare slot.
-
-### Immutable Trees
-
-> `smashtable/immutable_b_tree.hpp` · `smashtable/immutable_splus_tree.hpp`
-
-Both are built once from a sorted span and never written again, so any number of threads may read one at once with no synchronization at all.
-
-`immutable_b_tree` stores nodes breadth-first with implicit children: node `i` holds one row of `B` keys and its children are nodes `i*(B+1)+j+1`.
-A lookup reads one row per level and the rank adds up as the descent goes, with no subtree sizes stored.
-
-`immutable_splus_tree` keeps every key in sorted leaves and copies separators onto the levels above.
-A lookup lands on the leaf whose position __is__ the rank, so `select` is an index into the leaves.
 
 `immutable_b_set` and `immutable_splus_set` hold bare keys; `immutable_b_map` and `immutable_splus_map` pair each key with a value.
 A map keeps the rows byte-identical to its set twin and puts the values in one array the rank indexes, so every kit still loads a row of nothing but keys, and `mapped_at(rank)` costs one further cache line.
@@ -695,3 +733,18 @@ For the Python side:
 ```bash
 pip install -e . --group test && pytest test/
 ```
+
+### Model Checking
+
+The protocols the wrappers promise are checked as models, not only exercised as code.
+`verification/` holds eight Promela models — the two-phase group commit, the partitioned commit under one stamp, the snapshot clock, the slot lock, the locked store, the pinned reader, the partitioned window write and the staged batch — over shared includes spelling the shared mutex, its waiting policy and the memory models.
+Two of them run again as GenMC clients over `std::atomic` under RC11.
+
+```bash
+./verification/check.sh
+```
+
+Every `verify` line names a model, the verdict expected of it and the defines, so a new variant is one line, and the suite's 54 Spin verdicts and 5 GenMC verdicts read off the file.
+Most models carry deliberately broken variants — a dropped release, a lock held less long, a batch that writes before it staged — and the run fails if one of those __passes__, which is what keeps a model from going vacuous as the code moves under it.
+It needs `spin`; a `genmc` on the path also runs the two clients.
+
