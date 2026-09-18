@@ -1637,6 +1637,114 @@ constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
 
 #pragma endregion Device Portability
 
+#pragma region Extended Atomics
+
+/**
+ *  @brief An atomic reference offering the read-modify-writes the standard has no spelling for.
+ *
+ *  @tparam reference_type_ The reference being checked.
+ *  @tparam value_type_ The word it owns.
+ *
+ *  Two shapes matter here. A @b posted write is one whose result nobody reads, which a target with
+ *  a no-return form can fire and never wait on. A @b bounded read-modify-write is one that writes
+ *  only while the result stays inside a bound, which a target with a conditional form decides in
+ *  one instruction - and, where it refuses, without taking the line exclusively at all.
+ *
+ *  Nothing here is a dependency: @c atomic_ref does not satisfy this, and every operation below
+ *  falls back to the loop or the discarded result it replaces. ForkUnion ships references that do
+ *  satisfy it, one per instruction set, so a caller already linking it passes one straight in.
+ *
+ *  @see https://github.com/ashvardanian/ForkUnion
+ */
+template <typename reference_type_, typename value_type_>
+concept extended_atomic_ref = requires(reference_type_ reference, value_type_ value) {
+    reference.add(value, memory_order_relaxed_k);
+    reference.sub(value, memory_order_relaxed_k);
+    reference.set_bits(value, memory_order_relaxed_k);
+    reference.clear_bits(value, memory_order_relaxed_k);
+    reference.fetch_add_if_at_most(value, value, memory_order_relaxed_k);
+    reference.fetch_sub_if_at_least(value, value, memory_order_relaxed_k);
+};
+
+/** Posts @p addend onto @p word without reading what was there. */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+constexpr void atomic_post_add(integral_type_ &word, integral_type_ addend, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>) reference.add(addend, order);
+    else reference.fetch_add(addend, order);
+}
+
+/** Posts @p subtrahend off @p word without reading what was there. */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+constexpr void atomic_post_sub(integral_type_ &word, integral_type_ subtrahend, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        reference.sub(subtrahend, order);
+    else reference.fetch_sub(subtrahend, order);
+}
+
+/** Posts @p bits set in @p word without reading what was there. */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+constexpr void atomic_post_set_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        reference.set_bits(bits, order);
+    else reference.fetch_or(bits, order);
+}
+
+/** Posts @p bits cleared in @p word without reading what was there. */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        reference.clear_bits(bits, order);
+    else reference.fetch_and(static_cast<integral_type_>(~bits), order);
+}
+
+/**
+ *  @brief Adds @p addend to @p word only while the sum stays at or below @p limit.
+ *  @return What @p word held before, which is above @p limit exactly when nothing was written.
+ *
+ *  The bound is the whole point: a predicate a loop would re-check after every failed exchange
+ *  becomes an argument the instruction decides on, so a refused caller writes nothing and leaves
+ *  the line where it was. Without the extended form this is the compare-exchange loop it replaces.
+ */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+[[nodiscard]] constexpr integral_type_ atomic_fetch_add_if_at_most(integral_type_ &word, integral_type_ addend,
+                                                                   integral_type_ limit, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        return reference.fetch_add_if_at_most(addend, limit, order);
+    else {
+        integral_type_ observed = reference.load(memory_order_acquire_k);
+        while (observed <= limit && static_cast<integral_type_>(limit - observed) >= addend &&
+               !reference.compare_exchange_weak(observed, static_cast<integral_type_>(observed + addend), order,
+                                                memory_order_acquire_k)) {}
+        return observed;
+    }
+}
+
+/**
+ *  @brief Subtracts @p subtrahend from @p word only while the difference stays at or above @p floor.
+ *  @return What @p word held before, which is below @p floor exactly when nothing was written.
+ */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+[[nodiscard]] constexpr integral_type_ atomic_fetch_sub_if_at_least(integral_type_ &word, integral_type_ subtrahend,
+                                                                    integral_type_ floor, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        return reference.fetch_sub_if_at_least(subtrahend, floor, order);
+    else {
+        integral_type_ observed = reference.load(memory_order_acquire_k);
+        while (observed >= floor && static_cast<integral_type_>(observed - floor) >= subtrahend &&
+               !reference.compare_exchange_weak(observed, static_cast<integral_type_>(observed - subtrahend), order,
+                                                memory_order_acquire_k)) {}
+        return observed;
+    }
+}
+
+#pragma endregion Extended Atomics
+
 #pragma region Numeric Helpers
 
 /**
@@ -2773,8 +2881,122 @@ expected<transaction_group<store_types_...>> make_transaction_group(store_types_
 
 #pragma region Shared Mutex
 
+#pragma region Waiting Policies
+
 /**
- *  @brief A reader-writer lock that spins briefly, then parks on @c std::atomic::wait.
+ *  @brief What a spin loop asks of the policy deciding what its core does between attempts.
+ *
+ *  @tparam policy_type_ The policy being checked.
+ *  @tparam watched_type_ The word the loop retries over, as the policy sees it - an atomic object,
+ *      or a pointer to a word owned through @c atomic_ref.
+ *  @tparam value_type_ The bit pattern the loop last read out of that word.
+ *
+ *  One call takes the watched word, the value that was there, and how many attempts the loop has
+ *  already spent, and it must come back on its own: a wait ending only on someone else's action
+ *  deadlocks wherever the spinner is the thread that action waits for. Every architectural hint
+ *  fits - a stall of a few tens of cycles, a hint handing the pipeline to a sibling thread, or a
+ *  monitored wait ended by a store to the watched line or by a deadline. Ignoring all three
+ *  arguments is legitimate, and is what a bare stall does.
+ */
+template <typename policy_type_, typename watched_type_, typename value_type_>
+concept waiting_policy = requires(policy_type_ const &policy, watched_type_ &watched, value_type_ const observed,
+                                  std::size_t const attempts_spent) {
+    { policy(watched, observed, attempts_spent) } noexcept;
+};
+
+/**
+ *  @brief A waiting policy that can also take a thread off its core until the watched word moves.
+ *
+ *  @tparam policy_type_ The policy being checked.
+ *  @tparam watched_type_ The word a parked thread blocks on.
+ *  @tparam value_type_ The bit pattern that has to change before a parked thread is owed a wake.
+ *
+ *  Asked only where a loop gives up on spinning, which is where a lock is held across user code and
+ *  a burnt core costs more than a syscall. @c wait_until_changed may return spuriously, since every
+ *  caller re-reads the word and decides again, but it has to return once @c notify_waiters lands,
+ *  or a waiter sleeps through the handoff it parked for.
+ */
+template <typename policy_type_, typename watched_type_, typename value_type_>
+concept parking_waiting_policy =
+    waiting_policy<policy_type_, watched_type_, value_type_> &&
+    requires(policy_type_ const &policy, watched_type_ &watched, value_type_ const observed) {
+        { policy.wait_until_changed(watched, observed) } noexcept;
+        { policy.notify_waiters(watched) } noexcept;
+    };
+
+/**
+ *  @brief The policy a spin takes when nobody names one: no instruction at all between attempts.
+ *
+ *  Leaves a spin the bare retry loop it reads as, which is the one choice needing neither an
+ *  architecture nor a runtime probe, and the only one that compiles for every target this header
+ *  reaches, a device included. A deployment that knows what its cores are names a policy stalling
+ *  them properly - @c PAUSE, @c YIELD, @c UMWAIT, @c WFET - and one that does not pays nothing for
+ *  the question.
+ */
+struct bare_waiting_policy_t {
+
+    /** Spends no instruction between attempts, whatever the loop watches. */
+    template <typename watched_type_, typename value_type_, typename attempts_type_>
+    constexpr void operator()(watched_type_ const &, value_type_, attempts_type_) const noexcept {}
+};
+
+/**
+ *  @brief Parks a spent spin on @c std::atomic::wait, leaving the spin itself to
+ *      @p pausing_policy_type_.
+ *
+ *  @tparam pausing_policy_type_ What a core does between attempts, defaulting to nothing at all.
+ *
+ *  This is how a pause hint reaches a path that also parks: the hint answers for the spin and the
+ *  standard library answers for the sleep, so a policy that only knows how to stall a core needs to
+ *  say nothing about parking to be usable on a lock that parks.
+ */
+template <typename pausing_policy_type_ = bare_waiting_policy_t>
+struct standard_waiting_policy {
+
+    /** What a core does between attempts, asked once per attempt the spin spends. */
+    ST_NO_UNIQUE_ADDRESS_ pausing_policy_type_ pausing {};
+
+    /** Hands one spent attempt to the pausing policy, which is the whole of the spin here. */
+    template <typename watched_type_, typename value_type_, typename attempts_type_>
+    constexpr void operator()(watched_type_ const &watched, value_type_ const observed,
+                              attempts_type_ const attempts_spent) const noexcept {
+        pausing(watched, observed, attempts_spent);
+    }
+
+    /** Parks until @p watched stops reading @p observed, or until the wait returns spuriously. */
+    template <typename value_type_>
+    void wait_until_changed(value_type_ &watched, value_type_ const observed) const noexcept {
+        atomic_wait(watched, observed);
+    }
+
+    /** Wakes every thread parked on @p watched. */
+    template <typename value_type_>
+    void notify_waiters(value_type_ &watched) const noexcept {
+        atomic_notify_all(watched);
+    }
+};
+
+/** What every path that parks here takes unless a caller names another: a bare retry loop, parking
+ *  on @c std::atomic::wait once the spin is spent. */
+using standard_waiting_policy_t = standard_waiting_policy<>;
+
+#pragma endregion Waiting Policies
+
+/**
+ *  @brief A reader-writer lock that spins briefly, then parks.
+ *
+ *  @tparam waiting_policy_type_ Decides what a core does between attempts, and how a spent spin
+ *      parks. The default spends nothing and parks on @c std::atomic::wait.
+ *  @tparam atomic_reference_ The reference the word is owned through, for one operation at a time.
+ *
+ *  Both acquires are bounded adds rather than compare-exchange loops, which is what the word's
+ *  layout buys: every writer bit sits above the reader tally, so @em no @em writer @em here and
+ *  @em room @em for @em one @em more @em reader is the single question does the sum stay inside
+ *  the tally. A reference satisfying @c extended_atomic_ref answers it in one instruction and, when
+ *  the answer is no, without taking the line at all; @c atomic_ref answers it with the loop that
+ *  question replaces. Dropping the held bit reads nothing back, so it is posted rather than waited
+ *  on. Releasing a reader is the one path that cannot be either, since the count it returns is what
+ *  tells the last reader out to wake a writer.
  *
  *  Locks here are held across user code - callbacks, comparators, allocators, a whole commit loop -
  *  so a pure spinner would burn a core while a holder walks a range, and pure parking would pay a
@@ -2782,12 +3004,11 @@ expected<transaction_group<store_types_...>> make_transaction_group(store_types_
  *  count turns new readers away, so a steady read load cannot starve any of them indefinitely.
  *
  *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
- *  timed acquisition, no upgrading. The spin is a bare retry loop with no architecture hint in it:
- *  both collection wrappers take the mutex as a template parameter, so a deployment that cares
- *  about what its cores do while waiting supplies its own rather than being served a
- *  per-target guess.
+ *  timed acquisition, no upgrading.
  */
-class spin_shared_mutex_t {
+template <parking_waiting_policy<std::uint32_t, std::uint32_t> waiting_policy_type_ = standard_waiting_policy_t,
+          template <typename> class atomic_reference_ = atomic_ref>
+class spin_shared_mutex {
 
     /** Set while one writer owns the lock; the reader count is zero for as long as it is. */
     static constexpr std::uint32_t writer_held_k = 1u << 31;
@@ -2805,85 +3026,98 @@ class spin_shared_mutex_t {
     static constexpr std::uint32_t writer_bits_k = writer_held_k | writers_waiting_mask_k;
 
     /** How long to spin before parking, which is about the cost of one uncontended handoff. */
-    static constexpr int spins_before_parking_k = 64;
+    static constexpr std::size_t spins_before_parking_k = 64;
 
-    std::atomic<std::uint32_t> state_ {0};
+    /** The owning bit, the waiting-writer tally and the reader tally, in one word every path drives.
+     *  Plain rather than an @c std::atomic, so the reference it is owned through is the caller's. */
+    alignas(atomic_alignment<std::uint32_t>) std::uint32_t state_ {0};
+
+    /** The reference every operation below wraps around @c state_, for one operation and no longer. */
+    using word_ref_t = atomic_reference_<std::uint32_t>;
+
+    /** What a waiting thread does with its core, and what it parks on once its spin is spent. */
+    ST_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
 
   public:
-    constexpr spin_shared_mutex_t() noexcept = default;
-    spin_shared_mutex_t(spin_shared_mutex_t const &) = delete;
-    spin_shared_mutex_t &operator=(spin_shared_mutex_t const &) = delete;
+    constexpr spin_shared_mutex() noexcept = default;
+    spin_shared_mutex(spin_shared_mutex const &) = delete;
+    spin_shared_mutex &operator=(spin_shared_mutex const &) = delete;
 
-    [[nodiscard]] bool try_lock() noexcept {
-        std::uint32_t expected = 0;
-        return state_.compare_exchange_strong(expected, writer_held_k, std::memory_order_acquire,
-                                              std::memory_order_relaxed);
+  private:
+    /** Takes the word from idle to held, which is the only sum that stays within the held bit. */
+    [[nodiscard]] std::uint32_t claim_as_writer_() noexcept {
+        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, writer_held_k, writer_held_k,
+                                                              memory_order_acquire_k);
     }
 
-    [[nodiscard]] bool try_lock_shared() noexcept {
-        std::uint32_t observed = state_.load(std::memory_order_relaxed);
-        if (observed & writer_bits_k) return false;
-        return state_.compare_exchange_strong(observed, observed + 1, std::memory_order_acquire,
-                                              std::memory_order_relaxed);
+    /** Adds one reader while the sum stays inside the reader tally, which every writer bit overflows. */
+    [[nodiscard]] std::uint32_t claim_as_reader_() noexcept {
+        return atomic_fetch_add_if_at_most<atomic_reference_>(state_, 1u, readers_mask_k, memory_order_acquire_k);
     }
+
+  public:
+    [[nodiscard]] bool try_lock() noexcept { return claim_as_writer_() == 0; }
+
+    [[nodiscard]] bool try_lock_shared() noexcept { return claim_as_reader_() < readers_mask_k; }
 
     void lock() noexcept {
-        for (int spin = 0; spin != spins_before_parking_k; ++spin) {
-            std::uint32_t expected = 0;
-            if (state_.compare_exchange_weak(expected, writer_held_k, std::memory_order_acquire,
-                                             std::memory_order_relaxed))
-                return;
+        for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
+            std::uint32_t const observed = claim_as_writer_();
+            if (observed == 0) return;
+            waiting_(state_, observed, attempts_spent);
         }
 
         // Joining the tally is what stops a stream of readers from renewing the lock forever. A tally
         // rather than a flag, so one writer taking the lock cannot erase the intent of the others.
+        word_ref_t state_ref(state_);
         std::uint32_t observed =
-            state_.fetch_add(one_writer_waiting_k, std::memory_order_relaxed) + one_writer_waiting_k;
+            state_ref.fetch_add(one_writer_waiting_k, memory_order_relaxed_k) + one_writer_waiting_k;
         while (true) {
+            // Leaving the tally and taking the lock are one write, so no arrival slips between them,
+            // and the pair is not a sum any bound can decide.
             if ((observed & (writer_held_k | readers_mask_k)) == 0) {
                 std::uint32_t const taken = (observed - one_writer_waiting_k) | writer_held_k;
-                if (state_.compare_exchange_weak(observed, taken, std::memory_order_acquire, std::memory_order_relaxed))
+                if (state_ref.compare_exchange_weak(observed, taken, memory_order_acquire_k, memory_order_relaxed_k))
                     return;
                 continue; // ? The exchange refreshed `observed`
             }
-            state_.wait(observed, std::memory_order_relaxed);
-            observed = state_.load(std::memory_order_relaxed);
+            waiting_.wait_until_changed(state_, observed);
+            observed = state_ref.load(memory_order_relaxed_k);
         }
     }
 
     void unlock() noexcept {
         // Only the held bit is ours to drop: the writers queued behind us keep their places, and
-        // keep new readers out while they wait.
-        state_.fetch_and(~writer_held_k, std::memory_order_release);
-        state_.notify_all();
+        // keep new readers out while they wait. Nothing reads what the word held, so nothing waits.
+        atomic_post_clear_bits<atomic_reference_>(state_, writer_held_k, memory_order_release_k);
+        waiting_.notify_waiters(state_);
     }
 
     void lock_shared() noexcept {
-        for (int spin = 0; spin != spins_before_parking_k; ++spin) {
-            std::uint32_t observed = state_.load(std::memory_order_relaxed);
-            if ((observed & writer_bits_k) == 0 &&
-                state_.compare_exchange_weak(observed, observed + 1, std::memory_order_acquire,
-                                             std::memory_order_relaxed))
-                return;
+        for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
+            std::uint32_t const observed = claim_as_reader_();
+            if (observed < readers_mask_k) return;
+            waiting_(state_, observed, attempts_spent);
         }
 
         while (true) {
-            std::uint32_t observed = state_.load(std::memory_order_relaxed);
-            if ((observed & writer_bits_k) == 0) {
-                if (state_.compare_exchange_weak(observed, observed + 1, std::memory_order_acquire,
-                                                 std::memory_order_relaxed))
-                    return;
-            }
-            else { state_.wait(observed, std::memory_order_relaxed); }
+            std::uint32_t const observed = claim_as_reader_();
+            if (observed < readers_mask_k) return;
+            waiting_.wait_until_changed(state_, observed);
         }
     }
 
     void unlock_shared() noexcept {
-        std::uint32_t const previous = state_.fetch_sub(1, std::memory_order_release);
-        // The last reader out is the only one a waiting writer is still blocked on.
-        if ((previous & readers_mask_k) == 1) state_.notify_all();
+        // The count is read back, so this one cannot be posted: the last reader out is the only one
+        // a waiting writer is still blocked on.
+        std::uint32_t const previous = word_ref_t(state_).fetch_sub(1, memory_order_release_k);
+        if ((previous & readers_mask_k) == 1) waiting_.notify_waiters(state_);
     }
 };
+
+/** The reader-writer lock every collection wrapper here defaults to, spinning without a hint and
+ *  parking on @c std::atomic::wait. */
+using spin_shared_mutex_t = spin_shared_mutex<>;
 
 /** Holds @p mutex_type_ exclusively for the enclosing scope, or for as long as whoever it is moved into keeps it; an
  *  empty one holds nothing, so a hold can outlive one call. */

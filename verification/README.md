@@ -4,14 +4,17 @@ Model checking for the protocols the stores promise: the two-phase group commit,
 [Spin](https://spinroot.com) checks each as a Promela model under the memory models of [ForkUnion's `verification/`](https://github.com/ashvardanian/ForkUnion), which sits beside this repository in whichever superproject vendors both, and is checked out beside it in CI; `./check.sh` runs everything here and compares each verdict with the expected one.
 
 - `weak_memory.pml` — the forwarder to ForkUnion's memory module.
+- `waiting_policy.pml` — what a loser of either lock does between two attempts, shared by the two models that spell a lock.
+  `-Dwaiting=spinning`, the default, re-reads the word until it admits the attempt; `-Dwaiting=pausing` adds a step that touches no location; `-Dwaiting=on_the_address` wakes on any move of the word; `-Dwaiting=parking` blocks on nothing and retries whenever it is scheduled.
 - `spin_shared_mutex.pml` — `spin_shared_mutex_t` as one word, the lock an acquire exchange and the unlock a release, shared by every model here.
+  `-Dwaiting=` for the policy its two retry loops plug in.
 - `locked_store.pml` — `locked_store`: one shared mutex per call, exclusion, and a reader inside the lock seeing a commit whole.
 - `transaction_group.pml` — `transaction_group`: staging in address order and the unwind of a refused prefix, the two-pass commit that asks every participant before any writes, the in-turn commit's tear, and a participant holding its lock across the phases.
 - `partitioned_store.pml` — `partitioned_store`: the reached partitions held ascending, the stamp drawn before any write and the watermark moved after the last, and the cursor's epoch.
   `-Dscenario=cursor` for the epoch.
 - `snapshot_clock.pml` — `snapshot_clock_t`: leases, commits in flight, the low-water mark, and the watermark stored and read relaxed under its mutex.
 - `atomic_hash_table.pml` — `atomic_hash_table`: the slot lock driven up with acquire and released with an xor, the counters under it, the finder, and a full table.
-  `-Dscenario=exhausted` for one slot.
+  `-Dscenario=exhausted` for one slot, and `-Dwaiting=` for the policy the slot lock's retry loop plugs in.
 - `snapshot_reader.pml` — `snapshot_store::reader_t`: its claim joining the census under the clock's mutex, reads at its stamp while commits prune the key's version run, and a transaction adopting the stamp.
   `-Dscenario=adoption` for the adoption.
 - `partitioned_erase.pml` — `partitioned_store`'s store-level window writes: every partition held, one stamp drawn once all of them staged, stamped into each, and the watermark moved after the last.

@@ -23,6 +23,7 @@
 
 #include <smashtable/reference_store.hpp>
 #include <smashtable/shared.hpp>
+#include <smashtable/hash_layout.hpp>
 #include <smashtable/monotonic_store.hpp>
 
 #include "harness.hpp"
@@ -372,6 +373,197 @@ static void shared_mutex_admits_every_writer() {
 }
 
 #pragma endregion Shared Mutex Tests
+
+#pragma region Waiting Policy Tests
+
+/**
+ *  @brief A waiting policy handing the core back to the scheduler, tallying what it was asked for.
+ *
+ *  Names nothing but the one pause every spin path needs, which is the shape a hardware hint takes:
+ *  the parking a mutex also wants comes from @c standard_waiting_policy wrapped around this. The
+ *  tally is static because a policy is default-constructed inside whatever spins on it, so there is
+ *  nowhere to hand a counter in, and one test runs at a time.
+ */
+struct yielding_waiting_policy_t {
+
+    /** How many single pauses the spin paths have asked for. */
+    static inline std::atomic<std::size_t> pauses {0};
+
+    /** Gives the core up for a scheduling quantum rather than burning it on a retry. */
+    template <typename watched_type_, typename value_type_, typename attempts_type_>
+    void operator()(watched_type_ const &, value_type_, attempts_type_) const noexcept {
+        pauses.fetch_add(1, std::memory_order_relaxed);
+        std::this_thread::yield();
+    }
+};
+
+/** The mutex parks, so a pause-only policy reaches it through the standard parking wrapper. */
+using yielding_mutex_t = spin_shared_mutex<standard_waiting_policy<yielding_waiting_policy_t>>;
+
+/** The slot lock only ever spins, so a pause-only policy goes in directly. */
+using yielding_slot_t = hash_atomic_slot_ref<std::uint64_t, default_hash_t, yielding_waiting_policy_t>;
+
+static_assert(parking_waiting_policy<standard_waiting_policy_t, std::uint32_t, std::uint32_t>,
+              "the default must satisfy the concept the mutex constrains its parameter on");
+static_assert(waiting_policy<yielding_waiting_policy_t, std::uint64_t const *, std::uint64_t>,
+              "the slot lock watches a word owned through atomic_ref rather than an atomic object");
+static_assert(waiting_policy<yielding_waiting_policy_t, std::uint32_t, std::uint32_t>,
+              "one pause-only policy serves both watched shapes without knowing either");
+static_assert(sizeof(yielding_mutex_t) == sizeof(spin_shared_mutex_t), "a stateless policy costs the mutex no storage");
+static_assert(sizeof(yielding_slot_t) == sizeof(hash_atomic_slot_ref<std::uint64_t, default_hash_t>),
+              "a stateless policy costs the slot reference no storage");
+
+/**
+ *  @brief A reference offering the extended shapes, counting which one the mutex reached for.
+ *
+ *  Every operation lands on @c std::atomic_ref underneath, so the lock still behaves; what the
+ *  tallies prove is which spelling the mutex chose, not that a bounded add is faster here.
+ */
+template <typename value_type_>
+struct counting_extended_ref {
+
+    /** How many bounded adds the mutex asked for, which is once per acquire attempt. */
+    static inline std::atomic<std::size_t> bounded_adds {0};
+
+    /** How many writes it posted without reading anything back, which is once per writer release. */
+    static inline std::atomic<std::size_t> posted_writes {0};
+
+    /** The word this reference owns, for one operation and no longer. */
+    value_type_ *word;
+
+    explicit counting_extended_ref(value_type_ &owned) noexcept : word(&owned) {}
+
+    [[nodiscard]] value_type_ load(std::memory_order order) const noexcept {
+        return std::atomic_ref<value_type_>(*word).load(order);
+    }
+    [[nodiscard]] value_type_ fetch_add(value_type_ addend, std::memory_order order) const noexcept {
+        return std::atomic_ref<value_type_>(*word).fetch_add(addend, order);
+    }
+    [[nodiscard]] value_type_ fetch_sub(value_type_ subtrahend, std::memory_order order) const noexcept {
+        return std::atomic_ref<value_type_>(*word).fetch_sub(subtrahend, order);
+    }
+    bool compare_exchange_weak(value_type_ &expected, value_type_ wanted, std::memory_order success,
+                               std::memory_order failure) const noexcept {
+        return std::atomic_ref<value_type_>(*word).compare_exchange_weak(expected, wanted, success, failure);
+    }
+
+    void add(value_type_ addend, std::memory_order order) const noexcept {
+        posted_writes.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_ref<value_type_>(*word).fetch_add(addend, order);
+    }
+    void sub(value_type_ subtrahend, std::memory_order order) const noexcept {
+        posted_writes.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_ref<value_type_>(*word).fetch_sub(subtrahend, order);
+    }
+    void set_bits(value_type_ bits, std::memory_order order) const noexcept {
+        posted_writes.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_ref<value_type_>(*word).fetch_or(bits, order);
+    }
+    void clear_bits(value_type_ bits, std::memory_order order) const noexcept {
+        posted_writes.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_ref<value_type_>(*word).fetch_and(static_cast<value_type_>(~bits), order);
+    }
+
+    [[nodiscard]] value_type_ fetch_add_if_at_most(value_type_ addend, value_type_ limit,
+                                                   std::memory_order order) const noexcept {
+        bounded_adds.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_ref<value_type_> reference(*word);
+        value_type_ observed = reference.load(std::memory_order_acquire);
+        while (observed <= limit && static_cast<value_type_>(limit - observed) >= addend &&
+               !reference.compare_exchange_weak(observed, static_cast<value_type_>(observed + addend), order,
+                                                std::memory_order_acquire)) {}
+        return observed;
+    }
+    [[nodiscard]] value_type_ fetch_sub_if_at_least(value_type_ subtrahend, value_type_ floor,
+                                                    std::memory_order order) const noexcept {
+        std::atomic_ref<value_type_> reference(*word);
+        value_type_ observed = reference.load(std::memory_order_acquire);
+        while (observed >= floor && static_cast<value_type_>(observed - floor) >= subtrahend &&
+               !reference.compare_exchange_weak(observed, static_cast<value_type_>(observed - subtrahend), order,
+                                                std::memory_order_acquire)) {}
+        return observed;
+    }
+};
+
+/** The same mutex, owning its word through a reference that spells the extended shapes. */
+using extended_mutex_t = spin_shared_mutex<standard_waiting_policy_t, counting_extended_ref>;
+
+static_assert(extended_atomic_ref<counting_extended_ref<std::uint32_t>, std::uint32_t>,
+              "the fixture has to satisfy the concept, or the test proves nothing about dispatch");
+static_assert(!extended_atomic_ref<atomic_ref<std::uint32_t>, std::uint32_t>,
+              "and the default must not, or there is no fallback to fall back to");
+static_assert(sizeof(extended_mutex_t) == sizeof(spin_shared_mutex_t),
+              "the reference is chosen at compile time and costs the mutex no storage");
+
+/** A reference spelling the extended shapes is the one the mutex drives its acquires through. */
+static void extended_atomics_take_the_bounded_path() {
+
+    counting_extended_ref<std::uint32_t>::bounded_adds.store(0);
+    counting_extended_ref<std::uint32_t>::posted_writes.store(0);
+
+    extended_mutex_t mutex;
+    mutex.lock();
+    st_verify_eq_(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {1},
+                  "a writer takes the lock with one bounded add, not a compare-exchange loop");
+    mutex.unlock();
+    st_verify_eq_(counting_extended_ref<std::uint32_t>::posted_writes.load(), std::size_t {1},
+                  "and drops the held bit by posting it, since nothing reads what the word held");
+
+    mutex.lock_shared();
+    mutex.lock_shared();
+    st_verify_eq_(counting_extended_ref<std::uint32_t>::bounded_adds.load(), std::size_t {3},
+                  "every reader arrives by the same bounded add");
+    st_verify_eq_(mutex.try_lock(), false, "a writer is refused while readers hold");
+    mutex.unlock_shared();
+    mutex.unlock_shared();
+
+    st_verify_eq_(mutex.try_lock(), true, "and admitted once the last of them leaves");
+    mutex.unlock();
+}
+
+/** The mutex asks the policy it was handed once per attempt, and parks only once the spin is spent. */
+static void waiting_policy_substitutes_in_the_mutex() {
+    yielding_waiting_policy_t::pauses.store(0);
+
+    yielding_mutex_t mutex;
+    unique_lock<yielding_mutex_t> held {mutex};
+
+    // The contender cannot win the lock until the hold is released, so it spends its whole spin -
+    // and the hold is given up only once it has, so the tally is read after the spinning stops.
+    std::thread contender {[&]() noexcept { unique_lock<yielding_mutex_t> guard {mutex}; }};
+    while (yielding_waiting_policy_t::pauses.load() < 64) std::this_thread::yield();
+    held.release();
+    contender.join();
+
+    st_verify_ge_(yielding_waiting_policy_t::pauses.load(), std::size_t {64}, "one pause per spent attempt");
+}
+
+/** The slot lock asks the same policy while a prober waits for the holder to let the slot go. */
+static void waiting_policy_substitutes_in_the_slot_lock() {
+    yielding_waiting_policy_t::pauses.store(0);
+
+    hash_bucket_head_t header {};
+    yielding_slot_t holder;
+    holder.headers_ = &header;
+    holder.lock();
+
+    std::thread prober {[&]() noexcept {
+        yielding_slot_t contender;
+        contender.headers_ = &header;
+        contender.lock();
+        contender.unlock();
+    }};
+
+    // Every attempt the prober spends on a held slot goes to the policy, so one tally is enough to
+    // know the lock is spinning through it rather than through a hint of its own.
+    while (yielding_waiting_policy_t::pauses.load() == 0) std::this_thread::yield();
+    holder.unlock();
+    prober.join();
+
+    st_verify_(hash_slot_state_of(header, 1u) == hash_slot_state_t::free_k);
+}
+
+#pragma endregion Waiting Policy Tests
 
 #pragma region Transaction Group Tests
 
@@ -997,6 +1189,11 @@ int main() {
 
     failures += run_test(filter, "shared_mutex.excludes", shared_mutex_excludes);
     failures += run_test(filter, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
+
+    failures += run_test(filter, "extended_atomics.take_the_bounded_path", extended_atomics_take_the_bounded_path);
+    failures += run_test(filter, "waiting_policy.substitutes_in_the_mutex", waiting_policy_substitutes_in_the_mutex);
+    failures +=
+        run_test(filter, "waiting_policy.substitutes_in_the_slot_lock", waiting_policy_substitutes_in_the_slot_lock);
 
     failures += run_test(filter, "transaction_group.walks_one_order", transaction_group_walks_one_order);
     failures +=

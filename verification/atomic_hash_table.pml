@@ -21,8 +21,13 @@
  *    through zero;
  *  - `-Dscenario=exhausted` runs the table with one slot: the second emplacer answers
  *    `capacity_exhausted_k` after exactly one probe.
+ *
+ *  What a loser of the slot lock does between two attempts is `waiting_policy.pml`'s, chosen by
+ *  `-Dwaiting=`: the header word alone decides who holds a slot, so every invariant above has to
+ *  hold under all four policies.
  */
 #include "weak_memory.pml"
+#include "waiting_policy.pml"
 
 // The knob's values are integers, so a typo fails the range check below.
 #define roomy 1
@@ -78,7 +83,7 @@ inline lock(t, slot) {
     :: read_modify_write_if(t, header, lock_order, (seen & mask(slot)) != mask(slot), seen, seen | mask(slot));
        if
        :: (seen & mask(slot)) != mask(slot) -> staged = seen & mask(slot); break
-       :: else -> ((newest_value(header) & mask(slot)) != mask(slot))
+       :: else -> wait_until(header, (newest_value(header) & mask(slot)) != mask(slot))
        fi
     od
 }

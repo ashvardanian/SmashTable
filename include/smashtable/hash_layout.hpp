@@ -385,6 +385,8 @@ struct hash_slot_ref {
  *  @brief Thread-safe smart reference to a hash table slot with metadata accessors.
  *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
+ *  @tparam waiting_policy_type_ Decides what a core does between the attempts of @c lock(). The
+ *      default spends nothing, leaving the spin a bare retry loop.
  *
  *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots. On
  *  the locking path, we can use a @c fetch_or atomic operation to set both bits (populated +
@@ -404,19 +406,24 @@ struct hash_slot_ref {
  *  Neither path is lock-free in the technical sense: @c lock() spins until it wins the slot, so a
  *  thread stopped between @c lock() and @c unlock() blocks every prober that reaches that slot.
  *  What the pair buys is that the whole table is never locked, and that no slot state needs a
- *  CAS retry.
+ *  CAS retry. What a losing prober does with its core in the meantime is @c waiting_policy_type_,
+ *  which is where a caller that owns the hardware spends a stall instead of an issue slot.
  *
  *  This doesn't resolve @b false-sharing issues native to such a densely packed design, but still
  *  results in very low contention if the duration of atomic operations under the lock is comparable
  *  to CPU's memory latency.
  */
-template <typename value_type_, typename hasher_type_>
+template <typename value_type_, typename hasher_type_,
+          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t>
 class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
 
     using base_t = hash_slot_ref<value_type_, hasher_type_>;
 
     /** State the slot will be driven into once @c unlock() lands. */
     hash_bucket_head_t mutable future_header_ {};
+
+    /** What a prober that lost the slot does with its core before trying again. */
+    ST_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
 
     /** Both lanes of this slot's bit, the exact footprint the lock owns. */
     constexpr hash_bucket_head_t header_mask_() const noexcept {
@@ -469,15 +476,22 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
      */
     constexpr void lock() const noexcept {
         hash_bucket_head_t const header_mask = header_mask_();
-        while (true) {
+        std::uint64_t const *const watched = &base_t::header_ref().u64;
+        for (std::size_t attempts_spent = 0;; ++attempts_spent) {
             // Read until the two bits are not both set, then claim: a locked slot costs no store.
-            if ((atomic_ref<std::uint64_t>(base_t::header_ref().u64).load(memory_order_relaxed_k) & header_mask.u64) ==
-                header_mask.u64)
+            std::uint64_t const observed =
+                atomic_ref<std::uint64_t>(base_t::header_ref().u64).load(memory_order_relaxed_k);
+            if ((observed & header_mask.u64) == header_mask.u64) {
+                waiting_(watched, observed, attempts_spent);
                 continue;
-            future_header_.u64 =
-                atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_or(header_mask.u64, memory_order_acquire_k) &
-                header_mask.u64;
+            }
+            std::uint64_t const previous =
+                atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_or(header_mask.u64, memory_order_acquire_k);
+            future_header_.u64 = previous & header_mask.u64;
             if (future_header_.u64 != header_mask.u64) break;
+            // A lost race found both bits already set, so the OR changed nothing and the word this
+            // thread now waits on is the one it just read back.
+            waiting_(watched, previous, attempts_spent);
         }
     }
 

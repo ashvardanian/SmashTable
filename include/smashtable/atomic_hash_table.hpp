@@ -297,8 +297,8 @@ class atomic_hash_table {
                 if constexpr (destruct_keys_k) slot.key_ref().~key_t();
                 if constexpr (destruct_values_k) slot.value_ref().~mapped_storage_t();
                 slot.mark_deleted();
-                atomic_add_fetch<offset_t>(storage_.deleted_count, 1);
-                atomic_sub_fetch<offset_t>(storage_.populated_count, 1);
+                atomic_post_add(storage_.deleted_count, offset_t {1}, memory_order_relaxed_k);
+                atomic_post_sub(storage_.populated_count, offset_t {1}, memory_order_relaxed_k);
             });
         return found ? success_k : key_not_found_k;
     }
@@ -402,7 +402,7 @@ class atomic_hash_table {
                 call_unused(current);
                 current.mark_populated();
                 // Under the lock, as `erase` subtracts, so the count never passes through zero.
-                atomic_add_fetch<offset_t>(storage_.populated_count, 1);
+                atomic_post_add(storage_.populated_count, offset_t {1}, memory_order_relaxed_k);
                 current.unlock();
                 return success_k;
             }

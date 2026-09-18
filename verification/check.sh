@@ -15,6 +15,9 @@ verify locked_store.pml pass -Dmemory=sequential
 verify locked_store.pml pass
 verify locked_store.pml fail -Dwithout_unlock_release
 verify locked_store.pml fail -Dwithout_lock_acquire
+verify locked_store.pml pass -Dwaiting=pausing
+verify locked_store.pml pass -Dwaiting=on_the_address
+verify locked_store.pml pass -Dwaiting=parking
 
 section "transaction_group.pml: staging in address order, the two-pass commit, the in-turn tear, and the held validation"
 verify transaction_group.pml pass -Dmemory=sequential
@@ -46,6 +49,9 @@ verify atomic_hash_table.pml fail -Dwithout_unlock_release
 verify atomic_hash_table.pml fail -Dwithout_lock_acquire
 verify atomic_hash_table.pml fail -Dmemory=sequential -Dwithout_count_under_lock
 verify atomic_hash_table.pml pass -Dmemory=sequential -Dscenario=exhausted
+verify atomic_hash_table.pml pass -Dwaiting=pausing
+verify atomic_hash_table.pml pass -Dwaiting=on_the_address
+verify atomic_hash_table.pml pass -Dwaiting=parking
 
 section "snapshot_reader.pml: a pinned reader's claim against commits that prune, and a transaction adopting its stamp"
 verify snapshot_reader.pml pass -Dmemory=sequential
