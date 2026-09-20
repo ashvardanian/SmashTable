@@ -450,6 +450,9 @@ struct default_allocator {
     }
 };
 
+/** The byte allocator every table is carved from unless a caller names another. */
+using default_allocator_t = default_allocator<std::byte>;
+
 /**
  *  @brief Transparent ordering and equality, so a container needs no @c \<functional\>.
  *
@@ -1669,6 +1672,7 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
     reference.sub(value, memory_order_relaxed_k);
     reference.set_bits(value, memory_order_relaxed_k);
     reference.clear_bits(value, memory_order_relaxed_k);
+    reference.flip_bits(value, memory_order_relaxed_k);
     reference.fetch_add_if_at_most(value, value, memory_order_relaxed_k);
     reference.fetch_sub_if_at_least(value, value, memory_order_relaxed_k);
 };
@@ -1706,6 +1710,15 @@ constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits,
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.clear_bits(bits, order);
     else reference.fetch_and(static_cast<integral_type_>(~bits), order);
+}
+
+/** Posts @p bits flipped in @p word without reading what was there. */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+constexpr void atomic_post_flip_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        reference.flip_bits(bits, order);
+    else reference.fetch_xor(bits, order);
 }
 
 /**

@@ -185,13 +185,13 @@ struct hash_table_iterator : public hash_slot_ref<value_type_, hasher_type_> {
  *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be
  *      copy-constructible. Defaults to a transparent @c std::equal_to.
  *  @tparam allocator_type_ Allocator for internal memory management. Defaults to
- *      @c default_allocator<std::byte>.
+ *      @c default_allocator_t.
  *
  *  @see https://en.cppreference.com/w/cpp/container/unordered_set
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
  */
 template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator<std::byte>>
+          typename allocator_type_ = default_allocator_t>
 class basic_hash_table {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
@@ -1499,11 +1499,11 @@ class basic_hash_table {
 #pragma region Aliases
 
 template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
-          typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
+          typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator_t>
 using hash_map = basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>;
 
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator<std::byte>>
+          typename allocator_type_ = default_allocator_t>
 using hash_set = basic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
 
 static_assert(sizeof(hash_set<int>) >= 3 * sizeof(void *), "Hash-Table is too small!");

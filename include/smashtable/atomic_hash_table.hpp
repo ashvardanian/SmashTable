@@ -81,9 +81,13 @@ namespace ashvardanian::smashtable {
  *  @tparam hasher_type_ Hashes a key to a slot index.
  *  @tparam equals_type_ Compares two keys for equality.
  *  @tparam allocator_type_ Supplies the single byte buffer the table is carved from.
+ *  @tparam waiting_policy_type_ Decides what a prober does with its core while a slot is held.
+ *  @tparam atomic_reference_ The reference every header word and counter is owned through.
  */
 template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator<std::byte>>
+          typename allocator_type_ = default_allocator_t,
+          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          template <typename> class atomic_reference_ = atomic_ref>
 class atomic_hash_table {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
@@ -116,8 +120,8 @@ class atomic_hash_table {
     using equals_t = equals_type_;
     using allocator_t = allocator_type_;
     using storage_t = hash_storage<value_type_, hasher_type_, allocator_type_>;
-    using slot_ref_t = hash_atomic_slot_ref<value_type_, hasher_t>;
-    using const_slot_ref_t = hash_atomic_slot_ref<value_type_ const, hasher_t>;
+    using slot_ref_t = hash_atomic_slot_ref<value_type_, hasher_t, waiting_policy_type_, atomic_reference_>;
+    using const_slot_ref_t = hash_atomic_slot_ref<value_type_ const, hasher_t, waiting_policy_type_, atomic_reference_>;
 
     static_assert(std::is_unsigned<offset_t>(),
                   "Hash value must be an unsigned integer, like std::uint32_t or std::uint64_t!");
@@ -297,8 +301,8 @@ class atomic_hash_table {
                 if constexpr (destruct_keys_k) slot.key_ref().~key_t();
                 if constexpr (destruct_values_k) slot.value_ref().~mapped_storage_t();
                 slot.mark_deleted();
-                atomic_post_add(storage_.deleted_count, offset_t {1}, memory_order_relaxed_k);
-                atomic_post_sub(storage_.populated_count, offset_t {1}, memory_order_relaxed_k);
+                atomic_post_add<atomic_reference_>(storage_.deleted_count, offset_t {1}, memory_order_release_k);
+                atomic_post_sub<atomic_reference_>(storage_.populated_count, offset_t {1}, memory_order_release_k);
             });
         return found ? success_k : key_not_found_k;
     }
@@ -401,8 +405,9 @@ class atomic_hash_table {
             else {
                 call_unused(current);
                 current.mark_populated();
-                // Under the lock, as `erase` subtracts, so the count never passes through zero.
-                atomic_post_add(storage_.populated_count, offset_t {1}, memory_order_relaxed_k);
+                // Under the lock and released, as `erase` subtracts: a relaxed post could land after the
+                // unlock and let the eraser take the count through zero.
+                atomic_post_add<atomic_reference_>(storage_.populated_count, offset_t {1}, memory_order_release_k);
                 current.unlock();
                 return success_k;
             }
@@ -421,13 +426,18 @@ class atomic_hash_table {
 #pragma region Aliases
 
 template <typename key_type_, typename mapped_type_, typename hasher_type_ = default_hash_t,
-          typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator<std::byte>>
-using atomic_hash_map =
-    atomic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>;
+          typename equals_type_ = equal_to_t, typename allocator_type_ = default_allocator_t,
+          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          template <typename> class atomic_reference_ = atomic_ref>
+using atomic_hash_map = atomic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_,
+                                          waiting_policy_type_, atomic_reference_>;
 
 template <typename key_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator<std::byte>>
-using atomic_hash_set = atomic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_>;
+          typename allocator_type_ = default_allocator_t,
+          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          template <typename> class atomic_reference_ = atomic_ref>
+using atomic_hash_set =
+    atomic_hash_table<key_type_, hasher_type_, equals_type_, allocator_type_, waiting_policy_type_, atomic_reference_>;
 
 static_assert(tagged_collection<atomic_hash_set<std::uint64_t>> &&
                   tagged_collection<atomic_hash_map<std::uint64_t, double>>,

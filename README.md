@@ -497,6 +497,7 @@ A core that can grow repoints the regions every live slot reference and every no
 | One commit spanning several stores          | `transaction_group`                                       | inherits its participants'           |
 
 Both wrappers take their mutex as a template parameter, and that mutex takes two of its own: the reference its word is owned through, and the policy a waiting core follows.
+The pinned table takes the same two directly, since its slot lock is the mutex it has.
 A deployment that knows its hardware names both: a reference whose conditional add decides an acquire in one instruction, and a stall its cores actually have.
 One that does not pays nothing for the question.
 
@@ -689,7 +690,7 @@ if (failed(pinned.emplace(key, value))) report_full();                   // a pi
 auto compacted = hash_map<key_t, value_t>::adopt(std::move(pinned).release());   // iterators return
 ```
 
-Every operation on the pinned table is atomic over the slot it touches: it takes that slot by setting both its bits with a `fetch_or` and releases it with a `fetch_xor` of the difference to the desired state, so neither path needs a compare-and-swap loop.
+Every operation on the pinned table is atomic over the slot it touches: it takes that slot by setting both its bits with a `fetch_or` and releases it by posting the xor of the difference to the desired state, which reads nothing back, so neither path needs a compare-and-swap loop.
 It is not lock-free, though — `fetch_or` spins until it wins the slot, so a thread descheduled while holding one blocks every other prober that walks onto it.
 No global lock and no reallocation is what the pinning buys; a stalled thread stalling its neighbours is what it does not.
 Reads take a callback rather than returning a reference or an iterator, since both would dangle the moment another thread erased the slot.

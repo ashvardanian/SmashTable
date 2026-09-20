@@ -384,6 +384,8 @@ struct hash_slot_ref {
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *  @tparam waiting_policy_type_ Decides what a core does between the attempts of @c lock(). The
  *      default spends nothing, leaving the spin a bare retry loop.
+ *  @tparam atomic_reference_ The reference the header word is owned through, for one operation at
+ *      a time. One spelling the extended verbs posts the release rather than reading it back.
  *
  *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots. On
  *  the locking path, we can use a @c fetch_or atomic operation to set both bits (populated +
@@ -411,10 +413,14 @@ struct hash_slot_ref {
  *  to CPU's memory latency.
  */
 template <typename value_type_, typename hasher_type_,
-          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t>
+          waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
+          template <typename> class atomic_reference_ = atomic_ref>
 class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
 
     using base_t = hash_slot_ref<value_type_, hasher_type_>;
+
+    /** The reference every operation below wraps around the header word, for one operation and no longer. */
+    using word_ref_t = atomic_reference_<std::uint64_t>;
 
     /** State the slot will be driven into once @c unlock() lands. */
     hash_bucket_head_t mutable future_header_ {};
@@ -476,14 +482,13 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
         std::uint64_t const *const watched = &base_t::header_ref().u64;
         for (std::size_t attempts_spent = 0;; ++attempts_spent) {
             // Read until the two bits are not both set, then claim: a locked slot costs no store.
-            std::uint64_t const observed =
-                atomic_ref<std::uint64_t>(base_t::header_ref().u64).load(memory_order_relaxed_k);
+            std::uint64_t const observed = word_ref_t(base_t::header_ref().u64).load(memory_order_relaxed_k);
             if ((observed & header_mask.u64) == header_mask.u64) {
                 waiting_(watched, observed, attempts_spent);
                 continue;
             }
             std::uint64_t const previous =
-                atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_or(header_mask.u64, memory_order_acquire_k);
+                word_ref_t(base_t::header_ref().u64).fetch_or(header_mask.u64, memory_order_acquire_k);
             future_header_.u64 = previous & header_mask.u64;
             if (future_header_.u64 != header_mask.u64) break;
             // A lost race found both bits already set, so the OR changed nothing and the word this
@@ -492,7 +497,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
         }
     }
 
-    /** Drives the two owned bits from @c locked_k to whatever was staged, with one @c fetch_xor. */
+    /** Drives the two owned bits from @c locked_k to whatever was staged, with one posted xor. */
     constexpr void unlock() const noexcept {
         // The bits we care about are now set to 11 (locked).
         // After this procedure they must be set to either 00, 01, or 10, depending on the "future header".
@@ -511,7 +516,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
         // - going from "locked" state to "freed" state: 11 ^ 11 = 00
         // - going from "locked" state to "deleted" state: 11 ^ 10 = 01
         // - going from "locked" state to "populated" state: 11 ^ 01 = 10
-        atomic_ref<std::uint64_t>(base_t::header_ref().u64).fetch_xor(header_differences, memory_order_release_k);
+        atomic_post_flip_bits<atomic_reference_>(base_t::header_ref().u64, header_differences, memory_order_release_k);
     }
 };
 

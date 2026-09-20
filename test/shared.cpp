@@ -21,6 +21,8 @@
 #include <utility>     // `std::pair`
 #include <vector>      // `std::vector`
 
+#include <smashtable/atomic_hash_table.hpp>
+#include <smashtable/basic_hash_table.hpp>
 #include <smashtable/reference_store.hpp>
 #include <smashtable/shared.hpp>
 #include <smashtable/hash_layout.hpp>
@@ -400,8 +402,9 @@ struct yielding_waiting_policy_t {
 /** The mutex parks, so a pause-only policy reaches it through the standard parking wrapper. */
 using yielding_mutex_t = spin_shared_mutex<standard_waiting_policy<yielding_waiting_policy_t>>;
 
-/** The slot lock only ever spins, so a pause-only policy goes in directly. */
-using yielding_slot_t = hash_atomic_slot_ref<std::uint64_t, default_hash_t, yielding_waiting_policy_t>;
+/** The slot lock only ever spins, so a pause-only policy goes into the pinned table directly. */
+using yielding_table_t =
+    atomic_hash_set<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t, yielding_waiting_policy_t>;
 
 static_assert(parking_waiting_policy<standard_waiting_policy_t, std::uint32_t, std::uint32_t>,
               "the default must satisfy the concept the mutex constrains its parameter on");
@@ -428,6 +431,9 @@ struct counting_extended_ref {
     /** How many writes it posted without reading anything back, which is once per writer release. */
     static inline std::atomic<std::size_t> posted_writes {0};
 
+    /** How many xors it posted, which is once per slot the pinned table lets go. */
+    static inline std::atomic<std::size_t> posted_flips {0};
+
     /** The word this reference owns, for one operation and no longer. */
     value_type_ *word;
 
@@ -441,6 +447,9 @@ struct counting_extended_ref {
     }
     [[nodiscard]] value_type_ fetch_sub(value_type_ subtrahend, std::memory_order order) const noexcept {
         return std::atomic_ref<value_type_>(*word).fetch_sub(subtrahend, order);
+    }
+    [[nodiscard]] value_type_ fetch_or(value_type_ bits, std::memory_order order) const noexcept {
+        return std::atomic_ref<value_type_>(*word).fetch_or(bits, order);
     }
     bool compare_exchange_weak(value_type_ &expected, value_type_ wanted, std::memory_order success,
                                std::memory_order failure) const noexcept {
@@ -462,6 +471,10 @@ struct counting_extended_ref {
     void clear_bits(value_type_ bits, std::memory_order order) const noexcept {
         posted_writes.fetch_add(1, std::memory_order_relaxed);
         std::atomic_ref<value_type_>(*word).fetch_and(static_cast<value_type_>(~bits), order);
+    }
+    void flip_bits(value_type_ bits, std::memory_order order) const noexcept {
+        posted_flips.fetch_add(1, std::memory_order_relaxed);
+        std::atomic_ref<value_type_>(*word).fetch_xor(bits, order);
     }
 
     [[nodiscard]] value_type_ fetch_add_if_at_most(value_type_ addend, value_type_ limit,
@@ -488,12 +501,18 @@ struct counting_extended_ref {
 /** The same mutex, owning its word through a reference that spells the extended shapes. */
 using extended_mutex_t = spin_shared_mutex<standard_waiting_policy_t, counting_extended_ref>;
 
+/** The pinned table over the same reference, so its slot lock and counters are seen going through it. */
+using extended_table_t = atomic_hash_set<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t,
+                                         bare_waiting_policy_t, counting_extended_ref>;
+
 static_assert(extended_atomic_ref<counting_extended_ref<std::uint32_t>, std::uint32_t>,
               "the fixture has to satisfy the concept, or the test proves nothing about dispatch");
 static_assert(!extended_atomic_ref<atomic_ref<std::uint32_t>, std::uint32_t>,
               "and the default must not, or there is no fallback to fall back to");
 static_assert(sizeof(extended_mutex_t) == sizeof(spin_shared_mutex_t),
               "the reference is chosen at compile time and costs the mutex no storage");
+static_assert(sizeof(extended_table_t) == sizeof(atomic_hash_set<std::uint64_t>),
+              "and costs the pinned table none either");
 
 /** A reference spelling the extended shapes is the one the mutex drives its acquires through. */
 static void extended_atomics_take_the_bounded_path() {
@@ -521,6 +540,32 @@ static void extended_atomics_take_the_bounded_path() {
     mutex.unlock();
 }
 
+/** The pinned table lets every slot go with one posted xor, and moves its counters by posted adds. */
+static void extended_atomics_reach_the_pinned_table() {
+
+    counting_extended_ref<std::uint64_t>::posted_flips.store(0);
+    counting_extended_ref<std::uint64_t>::posted_writes.store(0);
+
+    auto allocated = hash_set<std::uint64_t>::make(std::size_t {64});
+    st_verify_((allocated) && "the table to be pinned must build");
+    extended_table_t pinned = extended_table_t::adopt((*std::move(allocated)).release());
+
+    st_verify_(pinned.emplace(std::uint64_t {42}));
+    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {1},
+                  "an emplace takes one free slot and lets it go by posting the xor");
+    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {1},
+                  "and counts the population with one posted add");
+
+    st_verify_(*pinned.contains(std::uint64_t {42}));
+    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {2},
+                  "a probe that finds its key locks that slot alone");
+
+    st_verify_(pinned.erase(std::uint64_t {42}));
+    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {3});
+    st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {3},
+                  "an erase moves both counters by posted writes");
+}
+
 /** The mutex asks the policy it was handed once per attempt, and parks only once the spin is spent. */
 static void waiting_policy_substitutes_in_the_mutex() {
     yielding_waiting_policy_t::pauses.store(0);
@@ -538,29 +583,37 @@ static void waiting_policy_substitutes_in_the_mutex() {
     st_verify_ge_(yielding_waiting_policy_t::pauses.load(), std::size_t {64}, "one pause per spent attempt");
 }
 
-/** The slot lock asks the same policy while a prober waits for the holder to let the slot go. */
+/** The slot lock asks the same policy, reached through the table, while a prober waits for a held slot. */
 static void waiting_policy_substitutes_in_the_slot_lock() {
     yielding_waiting_policy_t::pauses.store(0);
 
-    hash_bucket_head_t header {};
-    yielding_slot_t holder;
-    holder.headers_ = &header;
-    holder.lock();
+    auto allocated = hash_set<std::uint64_t>::make(std::size_t {64});
+    st_verify_((allocated) && "the table to be pinned must build");
+    yielding_table_t pinned = yielding_table_t::adopt((*std::move(allocated)).release());
+    st_verify_(pinned.emplace(std::uint64_t {42}));
 
-    std::thread prober {[&]() noexcept {
-        yielding_slot_t contender;
-        contender.headers_ = &header;
-        contender.lock();
-        contender.unlock();
+    // A found callback runs under the slot's lock, which is the one way to hold a slot from outside.
+    std::atomic<bool> holding {false};
+    std::atomic<bool> release {false};
+    std::thread holder {[&]() noexcept {
+        [[maybe_unused]] status_t const found = pinned.find(std::uint64_t {42}, [&](auto const &) noexcept {
+            holding.store(true);
+            while (!release.load()) std::this_thread::yield();
+        });
     }};
+    while (!holding.load()) std::this_thread::yield();
 
-    // Every attempt the prober spends on a held slot goes to the policy, so one tally is enough to
+    std::thread prober {
+        [&]() noexcept { [[maybe_unused]] expected<bool> const seen = pinned.contains(std::uint64_t {42}); }};
+
+    // Every attempt the prober spends on the held slot goes to the policy, so one tally is enough to
     // know the lock is spinning through it rather than through a hint of its own.
     while (yielding_waiting_policy_t::pauses.load() == 0) std::this_thread::yield();
-    holder.unlock();
+    release.store(true);
+    holder.join();
     prober.join();
 
-    st_verify_(hash_slot_state_of(header, 1u) == hash_slot_state_t::free_k);
+    st_verify_(*pinned.contains(std::uint64_t {42}));
 }
 
 #pragma endregion Waiting Policy Tests
@@ -1191,6 +1244,7 @@ int main() {
     failures += run_test(filter, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
 
     failures += run_test(filter, "extended_atomics.take_the_bounded_path", extended_atomics_take_the_bounded_path);
+    failures += run_test(filter, "extended_atomics.reach_the_pinned_table", extended_atomics_reach_the_pinned_table);
     failures += run_test(filter, "waiting_policy.substitutes_in_the_mutex", waiting_policy_substitutes_in_the_mutex);
     failures +=
         run_test(filter, "waiting_policy.substitutes_in_the_slot_lock", waiting_policy_substitutes_in_the_slot_lock);
