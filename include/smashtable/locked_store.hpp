@@ -6,6 +6,7 @@
  *      its transactions stay single-threaded.
  */
 #pragma once
+#include <cassert> // `assert`
 
 #include "shared.hpp"
 
@@ -38,12 +39,18 @@ namespace ashvardanian::smashtable {
  *      empty and whose mutex guards nothing, so commits land nowhere and report success. Move only
  *      a store no transaction is open on and no other thread is touching.
  */
-template <typename store_type_, typename shared_mutex_type_ = spin_shared_mutex_t>
+template <typename store_type_, typename shared_mutex_type_ = spin_shared_mutex_t,
+          typename order_type_ = basic_commit_order<1>>
 class locked_store {
 
   public:
     using store_t = locked_store;
-    using order_t = basic_commit_order<1>;
+    using order_t = order_type_;
+
+    /** The same store in another order, which is how a shard set builds its partitions into its own. */
+    template <typename other_order_type_>
+    using rebind_order = locked_store<store_type_, shared_mutex_type_, other_order_type_>;
+
     using inner_store_t = typename rebound_order_of<store_type_, order_t>::type;
     using inner_transaction_t = typename inner_store_t::transaction_t;
     using mutex_t = shared_mutex_type_;
@@ -61,9 +68,6 @@ class locked_store {
     using comparator_t = typename inner_store_t::comparator_t;
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
-
-    /** The order the wrapped store is a member of, which an outer wrapper looks for by exactly this alias. */
-    using commit_order_t = order_t;
 
     /** Whether the wrapped transaction can be driven as one part of a commit under a stamp drawn elsewhere. */
     static constexpr bool inner_transaction_shards_k = shards_its_commit<inner_transaction_t>;
@@ -579,10 +583,18 @@ class locked_store {
         seat_order_();
     }
 
+    /** Takes over whichever order @p other was a member of, and seats the wrapped store in it. */
+    void adopt_order_of_(locked_store &other) noexcept {
+        if (other.order_ == &other.own_order_) own_order_.adopt(other.own_order_);
+        else order_ = other.order_;
+        seat_order_();
+    }
+
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     locked_store &operator=(locked_store &&other) noexcept {
         unique_lock _ {mutex_};
         inner_store_ = std::move(other.inner_store_);
+        adopt_order_of_(other);
         return *this;
     }
 
@@ -592,8 +604,22 @@ class locked_store {
     /** Builds a store that is a member of @p order rather than of one it made for itself. */
     explicit locked_store(order_t &order) noexcept : order_(&order) { seat_order_(); }
 
+    /**
+     *  @brief Makes this store, and the store it wraps, a member of @p order.
+     *
+     *  Called once, by the wrapper that owns both, before any transaction opens. A shard set seats
+     *  every partition this way, which is what makes one stamp mean the same thing across them.
+     */
+    void join_order(order_t &order) noexcept {
+        assert(order_->open_snapshots() == 0 && "a reader would leave its claim on the order being left");
+        order_ = &order;
+        seat_order_();
+    }
+
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
-    locked_store(locked_store &&other) noexcept : inner_store_(std::move(other.inner_store_)) {}
+    locked_store(locked_store &&other) noexcept : inner_store_(std::move(other.inner_store_)) {
+        adopt_order_of_(other);
+    }
 
     [[nodiscard]] std::size_t size() const noexcept {
         shared_lock _ {mutex_};

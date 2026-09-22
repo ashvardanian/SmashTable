@@ -1510,7 +1510,7 @@ void test_group_publishes_under_one_stamp() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
-    using order_t = typename container_t::commit_order_t;
+    using order_t = typename container_t::order_t;
     static_assert(transaction_group<container_t, container_t>::shares_one_order_k,
                   "two stores in one order must take the one-stamp branch");
 
@@ -1543,7 +1543,7 @@ void test_group_commit_with_runs_the_body() {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
-    using order_t = typename container_t::commit_order_t;
+    using order_t = typename container_t::order_t;
 
     order_t order;
     container_t first {order}, second {order};

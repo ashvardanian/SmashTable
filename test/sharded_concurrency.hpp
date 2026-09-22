@@ -1010,7 +1010,7 @@ void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
-    using order_t = typename container_t::commit_order_t;
+    using order_t = typename container_t::order_t;
 
     order_t order;
     container_t first {order}, second {order};

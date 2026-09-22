@@ -89,6 +89,12 @@ using sharded_snapshot_map_t = partitioned_store<snapshot_avl_map_t>;
 /** The same map behind one mutex, which is what a group of stores on one order is made of. */
 using locked_snapshot_map_t = locked_store<snapshot_avl_map_t>;
 
+/** The same two cores built into a shared order rather than each making its own, which is what a group of
+ *  stores is. No mutex around them: a group fuzzer writes to a store while a group over it sits staged, and
+ *  a wrapper's lock is not recursive. */
+using grouped_snapshot_map_t = typename snapshot_avl_map_t::template rebind_order<commit_order_t>;
+using grouped_serializable_map_t = typename serializable_avl_map_t::template rebind_order<commit_order_t>;
+
 /** The same map behind one mutex, where sharding has nothing to weaken. */
 using monotonic_avl_map_t =
     monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
@@ -677,7 +683,7 @@ static void test_low_water_mark_tracks_the_oldest_reader() {
     } while (std::next_permutation(closing_order.begin(), closing_order.end()));
 }
 
-/** Tests that a census that never empties still lets the mark follow its oldest reader */
+/** Tests that a bucket that never empties still lets the mark follow its oldest reader */
 template <typename store_type_>
 static void test_rolling_readers_keep_reclamation_moving() {
     using transaction_t = typename store_type_::transaction_t;
@@ -692,7 +698,7 @@ static void test_rolling_readers_keep_reclamation_moving() {
     for (int round = 1; round != 64; ++round) {
         commit_write(store, 1, round);
 
-        // The next reader arrives before the one before it leaves, so the census is never empty -
+        // The next reader arrives before the one before it leaves, so no bucket ever empties -
         // which is the shape a service with one perpetually open transaction has.
         auto opened = store.transaction();
         st_verify_(opened.has_value());
@@ -2722,7 +2728,7 @@ static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
             } while (!writing_done.load(std::memory_order_acquire));
         });
 
-    // A transaction adopting the stamp over and over joins and leaves the census beside the reader's claim.
+    // A transaction adopting the stamp counts a snapshot of its own beside the reader's claim, over and over.
     threads.emplace_back([&]() noexcept {
         do {
             auto adopted = store.transaction(pinned);
@@ -3353,10 +3359,11 @@ int main(int, char **) {
                          []() { test_random_windows_match_the_oracle<snapshot_avl_map_t>(); });
     failures += run_test(filter, "fuzz.windows_match_the_oracle.sharded_snapshot",
                          []() { test_random_windows_match_the_oracle<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "fuzz.refused_group_publishes_nothing",
-                         []() { test_a_refused_group_publishes_nothing<snapshot_avl_map_t, snapshot_avl_map_t>(); });
+    failures += run_test(filter, "fuzz.refused_group_publishes_nothing", []() {
+        test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>();
+    });
     failures += run_test(filter, "fuzz.accepted_group_publishes_everything", []() {
-        test_an_accepted_group_publishes_everything<snapshot_avl_map_t, serializable_avl_map_t>();
+        test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>();
     });
 
     failures += run_test(filter, "commit_stamp.follows_commit_order.snapshot",

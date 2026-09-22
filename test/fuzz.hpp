@@ -225,8 +225,12 @@ void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
     using second_member_t = typename second_t::value_type;
 
     std::mt19937 generator(test_seed_for(__func__));
-    first_t alpha;
-    second_t beta;
+    // One commit across two stores means one order both were built into; two stores that each made
+    // their own are two visibility domains, and `make_transaction_group` refuses them by design.
+    using order_t = typename first_t::order_t;
+    order_t order;
+    first_t alpha {order};
+    second_t beta {order};
 
     for (trivial_id_t identifier = 0; identifier != fuzz_keyspace_k; ++identifier) {
         st_verify_(alpha.upsert(trivial_id_to_member<first_member_t>(identifier, 0)));
@@ -296,8 +300,12 @@ void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
     using model_member_t = typename fuzz_oracle_t::value_type;
 
     std::mt19937 generator(test_seed_for(__func__));
-    first_t alpha;
-    second_t beta;
+    // One commit across two stores means one order both were built into; two stores that each made
+    // their own are two visibility domains, and `make_transaction_group` refuses them by design.
+    using order_t = typename first_t::order_t;
+    order_t order;
+    first_t alpha {order};
+    second_t beta {order};
     fuzz_oracle_t model;
     std::size_t published_rounds = 0;
 

@@ -3467,7 +3467,7 @@ enum class order_sharing_t : bool {
  *  the ceiling is the number of independently lockable regions the order serves. A shard set
  *  therefore names its own partition count, and a single locked store needs one.
  *
- *  @section commit_order_census Census
+ *  @section commit_order_readers Open Snapshots
  *
  *  Readers are counted by bucket rather than listed one by one. A bucket carries the watermark it
  *  was opened at, which is a floor for every reader that joins it, and the low-water mark is the
@@ -3479,8 +3479,8 @@ enum class order_sharing_t : bool {
  *
  *  A claim is therefore a bucket index and a stamp, never a pointer into caller memory, so a claim
  *  moves with its transaction between threads by copying two fields and touching this order not at
- *  all. At one bucket the mark is the floor the first reader opened at and stays there until the
- *  last one leaves, which is the whole census a single-threaded store needs.
+ *  all. Two buckets are the fewest that work: the head rotates into the other one as the watermark
+ *  leaves its floor behind, so a reader handing over to the next never pins the first one's floor.
  *
  *  @section commit_order_ordering Ordering
  *
@@ -3503,7 +3503,7 @@ enum class order_sharing_t : bool {
  *
  *  @tparam commits_in_flight_ How many commits may sit past the watermark before a landing one
  *      waits. Bounded by disjoint lock sets rather than by cores; see above.
- *  @tparam reader_buckets_ How many floors the census keeps. Caps nothing, and trades the precision
+ *  @tparam reader_buckets_ How many floors are kept. Caps nothing, and trades the precision
  *      of the low-water mark against the memory and the scan.
  *  @tparam sharing_ Whether several threads reach this order, which decides its atomics and padding.
  *  @tparam waiting_policy_type_ What a waiting committer does with its core.
@@ -3517,20 +3517,68 @@ class basic_commit_order {
     /** Commits that may be in flight past the watermark before a landing one waits. */
     static constexpr std::size_t ring_k = commits_in_flight_;
 
-    /** Floors the census keeps. Readers past it share a bucket rather than being turned away. */
+    /** How many floors are kept. Readers past it share a bucket rather than being turned away. */
     static constexpr std::size_t buckets_k = reader_buckets_;
 
     /** Whether several threads reach this order. */
     static constexpr order_sharing_t sharing_k = sharing_;
 
-    static_assert(ring_k >= 1 && buckets_k >= 1, "one of each is the smallest working order");
+    static_assert(ring_k >= 1 && buckets_k >= 2, "the head rotates into another bucket, so there must be one");
 
   private:
-    /** Live members in the low half, the head value that opened the bucket in the high half. */
-    using census_word_t = std::uint64_t;
+    /** One bucket's word, and the monotone cursor naming which bucket a new snapshot lands in. */
+    using bucket_word_t = std::uint64_t;
 
-    /** Where a bucket's live count ends and the tag that opened it begins. */
-    static constexpr census_word_t members_mask_k = 0xFFFFFFFFull;
+    /**
+     *  @brief How many snapshots a bucket holds open, under the head value that opened it.
+     *
+     *  One word because one bounded add has to count a snapshot in or refuse it: with the head value
+     *  above the count, a bucket already reopened past the head a reader saw sorts above every
+     *  admissible word, so a single magnitude compare decides all three cases.
+     */
+    struct bucket_snapshots_t {
+
+        /** How far the opening head value sits above the count. */
+        static constexpr unsigned opened_at_bits_k = 32;
+
+        /** The widest count the low half holds, which is also the opening value's width. */
+        static constexpr bucket_word_t open_snapshots_mask_k = (bucket_word_t {1} << opened_at_bits_k) - 1;
+
+        /** The whole word, which is what every atomic here drives. */
+        bucket_word_t bits {0};
+
+        /** The head value this bucket was opened at, narrowed to the half it is kept in. */
+        [[nodiscard]] constexpr std::uint32_t opened_at() const noexcept {
+            return static_cast<std::uint32_t>(bits >> opened_at_bits_k);
+        }
+
+        /** How many snapshots this bucket currently holds open. */
+        [[nodiscard]] constexpr std::uint32_t open_snapshots() const noexcept {
+            return static_cast<std::uint32_t>(bits & open_snapshots_mask_k);
+        }
+
+        /** The word a bucket opened at @p opened starts from, with no snapshot counted in it yet. */
+        [[nodiscard]] static constexpr bucket_snapshots_t opened_by(bucket_word_t opened) noexcept {
+            return bucket_snapshots_t {(opened & open_snapshots_mask_k) << opened_at_bits_k};
+        }
+
+        /** The largest word one more snapshot may be counted into while @p opened is still the head. */
+        [[nodiscard]] static constexpr bucket_snapshots_t admitting(bucket_word_t opened) noexcept {
+            return bucket_snapshots_t {opened_by(opened).bits | open_snapshots_mask_k};
+        }
+    };
+
+    static_assert(sizeof(bucket_snapshots_t) == sizeof(bucket_word_t), "the count and the head value tile one word");
+
+    /** Whether a snapshot was counted into the bucket it aimed at. */
+    enum class snapshot_recorded_t : bool {
+
+        /** The bucket was reopened past the head value this caller read, so nothing was counted. */
+        bucket_moved_on_k,
+
+        /** One more snapshot, counted into that bucket. */
+        recorded_k,
+    };
 
     /** A contended word owns a line; a solitary one is packed, since nothing shares it. */
     static constexpr std::size_t word_alignment_k =
@@ -3650,15 +3698,15 @@ class basic_commit_order {
     alignas(word_alignment_k) generation_t low_water_mark_ {0};
 
     /** Which bucket arrivals join, monotone, so a bucket is recycled only after it has drained. */
-    alignas(word_alignment_k) census_word_t head_ {0};
+    alignas(word_alignment_k) bucket_word_t head_ {0};
 
     /** The ring: slot @c stamp % ring_k holds @c stamp once that commit has landed. */
     alignas(word_alignment_k) generation_t landed_[ring_k] {};
 
-    /** Live members of each bucket, tagged with the head value that opened it. */
-    alignas(word_alignment_k) census_word_t members_[buckets_k] {};
+    /** Snapshots each bucket holds open, under the head value that opened it. */
+    alignas(word_alignment_k) bucket_snapshots_t snapshots_[buckets_k] {};
 
-    /** The watermark each bucket was opened at, which is a floor for every member of it. */
+    /** The watermark each bucket was opened at, which is a floor for every snapshot in it. */
     alignas(word_alignment_k) generation_t floors_[buckets_k] {};
 
     /** What a committer waiting for ring room does with its core. */
@@ -3670,81 +3718,94 @@ class basic_commit_order {
     }
 
     /** Which bucket the head value @p opened names. */
-    static constexpr std::size_t bucket_of_(census_word_t opened) noexcept {
+    static constexpr std::size_t bucket_of_(bucket_word_t opened) noexcept {
         return static_cast<std::size_t>(opened % buckets_k);
     }
 
-    /** Joins the head bucket, whose floor is at or below any snapshot drawn after this returns. */
-    std::uint32_t join_head_() noexcept {
+    /** Counts one snapshot into @p bucket while @p opened is still the head value it was opened at. */
+    snapshot_recorded_t record_into_(std::size_t bucket, bucket_word_t opened) noexcept {
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
-            std::size_t const bucket = bucket_of_(head_);
-            ++members_[bucket];
-            return static_cast<std::uint32_t>(bucket);
+            ++snapshots_[bucket].bits;
+            return snapshot_recorded_t::recorded_k;
         }
-        else
-            for (;;) {
-                census_word_t const opened = atomic_ref<census_word_t>(head_).load(memory_order_acquire_k);
-                std::size_t const bucket = bucket_of_(opened);
-                // One member more, admitted only while the tag still reads as the head that opened it:
-                // a recycled bucket carries a larger tag, which overflows the ceiling and is refused.
-                census_word_t const ceiling = ((opened & members_mask_k) << 32) | members_mask_k;
-                census_word_t const before = atomic_fetch_add_if_at_most<atomic_ref>(
-                    members_[bucket], census_word_t {1}, ceiling, memory_order_acq_rel_k);
-                if ((before >> 32) == (opened & members_mask_k) && (before & members_mask_k) != members_mask_k)
-                    return static_cast<std::uint32_t>(bucket);
-            }
+        else {
+            // Refused only by a head value above the one just read, which a bucket already reopened ahead
+            // of this thread carries. A value below it is a bucket this snapshot shares, whose floor is
+            // older and therefore still bounds it.
+            bucket_snapshots_t const ceiling = bucket_snapshots_t::admitting(opened);
+            bucket_word_t const before = atomic_fetch_add_if_at_most<atomic_ref>(
+                snapshots_[bucket].bits, bucket_word_t {1}, ceiling.bits, memory_order_acq_rel_k);
+            // Strictly below, because the add lands only where the sum still fits: at the ceiling itself
+            // nothing is written, and reporting success would hand back a claim with nothing to retire.
+            return before < ceiling.bits ? snapshot_recorded_t::recorded_k : snapshot_recorded_t::bucket_moved_on_k;
+        }
     }
 
-    /** Opens the bucket after @p opened at @p watermark, when the one it would recycle has drained. */
-    void open_next_bucket_(census_word_t opened, generation_t watermark) noexcept {
-        census_word_t const next = opened + 1;
+    /** Counts a snapshot into the head bucket, whose floor is at or below any snapshot drawn after this. */
+    std::uint32_t record_snapshot_() noexcept {
+        for (;;) {
+            bucket_word_t const opened = read_(head_);
+            std::size_t const bucket = bucket_of_(opened);
+            if (record_into_(bucket, opened) == snapshot_recorded_t::recorded_k)
+                return static_cast<std::uint32_t>(bucket);
+        }
+    }
+
+    /** Opens the bucket after @p opened at @p opened_at, when the one it would recycle has drained. */
+    void open_next_bucket_(bucket_word_t opened, generation_t opened_at) noexcept {
+        bucket_word_t const next = opened + 1;
         std::size_t const bucket = bucket_of_(next);
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
-            if ((members_[bucket] & members_mask_k) != 0) return;
-            members_[bucket] = (next & members_mask_k) << 32;
-            floors_[bucket] = watermark;
+            if (snapshots_[bucket].open_snapshots() != 0) return;
+            snapshots_[bucket] = bucket_snapshots_t::opened_by(next);
+            floors_[bucket] = opened_at;
             if (head_ < next) head_ = next;
         }
         else {
-            atomic_ref<census_word_t> members(members_[bucket]);
-            census_word_t observed = members.load(memory_order_acquire_k);
-            if ((observed & members_mask_k) != 0) return;
+            atomic_ref<bucket_word_t> holding(snapshots_[bucket].bits);
+            bucket_word_t observed = holding.load(memory_order_acquire_k);
+            if (bucket_snapshots_t {observed}.open_snapshots() != 0) return;
+            // Another opener got here from the same head value: its floor store and this one would race
+            // with nothing ordering them, and its is already the right one.
+            if (bucket_snapshots_t {observed}.opened_at() == bucket_snapshots_t::opened_by(next).opened_at()) return;
             // Retagged first, which shuts the bucket to arrivals under either value and is what makes the
             // floor store below safe: nobody can be counted in it while its floor is being replaced.
-            if (!members.compare_exchange_strong(observed, (next & members_mask_k) << 32, memory_order_acq_rel_k,
-                                                 memory_order_relaxed_k))
+            if (!holding.compare_exchange_strong(observed, bucket_snapshots_t::opened_by(next).bits,
+                                                 memory_order_acq_rel_k, memory_order_relaxed_k))
                 return;
-            atomic_store<generation_t>(floors_[bucket], watermark);
-            atomic_max_fetch<atomic_ref, census_word_t>(head_, next);
+            atomic_store<generation_t>(floors_[bucket], opened_at);
+            atomic_max_fetch<atomic_ref, bucket_word_t>(head_, next);
         }
     }
 
     /** Recomputes the mark from the watermark and every occupied bucket, and raises the published one to it. */
     void republish_mark_() noexcept {
         // The watermark first, then the buckets: a reader joining after this read draws at or above it.
-        generation_t mark = read_newest_(published_stamp_);
-        census_word_t const opened = read_(head_);
+        generation_t const published_now = read_newest_(published_stamp_);
+        generation_t oldest_needed = published_now;
+        bucket_word_t const opened = read_(head_);
         for (std::size_t bucket = 0; bucket != buckets_k; ++bucket) {
-            census_word_t const observed = read_(members_[bucket]);
-            if ((observed & members_mask_k) == 0) continue;
-            if (generation_t const floor = read_(floors_[bucket]); floor < mark) mark = floor;
+            bucket_snapshots_t const observed {read_(snapshots_[bucket].bits)};
+            if (observed.open_snapshots() == 0) continue;
+            if (generation_t const floor = read_(floors_[bucket]); floor < oldest_needed) oldest_needed = floor;
         }
-        raise_(low_water_mark_, mark);
-        // Sealed here rather than on a timer: this already runs on every commit that moved the watermark,
-        // and a head bucket whose floor has fallen behind the mark is one every later reader over-retains on.
-        if (read_(floors_[bucket_of_(opened)]) < mark) open_next_bucket_(opened, mark);
+        raise_(low_water_mark_, oldest_needed);
+        // Against what is published, never against what is needed: a head bucket holding the least floor
+        // equals the mark by construction, so comparing those two leaves the head where it is and pins
+        // every later reader to a floor it has no reason to hold.
+        if (read_(floors_[bucket_of_(opened)]) < published_now) open_next_bucket_(opened, published_now);
     }
 
     /** Gives one reader's membership back, which only @c snapshot_claim_t is allowed to do. */
     void retire_snapshot_(snapshot_claim_t &claim) noexcept {
-        census_word_t before {};
-        if constexpr (sharing_ == order_sharing_t::solitary_k) before = members_[claim.bucket_]--;
+        bucket_word_t before {};
+        if constexpr (sharing_ == order_sharing_t::solitary_k) before = snapshots_[claim.bucket_].bits--;
         else
             // Released, and every scan above acquires: whoever sees a bucket drain sees every claim its
             // members made first, so a snapshot adopted from one cannot be missed by the mark that follows.
-            before = atomic_ref<census_word_t>(members_[claim.bucket_]).fetch_sub(1, memory_order_release_k);
+            before = atomic_ref<bucket_word_t>(snapshots_[claim.bucket_].bits).fetch_sub(1, memory_order_release_k);
         // Only a bucket that just drained can raise the mark, so the scan is spent on that departure alone.
-        if ((before & members_mask_k) == 1) republish_mark_();
+        if (bucket_snapshots_t {before}.open_snapshots() == 1) republish_mark_();
     }
 
   public:
@@ -3779,7 +3840,7 @@ class basic_commit_order {
     generation_t take_snapshot(snapshot_claim_t &claim) noexcept {
         if (claim.order_) retire_snapshot_(claim);
         claim.order_ = this;
-        claim.bucket_ = join_head_();
+        claim.bucket_ = record_snapshot_();
         // Reading the newest is the reader's half of the pair: a mark computed after this counts the
         // member above, and one computed before it stands at or below the stamp returned.
         generation_t const seen = read_newest_(published_stamp_);
@@ -3798,8 +3859,8 @@ class basic_commit_order {
     generation_t share_snapshot(snapshot_claim_t &held, snapshot_claim_t &claim) noexcept {
         assert(held.order_ == this && &held != &claim && "a shared snapshot is copied from another live claim");
         if (claim.order_) retire_snapshot_(claim);
-        if constexpr (sharing_ == order_sharing_t::solitary_k) ++members_[held.bucket_];
-        else atomic_post_add<atomic_ref>(members_[held.bucket_], census_word_t {1}, memory_order_release_k);
+        if constexpr (sharing_ == order_sharing_t::solitary_k) ++snapshots_[held.bucket_].bits;
+        else atomic_post_add<atomic_ref>(snapshots_[held.bucket_].bits, bucket_word_t {1}, memory_order_release_k);
         claim.order_ = this;
         claim.bucket_ = held.bucket_;
         claim.snapshot_ = held.snapshot_;
@@ -3882,8 +3943,8 @@ class basic_commit_order {
     /** How many readers currently hold a snapshot, summed over the buckets. */
     [[nodiscard]] std::size_t open_snapshots() const noexcept {
         std::size_t counted = 0;
-        for (census_word_t const &members : members_)
-            counted += static_cast<std::size_t>(read_(members) & members_mask_k);
+        for (bucket_snapshots_t const &bucket : snapshots_)
+            counted += bucket_snapshots_t {read_(bucket.bits)}.open_snapshots();
         return counted;
     }
 
@@ -3902,8 +3963,9 @@ class basic_commit_order {
 /** The order several threads or several stores share, sized for sixteen commits in flight. */
 using commit_order_t = basic_commit_order<>;
 
-/** The order a store nobody shares builds for itself: one commit in flight, one floor, no atomics, no padding. */
-using solitary_commit_order_t = basic_commit_order<1, 1, order_sharing_t::solitary_k>;
+/** The order a store nobody shares builds for itself: one commit in flight, no atomics, no padding. Two
+ *  floors rather than one, because the head rotates into the other and a single bucket has nowhere to go. */
+using solitary_commit_order_t = basic_commit_order<1, 2, order_sharing_t::solitary_k>;
 
 #pragma endregion Commit Order
 

@@ -117,7 +117,7 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *  Versions are pruned on write against a low-water mark, and an explicit @c vacuum sweeps the
  *  rest. There is no background thread, no epoch registry and no hidden global state: registering
  *  and retiring a snapshot is linking a node the caller already owns, so a destructor may do it.
- *  The mark is a floor at or below every snapshot the census counts, which cannot pass one somebody
+ *  The mark is a floor at or below every snapshot the order counts open, which cannot pass one somebody
  *  still holds and follows the oldest reader up as readers leave. With nothing open the mark equals
  *  the published stamp, so a key falls back to a single entry on the next commit that touches it.
  *
@@ -362,8 +362,8 @@ class snapshot_store {
      *
      *  @section snapshot_store_reader_costs Costs
      *
-     *  Opening a reader joins one bucket of the order's census and closing it leaves that bucket, which
-     *  on the census. A read takes no lock and touches no atomic of its own; a point read costs a
+     *  Opening a reader counts a snapshot into one bucket of the order and closing it takes that back, which
+     *  on that count. A read takes no lock and touches no atomic of its own; a point read costs a
      *  descent plus a step over every version its key still holds, and a range read a step over
      *  every version inside the window.
      *

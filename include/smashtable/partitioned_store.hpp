@@ -121,9 +121,6 @@ class partitioned_store {
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
 
-    /** The order every partition was built into, which is this set's own. */
-    using commit_order_t = order_t;
-
     /**
      *  @brief A reader takes and releases one partition's lock at a time, so it can catch a commit
      *      half-applied however the commit itself was written - unless what a reader sees is
@@ -892,11 +889,11 @@ class partitioned_store {
      *
      *  @section partitioned_store_reader_costs Costs
      *
-     *  Opening joins one bucket of the order's census and closing leaves it. A point read takes one partition's
-     *  lock shared, which uncontended is one compare-exchange to acquire and one subtraction to
-     *  release; a range read takes every partition shared, ascending, for the length of its walk,
-     *  as @c range does. Neither touches the order, marks a partition, allocates or
-     *  validates anything.
+     *  Opening counts a snapshot into a bucket of the order, and closing takes it back out. A point
+     *  read takes one partition's lock shared, which uncontended is one compare-exchange to acquire
+     *  and one subtraction to release; a range read takes every partition shared, ascending, for the
+     *  length of its walk, as @c range does. Neither touches the order, marks a partition, allocates
+     *  or validates anything.
      *
      *  The claim holds the low-water mark at or below the stamp, so no partition prunes a version
      *  published after it while the reader is open: retention grows by one entry per commit to a
@@ -1018,7 +1015,7 @@ class partitioned_store {
         staging_t staging_ {staging_t::pending_k};
 
         /** The one claim on the snapshot every partition of this transaction reads at. A part registers nothing of
-         *  its own, so the reader census counts this transaction once rather than once per partition, and the
+         *  its own, so the order counts this transaction once rather than once per partition, and the
          *  low-water mark answers for all of them together. */
         ST_NO_UNIQUE_ADDRESS_ mutable typename order_t::snapshot_claim_t claim_ {};
 
@@ -2066,7 +2063,7 @@ class partitioned_store {
     partitions_t partitions_;
 
     /** The one order every partition is a member of, so a stamp means the same thing in each. Empty, and free, for
-     *  a part that keeps no stamps. Mutable because a reader of a const store still joins the census, which is
+     *  a part that keeps no stamps. Mutable because a reader of a const store still counts a snapshot, which is
      *  bookkeeping rather than the store's contents. */
     ST_NO_UNIQUE_ADDRESS_ mutable order_t order_ {};
 
