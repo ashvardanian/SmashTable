@@ -55,6 +55,7 @@
  *  which never gets to run its unlock. That is a livelock, not a slow path.
  */
 #pragma once
+#include <cassert> // `assert`
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::uint64_t`
 

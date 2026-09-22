@@ -680,6 +680,21 @@ struct store_ops_t {
  */
 enum class core_t : std::uint8_t { sorted_k, hashed_k };
 
+/**
+ *  @brief Whether a store keeps a value beside each key, which is the axis a map and a set differ on.
+ *
+ *  Spelled as the cores already spell the predicate, so this names the same condition @c has_values_k
+ *  does rather than becoming a seventh word for it.
+ */
+enum class associativity_t : bool {
+
+    /** A set: the key is the whole element. */
+    without_values_k,
+
+    /** A map: a value stands beside every key. */
+    with_values_k,
+};
+
 /** What a reader is promised, as the constructor's @c isolation argument names it. */
 enum class isolation_choice_t : std::uint8_t { monotonic_k, snapshot_k, serializable_k, strict_serializable_k };
 
@@ -708,15 +723,15 @@ constexpr char const *isolation_name_of(isolation_t level) noexcept {
  *  @return The table to use, or @c nullptr with no exception set.
  */
 store_ops_t const *store_ops_for(core_t core, isolation_choice_t isolation, sharing_choice_t sharing,
-                                 bool associative) noexcept;
+                                 associativity_t associativity) noexcept;
 
 /** The ordered core's half of that resolution, defined beside the tables it names. */
 store_ops_t const *sorted_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
-                                        bool associative) noexcept;
+                                        associativity_t associativity) noexcept;
 
 /** The unordered core's half, whose tables carry no ordered slot at all. */
 store_ops_t const *hashed_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
-                                        bool associative) noexcept;
+                                        associativity_t associativity) noexcept;
 
 #pragma endregion Stores
 

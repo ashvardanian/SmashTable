@@ -80,23 +80,26 @@ constexpr store_ops_t sorted_set_strict_serializable_partitioned =
 #pragma region Resolution
 
 store_ops_t const *sorted_store_ops_for(isolation_choice_t isolation, sharing_choice_t sharing,
-                                        bool associative) noexcept {
+                                        associativity_t associativity) noexcept {
     bool const partitioned = sharing == sharing_choice_t::partitioned_k;
     // A switch rather than a pair of flags: four levels do not fit in one boolean, and naming
     // each arm keeps a configuration that does not exist from being spelled by accident.
     switch (isolation) {
     case isolation_choice_t::strict_serializable_k:
-        if (associative)
+        if (associativity == associativity_t::with_values_k)
             return partitioned ? &sorted_map_strict_serializable_partitioned : &sorted_map_strict_serializable_locked;
         return partitioned ? &sorted_set_strict_serializable_partitioned : &sorted_set_strict_serializable_locked;
     case isolation_choice_t::serializable_k:
-        if (associative) return partitioned ? &sorted_map_serializable_partitioned : &sorted_map_serializable_locked;
+        if (associativity == associativity_t::with_values_k)
+            return partitioned ? &sorted_map_serializable_partitioned : &sorted_map_serializable_locked;
         return partitioned ? &sorted_set_serializable_partitioned : &sorted_set_serializable_locked;
     case isolation_choice_t::snapshot_k:
-        if (associative) return partitioned ? &sorted_map_snapshot_partitioned : &sorted_map_snapshot_locked;
+        if (associativity == associativity_t::with_values_k)
+            return partitioned ? &sorted_map_snapshot_partitioned : &sorted_map_snapshot_locked;
         return partitioned ? &sorted_set_snapshot_partitioned : &sorted_set_snapshot_locked;
     case isolation_choice_t::monotonic_k:
-        if (associative) return partitioned ? &sorted_map_monotonic_partitioned : &sorted_map_monotonic_locked;
+        if (associativity == associativity_t::with_values_k)
+            return partitioned ? &sorted_map_monotonic_partitioned : &sorted_map_monotonic_locked;
         return partitioned ? &sorted_set_monotonic_partitioned : &sorted_set_monotonic_locked;
     }
     return nullptr;

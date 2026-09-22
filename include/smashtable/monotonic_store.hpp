@@ -1133,7 +1133,7 @@ class monotonic_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                             callback_type_ &&callback) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
         {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
@@ -1159,7 +1159,7 @@ class monotonic_store {
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
-            requires ordered_collection<versioned_chains_t>
+            requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
         {
             static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                           "a reservoir copies into the caller's buffer, so the member must copy without throwing");
@@ -2419,7 +2419,7 @@ class monotonic_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
 
         auto node = chain_node_t::sample_range( //
@@ -2433,7 +2433,7 @@ class monotonic_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
-        requires ordered_collection<versioned_chains_t>
+        requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");

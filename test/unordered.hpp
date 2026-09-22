@@ -1211,7 +1211,7 @@ inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t cons
     std::vector<std::size_t> generations;
     container.probe_to_visit(unversioned_key_t {bare}, [&](auto const &slot) noexcept {
         generations.push_back(slot.key().generation);
-        return probe_control_t::resume_k;
+        return walk_control_t::resume_k;
     });
     return generations;
 }
@@ -1258,7 +1258,7 @@ inline void test_unordered_visit_early_exit(std::size_t versions = 5) {
         std::size_t visits = 0;
         container.probe_to_visit(unversioned_key_t {1}, [&](auto const &) noexcept {
             ++visits;
-            return visits == stop_after ? probe_control_t::halt_k : probe_control_t::resume_k;
+            return visits == stop_after ? walk_control_t::halt_k : walk_control_t::resume_k;
         });
         st_verify_eq_(visits, stop_after);
     }
@@ -1342,7 +1342,7 @@ inline void test_unordered_visit_full_table() {
     std::size_t visits = 0;
     container.probe_to_visit(unversioned_key_t {2}, [&](auto const &) noexcept {
         ++visits;
-        return probe_control_t::resume_k;
+        return walk_control_t::resume_k;
     });
     st_verify_eq_(visits, 0u);
 

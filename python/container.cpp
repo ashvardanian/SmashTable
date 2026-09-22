@@ -29,10 +29,10 @@ bool is_container(module_state_t *state, PyObject *object) noexcept {
 }
 
 store_ops_t const *store_ops_for(core_t core, isolation_choice_t isolation, sharing_choice_t sharing,
-                                 bool associative) noexcept {
+                                 associativity_t associativity) noexcept {
     switch (core) {
-    case core_t::sorted_k: return sorted_store_ops_for(isolation, sharing, associative);
-    case core_t::hashed_k: return hashed_store_ops_for(isolation, sharing, associative);
+    case core_t::sorted_k: return sorted_store_ops_for(isolation, sharing, associativity);
+    case core_t::hashed_k: return hashed_store_ops_for(isolation, sharing, associativity);
     }
     return nullptr;
 }
@@ -121,7 +121,7 @@ static bool sharing_from_python(PyObject *specification, sharing_choice_t &choic
  *  file uses.
  */
 static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *keywords, core_t core,
-                               bool associative) noexcept {
+                               associativity_t associativity) noexcept {
     char const *class_name = type->tp_name;
     if (args && PyTuple_GET_SIZE(args) != 0) {
         PyErr_Format(PyExc_TypeError, "%s() takes no positional arguments", class_name);
@@ -151,8 +151,9 @@ static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *key
     key_ops_t const *ops = key_ops_from_python(key_specification);
     if (!ops) return nullptr;
     value_mode_t mode = value_mode_t::scalars_k;
-    if (associative && !value_mode_from_python(value_specification, mode)) return nullptr;
-    if (!associative && value_specification) {
+    if (associativity == associativity_t::with_values_k && !value_mode_from_python(value_specification, mode))
+        return nullptr;
+    if (associativity == associativity_t::without_values_k && value_specification) {
         PyErr_Format(PyExc_TypeError, "%s() got an unexpected keyword argument 'value'", class_name);
         return nullptr;
     }
@@ -164,7 +165,7 @@ static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *key
     if (!isolation_from_python(isolation_specification, isolation)) return nullptr;
     if (!sharing_from_python(sharing_specification, sharing)) return nullptr;
 
-    store_ops_t const *store_ops = store_ops_for(core, isolation, sharing, associative);
+    store_ops_t const *store_ops = store_ops_for(core, isolation, sharing, associativity);
     if (!store_ops) {
         PyErr_Format(PyExc_ValueError, "%s() cannot be built with this combination in this build", class_name);
         return nullptr;
@@ -176,19 +177,19 @@ static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *key
 }
 
 static PyObject *SortedMap_new(PyTypeObject *type, PyObject *args, PyObject *keywords) noexcept {
-    return container_new(type, args, keywords, core_t::sorted_k, true);
+    return container_new(type, args, keywords, core_t::sorted_k, associativity_t::with_values_k);
 }
 
 static PyObject *SortedSet_new(PyTypeObject *type, PyObject *args, PyObject *keywords) noexcept {
-    return container_new(type, args, keywords, core_t::sorted_k, false);
+    return container_new(type, args, keywords, core_t::sorted_k, associativity_t::without_values_k);
 }
 
 static PyObject *HashMap_new(PyTypeObject *type, PyObject *args, PyObject *keywords) noexcept {
-    return container_new(type, args, keywords, core_t::hashed_k, true);
+    return container_new(type, args, keywords, core_t::hashed_k, associativity_t::with_values_k);
 }
 
 static PyObject *HashSet_new(PyTypeObject *type, PyObject *args, PyObject *keywords) noexcept {
-    return container_new(type, args, keywords, core_t::hashed_k, false);
+    return container_new(type, args, keywords, core_t::hashed_k, associativity_t::without_values_k);
 }
 
 static void container_dealloc(PyObject *self) noexcept {

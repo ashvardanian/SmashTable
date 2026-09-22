@@ -458,7 +458,8 @@ class locked_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                             callback_type_ &&callback) const noexcept
-            requires transaction_offers_sample_one<inner_store_t>
+            requires transaction_offers_sample_one<inner_store_t> &&
+                     uniform_random_bits<std::remove_cvref_t<generator_type_>>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -472,7 +473,8 @@ class locked_store {
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
-            requires transaction_offers_sample_reservoir<inner_store_t>
+            requires transaction_offers_sample_reservoir<inner_store_t> &&
+                     uniform_random_bits<std::remove_cvref_t<generator_type_>>
         {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.sample_reservoir(std::forward<lower_type_>(lower),
@@ -1115,7 +1117,7 @@ class locked_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
-        requires offers_sample_one<inner_store_t>
+        requires offers_sample_one<inner_store_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         shared_lock _ {mutex_};
         return inner_store_.sample_one(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
@@ -1126,7 +1128,7 @@ class locked_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
-        requires offers_sample_reservoir<inner_store_t>
+        requires offers_sample_reservoir<inner_store_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         shared_lock _ {mutex_};
         return inner_store_.sample_reservoir(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),

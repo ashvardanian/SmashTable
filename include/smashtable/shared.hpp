@@ -561,6 +561,29 @@ struct no_op<void> {
 
 using no_op_t = no_op<void>;
 
+/**
+ *  @brief A generator that yields nothing, so a concept can probe a sampling call without drawing.
+ *
+ *  The counterpart of @c no_op_t on the other slot: a concept needs a value of some type to write
+ *  the call it is asking about, and binding a callback there would leave a swapped generator and
+ *  callback invisible. Nothing samples through this - @c draw_below wants @c min, @c max and a call
+ *  operator, and this is the least that satisfies all three.
+ */
+struct no_entropy_t {
+
+    /** What a draw hands back, widest so a probe never narrows what a real generator would give. */
+    using result_type = std::uint64_t;
+
+    /** The lowest value a draw can take, which @c draw_below subtracts to normalise. */
+    static constexpr result_type min() noexcept { return 0; }
+
+    /** The highest value a draw can take, which @c draw_below spans to size its mask. */
+    static constexpr result_type max() noexcept { return ~result_type {0}; }
+
+    /** Draws nothing, since no concept using this ever runs the body it probes. */
+    constexpr result_type operator()() noexcept { return 0; }
+};
+
 /** Callback that stores whatever it is handed into a caller-owned destination. */
 template <typename element_type_>
 struct copy_to_fn {
@@ -1023,21 +1046,20 @@ enum class isolation_t : std::uint8_t {
     strict_serializable_k = 4,
 };
 
-/** Whether a walk carries on after handing an element over, for a callback that can say. */
-enum class walk_control_t : bool { resume_k, halt_k };
-
 /**
- *  @brief What a step tells the walk that handed it a member to do next, inside the library.
+ *  @brief Whether a walk carries on after handing an element over.
  *
- *  The counterpart of @c walk_control_t on the other side of the boundary: a caller's callback
- *  answers @c walk_control_t, and @c hand_over turns that into this for the walk that is running.
+ *  One type for both sides. A caller's callback answers it, and so does every step inside a walk,
+ *  because the boundary that once separated the two was never there: @c basic_flat_set compares
+ *  against @c halt_k directly, and @c probe_to_visit documents this as the return of a callback
+ *  the caller supplies.
  */
-enum class probe_control_t : std::uint8_t {
+enum class walk_control_t : bool {
 
-    /** The step wants whatever the walk has next - the same probe run, or the merged order. */
+    /** The walk carries on with whatever it has next - the same probe run, or the merged order. */
     resume_k,
 
-    /** The step has what it came for, and the walk stops here. */
+    /** Whoever answered has what it came for, and the walk stops here. */
     halt_k,
 };
 
@@ -1925,6 +1947,23 @@ constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
 }
 
 /**
+ *  @brief What @c draw_below needs of a generator, which the standard spells the same way.
+ *
+ *  @c min and @c max must be usable in a constant expression, because @c draw_below sizes its mask
+ *  from their span at compile time. A generator whose bounds are only known at run time satisfies
+ *  @c std::uniform_random_bit_generator and would still fail here, so this asks for what is used
+ *  rather than deferring to the standard concept and pulling @c <random> into every translation unit.
+ */
+template <typename generator_type_>
+concept uniform_random_bits = requires(generator_type_ &generator) {
+    typename generator_type_::result_type;
+    { generator() } -> std::same_as<typename generator_type_::result_type>;
+    requires std::same_as<decltype(generator_type_::min()), typename generator_type_::result_type>;
+    requires std::same_as<decltype(generator_type_::max()), typename generator_type_::result_type>;
+    requires generator_type_::min() < generator_type_::max();
+};
+
+/**
  *  @brief A uniform draw below @p bound, without the bias a modulo would introduce.
  *
  *  Masks to the next power of two and redraws when the value lands above the bound, which is
@@ -2236,14 +2275,19 @@ concept offers_update_range = requires(store_type_ &store, typename store_type_:
 
 /** Whether the store draws one member of a window at random. */
 template <typename store_type_>
-concept offers_sample_one = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
-                                     no_op_t callback) { store.sample_one(key, key, callback, callback); };
+concept offers_sample_one =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &lower,
+             typename store_type_::identifier_t const &upper, no_entropy_t generator, no_op_t callback) {
+        { store.sample_one(lower, upper, generator, callback) } noexcept -> std::same_as<status_t>;
+    };
 
 /** Whether the store fills a reservoir from a window. */
 template <typename store_type_>
-concept offers_sample_reservoir =
-    requires(store_type_ const &store, typename store_type_::identifier_t const &key, no_op_t callback,
-             std::size_t seen) { store.sample_reservoir(key, key, callback, seen, seen, callback); };
+concept offers_sample_reservoir = requires(store_type_ const &store, typename store_type_::identifier_t const &lower,
+                                           typename store_type_::identifier_t const &upper, no_entropy_t generator,
+                                           std::size_t &seen, std::size_t capacity, no_op_t reservoir) {
+    { store.sample_reservoir(lower, upper, generator, seen, capacity, reservoir) } noexcept -> std::same_as<status_t>;
+};
 
 /** Whether an open transaction stages a tombstone for every member it reads. */
 template <typename store_type_>
@@ -2387,21 +2431,6 @@ concept offers_ordered_surface = offers_lower_bound<store_type_> && offers_upper
 template <typename store_type_>
 concept offers_order_statistics = offers_select<store_type_> && offers_rank<store_type_>;
 
-/** Erasure of a window with one end left open, at both ends. */
-template <typename store_type_>
-concept offers_open_range_erasure = offers_erase_from<store_type_> && offers_erase_up_to<store_type_>;
-
-/** Every window erase an open transaction stages, bounded and open-ended alike. */
-template <typename store_type_>
-concept transaction_offers_range_erasure =
-    transaction_offers_erase_range<store_type_> && transaction_offers_erase_from<store_type_> &&
-    transaction_offers_erase_up_to<store_type_>;
-
-/** The ordinal surface of an open transaction. */
-template <typename store_type_>
-concept transaction_offers_order_statistics =
-    transaction_offers_select<store_type_> && transaction_offers_rank<store_type_>;
-
 /** What an open transaction says about its own staging, whether and how much. */
 template <typename store_type_>
 concept transaction_offers_change_report =
@@ -2436,14 +2465,21 @@ concept transaction_offers_upper_bound_copy =
 /** Whether an open transaction draws one member of a window at random. */
 template <typename store_type_>
 concept transaction_offers_sample_one =
-    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-             no_op_t callback) { transaction.sample_one(key, key, callback, callback); };
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &lower,
+             typename store_type_::identifier_t const &upper, no_entropy_t generator, no_op_t callback) {
+        { transaction.sample_one(lower, upper, generator, callback) } noexcept -> std::same_as<status_t>;
+    };
 
 /** Whether an open transaction fills a reservoir from a window. */
 template <typename store_type_>
-concept transaction_offers_sample_reservoir = requires(
-    typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
-    no_op_t callback, std::size_t seen) { transaction.sample_reservoir(key, key, callback, seen, seen, callback); };
+concept transaction_offers_sample_reservoir =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &lower,
+             typename store_type_::identifier_t const &upper, no_entropy_t generator, std::size_t &seen,
+             std::size_t capacity, no_op_t reservoir) {
+        {
+            transaction.sample_reservoir(lower, upper, generator, seen, capacity, reservoir)
+        } noexcept -> std::same_as<status_t>;
+    };
 
 /** Whether the store says how many keys its ordinal surface indexes. */
 template <typename store_type_>
@@ -4025,7 +4061,6 @@ template <algebra_t algebra_>
 }
 
 /** Whether a crossed walk carries on past a member, or the answer no longer needs it. */
-enum class comparison_t : bool { carry_on_k, settled_k };
 
 /** How many members a crossed walk carries out of one side before it puts that side down. The only memory such a
  *  walk holds, on its own stack; a larger chunk re-seeds the walk fewer times and costs that much more of it. */
@@ -4101,7 +4136,7 @@ status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_
                 expected<bool> const shared = reading_probing->contains(mapping_key_or_itself<member_t>(chunk[index]));
                 if (!shared) return shared.status();
                 membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
-                if (visitor(chunk[index], membership) == comparison_t::settled_k) return success_k;
+                if (visitor(chunk[index], membership) == walk_control_t::halt_k) return success_k;
             }
             if (seen <= algebra_chunk_k) return success_k;
             resume = std::move(next_resume);
@@ -4116,8 +4151,7 @@ status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_
                 return walk_control_t::halt_k;
             }
             membership_t const membership = *shared ? membership_t::on_both_sides_k : membership_t::on_one_side_k;
-            return visitor(member, membership) == comparison_t::settled_k ? walk_control_t::halt_k
-                                                                          : walk_control_t::resume_k;
+            return visitor(member, membership);
         });
         if (failed(swept)) return swept;
         return probed;
@@ -4138,7 +4172,7 @@ status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &
     auto sweep = [&](auto &side, auto &other, auto keeps) noexcept {
         return compare_crossed_(side, other, [&](auto const &member, membership_t membership) noexcept {
             if (keeps(membership)) callback(member);
-            return comparison_t::carry_on_k;
+            return walk_control_t::resume_k;
         });
     };
 
@@ -4171,7 +4205,7 @@ expected<bool> is_subset(first_type_ &first, second_type_ &second) noexcept {
     bool subset = true;
     status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
         subset = membership == membership_t::on_both_sides_k;
-        return subset ? comparison_t::carry_on_k : comparison_t::settled_k;
+        return subset ? walk_control_t::resume_k : walk_control_t::halt_k;
     });
     if (failed(compared)) return compared;
     return subset;
@@ -4183,7 +4217,7 @@ expected<bool> is_disjoint_walking_(first_type_ &first, second_type_ &second) no
     bool disjoint = true;
     status_t const compared = compare_crossed_(first, second, [&](auto const &, membership_t membership) noexcept {
         disjoint = membership == membership_t::on_one_side_k;
-        return disjoint ? comparison_t::carry_on_k : comparison_t::settled_k;
+        return disjoint ? walk_control_t::resume_k : walk_control_t::halt_k;
     });
     if (failed(compared)) return compared;
     return disjoint;

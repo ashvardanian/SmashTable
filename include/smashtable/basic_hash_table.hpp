@@ -541,7 +541,7 @@ class basic_hash_table {
      *      hasher still peels to the bare key. Finding one of them is not finding the newest one.
      *
      *  @param[in] wanted Hashable and comparable with key object.
-     *  @param[in] call Receives each @c const_slot_ref_t and returns @c probe_control_t. Must be
+     *  @param[in] call Receives each @c const_slot_ref_t and returns @c walk_control_t. Must be
      *      @c noexcept.
      *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
      */
@@ -567,7 +567,7 @@ class basic_hash_table {
             // So instead of one runtime `if`, we have two nested `if`s.
             if (slot.is_populated()) {
                 if (equals_(slot.key(), wanted))
-                    if (call(slot) == probe_control_t::halt_k) break;
+                    if (call(slot) == walk_control_t::halt_k) break;
                 offset = (offset + 1) & offset_mask;
                 if (offset == initial_offset) break;
             }

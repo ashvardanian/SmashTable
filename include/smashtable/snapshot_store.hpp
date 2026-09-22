@@ -467,8 +467,8 @@ class snapshot_store {
             store_->range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), snapshot_,
                               [&](value_t const &value) noexcept {
                                   if (hand_over(callback, value) == walk_control_t::halt_k)
-                                      return probe_control_t::halt_k;
-                                  return probe_control_t::resume_k;
+                                      return walk_control_t::halt_k;
+                                  return walk_control_t::resume_k;
                               });
             return success_k;
         }
@@ -1319,8 +1319,8 @@ class snapshot_store {
             status_t const recorded = record_whole_keyspace_read_();
             if constexpr (ordered_core_k) {
                 merge_all_([&](versioned_t const &version) noexcept {
-                    if (hand_over(callback, version.payload) == walk_control_t::halt_k) return probe_control_t::halt_k;
-                    return probe_control_t::resume_k;
+                    if (hand_over(callback, version.payload) == walk_control_t::halt_k) return walk_control_t::halt_k;
+                    return walk_control_t::resume_k;
                 });
             }
             else {
@@ -1377,7 +1377,7 @@ class snapshot_store {
             merge_all_([&](versioned_t const &version) noexcept {
                 if (ordinal != 0) {
                     --ordinal;
-                    return probe_control_t::resume_k;
+                    return walk_control_t::resume_k;
                 }
                 identifier_t const &key = mapping_key_or_itself<value_t>(version.payload);
                 // An ordinal is decided by how many keys precede it, so the window is everything
@@ -1386,7 +1386,7 @@ class snapshot_store {
                 recorded = first_failure(recorded, record_read_(key));
                 callback_found(version.payload);
                 found = true;
-                return probe_control_t::halt_k;
+                return walk_control_t::halt_k;
             });
             if (!found) {
                 recorded = first_failure(recorded, record_whole_keyspace_read_());
@@ -1425,9 +1425,9 @@ class snapshot_store {
             auto const ordering = changes_.key_comp();
             std::size_t counted = 0;
             merge_all_([&](versioned_t const &version) noexcept {
-                if (!ordering.per_key_compare(version, comparable)) return probe_control_t::halt_k;
+                if (!ordering.per_key_compare(version, comparable)) return walk_control_t::halt_k;
                 ++counted;
-                return probe_control_t::resume_k;
+                return walk_control_t::resume_k;
             });
             callback_found(counted);
             return recorded;
@@ -1558,7 +1558,7 @@ class snapshot_store {
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                             callback_type_ &&callback) const noexcept
-            requires ordered_core_k
+            requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
         {
             std::size_t counted = 0;
             if (status_t const measured = range(lower, upper, [&](value_t const &) noexcept { ++counted; });
@@ -1584,7 +1584,7 @@ class snapshot_store {
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
-            requires ordered_core_k
+            requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
         {
             static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                           "a reservoir copies into the caller's buffer, so the member must copy without throwing");
@@ -1637,7 +1637,7 @@ class snapshot_store {
             requires ordered_core_k
         {
             for (merged_cursor_t walking = cursor(); !walking.exhausted(); walking.advance())
-                if (callback(walking.standing_()) == probe_control_t::halt_k) return;
+                if (callback(walking.standing_()) == walk_control_t::halt_k) return;
         }
 
         /** Reports whichever of the staged and the committed candidate comes first. */
@@ -1911,9 +1911,9 @@ class snapshot_store {
                 auto duplicate = copy_one(value);
                 if (duplicate) collecting = collected.push_back(std::move(*duplicate));
                 else collecting = duplicate.status();
-                if (failed(collecting)) return probe_control_t::halt_k;
+                if (failed(collecting)) return walk_control_t::halt_k;
                 on_kept(value);
-                return probe_control_t::resume_k;
+                return walk_control_t::resume_k;
             });
             if (failed(collecting)) return collecting;
             return reserve(staged_identifiers_.size() + collected.size());
@@ -2201,7 +2201,7 @@ class snapshot_store {
         else {
             entries_.probe_to_visit(comparable, [&](auto const &slot) noexcept {
                 visitor(slot.key());
-                return probe_control_t::resume_k;
+                return walk_control_t::resume_k;
             });
         }
     }
@@ -2316,8 +2316,8 @@ class snapshot_store {
             walk_visible_keys_(
                 entries_.begin(), [](versioned_t const &) noexcept { return true; }, snapshot,
                 [&](value_t const &value) noexcept {
-                    if (hand_over(callback, value) == walk_control_t::halt_k) return probe_control_t::halt_k;
-                    return probe_control_t::resume_k;
+                    if (hand_over(callback, value) == walk_control_t::halt_k) return walk_control_t::halt_k;
+                    return walk_control_t::resume_k;
                 });
         }
         else {
@@ -2350,7 +2350,7 @@ class snapshot_store {
         for (visible_cursor_t cursor(*this, start, snapshot); !cursor.exhausted(); cursor.step_()) {
             if (!within(*cursor.position_)) break;
             if (!cursor.standing_) continue;
-            if (callback(cursor.standing_->payload) == probe_control_t::halt_k) break;
+            if (callback(cursor.standing_->payload) == walk_control_t::halt_k) break;
         }
     }
 
@@ -2610,7 +2610,7 @@ class snapshot_store {
                     [[maybe_unused]] bool const erased = entries_.erase(mutable_ref_(version));
                     ++reclaimed;
                 }
-                return probe_control_t::resume_k;
+                return walk_control_t::resume_k;
             });
             if (unreachable_(anchor, survivor, mark)) {
                 [[maybe_unused]] bool const erased = entries_.erase(mutable_ref_(anchor));
@@ -2910,7 +2910,7 @@ class snapshot_store {
             [](versioned_t const &) noexcept { return true; }, published_stamp_(),
             [&](value_t const &value) noexcept {
                 found = &value;
-                return probe_control_t::halt_k;
+                return walk_control_t::halt_k;
             });
         if (found) callback_found(*found);
         else callback_missing();
@@ -2930,7 +2930,7 @@ class snapshot_store {
             [](versioned_t const &) noexcept { return true; }, published_stamp_(),
             [&](value_t const &value) noexcept {
                 found = &value;
-                return probe_control_t::halt_k;
+                return walk_control_t::halt_k;
             });
         if (found) callback_found(*found);
         else callback_missing();
@@ -2990,8 +2990,8 @@ class snapshot_store {
     {
         range_at_(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper), published_stamp_(),
                   [&](value_t const &value) noexcept {
-                      if (hand_over(callback, value) == walk_control_t::halt_k) return probe_control_t::halt_k;
-                      return probe_control_t::resume_k;
+                      if (hand_over(callback, value) == walk_control_t::halt_k) return walk_control_t::halt_k;
+                      return walk_control_t::resume_k;
                   });
         return success_k;
     }
@@ -3412,7 +3412,7 @@ class snapshot_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
-        requires ordered_core_k
+        requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         std::size_t visible_count = 0;
         [[maybe_unused]] status_t const walked =
@@ -3447,7 +3447,7 @@ class snapshot_store {
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
-        requires ordered_core_k
+        requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");

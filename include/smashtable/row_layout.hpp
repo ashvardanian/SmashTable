@@ -10,6 +10,7 @@
  *  says how one is searched, and the layouts above both say what they do with the answer.
  */
 #pragma once
+#include <cassert> // `assert`
 #include <cstddef> // `std::size_t`, `offsetof`
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`
 
