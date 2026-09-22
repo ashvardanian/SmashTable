@@ -83,7 +83,7 @@ inline ask_allocator(granted) {
     fi
 }
 
-// `copy_safely` on an element whose duplication can refuse: the second cause: shared.hpp:806-818
+// `copy_safely` on an element whose duplication can refuse: the second cause: stage_each
 inline duplicate_element(granted) {
     if
     :: granted = true
@@ -92,21 +92,21 @@ inline duplicate_element(granted) {
 }
 
 #if scenario == tree
-// The staging tree asks for one node per key it takes: basic_avl_tree.hpp:2163, 2170-2183
+// The staging tree asks for one node per key it takes: basic_avl_tree::stage_range_
 inline stage_room(granted) { ask_allocator(granted) }
 #else
 // The staging array and the staging vector fill room reserved for the whole range up front,
-// so a key landing in one asks for nothing: basic_flat_set.hpp:331-333, basic_hash_table.hpp:1240-1244
+// so a key landing in one asks for nothing: basic_flat_set::stage_range_, basic_hash_table::absorb_range_
 inline stage_room(granted) { granted = true }
 #endif
 
 #if scenario == tree
 // The merge relinks the nodes the staging tree holds, so the absorb asks for nothing and cannot
-// refuse part-way: basic_avl_tree.hpp:1404-1428
+// refuse part-way: basic_avl_tree::merge, basic_avl_tree::merge_with_upsert
 inline absorb_room(granted) { granted = true }
 #else
 // The flat set's merged array and the table's `reserve_more`: one request for the whole absorb,
-// made before a single element moves: basic_flat_set.hpp:375-377, basic_hash_table.hpp:1246-1247
+// made before a single element moves: basic_flat_set::absorb, basic_hash_table::reserve_more
 inline absorb_room(granted) { absorb_requests++; ask_allocator(granted) }
 #endif
 
@@ -121,7 +121,7 @@ inline stage_one(where, value) { staged[where] = value }
 #endif
 
 // The range checked against the destination before a single element moves, which is the only
-// thing the two refusing verbs do that the other two do not: basic_avl_tree.hpp:2243-2245, 2364-2366
+// thing the two refusing verbs do that the other two do not: basic_avl_tree::has_any_key, basic_avl_tree::has_all_keys
 inline check_destination(key) {
     for (key : 1 .. keys) {
         if
@@ -135,7 +135,7 @@ inline check_destination(key) {
 }
 
 // One element of the staging container landing in the destination, the side a key held on both
-// sides keeps: basic_avl_tree.hpp:1414-1424, basic_flat_set.hpp:379-393
+// sides keeps: basic_avl_tree::merge_with_upsert, basic_flat_set::absorb
 inline place(where) {
     if
     :: verb == keeps_the_incumbent && here[where] != absent -> skip
@@ -202,7 +202,7 @@ active proctype batch() {
 #endif
 
     // The staging: every element duplicated outside the destination and placed in a container of
-    // the destination's own kind: basic_avl_tree.hpp:2155-2184, basic_flat_set.hpp:326-346
+    // the destination's own kind: basic_avl_tree::stage_range_, basic_flat_set::stage_range_
     for (index : 0 .. range_length - 1) {
         duplicate_element(granted);
         if
@@ -228,7 +228,7 @@ active proctype batch() {
         fi
     };
 
-    // Nothing of the range has reached the destination yet: basic_avl_tree.hpp:2205-2211
+    // Nothing of the range has reached the destination yet: basic_avl_tree::insert_if_missing, before its merge
     assert(touched == 0);
 
 #ifndef without_prior_check

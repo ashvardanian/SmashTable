@@ -99,6 +99,27 @@ Either way pytest prints it in its own header, so a failing run is reproducible 
 SMASHTABLE_TESTS_SEED=42 pytest test/
 ```
 
+### Model Checking
+
+The commit protocols are also checked as Promela models under Spin, and two of them as GenMC clients over `std::atomic`; the README's Model Checking section says what each model covers.
+The memory model comes from ForkUnion's `verification/`, checked out beside this repository, which is what CI does:
+
+```bash
+./verification/check.sh
+```
+
+Every `verify` line names a model, the verdict expected of it and its defines, and the run fails if a deliberately broken variant passes.
+
+### Git Hooks
+
+Configuring the CMake build points `core.hooksPath` at `.githooks`, so the pre-commit checks run on every commit from then on.
+Every check reads only the added lines of a staged file, so legacy code migrates on its own schedule.
+After touching a check, run its fixtures, which feed known-good and known-bad files through the real hooks and assert that a bad one trips exactly the rule it was written for:
+
+```bash
+.githooks/selftest
+```
+
 ## Code Styling Guidelines
 
 A batch operation applies wholly or not at all.

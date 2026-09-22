@@ -10,11 +10,18 @@
  *  word alone decides who holds the mutex, so every property a model over this asserts has to
  *  hold under all four policies.
  *
+ *  `-Dqueued` spells the slow path: a writer whose first attempt lost joins a tally of waiting
+ *  writers, which turns new readers away, and leaves the tally in the very write that takes the
+ *  lock. The unlock posts the held bit off without reading the word, as the code does, which
+ *  `-Dmemory=far` lands later unless the order is a release.
+ *
  *  Every inline uses the caller's `seen` scratch.
  */
 #include "waiting_policy.pml"
 
 #define writer_held 8
+#define writer_waiting 4
+#define readers_mask 3
 
 #ifdef without_lock_acquire
 #define lock_order order_relaxed
@@ -28,7 +35,37 @@
 #define unlock_order order_release
 #endif
 
-// lock: the writer's exchange from an idle word, retried after a wait on it: shared.hpp:2146-2166
+#ifdef queued
+// lock: one bounded attempt from an idle word, then the tally joined and left in the write that takes the lock
+inline lock(t, m) {
+    read_modify_write_if(t, m, lock_order, seen == 0, seen, writer_held);
+    if
+    :: seen == 0 -> skip
+    :: else ->
+        read_modify_write(t, m, order_relaxed, seen, seen + writer_waiting);
+        do
+        :: read_modify_write_if(t, m, lock_order, (seen & (writer_held | readers_mask)) == 0, seen,
+                                (seen - writer_waiting) | writer_held);
+           if
+           :: (seen & (writer_held | readers_mask)) == 0 -> break
+           :: else -> wait_until(m, newest_value(m) != seen)
+           fi
+        od
+    fi
+}
+
+// lock_shared: one more reader while no writer holds or waits, the tally counting as waiting
+inline lock_shared(t, m) {
+    do
+    :: read_modify_write_if(t, m, lock_order, seen < writer_waiting, seen, seen + 1);
+       if
+       :: seen < writer_waiting -> break
+       :: else -> wait_until(m, newest_value(m) < writer_waiting)
+       fi
+    od
+}
+#else
+// lock: the writer's exchange from an idle word, retried after a wait on it: spin_shared_mutex::lock over take_as_writer_
 inline lock(t, m) {
     do
     :: read_modify_write_if(t, m, lock_order, seen == 0, seen, writer_held);
@@ -39,10 +76,7 @@ inline lock(t, m) {
     od
 }
 
-// unlock: the held bit dropped with a release: shared.hpp:2172
-inline unlock(t, m) { read_modify_write(t, m, unlock_order, seen, seen - writer_held) }
-
-// lock_shared: one more reader while no writer holds or waits: shared.hpp:2177-2194
+// lock_shared: one more reader while no writer holds or waits: spin_shared_mutex::lock_shared over take_as_reader_
 inline lock_shared(t, m) {
     do
     :: read_modify_write_if(t, m, lock_order, seen < writer_held, seen, seen + 1);
@@ -52,6 +86,10 @@ inline lock_shared(t, m) {
        fi
     od
 }
+#endif
 
-// unlock_shared: one reader fewer, with a release: shared.hpp:2197
+// unlock: the held bit posted off with a release, reading nothing back: spin_shared_mutex::unlock
+inline unlock(t, m) { add_no_return(t, m, unlock_order, -writer_held) }
+
+// unlock_shared: one reader fewer, with a release: spin_shared_mutex::unlock_shared
 inline unlock_shared(t, m) { read_modify_write(t, m, unlock_order, seen, seen - 1) }

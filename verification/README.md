@@ -10,9 +10,10 @@ Model checking for the protocols the stores promise: the two-phase group commit,
   `-Dwaiting=` for the policy its two retry loops plug in.
 - `locked_store.pml` — `locked_store`: one shared mutex per call, exclusion, and a reader inside the lock seeing a commit whole.
 - `transaction_group.pml` — `transaction_group`: staging in address order and the unwind of a refused prefix, the two-pass commit that asks every participant before any writes, the in-turn commit's tear, and a participant holding its lock across the phases.
+  `-Dscenario=one_stamp` for stores on one clock: the group's stamp drawn before any store is written and the watermark moved after the last, against a reader that must see the group whole.
 - `partitioned_store.pml` — `partitioned_store`: the reached partitions held ascending, the stamp drawn before any write and the watermark moved after the last, and the cursor's epoch.
   `-Dscenario=cursor` for the epoch.
-- `snapshot_clock.pml` — `snapshot_clock_t`: leases, commits in flight, the low-water mark, and the watermark stored and read relaxed under its mutex.
+- `commit_order.pml` — `basic_commit_order`: the stamp ring, the watermark walk, the reader buckets and the marks they bound, over the steps in `commit_order_steps.pml`.
 - `atomic_hash_table.pml` — `atomic_hash_table`: the slot lock driven up with acquire and released with an xor, the counters under it, the finder, and a full table.
   `-Dscenario=exhausted` for one slot, and `-Dwaiting=` for the policy the slot lock's retry loop plugs in.
 - `snapshot_reader.pml` — `snapshot_store::reader_t`: its claim joining the census under the clock's mutex, reads at its stamp while commits prune the key's version run, and a transaction adopting the stamp.
@@ -36,9 +37,9 @@ The atomic hash table counted a slot populated after it had unlocked it.
 The count is a statistic and nothing reads it for a decision, but `atomic_hash_table.pml` showed the dip, the add moved under the lock, and `-Dwithout_count_under_lock` keeps the old order.
 The slot lock also re-issued its `fetch_or` on every miss, a store to a header thirty-two slots share; it reads until the two bits are not both set before it claims now, the shape the model's own lock had.
 
-The snapshot clock's relaxed words are ordered by its mutex, and the model says which reads may stand outside it.
-`published_stamp_` is stored and read under `mutex_` by every transactional path, and `snapshot_clock.pml` shows the bare accessor, the one path outside it, naming a stamp whose versions a reader cannot yet see under the view model, while under sequential consistency it is fine: that is the docblock's warning made visible, and no code changed for it.
-`low_water_mark_` is read without the mutex by the pruner, and a stale read is a lower mark, which frees less and never a version a live lease names.
+The commit order carries no mutex at all, and four orderings stand in its place.
+A reader counts its snapshot into a bucket before reading the watermark, a mark reads the watermark before it scans the buckets, a landing commit reads the watermark through a read-modify-write before walking the ring, and a bucket is shut to arrivals before its floor is replaced.
+`commit_order.pml` drops each in turn under `-Dwithout_*`, and `low_water_mark_` is read without any lock by the pruner, where a stale read is a lower mark, which frees less and never a version a live claim names.
 
 A store-level window write over partitions sharing a clock drew one stamp per partition.
 `erase_range`, `erase_from`, `erase_up_to` and `update_range` held every partition exclusively and called each part's own, whose publication drew, stamped and published a stamp of its own in turn, while a snapshot is drawn from the clock without any partition lock.
@@ -77,4 +78,7 @@ A policy that sleeps on a notification of its own, rather than on the word the l
 
 Inside a superproject the runner finds ForkUnion two directories up, as the forwarder does; standalone, check ForkUnion out beside this repository, which is what CI does.
 Every `verify` line names a model, the expected verdict and the defines, so a new variant is one line.
-The suite's 54 Spin verdicts and 5 GenMC verdicts take about a minute four at a time, which is the default.
+Counting the verdicts here would drift the moment a line is added, so the file is the count.
+
+A green suite is narrower than it looks, and this is worth saying plainly.
+Six defects in `basic_commit_order` were found by the C++ tests while every model passed: two of them no model here can express — a livelock leaves no invalid end state under `-DSAFETY`, and two unordered relaxed stores are a shape rather than a value — and the other four were arithmetic and object lifetime, which these models abstract away.

@@ -18,9 +18,15 @@
  *  - every slot ends unlocked, and the counters end equal to the occupied slots and never go
  *    below zero on the way. `-Dwithout_count_under_lock` moves the populated count after the
  *    unlock, the header before the fix, and an eraser slipping in between takes the count
- *    through zero;
- *  - `-Dscenario=exhausted` runs the table with one slot: the second emplacer answers
- *    `capacity_exhausted_k` after exactly one probe.
+ *    through zero. The emplacer posts its count as a no-return add with release, as the code
+ *    does; `-Dwithout_count_release` posts it relaxed, which `-Dmemory=far` lands only later,
+ *    after the unlock that was meant to cover it, and the eraser takes the count through zero
+ *    again. The eraser's two moves are spelled performed, since the module lands one post per
+ *    thread at a time;
+ *  - `-Dscenario=exhausted` runs the table with one slot, so the emplacer that loses it walks
+ *    off the end of its probe sequence. Nothing there is asserted of the loser itself: with one
+ *    slot every claim about its probe count is a tautology, and what the refusal must not break
+ *    is the counter invariant above, which the auditor already checks.
  *
  *  What a loser of the slot lock does between two attempts is `waiting_policy.pml`'s, chosen by
  *  `-Dwaiting=`: the header word alone decides who holds a slot, so every invariant above has to
@@ -49,7 +55,7 @@
 #define populated_count 3
 #define deleted_count 4
 
-// The header's bits for a slot, the populations lane low and the deletions lane high: hash_layout.hpp:78-103
+// The header's bits for a slot, the populations lane low and the deletions lane high: hash_bucket_head_t
 #if scenario == exhausted
 #define slots 1
 #else
@@ -73,11 +79,16 @@
 #define unlock_order order_release
 #endif
 
+#ifdef without_count_release
+#define count_order order_relaxed
+#else
+#define count_order order_release
+#endif
+
 byte emplacers_started;
 byte finished;
-byte probes[2]; // each emplacer's probes before it returned
 
-// lock: both bits driven up with acquire, until the holder is the one that saw them down; the state seen is staged: hash_layout.hpp:453-459
+// lock: both bits driven up with acquire, until the holder is the one that saw them down; the state seen is staged: hash_atomic_slot_ref::lock
 inline lock(t, slot) {
     do
     :: read_modify_write_if(t, header, lock_order, (seen & mask(slot)) != mask(slot), seen, seen | mask(slot));
@@ -88,16 +99,15 @@ inline lock(t, slot) {
     od
 }
 
-// unlock: the xor of the locked state with the staged one, with release: hash_layout.hpp:465-482
+// unlock: the xor of the locked state with the staged one, with release: hash_atomic_slot_ref::unlock
 inline unlock(t, slot, bits) { read_modify_write(t, header, unlock_order, seen, seen ^ (mask(slot) ^ (bits))) }
 
 active [2] proctype emplacer() {
     byte me, slot;
     int seen, staged, seen_key;
     atomic { me = emplacers_started; emplacers_started++ };
-    // emplace: each slot locked in turn, compared when populated, skipped when deleted, taken when free: atomic_hash_table.hpp:375-404
+    // emplace: each slot locked in turn, compared when populated, skipped when deleted, taken when free: atomic_hash_table::probe_to_upsert_
     for (slot : 0 .. slots - 1) {
-        probes[me]++;
         lock(me, slot);
         if
         :: staged == populated(slot) ->
@@ -109,22 +119,20 @@ active [2] proctype emplacer() {
             store(me, key(slot), order_relaxed, key_of(me));
 #ifdef without_count_under_lock
             unlock(me, slot, populated(slot));
-            read_modify_write(me, populated_count, order_relaxed, seen, seen + 1);
+            add_no_return(me, populated_count, count_order, 1);
 #else
-            read_modify_write(me, populated_count, order_relaxed, seen, seen + 1);
+            add_no_return(me, populated_count, count_order, 1);
             unlock(me, slot, populated(slot));
 #endif
             goto done
         fi
     };
-#if scenario == exhausted
-    assert(probes[me] == slots); // capacity_exhausted_k, after every slot was probed once
-#endif
 done:
+    landed(me);
     finished++
 }
 
-// find: each slot locked in turn, a populated one's key read under the lock: atomic_hash_table.hpp:319-344
+// find: each slot locked in turn, a populated one's key read under the lock: atomic_hash_table::probe_to_find_
 active proctype finder() {
     byte slot;
     int seen, staged, seen_key;
@@ -144,7 +152,7 @@ done:
     finished++
 }
 
-// erase: a match driven to deleted under the lock, both counters moved under it: atomic_hash_table.hpp:286-293
+// erase: a match driven to deleted under the lock, both counters moved under it: atomic_hash_table::erase
 active proctype eraser() {
     byte slot;
     int seen, staged, seen_key;

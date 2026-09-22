@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # SmashTable commit-msg: enforce the commit-message contract.
 #
-#   1. The subject starts with an approved verb prefix - Add / Chore / Docs / Fix / Improve /
+#   - The subject starts with an approved verb prefix - Add / Chore / Docs / Fix / Improve /
 #      Make - followed by a capitalized summary, so the history reads as a consistent changelog.
 #      A refactor is an Improve; Chore covers housekeeping that rearranges rather than changes
 #      behaviour; Make covers changes that touch only the build or the environment, never the
 #      sources; Docs covers documentation that drifted on its own, where a doc change that
 #      accompanies the code making it true belongs in that commit instead. Merge commits are
 #      exempt, since Git writes their subject.
-#   2. No AI-assistant attribution: no `Co-authored-by` bot trailer, no "Generated with/by
+#   - No AI-assistant attribution: no `Co-authored-by` bot trailer, no "Generated with/by
 #      <assistant>", no assistant name, vendor URL, or robot emoji. Authorship is the human who
 #      committed.
 #
@@ -25,7 +25,7 @@ subject=$(printf '%s\n' "$payload" | grep -vE '^[[:space:]]*$' | head -1)
 
 failed=0
 
-# 1. Verb prefix. Git writes the subject itself for merges, and for the `fixup!` and `squash!` marks
+# Verb prefix. Git writes the subject itself for merges, and for the `fixup!` and `squash!` marks
 # that `git commit --fixup` produces - those are transient and autosquash replaces them on rebase.
 case "$subject" in
 Merge*) ;;
@@ -44,7 +44,7 @@ Merge*) ;;
     ;;
 esac
 
-# 2. AI-assistant attribution - matched generically across assistants and vendors, not one product.
+# AI-assistant attribution - matched generically across assistants and vendors, not one product.
 offenders=$(printf '%s\n' "$payload" | grep -inE \
     'co-authored-by:.*(\[bot\]|\bbot\b|claude|chatgpt|gpt-[0-9]|openai|copilot|gemini|\bbard\b|cursor|codeium|devin)|generated (with|by).*\b(ai|llm|claude|chatgpt|gpt|copilot|gemini|cursor|anthropic|openai)\b|\b(anthropic|openai)\.com|claude\.ai|chatgpt\.com|claude-session|🤖' || true)
 if [ -n "$offenders" ]; then
@@ -53,7 +53,7 @@ if [ -n "$offenders" ]; then
     failed=1
 fi
 
-# 3. A subject that names a change rather than gesturing at one. Two tells, both cheap to spot and
+# A subject that names a change rather than gesturing at one. Two tells, both cheap to spot and
 # both responsible for real titles in this history that said nothing on their own:
 #
 #   - The predicate compares to something else instead of stating what changed. "Unwind a refused
@@ -81,6 +81,34 @@ Merge* | "fixup!"* | "squash!"*) ;;
     fi
     ;;
 esac
+
+# Widths. A subject is read in `git log --oneline`, a terminal listing and a pull-request title,
+# all of which truncate; a body is read in a terminal that does not reflow. The limits are this
+# history's own shape rather than a convention borrowed from elsewhere - subjects here run a median
+# of 57 and a ninetieth percentile of 71, bodies a median of 80. A line with no space past the limit
+# is exempt, since a bare URL or one long identifier cannot be wrapped without breaking it.
+subject_limit_k=72
+body_limit_k=100
+
+case "$subject" in
+Merge* | "fixup!"* | "squash!"*) ;;
+*)
+    if [ "${#subject}" -gt "$subject_limit_k" ]; then
+        echo "commit-msg: the subject is ${#subject} characters, over $subject_limit_k - it truncates wherever it is read."
+        echo "            Got: $subject"
+        failed=1
+    fi
+    ;;
+esac
+
+long_lines=$(printf '%s\n' "$payload" | awk -v limit="$body_limit_k" '
+    NR == 1 { next }
+    length($0) > limit && substr($0, limit) ~ / / { printf "line %d: %d characters\n", NR, length($0) }')
+if [ -n "$long_lines" ]; then
+    echo "commit-msg: the body runs past $body_limit_k characters where it could have wrapped:"
+    printf '%s\n' "$long_lines" | head -5
+    failed=1
+fi
 
 if [ "$failed" -ne 0 ]; then
     echo ""

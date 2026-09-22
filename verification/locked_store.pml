@@ -34,13 +34,13 @@ bool inside_writing; // the writer past the unique lock
 
 active proctype writer() {
     int seen;
-    // stage: the reservation under the unique lock: locked_store.hpp:364-367
+    // stage: the reservation under the unique lock: locked_store::transaction_t::stage
     lock(writer_thread, mutex);
     atomic { assert(inside_reading == 0); inside_writing = true };
     store(writer_thread, reserved, order_relaxed, 1);
     inside_writing = false;
     unlock(writer_thread, mutex);
-    // commit: the value and its stamp under the unique lock: locked_store.hpp:379-382
+    // commit: the value and its stamp under the unique lock: locked_store::transaction_t::commit
     lock(writer_thread, mutex);
     atomic { assert(inside_reading == 0); inside_writing = true };
     store(writer_thread, value, order_relaxed, published);
@@ -54,7 +54,7 @@ active [2] proctype reader() {
     byte me;
     int seen, seen_value, seen_stamp;
     atomic { me = readers_started; readers_started++ };
-    // find: one shared lock around the read: locked_store.hpp:311
+    // find: one shared lock around the read: locked_store::find
     lock_shared(reader_thread(me), mutex);
     atomic { assert(!inside_writing); inside_reading++ };
     load(reader_thread(me), value, order_relaxed, seen_value);
