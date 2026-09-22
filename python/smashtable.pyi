@@ -30,7 +30,7 @@ _IsolationName = Literal["monotonic_atomic_view", "snapshot", "serializable", "s
 _SharingName = Literal["locked", "partitioned"]
 
 # What a store reports it actually delivers, which is wider than what may be asked for: sharding a
-# clock-less store falls back to a rung the constructor does not accept.
+# store in no order falls back to a rung the constructor does not accept.
 _DeliveredIsolationName = _IsolationName | Literal["read_committed"]
 
 # A key may be named by its layout or by the Python type standing for it, so `key=int` and

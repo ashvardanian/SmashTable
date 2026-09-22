@@ -274,9 +274,7 @@ class releases_t {
     }
 
     /** One store call arrives. Shared, because several may be in flight at once. */
-    void lock_shared() noexcept {
-        [[maybe_unused]] std::size_t const arrived = atomic_add_fetch(calls_in_flight_, std::size_t {1});
-    }
+    void lock_shared() noexcept { atomic_post_add(calls_in_flight_, std::size_t {1}, memory_order_relaxed_k); }
 
     /** One store call leaves, and the last one out gives back what the calls recorded. */
     void unlock_shared() noexcept {

@@ -51,8 +51,8 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `locked_store`              | inherits                |   one call    |      ✔       |     inherits      |
 | `partitioned_store`         | inherits ¹              | per partition |      ✔       |    inherits ³     |
 
-> ¹ A stamp-based store keeps its level: one clock, and the watermark moves only once the last partition has published, so a reader sees a whole commit or none.
-> A clock-less store has no stamp to hold, so only Read Committed survives; atomicity costs in proportion to the partitions touched.
+> ¹ A stamp-based store keeps its level: one order, and the watermark moves only once the last partition has published, so a reader sees a whole commit or none.
+> A store in no order has no stamp to hold, so only Read Committed survives; atomicity costs in proportion to the partitions touched.
 > ² `select` and `rank` are exact at the newest commit; an older snapshot gets a merged walk, since one count per node cannot answer an unbounded parameter.
 > ³ A bound, a range and an ordinal hold every partition's lock for the whole walk, so each is decided at one moment rather than by probes that can disagree.
 > An unbounded enumeration takes one partition at a time and answers unordered, while the cursor behind iteration walks the merged order and holds no lock between its steps.
@@ -174,7 +174,7 @@ Even where every participant is asked first, one of them may be committed over b
 - __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
 - __A transaction reads its own writes, until it stages.__
   `view[k]` sees what `view[k] = v` put there; after `stage()` the write is in the store carrying no stamp, so it is invisible to everyone including its own transaction until `commit()`.
-- __Commit is not a snapshot.__
+- __Commit is not a snapshot, unless the containers share a commit order.__
   It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead.
   A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
 - __Scans are not snapshots either.__ `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
@@ -351,8 +351,7 @@ auto by_id = *by_id_t::make();
 auto by_name = *by_name_t::make();
 
 auto group = *st::make_transaction_group(by_id, by_name);
-auto &ids = group.participant<0>();
-auto &names = group.participant<1>();
+auto [ids, names] = group.participants();
 
 _ = ids.upsert({id, record});
 _ = names.upsert({record.name, id});
@@ -360,6 +359,15 @@ _ = ids.watch(id);                  // fail rather than clobber a concurrent wri
 
 _ = group.stage();                  // both reserve, or neither does
 _ = group.commit();                 // both become visible
+```
+
+The body, the stage and the commit always run in that order, so `commit_with` takes the first and runs the other two, resetting every participant if anything refuses:
+
+```cpp
+st::status_t const landed = group.commit_with([&](auto &ids, auto &names) noexcept {
+    st::status_t const filed = ids.upsert({id, record});
+    return failed(filed) ? filed : names.upsert({record.name, id});
+});
 ```
 
 Staging the two by hand would leave the first one staged when the second refuses, which is the bug a group exists to remove.
@@ -472,7 +480,7 @@ Headers group as:
     └─ reference_store<T, Comparator, Alloc>        # the same contract over `std::set`, kept as the oracle
        ↓ either of the first two wraps a core; either of these wraps a store
     ├─ locked_store<Store, Mutex>                   # one lock spans a whole commit
-    └─ partitioned_store<Store, Hash, Mutex, N>     # one lock per partition, one shared commit clock
+    └─ partitioned_store<Store, Hash, Mutex, N>     # one lock per partition, one shared commit order
 
   transaction_group<Stores...>  → One 2-phase commit spanning several stores
 ```
@@ -504,7 +512,7 @@ One that does not pays nothing for the question.
 Transactions and thread-safety are two independent axes, not one ladder.
 A wrapper takes its mutex per __call__, not across a transaction: `stage` and `commit` each take it and drop it in between.
 What carries the inner store's level across that gap is the reservation staging made, since no other transaction can claim those keys until this one publishes or unwinds.
-A clock-less store gives its reader no stamp to hold, so a monotonic reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives — but a snapshot reader answers at its own stamp, and every partition draws from one clock, so it keeps Snapshot across all sixteen.
+A store in no order gives its reader no stamp to hold, so a monotonic reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives — but a snapshot reader answers at its own stamp, and every partition belongs to one order, so it keeps Snapshot across all sixteen.
 Every container publishes what it promises as `isolation_k`, so the level is checkable rather than folklore.
 `atomic_hash_table` has no transactions at all — it offers per-__operation__ atomicity, which is a different product, and is why it is not a `*_store`.
 
@@ -702,8 +710,6 @@ Adding a per-bucket version counter would fix it and would cost half the slots p
 
 Order-dependent operations are absent by construction: there is no `range`, `erase_range`, `lower_bound` or `select`.
 
-The small-string specialization mentioned in the header is a design note, not shipped behaviour.
-
 ## Testing
 
 ```bash
@@ -738,14 +744,14 @@ pip install -e . --group test && pytest test/
 ### Model Checking
 
 The protocols the wrappers promise are checked as models, not only exercised as code.
-`verification/` holds eight Promela models — the two-phase group commit, the partitioned commit under one stamp, the snapshot clock, the slot lock, the locked store, the pinned reader, the partitioned window write and the staged batch — over shared includes spelling the shared mutex, its waiting policy and the memory models.
+`verification/` holds eight Promela models — the two-phase group commit, the partitioned commit under one stamp, the commit order, the slot lock, the locked store, the pinned reader, the partitioned window write and the staged batch — over shared includes spelling the shared mutex, its waiting policy and the memory models.
 Two of them run again as GenMC clients over `std::atomic` under RC11.
 
 ```bash
 ./verification/check.sh
 ```
 
-Every `verify` line names a model, the verdict expected of it and the defines, so a new variant is one line, and the suite's 54 Spin verdicts and 5 GenMC verdicts read off the file.
+Every `verify` line names a model, the verdict expected of it and the defines, so a new variant is one line and the whole suite reads off the file.
 Most models carry deliberately broken variants — a dropped release, a lock held less long, a batch that writes before it staged — and the run fails if one of those __passes__, which is what keeps a model from going vacuous as the code moves under it.
 It needs `spin`; a `genmc` on the path also runs the two clients.
 

@@ -158,7 +158,7 @@ static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *key
     }
 
     // Locked by default, which is the stronger of the two: a partitioned store sharing no commit
-    // clock is capped at Read Committed above a single key.
+    // order is capped at Read Committed above a single key.
     isolation_choice_t isolation = isolation_choice_t::monotonic_k;
     sharing_choice_t sharing = sharing_choice_t::locked_k;
     if (!isolation_from_python(isolation_specification, isolation)) return nullptr;

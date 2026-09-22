@@ -128,7 +128,7 @@ struct visible_cursor_surface_t {
 };
 struct shard_protocol_surface_t {
     template <typename store_type_>
-    static constexpr bool offered = offers_shared_clock<store_type_, typename shared_clock_of<store_type_>::type>;
+    static constexpr bool offered = draws_from_a_shared_order<store_type_>;
 };
 struct smallest_surface_t {
     template <typename store_type_>
@@ -250,8 +250,8 @@ constexpr bool waives_surface<visible_cursor_surface_t, locked_wrapper_t> = true
 template <>
 constexpr bool waives_surface<visible_cursor_surface_t, partitioned_wrapper_t> = true;
 
-/** A shard set owns exactly one clock and hands it to every partition, so it consumes the protocol rather than
- *  re-exporting it. Letting an outer set replace that clock would strand the stamps and reader claims the partitions
+/** A shard set owns exactly one order and seats every partition in it, so it consumes the protocol rather than
+ *  re-exporting it. Letting an outer set replace that order would strand the stamps and reader claims the partitions
  *  already hold. @c locked_store forwards it instead, which is what lets a shard set be built over one. */
 template <>
 constexpr bool waives_surface<shard_protocol_surface_t, partitioned_wrapper_t> = true;

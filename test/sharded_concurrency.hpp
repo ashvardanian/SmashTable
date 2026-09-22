@@ -1003,5 +1003,63 @@ void test_sharded_window_read_is_validated() {
     else { st_verify_(answered); }
 }
 
+/** A group over two stores in one order is read whole: a reader pinning one store's snapshot and reading the other
+ *  at the same stamp sees one round in both, however the commit and the two reads interleave. */
+template <typename container_type_>
+void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using order_t = typename container_t::commit_order_t;
+
+    order_t order;
+    container_t first {order}, second {order};
+    st_verify_(first.upsert(trivial_id_to_member<member_t>(1, 0)));
+    st_verify_(second.upsert(trivial_id_to_member<member_t>(1, 0)));
+
+    std::atomic<bool> writing {true};
+    std::atomic<std::size_t> readers_ready {0};
+    std::atomic<std::size_t> torn {0};
+    std::atomic<std::size_t> passes {0};
+    std::vector<std::thread> threads;
+    threads.reserve(sharded_threads_count_k + 1);
+
+    // Every round writes the same value into both stores, so the two disagreeing is a group read half applied.
+    threads.emplace_back([&]() noexcept {
+        while (readers_ready.load() != sharded_threads_count_k) std::this_thread::yield();
+        for (std::size_t round = 1; round <= rounds; ++round) {
+            auto group = make_transaction_group(first, second);
+            if (!group) break;
+            status_t staged = group->template participant<0>().upsert(trivial_id_to_member<member_t>(1, round));
+            if (succeeded(staged))
+                staged = group->template participant<1>().upsert(trivial_id_to_member<member_t>(1, round));
+            if (succeeded(staged)) staged = group->stage();
+            if (succeeded(staged)) { [[maybe_unused]] status_t const committed = group->commit(); }
+        }
+        writing.store(false);
+    });
+
+    for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
+        threads.emplace_back([&]() noexcept {
+            ++readers_ready;
+            while (writing.load()) {
+                auto pinned = first.transaction();
+                if (!pinned) continue;
+                // The peer reads at the very stamp the first transaction pinned, which its claim keeps retained.
+                auto peer = second.transaction_at(pinned->snapshot(), order.next_generation());
+                if (!peer) continue;
+                commit_span_sweep_t const here = read_every_key<member_t>(*pinned, 2);
+                commit_span_sweep_t const there = read_every_key<member_t>(*peer, 2);
+                if (here.refused || there.refused) continue;
+                ++passes;
+                if (here.first_value != there.first_value) ++torn;
+            }
+        });
+
+    for (std::thread &thread : threads) thread.join();
+    st_verify_((passes.load() != 0) && "the readers must have overlapped the writer");
+    st_verify_eq_(torn.load(), std::size_t {0}, "a group in one order is never read half applied");
+}
+
 #pragma endregion Sharded Concurrency
 } // namespace ashvardanian::smashtable::test

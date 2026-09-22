@@ -202,7 +202,7 @@ def effective_isolation(isolation: str, sharing: str) -> str:
     """What a container actually promises, which is not always what was asked for.
 
     A stamp-based container - snapshot upwards - carries its level across partitions,
-    because visibility there is a stamp comparison and every partition draws from one clock. A
+    because visibility there is a stamp comparison and every partition draws from one order. A
     monotonic one cannot: its reader holds no stamp to answer at, so a walk across partitions can
     catch a commit half-applied and only Read Committed survives above a single key.
 

@@ -44,6 +44,7 @@
 
 #include <cerrno>  // `ENOMEM`, `EINVAL`, and the rest of the errno space
 #include <climits> // `CHAR_BIT`
+#include <cassert> // `assert`
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::int64_t`
 
@@ -525,6 +526,12 @@ struct hash<key_type_, std::void_t<decltype(std::declval<key_type_ const &>().da
     }
 };
 
+/** The first of a pack, for a caller that needs one representative of several arguments. */
+template <typename first_type_, typename... rest_types_>
+[[nodiscard]] constexpr first_type_ &first_of(first_type_ &first, rest_types_ &...) noexcept {
+    return first;
+}
+
 /** How many steps separate two iterators, without the sixteen thousand lines of @c \<iterator\>. */
 template <typename iterator_type_>
 constexpr std::size_t distance_between(iterator_type_ first, iterator_type_ last) noexcept {
@@ -940,7 +947,14 @@ struct comparable_particle_of<comparator_type_, comparable_type_, true> {
 
 #pragma region Optimistic Concurrency
 
-/** Generation type for versioned elements. */
+/**
+ *  @brief The counter behind all three positions a version can be named by.
+ *
+ *  A @b generation dates a transaction's private versions and orders nothing anyone else sees; a
+ *  @b commit @b stamp, spelled @c commit_stamp_t, orders visibility; and a @b snapshot is a stamp
+ *  somebody is reading at. One type carries all three, so a parameter is named for the role it
+ *  plays rather than for the type it has.
+ */
 using generation_t = std::int64_t;
 
 /**
@@ -1521,8 +1535,30 @@ concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::
 
 #pragma region Device Portability
 
-/** Platform cache line size in bytes, typically 64 on modern CPUs. */
-inline constexpr std::size_t cache_line_bytes_k = 64;
+/**
+ *  @brief The span two counters must not share if neither is to invalidate the other's line.
+ *
+ *  Over-padding costs a computable number of bytes; under-padding is a throughput cliff that grows
+ *  with the core count, so the wider value is the default wherever the target is not known to be
+ *  narrower. 128 covers Apple silicon, POWER and s390x, and x86-64, whose adjacent-line prefetch
+ *  makes a 64-byte line behave as a 128-byte one for a writer.
+ */
+#if !defined(ST_CACHE_LINE_BYTES)
+#if defined(__x86_64__) || defined(_M_X64) || (defined(__APPLE__) && defined(__aarch64__)) || \
+    defined(__powerpc64__) || defined(__s390x__)
+// 128 rather than the 64 these report: adjacent-line prefetch pulls the neighbour in, so two counters
+// 64 bytes apart still invalidate each other for a writer.
+#define ST_CACHE_LINE_BYTES 128
+#elif defined(__GCC_DESTRUCTIVE_SIZE)
+#define ST_CACHE_LINE_BYTES __GCC_DESTRUCTIVE_SIZE
+#else
+#define ST_CACHE_LINE_BYTES 64
+#endif
+#endif
+
+inline constexpr std::size_t cache_line_bytes_k = ST_CACHE_LINE_BYTES;
+static_assert(cache_line_bytes_k >= 32 && (cache_line_bytes_k & (cache_line_bytes_k - 1)) == 0,
+              "a cache line is a power of two, and no target here has one below 32 bytes");
 
 /**
  *  @brief The bit intrinsics every container here counts slots with.
@@ -1568,6 +1604,7 @@ using atomic_ref = ::cuda::atomic_ref<scalar_type_, ::cuda::thread_scope_device>
 inline constexpr auto memory_order_relaxed_k = ::cuda::std::memory_order_relaxed;
 inline constexpr auto memory_order_acquire_k = ::cuda::std::memory_order_acquire;
 inline constexpr auto memory_order_release_k = ::cuda::std::memory_order_release;
+inline constexpr auto memory_order_acq_rel_k = ::cuda::std::memory_order_acq_rel;
 
 #else
 
@@ -1577,6 +1614,7 @@ using atomic_ref = std::atomic_ref<scalar_type_>;
 inline constexpr auto memory_order_relaxed_k = std::memory_order_relaxed;
 inline constexpr auto memory_order_acquire_k = std::memory_order_acquire;
 inline constexpr auto memory_order_release_k = std::memory_order_release;
+inline constexpr auto memory_order_acq_rel_k = std::memory_order_acq_rel;
 
 #endif
 
@@ -1619,6 +1657,18 @@ constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
 template <typename integral_type_>
 constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexcept {
     atomic_ref<integral_type_>(counter).store(value, memory_order_relaxed_k);
+}
+
+/**
+ *  @brief Reads @p word through a read-modify-write, returning the newest value rather than any older one.
+ *
+ *  A plain load may read a stale write; a read-modify-write reads the newest and joins its release
+ *  sequence, so a store made before this call is visible to whoever reads the word afterwards. That
+ *  is what an announce-then-re-read protocol needs and what a load cannot give it.
+ */
+template <typename integral_type_>
+constexpr integral_type_ atomic_load_newest(integral_type_ &word) noexcept {
+    return atomic_ref<integral_type_>(word).fetch_add(integral_type_ {0}, memory_order_acq_rel_k);
 }
 
 /** Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
@@ -1675,6 +1725,8 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
     reference.flip_bits(value, memory_order_relaxed_k);
     reference.fetch_add_if_at_most(value, value, memory_order_relaxed_k);
     reference.fetch_sub_if_at_least(value, value, memory_order_relaxed_k);
+    reference.fetch_max(value, memory_order_relaxed_k);
+    reference.fetch_min(value, memory_order_relaxed_k);
 };
 
 /** Posts @p addend onto @p word without reading what was there. */
@@ -1710,6 +1762,52 @@ constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits,
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
         reference.clear_bits(bits, order);
     else reference.fetch_and(static_cast<integral_type_>(~bits), order);
+}
+
+/**
+ *  @brief Raises @p word to @p floor unless it already stands higher, so a stale floor never lowers it.
+ *
+ *  One instruction through a reference that spells @c fetch_max, and the compare-exchange loop it
+ *  replaces otherwise. A word only ever raised this way is monotone whoever writes it.
+ */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_>
+constexpr void atomic_max_fetch(integral_type_ &word, integral_type_ floor) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>) {
+        [[maybe_unused]] integral_type_ const before = reference.fetch_max(floor, memory_order_release_k);
+    }
+    else {
+        integral_type_ observed = reference.load(memory_order_relaxed_k);
+        while (observed < floor &&
+               !reference.compare_exchange_weak(observed, floor, memory_order_release_k, memory_order_relaxed_k)) {}
+    }
+}
+
+/**
+ *  @brief Raises @p word to @p floor unless it already stands higher, answering what it held before.
+ *  @return What @p word held before, which is at or above @p floor exactly when nothing was written.
+ *
+ *  One instruction through a reference that spells @c fetch_max, which @c std::atomic_ref does not
+ *  before C++26, and the compare-exchange loop it replaces otherwise. A word only ever raised this
+ *  way is monotone whoever writes it.
+ */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+[[nodiscard]] constexpr integral_type_ atomic_fetch_max(integral_type_ &word, integral_type_ floor,
+                                                        order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        return reference.fetch_max(floor, order);
+    else {
+        integral_type_ observed = reference.load(memory_order_acquire_k);
+        while (observed < floor && !reference.compare_exchange_weak(observed, floor, order, memory_order_acquire_k)) {}
+        return observed;
+    }
+}
+
+/** Raises @p word to @p floor without reading what was there, which Arm spells @c stumax. */
+template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+constexpr void atomic_post_max(integral_type_ &word, integral_type_ floor, order_type_ order) noexcept {
+    [[maybe_unused]] integral_type_ const before = atomic_fetch_max<atomic_reference_>(word, floor, order);
 }
 
 /** Posts @p bits flipped in @p word without reading what was there. */
@@ -2342,44 +2440,48 @@ concept transaction_offers_reserve =
 
 #pragma endregion Store Surfaces
 
-#pragma region Shared Clock
+#pragma region Commit Order Membership
 
-/**
- *  @brief What a store keeping no stamps contributes to a shard set, which is nothing at all.
- *
- *  Named so a wrapper declares its clock and its reader's claim unconditionally, and pays nothing
- *  for either where there is no clock to share.
- */
-struct no_clock_t {
+/** What a store keeping no stamps contributes to a shard set, which is nothing at all. */
+struct no_order_t {
 
     /** The claim a reader of such a store never takes. */
-    using snapshot_lease_t = no_clock_t;
+    using snapshot_claim_t = no_order_t;
 };
 
-/** The clock a store shares with its siblings, or @c no_clock_t when it keeps no stamps. */
+/** The order a store is a member of, or @c no_order_t when it keeps no stamps. */
 template <typename store_type_, typename = void>
-struct shared_clock_of {
-    using type = no_clock_t;
+struct order_of {
+    using type = no_order_t;
 };
 template <typename store_type_>
-struct shared_clock_of<store_type_, std::void_t<typename store_type_::clock_t>> {
-    using type = typename store_type_::clock_t;
+struct order_of<store_type_, std::void_t<typename store_type_::order_t>> {
+    using type = typename store_type_::order_t;
 };
 
-/** Whether the store takes a clock from outside, so a shard set can stamp every part alike. */
-template <typename store_type_, typename clock_type_>
-concept offers_attach_clock = requires(store_type_ &store, clock_type_ &clock) { store.attach_clock(clock); };
+/** The same store built into @p order_type_ instead, or the store itself where it names no such rebind. */
+template <typename store_type_, typename order_type_, typename = void>
+struct rebound_order_of {
+    using type = store_type_;
+};
+template <typename store_type_, typename order_type_>
+struct rebound_order_of<store_type_, order_type_,
+                        std::void_t<typename store_type_::template rebind_order<order_type_>>> {
+    using type = typename store_type_::template rebind_order<order_type_>;
+};
 
-/** Whether the store opens a transaction at a stamp somebody else drew. */
+/** Whether a store opens one part of a sharded transaction at a snapshot and a generation drawn elsewhere. */
 template <typename store_type_>
 concept offers_transaction_at =
     requires(store_type_ &store, typename store_type_::generation_t stamp) { store.transaction_at(stamp, stamp); };
 
-/** Both halves of sharing a clock: taking one, and opening at a stamp drawn from it. */
-template <typename store_type_, typename clock_type_>
-concept offers_shared_clock = offers_attach_clock<store_type_, clock_type_> && offers_transaction_at<store_type_>;
+/** Whether a store was built into an order a shard set can stamp every part alike from. */
+template <typename store_type_>
+concept draws_from_a_shared_order = offers_transaction_at<store_type_> && requires(store_type_ &store) {
+    store.order();
+} && !std::is_same_v<typename order_of<store_type_>::type, no_order_t>;
 
-#pragma endregion Shared Clock
+#pragma endregion Commit Order Membership
 
 #pragma region Storage Shape
 
@@ -2656,7 +2758,7 @@ status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempt
  *  caller cannot ask first, and a refusal from a later participant arrives over writes an earlier
  *  one has already published.
  *
- *  @c publish_under is the no-stamp spelling: an engine keeping a clock draws its own stamp inside
+ *  @c publish_under is the no-stamp spelling: an engine keeping an order draws its own stamp inside
  *  it, and one keeping none orders its own versions. Neither can refuse.
  */
 template <typename transaction_type_>
@@ -2666,7 +2768,27 @@ concept splits_its_commit = requires(transaction_type_ &transaction) {
 };
 
 /**
+ *  @brief Whether an open transaction can be driven as one part of a commit under a stamp somebody
+ *      else drew, which asks every part whether it may proceed before any of them publishes.
+ *
+ *  One gate over several methods, unlike the surfaces above: half a commit protocol is not a
+ *  weaker protocol, it is an unusable one, so there is nothing to keep by asking separately.
+ */
+template <typename transaction_type_>
+concept shards_its_commit = requires(transaction_type_ &transaction, generation_t stamp) {
+    { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
+    transaction.publish_under(static_cast<commit_stamp_t>(stamp));
+    transaction.adopt_snapshot(stamp);
+    transaction.prune_committed();
+    transaction.reset_at(stamp);
+};
+
+/**
  *  @brief A two-phase commit over several stores at once.
+ *
+ *  Stores built into one order are committed under one stamp, drawn before any of them is written
+ *  and published once the last one is, so a reader at any snapshot sees the whole group or none of
+ *  it. Stores in orders of their own, or in none, publish a stamp each.
  *
  *  @tparam store_types_ The stores taking part, each staging and committing on its own.
  */
@@ -2678,8 +2800,29 @@ class transaction_group {
 
     using transactions_t = std::tuple<typename store_types_::transaction_t...>;
 
+    /** The order the first participant was built into, or @c no_order_t where it keeps no stamps. */
+    using order_t = typename order_of<std::tuple_element_t<0, std::tuple<store_types_...>>>::type;
+
+    /** Whether every participant was built into one order, so the group can stamp all of them once. */
+    static constexpr bool shares_one_order_k =
+        participants_k > 1 && !std::is_same_v<order_t, no_order_t> &&
+        (std::is_same_v<typename order_of<store_types_>::type, order_t> && ...) &&
+        (draws_from_a_shared_order<store_types_> && ...) &&
+        (shards_its_commit<typename store_types_::transaction_t> && ...);
+
+    /** The claim every participant reads under where they share an order, and nothing where they do not. */
+    using claim_t = typename order_t::snapshot_claim_t;
+
   private:
+    using opened_t = std::tuple<expected<typename store_types_::transaction_t>...>;
+
     transactions_t transactions_;
+
+    /** The one claim every participant reads under, held only where they share an order. */
+    ST_NO_UNIQUE_ADDRESS_ claim_t claim_ {};
+
+    /** The stamp the last one-stamp commit published under, and zero where each participant stamps its own. */
+    generation_t committed_stamp_ {0};
 
     /** Positions into @c transactions_, ordered by the address of the store each belongs to. */
     std::array<std::size_t, participants_k> order_ {};
@@ -2722,6 +2865,23 @@ class transaction_group {
         return visit_at_(position, std::forward<visitor_type_>(visitor), std::make_index_sequence<participants_k> {});
     }
 
+    /** Opens one transaction per store, each drawing its own snapshot where it keeps one. */
+    static opened_t open_participants_(claim_t &, store_types_ &...stores) noexcept
+        requires(!shares_one_order_k)
+    {
+        return opened_t {stores.transaction()...};
+    }
+
+    /** Opens every store at one snapshot and one generation drawn from the order they share, pinned by @p claim. */
+    static opened_t open_participants_(claim_t &claim, store_types_ &...stores) noexcept
+        requires shares_one_order_k
+    {
+        order_t &order = first_of(stores...).order();
+        generation_t const snapshot = order.take_snapshot(claim);
+        generation_t const generation = order.next_generation();
+        return opened_t {stores.transaction_at(snapshot, generation)...};
+    }
+
   public:
     transaction_group(transaction_group &&) noexcept = default;
     transaction_group &operator=(transaction_group &&) noexcept = default;
@@ -2744,7 +2904,13 @@ class transaction_group {
             for (std::size_t earlier = 0; earlier != position; ++earlier)
                 if (addresses[position] == addresses[earlier]) return status_t::invalid_argument_k;
 
-        std::tuple<expected<typename store_types_::transaction_t>...> opened {stores.transaction()...};
+        if constexpr (shares_one_order_k) {
+            // Two orders would mean two stamps, which is the tear a shared order exists to remove.
+            order_t const &order = first_of(stores...).order();
+            if (((&stores.order() != &order) || ...)) return status_t::invalid_argument_k;
+        }
+        claim_t claim {};
+        opened_t opened = open_participants_(claim, stores...);
         status_t const refused = std::apply(
             [](auto const &...maybe) noexcept {
                 status_t first = success_k;
@@ -2755,7 +2921,9 @@ class transaction_group {
         if (failed(refused)) return refused;
 
         auto moved = std::apply([](auto &...maybe) noexcept { return transactions_t {std::move(*maybe)...}; }, opened);
-        return transaction_group {std::move(moved), addresses};
+        transaction_group group {std::move(moved), addresses};
+        group.claim_ = std::move(claim);
+        return group;
     }
 
     /** This group's participant in @p store_index_, counted in the caller's argument order. */
@@ -2765,8 +2933,36 @@ class transaction_group {
         return std::get<store_index_>(transactions_);
     }
 
+    /** Every participant at once, in the order the caller named their stores, for @c auto @c [a, @c b] @c = to name. */
+    [[nodiscard]] auto participants() noexcept {
+        return std::apply([](auto &...opened) noexcept { return std::tie(opened...); }, transactions_);
+    }
+
+    /**
+     *  @brief Runs @p body over the participants, then stages and commits the group.
+     *  @param[in] body Invoked as @c body(participants...), answering a @c status_t. Must be @c noexcept.
+     *  @return Success; whatever @p body refused; or the refusal the stage or the commit answered.
+     *
+     *  The three calls a group always makes in the same order, so a caller cannot forget the stage
+     *  or leave a refused group staged: anything short of success resets every participant before
+     *  returning. @c commit_with_retries is the sibling that takes a conflict as a reason to try again.
+     */
+    template <typename body_type_>
+    status_t commit_with(body_type_ &&body) noexcept {
+        status_t status =
+            std::apply([&](auto &...opened) noexcept { return status_t {body(opened...)}; }, transactions_);
+        if (succeeded(status)) status = stage();
+        if (succeeded(status)) status = commit();
+        if (succeeded(status)) return status;
+        [[maybe_unused]] status_t const discarded = reset();
+        return status;
+    }
+
     /** Whether the group's writes are sitting in their stores, invisible. */
     staging_t staging() const noexcept { return staging_; }
+
+    /** The stamp the last commit published every participant under, or zero where each stamped its own. */
+    [[nodiscard]] generation_t commit_stamp() const noexcept { return committed_stamp_; }
 
     /**
      *  @brief Validates every watch and reserves every write, undoing all of it if one refuses.
@@ -2825,10 +3021,50 @@ class transaction_group {
      *  group to pending, which refuses both @c commit and @c rollback - the position decides that,
      *  not whether anything was published, since a torn commit cannot be told apart from an untorn
      *  one without asking every participant what it did. Only @c reset then clears the rest.
+     *
+     *  Where @c shares_one_order_k, the participants are asked first as well, and then written under
+     *  one stamp drawn from the order they share, which the watermark covers only once the last of
+     *  them has published.
      */
     status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
-        if constexpr (asks_before_writing_k) {
+        if constexpr (shares_one_order_k) {
+            order_t &order = claim_.order();
+            // A wrapper keeps its lock from here to its `publish_under`, so a refusal leaves the
+            // locks held for the `rollback` or `reset` that follows.
+            for (std::size_t position = 0; position != participants_k; ++position)
+                if (status_t const refused = visit_at_(
+                        order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+                    failed(refused))
+                    return refused;
+
+            typename order_t::commit_in_flight_t in_flight;
+            order.begin_commit(in_flight);
+            for (std::size_t position = 0; position != participants_k; ++position) {
+                [[maybe_unused]] status_t const published =
+                    visit_at_(order_[position], [&](auto &transaction) noexcept {
+                        transaction.publish_under(in_flight.stamp());
+                        return success_k;
+                    });
+            }
+            order.end_commit(in_flight);
+
+            // No store lock is held here, so parking on an older commit's publication blocks nobody.
+            // Waited for at every level: the participants adopt the stamp at once, and one reading
+            // before the watermark covers it would see an older commit half-written.
+            order.await_published(in_flight.stamp());
+            generation_t const moved = order.take_snapshot(claim_);
+            for (std::size_t position = 0; position != participants_k; ++position) {
+                [[maybe_unused]] status_t const settled =
+                    visit_at_(order_[position], [moved](auto &transaction) noexcept {
+                        transaction.adopt_snapshot(moved);
+                        transaction.prune_committed();
+                        return success_k;
+                    });
+            }
+            committed_stamp_ = static_cast<generation_t>(in_flight.stamp());
+        }
+        else if constexpr (asks_before_writing_k) {
             for (std::size_t position = 0; position != participants_k; ++position)
                 if (status_t const refused = visit_at_(
                         order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
@@ -2880,12 +3116,17 @@ class transaction_group {
         return success_k;
     }
 
-    /** Discards every participant's staged and pending changes. */
+    /** Discards every participant's staged and pending changes, at one fresh snapshot where they share an order. */
     status_t reset() noexcept {
         status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
-            status_t const one =
-                visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.reset(); });
+            status_t one = success_k;
+            if constexpr (shares_one_order_k) {
+                generation_t const snapshot = claim_.order().take_snapshot(claim_);
+                one = visit_at_(order_[position],
+                                [snapshot](auto &transaction) noexcept { return transaction.reset_at(snapshot); });
+            }
+            else one = visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.reset(); });
             if (failed(one)) result = one;
         }
         staging_ = staging_t::pending_k;
@@ -3065,24 +3306,24 @@ class spin_shared_mutex {
 
   private:
     /** Takes the word from idle to held, which is the only sum that stays within the held bit. */
-    [[nodiscard]] std::uint32_t claim_as_writer_() noexcept {
+    [[nodiscard]] std::uint32_t take_as_writer_() noexcept {
         return atomic_fetch_add_if_at_most<atomic_reference_>(state_, writer_held_k, writer_held_k,
                                                               memory_order_acquire_k);
     }
 
     /** Adds one reader while the sum stays inside the reader tally, which every writer bit overflows. */
-    [[nodiscard]] std::uint32_t claim_as_reader_() noexcept {
+    [[nodiscard]] std::uint32_t take_as_reader_() noexcept {
         return atomic_fetch_add_if_at_most<atomic_reference_>(state_, 1u, readers_mask_k, memory_order_acquire_k);
     }
 
   public:
-    [[nodiscard]] bool try_lock() noexcept { return claim_as_writer_() == 0; }
+    [[nodiscard]] bool try_lock() noexcept { return take_as_writer_() == 0; }
 
-    [[nodiscard]] bool try_lock_shared() noexcept { return claim_as_reader_() < readers_mask_k; }
+    [[nodiscard]] bool try_lock_shared() noexcept { return take_as_reader_() < readers_mask_k; }
 
     void lock() noexcept {
         for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
-            std::uint32_t const observed = claim_as_writer_();
+            std::uint32_t const observed = take_as_writer_();
             if (observed == 0) return;
             waiting_(state_, observed, attempts_spent);
         }
@@ -3115,13 +3356,13 @@ class spin_shared_mutex {
 
     void lock_shared() noexcept {
         for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
-            std::uint32_t const observed = claim_as_reader_();
+            std::uint32_t const observed = take_as_reader_();
             if (observed < readers_mask_k) return;
             waiting_(state_, observed, attempts_spent);
         }
 
         while (true) {
-            std::uint32_t const observed = claim_as_reader_();
+            std::uint32_t const observed = take_as_reader_();
             if (observed < readers_mask_k) return;
             waiting_.wait_until_changed(state_, observed);
         }
@@ -3185,6 +3426,486 @@ template <typename mutex_type_>
 shared_lock(mutex_type_ &) -> shared_lock<mutex_type_>;
 
 #pragma endregion Shared Mutex
+
+#pragma region Commit Order
+
+/** Whether an order is reached from several threads, which decides both its atomics and its padding. */
+enum class order_sharing_t : bool {
+
+    /** One thread, so every word is plain and nothing is padded apart from the object itself. */
+    solitary_k,
+
+    /** Several threads, so every word moves atomically and the contended ones own a cache line. */
+    shared_k,
+};
+
+/**
+ *  @brief The order commits are published in, and the oldest snapshot readers can still name.
+ *
+ *  Stores are constructed into one of these. A store never owns an order and never borrows one; it
+ *  is a member of the order it was built with, and it says so once, at construction, which is why
+ *  nothing here can be attached, replaced or set wrong afterwards. A shard set builds all of its
+ *  partitions into the one order it owns, and a group over several stores is one commit exactly
+ *  when they were built into the same order.
+ *
+ *  Nothing here is wall time. Both counters are logical in the sense a commit stamp is logical:
+ *  monotone integers that order events, and nothing else.
+ *
+ *  @section commit_order_publication Publication
+ *
+ *  Commits are a ring indexed by stamp. Drawing a stamp is one unconditional add, so a committer
+ *  never waits for room; landing is what waits, and only for the stamp whose slot it is about to
+ *  reuse. The watermark then walks forward through consecutive landed slots, so it stops one below
+ *  the oldest commit still in flight and never covers a stamp whose versions are still being
+ *  written. A later commit that finishes first stays invisible until the earlier one lands, when
+ *  both appear together.
+ *
+ *  The ring is correct at every size down to one, where it degenerates to publishing in stamp
+ *  order; @p commits_in_flight_ chooses only how often a committer waits, never what the watermark
+ *  means. What bounds it is not the core count: a committer holds its locks across the whole span
+ *  between @c begin_commit and @c end_commit, so two commits in flight hold disjoint lock sets, and
+ *  the ceiling is the number of independently lockable regions the order serves. A shard set
+ *  therefore names its own partition count, and a single locked store needs one.
+ *
+ *  @section commit_order_census Census
+ *
+ *  Readers are counted by bucket rather than listed one by one. A bucket carries the watermark it
+ *  was opened at, which is a floor for every reader that joins it, and the low-water mark is the
+ *  least floor over occupied buckets. Running out of buckets refuses nothing and blocks nobody:
+ *  readers share a bucket, the mark becomes a lower bound rather than exact, and reclamation is
+ *  correspondingly conservative, which is already the only thing a caller may assume of it. That is
+ *  what lets @c take_snapshot stay infallible, since three of its callers sit inside @c noexcept
+ *  helpers with no channel to report a refusal.
+ *
+ *  A claim is therefore a bucket index and a stamp, never a pointer into caller memory, so a claim
+ *  moves with its transaction between threads by copying two fields and touching this order not at
+ *  all. At one bucket the mark is the floor the first reader opened at and stays there until the
+ *  last one leaves, which is the whole census a single-threaded store needs.
+ *
+ *  @section commit_order_ordering Ordering
+ *
+ *  Four orderings carry the guarantees under @c shared_k, and @c verification/commit_order.pml
+ *  drops each in turn. A reader joins its bucket and then reads the watermark through a
+ *  read-modify-write, so a mark computed after the join counts it, and one computed before it
+ *  stands at or below the stamp the reader is handed. A mark reads the watermark through a
+ *  read-modify-write @b before scanning the buckets, never after, or a reader joining in between is
+ *  missed. A landed commit reads the watermark through a read-modify-write before it walks the
+ *  ring, or two commits landing at once store-buffer past each other and a mark is left for the
+ *  next commit to find. And a bucket is retagged shut to arrivals @b before its floor is stored, or
+ *  a joiner lands in a bucket whose floor has moved above the snapshot it takes.
+ *
+ *  Under @c solitary_k none of that applies, because there is no second thread to order against.
+ *
+ *  @warning @c end_commit waits for older commits to land once @p commits_in_flight_ of them are
+ *      ahead of the watermark, and @c await_published waits for another thread's publication. Both
+ *      are deadlock-free only for a committer that holds every lock it publishes under before it
+ *      draws and takes none after, which is how every store and group here commits.
+ *
+ *  @tparam commits_in_flight_ How many commits may sit past the watermark before a landing one
+ *      waits. Bounded by disjoint lock sets rather than by cores; see above.
+ *  @tparam reader_buckets_ How many floors the census keeps. Caps nothing, and trades the precision
+ *      of the low-water mark against the memory and the scan.
+ *  @tparam sharing_ Whether several threads reach this order, which decides its atomics and padding.
+ *  @tparam waiting_policy_type_ What a waiting committer does with its core.
+ */
+template <std::size_t commits_in_flight_ = 16, std::size_t reader_buckets_ = 4,
+          order_sharing_t sharing_ = order_sharing_t::shared_k,
+          parking_waiting_policy<generation_t, generation_t> waiting_policy_type_ = standard_waiting_policy_t>
+class basic_commit_order {
+
+  public:
+    /** Commits that may be in flight past the watermark before a landing one waits. */
+    static constexpr std::size_t ring_k = commits_in_flight_;
+
+    /** Floors the census keeps. Readers past it share a bucket rather than being turned away. */
+    static constexpr std::size_t buckets_k = reader_buckets_;
+
+    /** Whether several threads reach this order. */
+    static constexpr order_sharing_t sharing_k = sharing_;
+
+    static_assert(ring_k >= 1 && buckets_k >= 1, "one of each is the smallest working order");
+
+  private:
+    /** Live members in the low half, the head value that opened the bucket in the high half. */
+    using census_word_t = std::uint64_t;
+
+    /** Where a bucket's live count ends and the tag that opened it begins. */
+    static constexpr census_word_t members_mask_k = 0xFFFFFFFFull;
+
+    /** A contended word owns a line; a solitary one is packed, since nothing shares it. */
+    static constexpr std::size_t word_alignment_k =
+        sharing_ == order_sharing_t::shared_k ? cache_line_bytes_k : alignof(generation_t);
+
+    /** Reads @p word: atomically where threads share this order, plainly where one owns it. */
+    template <typename integral_type_>
+    static integral_type_ read_(integral_type_ const &word) noexcept {
+        if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load(word);
+        else return word;
+    }
+
+    /** Writes @p value into @p word, atomically only where it must be. */
+    template <typename integral_type_>
+    static void write_(integral_type_ &word, integral_type_ value) noexcept {
+        if constexpr (sharing_ == order_sharing_t::shared_k) atomic_store<integral_type_>(word, value);
+        else word = value;
+    }
+
+    /** Reads the newest value of @p word, which only a read-modify-write can promise under sharing. */
+    template <typename integral_type_>
+    static integral_type_ read_newest_(integral_type_ &word) noexcept {
+        if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load_newest(word);
+        else return word;
+    }
+
+    /** Raises @p word to @p floor, never lowering it. */
+    template <typename integral_type_>
+    static void raise_(integral_type_ &word, integral_type_ floor) noexcept {
+        if constexpr (sharing_ == order_sharing_t::shared_k) atomic_max_fetch<atomic_ref, integral_type_>(word, floor);
+        else if (word < floor) word = floor;
+    }
+
+  public:
+    /** One commit that has drawn its stamp and has not finished writing it everywhere yet: the stamp alone, since
+     *  the ring slot it lands in is named by the stamp, so it may live anywhere and needs no linking. */
+    class commit_in_flight_t {
+        friend class basic_commit_order;
+
+        /** The stamp this commit publishes under, meaningless before it is drawn. */
+        generation_t stamp_ {0};
+
+      public:
+        constexpr commit_in_flight_t() noexcept = default;
+
+        /** The stamp every version of this commit is written under. */
+        [[nodiscard]] commit_stamp_t stamp() const noexcept { return static_cast<commit_stamp_t>(stamp_); }
+    };
+
+    /**
+     *  @brief One reader's claim on a snapshot, which holds the low-water mark at or below it.
+     *
+     *  While it is held the reader is one member of one bucket, whose floor is at or below the
+     *  snapshot it reads at, so the reader itself pins retention and no separate mark has to be
+     *  kept in step with it. Being a bucket index and a stamp, it moves between threads by copying
+     *  two fields and reaches this order not at all, and it is given back exactly once.
+     */
+    class snapshot_claim_t {
+        friend class basic_commit_order;
+
+        /** The order the claim is registered with, null once it has been given back. */
+        basic_commit_order *order_ {nullptr};
+
+        /** Which bucket counts this reader, meaningless while the claim is not held. */
+        std::uint32_t bucket_ {0};
+
+        /** The stamp every read under this claim is answered at. */
+        alignas(atomic_alignment<generation_t>) generation_t snapshot_ {0};
+
+      public:
+        constexpr snapshot_claim_t() noexcept = default;
+        snapshot_claim_t(snapshot_claim_t &&other) noexcept
+            : order_(std::exchange(other.order_, nullptr)), bucket_(other.bucket_), snapshot_(other.snapshot_) {}
+        snapshot_claim_t &operator=(snapshot_claim_t &&other) noexcept {
+            if (this == &other) return *this;
+            retire();
+            order_ = std::exchange(other.order_, nullptr);
+            bucket_ = other.bucket_;
+            snapshot_ = other.snapshot_;
+            return *this;
+        }
+        ~snapshot_claim_t() noexcept { retire(); }
+        snapshot_claim_t(snapshot_claim_t const &) = delete;
+        snapshot_claim_t &operator=(snapshot_claim_t const &) = delete;
+
+        /** The stamp this claim reads at. */
+        [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
+
+        /** The order this claim is registered with, which a held claim always has. */
+        [[nodiscard]] basic_commit_order &order() const noexcept {
+            assert(order_ && "a retired claim names no order");
+            return *order_;
+        }
+
+        /** Whether this claim is still registered, which a moved-from one is not. */
+        [[nodiscard]] bool held() const noexcept { return order_ != nullptr; }
+
+        /** Gives the claim back, letting the low-water mark move past it. Idempotent. */
+        void retire() noexcept {
+            if (!order_) return;
+            order_->retire_snapshot_(*this);
+            order_ = nullptr;
+        }
+    };
+
+  private:
+    /** Dates transactions rather than their visibility, and is drawn by a shard set once for all its parts. */
+    alignas(word_alignment_k) generation_t generation_ {0};
+
+    /** The newest stamp handed to a commit, whether or not that commit has landed. */
+    alignas(word_alignment_k) generation_t commits_ {0};
+
+    /** The newest stamp every commit at or below which has landed, and the only snapshot handed out. */
+    alignas(word_alignment_k) generation_t published_stamp_ {0};
+
+    /** The smallest snapshot a reader still names, or the watermark when nobody reads; only ever raised. */
+    alignas(word_alignment_k) generation_t low_water_mark_ {0};
+
+    /** Which bucket arrivals join, monotone, so a bucket is recycled only after it has drained. */
+    alignas(word_alignment_k) census_word_t head_ {0};
+
+    /** The ring: slot @c stamp % ring_k holds @c stamp once that commit has landed. */
+    alignas(word_alignment_k) generation_t landed_[ring_k] {};
+
+    /** Live members of each bucket, tagged with the head value that opened it. */
+    alignas(word_alignment_k) census_word_t members_[buckets_k] {};
+
+    /** The watermark each bucket was opened at, which is a floor for every member of it. */
+    alignas(word_alignment_k) generation_t floors_[buckets_k] {};
+
+    /** What a committer waiting for ring room does with its core. */
+    ST_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
+
+    /** Which ring slot @p stamp lands in. */
+    static constexpr std::size_t ring_slot_(generation_t stamp) noexcept {
+        return static_cast<std::size_t>(stamp) % ring_k;
+    }
+
+    /** Which bucket the head value @p opened names. */
+    static constexpr std::size_t bucket_of_(census_word_t opened) noexcept {
+        return static_cast<std::size_t>(opened % buckets_k);
+    }
+
+    /** Joins the head bucket, whose floor is at or below any snapshot drawn after this returns. */
+    std::uint32_t join_head_() noexcept {
+        if constexpr (sharing_ == order_sharing_t::solitary_k) {
+            std::size_t const bucket = bucket_of_(head_);
+            ++members_[bucket];
+            return static_cast<std::uint32_t>(bucket);
+        }
+        else
+            for (;;) {
+                census_word_t const opened = atomic_ref<census_word_t>(head_).load(memory_order_acquire_k);
+                std::size_t const bucket = bucket_of_(opened);
+                // One member more, admitted only while the tag still reads as the head that opened it:
+                // a recycled bucket carries a larger tag, which overflows the ceiling and is refused.
+                census_word_t const ceiling = ((opened & members_mask_k) << 32) | members_mask_k;
+                census_word_t const before = atomic_fetch_add_if_at_most<atomic_ref>(
+                    members_[bucket], census_word_t {1}, ceiling, memory_order_acq_rel_k);
+                if ((before >> 32) == (opened & members_mask_k) && (before & members_mask_k) != members_mask_k)
+                    return static_cast<std::uint32_t>(bucket);
+            }
+    }
+
+    /** Opens the bucket after @p opened at @p watermark, when the one it would recycle has drained. */
+    void open_next_bucket_(census_word_t opened, generation_t watermark) noexcept {
+        census_word_t const next = opened + 1;
+        std::size_t const bucket = bucket_of_(next);
+        if constexpr (sharing_ == order_sharing_t::solitary_k) {
+            if ((members_[bucket] & members_mask_k) != 0) return;
+            members_[bucket] = (next & members_mask_k) << 32;
+            floors_[bucket] = watermark;
+            if (head_ < next) head_ = next;
+        }
+        else {
+            atomic_ref<census_word_t> members(members_[bucket]);
+            census_word_t observed = members.load(memory_order_acquire_k);
+            if ((observed & members_mask_k) != 0) return;
+            // Retagged first, which shuts the bucket to arrivals under either value and is what makes the
+            // floor store below safe: nobody can be counted in it while its floor is being replaced.
+            if (!members.compare_exchange_strong(observed, (next & members_mask_k) << 32, memory_order_acq_rel_k,
+                                                 memory_order_relaxed_k))
+                return;
+            atomic_store<generation_t>(floors_[bucket], watermark);
+            atomic_max_fetch<atomic_ref, census_word_t>(head_, next);
+        }
+    }
+
+    /** Recomputes the mark from the watermark and every occupied bucket, and raises the published one to it. */
+    void republish_mark_() noexcept {
+        // The watermark first, then the buckets: a reader joining after this read draws at or above it.
+        generation_t mark = read_newest_(published_stamp_);
+        census_word_t const opened = read_(head_);
+        for (std::size_t bucket = 0; bucket != buckets_k; ++bucket) {
+            census_word_t const observed = read_(members_[bucket]);
+            if ((observed & members_mask_k) == 0) continue;
+            if (generation_t const floor = read_(floors_[bucket]); floor < mark) mark = floor;
+        }
+        raise_(low_water_mark_, mark);
+        // Sealed here rather than on a timer: this already runs on every commit that moved the watermark,
+        // and a head bucket whose floor has fallen behind the mark is one every later reader over-retains on.
+        if (read_(floors_[bucket_of_(opened)]) < mark) open_next_bucket_(opened, mark);
+    }
+
+    /** Gives one reader's membership back, which only @c snapshot_claim_t is allowed to do. */
+    void retire_snapshot_(snapshot_claim_t &claim) noexcept {
+        census_word_t before {};
+        if constexpr (sharing_ == order_sharing_t::solitary_k) before = members_[claim.bucket_]--;
+        else
+            // Released, and every scan above acquires: whoever sees a bucket drain sees every claim its
+            // members made first, so a snapshot adopted from one cannot be missed by the mark that follows.
+            before = atomic_ref<census_word_t>(members_[claim.bucket_]).fetch_sub(1, memory_order_release_k);
+        // Only a bucket that just drained can raise the mark, so the scan is spent on that departure alone.
+        if ((before & members_mask_k) == 1) republish_mark_();
+    }
+
+  public:
+    constexpr basic_commit_order() noexcept = default;
+    basic_commit_order(basic_commit_order const &) = delete;
+    basic_commit_order &operator=(basic_commit_order const &) = delete;
+
+    /** Hands out the next generation, which dates a transaction rather than its visibility, and which a shard set
+     *  draws once so every one of its parts keys its private versions alike. */
+    generation_t next_generation() noexcept {
+        if constexpr (sharing_ == order_sharing_t::solitary_k) return ++generation_;
+        else return atomic_add_fetch<generation_t>(generation_, 1);
+    }
+
+    /** The newest stamp every part of which is written, which is what a fresh read answers at. */
+    [[nodiscard]] generation_t published_stamp() const noexcept { return read_(published_stamp_); }
+
+    /**
+     *  @brief The newest stamp any commit has drawn, landed or not, which is what a reader must
+     *      validate against rather than the watermark.
+     *
+     *  A commit in flight has already written its stamp onto its versions while the watermark still
+     *  sits below it, so a validator asking whether anything moved has to compare against what was
+     *  drawn. Under a shard set that overlap is ordinary rather than a corner case.
+     */
+    [[nodiscard]] generation_t drawn_stamp() const noexcept { return read_(commits_); }
+
+    /**
+     *  @brief Points @p claim at the newest whole stamp, giving back whatever it held first.
+     *  @return The snapshot the claim now reads at.
+     */
+    generation_t take_snapshot(snapshot_claim_t &claim) noexcept {
+        if (claim.order_) retire_snapshot_(claim);
+        claim.order_ = this;
+        claim.bucket_ = join_head_();
+        // Reading the newest is the reader's half of the pair: a mark computed after this counts the
+        // member above, and one computed before it stands at or below the stamp returned.
+        generation_t const seen = read_newest_(published_stamp_);
+        claim.snapshot_ = seen;
+        return seen;
+    }
+
+    /**
+     *  @brief Points @p claim at the snapshot @p held reads, giving back whatever @p claim held first.
+     *  @return The snapshot the claim now reads at.
+     *
+     *  @p held is live, so its bucket carries at least one member and cannot have been recycled, and
+     *  its floor is already at or below the snapshot being shared. One more member of that same
+     *  bucket therefore needs no re-read: either claim retiring leaves the other pinning retention.
+     */
+    generation_t share_snapshot(snapshot_claim_t &held, snapshot_claim_t &claim) noexcept {
+        assert(held.order_ == this && &held != &claim && "a shared snapshot is copied from another live claim");
+        if (claim.order_) retire_snapshot_(claim);
+        if constexpr (sharing_ == order_sharing_t::solitary_k) ++members_[held.bucket_];
+        else atomic_post_add<atomic_ref>(members_[held.bucket_], census_word_t {1}, memory_order_release_k);
+        claim.order_ = this;
+        claim.bucket_ = held.bucket_;
+        claim.snapshot_ = held.snapshot_;
+        return claim.snapshot_;
+    }
+
+    /** Draws the stamp @p node publishes under. One add: a draw never waits and never refuses. */
+    void begin_commit(commit_in_flight_t &node) noexcept {
+        if constexpr (sharing_ == order_sharing_t::solitary_k) node.stamp_ = ++commits_;
+        // Relaxed: `commits_` is a dense counter compared by value, and it publishes nothing that a
+        // `drawn_stamp` reader could depend on beyond the acquire that reader does for itself.
+        else node.stamp_ = atomic_ref<generation_t>(commits_).fetch_add(1, memory_order_relaxed_k) + 1;
+    }
+
+    /** Records that every version of @p node is written, and walks the watermark through every landed stamp
+     *  above it: one below the oldest commit still in flight, or all the way to the newest drawn when none is. */
+    void end_commit(commit_in_flight_t &node) noexcept {
+        generation_t const stamp = node.stamp_;
+        if constexpr (sharing_ == order_sharing_t::solitary_k) {
+            landed_[ring_slot_(stamp)] = stamp;
+            generation_t seen = published_stamp_;
+            while (landed_[ring_slot_(seen + 1)] == seen + 1) ++seen;
+            if (seen == published_stamp_) return;
+            published_stamp_ = seen;
+            republish_mark_();
+            return;
+        }
+        else {
+            atomic_ref<generation_t> published(published_stamp_);
+
+            // This slot still holds `stamp - ring_k`, and overwriting a mark the watermark has not
+            // consumed would lose it for good. Waited here rather than at the draw, so the write already
+            // happened during the overlap rather than after it.
+            for (generation_t seen = published.load(memory_order_acquire_k);
+                 stamp - seen > static_cast<generation_t>(ring_k); seen = published.load(memory_order_acquire_k))
+                waiting_.wait_until_changed(published_stamp_, seen);
+
+            atomic_ref<generation_t>(landed_[ring_slot_(stamp)]).store(stamp, memory_order_release_k);
+
+            // Reading the newest, not merely loading: a plain load could miss a neighbour's mark and leave
+            // ours for the next commit to publish, which the strict rung would wait on for good.
+            generation_t seen = atomic_load_newest(published_stamp_);
+            bool moved = false;
+            while (atomic_ref<generation_t>(landed_[ring_slot_(seen + 1)]).load(memory_order_acquire_k) == seen + 1) {
+                generation_t const before =
+                    atomic_fetch_max<atomic_ref>(published_stamp_, seen + 1, memory_order_acq_rel_k);
+                moved = moved || before < seen + 1;
+                seen = before < seen + 1 ? seen + 1 : before;
+            }
+            if (!moved) return;
+            // A store wakes nobody, so anyone parked in `await_published` or in the wait above sleeps through
+            // the very publication it waits for unless the wake goes out here.
+            waiting_.notify_waiters(published_stamp_);
+            republish_mark_();
+        }
+    }
+
+    /**
+     *  @brief Waits until the watermark covers @p stamp, so the committer may read what it just wrote.
+     *  @warning Blocks on another thread's publication, so no store lock may be held across it.
+     */
+    void await_published(commit_stamp_t stamp) noexcept {
+        generation_t const wanted = static_cast<generation_t>(stamp);
+        if constexpr (sharing_ == order_sharing_t::solitary_k) {
+            assert(published_stamp_ >= wanted && "one thread publishes before it waits, so a wait is a deadlock");
+            return;
+        }
+        else {
+            atomic_ref<generation_t> published(published_stamp_);
+            for (generation_t seen = published.load(memory_order_acquire_k); seen < wanted;
+                 seen = published.load(memory_order_acquire_k))
+                waiting_.wait_until_changed(published_stamp_, seen);
+        }
+    }
+
+    /** The oldest snapshot any reader can still name, so everything older is unreachable. Raised whenever a
+     *  bucket drains or the watermark moves, and a stale read is a lower mark. */
+    [[nodiscard]] generation_t low_water_mark() const noexcept { return read_(low_water_mark_); }
+
+    /** How many readers currently hold a snapshot, summed over the buckets. */
+    [[nodiscard]] std::size_t open_snapshots() const noexcept {
+        std::size_t counted = 0;
+        for (census_word_t const &members : members_)
+            counted += static_cast<std::size_t>(read_(members) & members_mask_k);
+        return counted;
+    }
+
+    /** Takes over @p other's stamps, for a store that is being moved and has nothing open or in flight. */
+    void adopt(basic_commit_order const &other) noexcept {
+        assert(open_snapshots() == 0 && other.open_snapshots() == 0 && "a claim names the order it was drawn from");
+        assert(read_(other.commits_) == read_(other.published_stamp_) &&
+               "a commit in flight names the ring it lands in");
+        write_(generation_, read_(other.generation_));
+        write_(commits_, read_(other.commits_));
+        write_(published_stamp_, read_(other.published_stamp_));
+        write_(low_water_mark_, read_(other.low_water_mark_));
+    }
+};
+
+/** The order several threads or several stores share, sized for sixteen commits in flight. */
+using commit_order_t = basic_commit_order<>;
+
+/** The order a store nobody shares builds for itself: one commit in flight, one floor, no atomics, no padding. */
+using solitary_commit_order_t = basic_commit_order<1, 1, order_sharing_t::solitary_k>;
+
+#pragma endregion Commit Order
 
 #pragma endregion Transaction Group
 
@@ -3329,7 +4050,7 @@ status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_
 /**
  *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
  *
- *  @warning The two sides keep separate clocks, so the pair is never one instant however it is
+ *  @warning The two sides keep separate orders, so the pair is never one stamp however it is
  *      read. Each side is read through a read transaction opened here, which fixes what that side
  *      shows from @c snapshot_k up; pass transactions to choose the instants yourself, at the cost
  *      of the nested walk @c compare_crossed_ falls back to.

@@ -11,6 +11,7 @@
  */
 #pragma once
 #include <cassert> // `assert`
+#include <cstdint> // `std::uint32_t`, `std::uint64_t`
 
 #include <iterator>    // `std::iterator_traits`
 #include <memory>      // `std::allocator_traits`
@@ -75,344 +76,6 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
 
 #pragma endregion Liveness Ranking
 
-#pragma region Snapshot Clock
-
-/**
- *  @brief The stamps and the reader census a family of stamp-based stores keeps in common.
- *
- *  A single store owns one of these and never shares it. A shard set hands the very same instance
- *  to every partition, which is what turns sixteen independently locked stores into one snapshot: a
- *  reader draws one snapshot here and answers every partition at it, and a commit draws one stamp
- *  here and writes it into every partition it touched.
- *
- *  @section snapshot_clock_publication Publication
- *
- *  A stamp is drawn before the versions carrying it are written and the watermark only moves once
- *  they all are, so a snapshot never names a commit that is still writing itself out. Commits may
- *  overlap, so the watermark stops one below the oldest commit still in flight rather than at the
- *  newest one finished - a later commit that finishes first stays invisible until the earlier one
- *  lands, and then both appear together.
- *
- *  @section snapshot_clock_census Census
- *
- *  Readers are listed, not counted: every open snapshot is one node on an intrusive list ordered by
- *  the snapshot it reads at, exactly as commits in flight are ordered by their stamp. A snapshot is
- *  drawn at the watermark, which never moves backwards, so a fresh reader joins at the newest end
- *  and the oldest reader is the head - the minimum comes for free rather than from a
- *  remembered mark.
- *
- *  That minimum is what reclamation prunes to, and being global is the point: a partition that
- *  pruned to its own readers would free a version a reader of another partition is still entitled
- *  to name. With the list empty the mark is the watermark itself, which is what a reader arriving
- *  now would open on. A reader that outlives every other one therefore holds retention at its own
- *  snapshot and no lower, and its departure releases everything at once.
- *
- *  @section snapshot_clock_ordering Ordering
- *
- *  The watermark is a plain relaxed atomic, and the guarantee does not rest on it: @c end_commit
- *  stores it and @c take_snapshot and @c low_water_mark read it under @c mutex_, so publication and
- *  the drawing of a snapshot are ordered by that mutex rather than by the atomic. The bare
- *  @c published_stamp accessor reaches only single-key reads outside any transaction, which promise
- *  nothing across keys.
- *
- *  @warning A transactional path answering at @c published_stamp instead of at its own snapshot
- *      would make that relaxed load load-bearing, and would be a real defect on a weakly ordered
- *      machine. Read at a snapshot drawn through @c take_snapshot, or take @c mutex_.
- *
- *  @warning Every entry point here takes one short lock, and none of them calls back into a store,
- *      so the clock is a leaf and may be reached with a store's own lock held. The one exception is
- *      @c await_published, which blocks on another thread finishing its publication and must
- *      therefore be called with no store lock held.
- */
-class snapshot_clock_t {
-
-  public:
-    /** One commit that has drawn its stamp and has not finished writing it everywhere yet. The clock links it in
-     *  place, so it must outlive the publication - a local of the committing frame, never a temporary - and it is
-     *  neither copied nor moved. */
-    class commit_in_flight_t {
-        friend class snapshot_clock_t;
-
-        /** The commit that drew the previous stamp and is also still in flight. */
-        commit_in_flight_t *older_ {nullptr};
-
-        /** The commit that drew the next stamp and is also still in flight. */
-        commit_in_flight_t *newer_ {nullptr};
-
-        /** The stamp this commit publishes under, meaningless before it is drawn. */
-        generation_t stamp_ {0};
-
-      public:
-        constexpr commit_in_flight_t() noexcept = default;
-        commit_in_flight_t(commit_in_flight_t const &) = delete;
-        commit_in_flight_t &operator=(commit_in_flight_t const &) = delete;
-
-        /** The stamp every version of this commit is written under. */
-        [[nodiscard]] commit_stamp_t stamp() const noexcept { return static_cast<commit_stamp_t>(stamp_); }
-    };
-
-    /**
-     *  @brief One reader's claim on a snapshot, which holds the low-water mark at or below it.
-     *
-     *  While the claim is held the lease is a node on the clock's census list, so it is the reader
-     *  itself that pins retention and no separate mark has to be kept in step with it. Moving a
-     *  lease splices the new object into the old one's place under the clock's lock, which is what
-     *  lets a transaction holding one be moved. The claim is given back once, whenever the lease
-     *  goes away.
-     */
-    class snapshot_lease_t {
-        friend class snapshot_clock_t;
-
-        /** The clock the claim is registered with, null once it has been given back. */
-        snapshot_clock_t *clock_ {nullptr};
-
-        /** The reader on an older snapshot, or null when this is the oldest one open. */
-        snapshot_lease_t *older_ {nullptr};
-
-        /** The reader on a newer snapshot, or null when this is the newest one open. */
-        snapshot_lease_t *newer_ {nullptr};
-
-        /** The stamp every read under this claim is answered at. */
-        generation_t snapshot_ {0};
-
-        /** Takes @p other's place on the census list, leaving @p other holding nothing. */
-        void adopt_(snapshot_lease_t &other) noexcept {
-            snapshot_ = other.snapshot_;
-            clock_ = other.clock_;
-            if (clock_) clock_->relink_lease_(other, *this);
-        }
-
-      public:
-        constexpr snapshot_lease_t() noexcept = default;
-        snapshot_lease_t(snapshot_lease_t &&other) noexcept { adopt_(other); }
-        snapshot_lease_t &operator=(snapshot_lease_t &&other) noexcept {
-            if (this == &other) return *this;
-            retire();
-            adopt_(other);
-            return *this;
-        }
-        ~snapshot_lease_t() noexcept { retire(); }
-        snapshot_lease_t(snapshot_lease_t const &) = delete;
-        snapshot_lease_t &operator=(snapshot_lease_t const &) = delete;
-
-        /** The stamp this claim reads at. */
-        [[nodiscard]] generation_t snapshot() const noexcept { return snapshot_; }
-
-        /** Whether this claim is still registered, which a moved-from one is not. */
-        [[nodiscard]] bool held() const noexcept { return clock_ != nullptr; }
-
-        /** Gives the claim back, letting the low-water mark move past it. Idempotent. */
-        void retire() noexcept {
-            if (!clock_) return;
-            clock_->retire_snapshot_(*this);
-            clock_ = nullptr;
-        }
-    };
-
-  private:
-    /** Guards the census and the in-flight list, both of which are read and written together. */
-    mutable spin_shared_mutex_t mutex_ {};
-
-    /** Dates transactions rather than their visibility, and is drawn without the lock. */
-    alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
-
-    /** The newest stamp handed to a commit, whether or not that commit has landed. */
-    generation_t commits_ {0};
-
-    /** The newest stamp a fully written commit left behind, and the only snapshot handed out. */
-    alignas(atomic_alignment<generation_t>) generation_t published_stamp_ {0};
-
-    /** The commit with the smallest stamp still writing itself out, which caps the watermark. */
-    commit_in_flight_t *oldest_in_flight_ {nullptr};
-
-    /** Where a freshly drawn stamp joins the list, keeping it ordered by stamp. */
-    commit_in_flight_t *newest_in_flight_ {nullptr};
-
-    /** The reader on the smallest snapshot, which is what retention is pinned to. */
-    snapshot_lease_t *oldest_lease_ {nullptr};
-
-    /** Where a freshly drawn snapshot joins the census, keeping it ordered by snapshot. */
-    snapshot_lease_t *newest_lease_ {nullptr};
-
-    /** What the census currently answers, republished under the lock whenever it changes. */
-    alignas(atomic_alignment<generation_t>) generation_t low_water_mark_ {0};
-
-    /** Files @p lease at the newest end of the census, where its snapshot belongs. */
-    void link_newest_(snapshot_lease_t &lease) noexcept {
-        lease.older_ = newest_lease_;
-        lease.newer_ = nullptr;
-        (newest_lease_ ? newest_lease_->newer_ : oldest_lease_) = &lease;
-        newest_lease_ = &lease;
-    }
-
-    /** Takes @p lease off the census, leaving it linked to nothing. */
-    void unlink_(snapshot_lease_t &lease) noexcept {
-        (lease.older_ ? lease.older_->newer_ : oldest_lease_) = lease.newer_;
-        (lease.newer_ ? lease.newer_->older_ : newest_lease_) = lease.older_;
-        lease.older_ = nullptr;
-        lease.newer_ = nullptr;
-    }
-
-    /** Republishes the mark from the census head, which is the answer whenever it changes. */
-    void republish_mark_() noexcept {
-        atomic_store<generation_t>(low_water_mark_,
-                                   oldest_lease_ ? oldest_lease_->snapshot_ : atomic_load(published_stamp_));
-    }
-
-    /** Puts @p replacement in @p held 's place, for a lease that is being moved. */
-    void relink_lease_(snapshot_lease_t &held, snapshot_lease_t &replacement) noexcept {
-        unique_lock<spin_shared_mutex_t> _ {mutex_};
-        replacement.older_ = held.older_;
-        replacement.newer_ = held.newer_;
-        (held.older_ ? held.older_->newer_ : oldest_lease_) = &replacement;
-        (held.newer_ ? held.newer_->older_ : newest_lease_) = &replacement;
-        held.older_ = nullptr;
-        held.newer_ = nullptr;
-        held.clock_ = nullptr;
-    }
-
-    /** Gives one reader's claim back, which only @c snapshot_lease_t is allowed to do. */
-    void retire_snapshot_(snapshot_lease_t &lease) noexcept {
-        unique_lock<spin_shared_mutex_t> _ {mutex_};
-        unlink_(lease);
-        republish_mark_();
-    }
-
-  public:
-    constexpr snapshot_clock_t() noexcept = default;
-    snapshot_clock_t(snapshot_clock_t const &) = delete;
-    snapshot_clock_t &operator=(snapshot_clock_t const &) = delete;
-
-    /** Hands out the next generation, which dates a transaction rather than its visibility. */
-    generation_t next_generation() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
-
-    /** The newest stamp every part of which is written, which is what a fresh read answers at. */
-    [[nodiscard]] generation_t published_stamp() const noexcept { return atomic_load(published_stamp_); }
-
-    /**
-     *  @brief The newest stamp any commit has drawn, landed or not, which is what a reader must
-     *      validate against rather than the watermark.
-     *
-     *  A commit in flight has already written its stamp onto its versions while the watermark still
-     *  sits below it, so a validator asking whether anything moved has to compare against what was
-     *  drawn. Under a shard set that overlap is ordinary rather than a corner case.
-     */
-    [[nodiscard]] generation_t drawn_stamp() const noexcept {
-        shared_lock<spin_shared_mutex_t> _ {mutex_};
-        return commits_;
-    }
-
-    /**
-     *  @brief Points @p lease at the newest whole stamp, giving back whatever it held first.
-     *  @return The snapshot the lease now reads at.
-     */
-    generation_t take_snapshot(snapshot_lease_t &lease) noexcept {
-        unique_lock<spin_shared_mutex_t> _ {mutex_};
-        if (lease.clock_) unlink_(lease);
-        generation_t const snapshot = atomic_load(published_stamp_);
-        lease.clock_ = this;
-        lease.snapshot_ = snapshot;
-        // The watermark never moves backwards, so the snapshot just drawn is at least as new as every
-        // one already on the census and the newest end is where it belongs.
-        link_newest_(lease);
-        republish_mark_();
-        return snapshot;
-    }
-
-    /**
-     *  @brief Points @p lease at the snapshot @p held reads, giving back whatever @p lease
-     *      held first.
-     *  @return The snapshot the lease now reads at.
-     *
-     *  The new claim is linked straight after @p held, whose snapshot it shares, so the census
-     *  stays ordered and either claim retiring leaves the other pinning retention on its own.
-     */
-    generation_t share_snapshot(snapshot_lease_t &held, snapshot_lease_t &lease) noexcept {
-        unique_lock<spin_shared_mutex_t> _ {mutex_};
-        assert(held.clock_ == this && &held != &lease && "a shared snapshot is copied from another live claim");
-        if (lease.clock_) unlink_(lease);
-        lease.clock_ = this;
-        lease.snapshot_ = held.snapshot_;
-        lease.older_ = &held;
-        lease.newer_ = held.newer_;
-        (held.newer_ ? held.newer_->older_ : newest_lease_) = &lease;
-        held.newer_ = &lease;
-        republish_mark_();
-        return lease.snapshot_;
-    }
-
-    /** Draws the stamp @p node publishes under, and records that it has not landed yet. */
-    void begin_commit(commit_in_flight_t &node) noexcept {
-        unique_lock<spin_shared_mutex_t> _ {mutex_};
-        node.stamp_ = ++commits_;
-        node.older_ = newest_in_flight_;
-        node.newer_ = nullptr;
-        (newest_in_flight_ ? newest_in_flight_->newer_ : oldest_in_flight_) = &node;
-        newest_in_flight_ = &node;
-    }
-
-    /** Records that every version of @p node is written, and moves the watermark as far as it may go. Which is one
-     *  below the oldest commit still in flight, or all the way to the newest stamp drawn when none is: a commit is
-     *  whole only once every commit before it is. */
-    void end_commit(commit_in_flight_t &node) noexcept {
-        unique_lock<spin_shared_mutex_t> _ {mutex_};
-        (node.older_ ? node.older_->newer_ : oldest_in_flight_) = node.newer_;
-        (node.newer_ ? node.newer_->older_ : newest_in_flight_) = node.older_;
-        node.older_ = nullptr;
-        node.newer_ = nullptr;
-        generation_t const whole = oldest_in_flight_ ? oldest_in_flight_->stamp_ - 1 : commits_;
-        atomic_store<generation_t>(published_stamp_, whole);
-        // A store wakes nobody, so anyone parked in `await_published` sleeps through the very
-        // publication it waits for unless the wake goes out here.
-        atomic_notify_all(published_stamp_);
-        // With nobody reading, the mark is the watermark, so publishing one moves the other.
-        republish_mark_();
-    }
-
-    /**
-     *  @brief Waits until the watermark covers @p stamp, so the committer may read what it
-     *      just wrote.
-     *  @warning Blocks on another thread's publication, so no store lock may be held across it.
-     */
-    void await_published(commit_stamp_t stamp) noexcept {
-        generation_t const wanted = static_cast<generation_t>(stamp);
-        // Parked rather than spun: this waits on another thread's commit, which is unbounded, and a
-        // spinner would hold a core for the whole of it.
-        for (generation_t seen = atomic_load(published_stamp_); seen < wanted; seen = atomic_load(published_stamp_))
-            atomic_wait(published_stamp_, seen);
-    }
-
-    /** The oldest snapshot any reader can still name, so everything older is unreachable. Every arrival and
-     *  departure republishes it from the census head, so an early reader leaving while a later one stays open moves
-     *  it up to that later one rather than leaving it behind. */
-    [[nodiscard]] generation_t low_water_mark() const noexcept {
-        // Read without the lock: the mark is only written under it and never falls, so a stale read is
-        // an older mark - keeping versions nobody needs rather than freeing one somebody still names.
-        return atomic_load(low_water_mark_);
-    }
-
-    /** How many readers currently hold a snapshot, counted off the census. */
-    [[nodiscard]] std::size_t open_snapshots() const noexcept {
-        shared_lock<spin_shared_mutex_t> _ {mutex_};
-        std::size_t counted = 0;
-        for (snapshot_lease_t const *lease = oldest_lease_; lease; lease = lease->newer_) ++counted;
-        return counted;
-    }
-
-    /** Takes over @p other's stamps, for a store that is being moved and has nothing open. */
-    void adopt(snapshot_clock_t const &other) noexcept {
-        assert(!oldest_lease_ && !other.oldest_lease_ && "a lease names the clock it was drawn from");
-        // `generation_` moves atomically because `next_generation` increments it that way; `commits_`
-        // is guarded by `mutex_`.
-        atomic_store<generation_t>(generation_, atomic_load(other.generation_));
-        commits_ = other.commits_;
-        atomic_store<generation_t>(published_stamp_, atomic_load(other.published_stamp_));
-        atomic_store<generation_t>(low_water_mark_, atomic_load(other.low_water_mark_));
-    }
-};
-
-#pragma endregion Snapshot Clock
-
 /**
  *  @brief  Transactional store answering every read at one snapshot, over any key-addressable core.
  *
@@ -454,7 +117,7 @@ class snapshot_clock_t {
  *  Versions are pruned on write against a low-water mark, and an explicit @c vacuum sweeps the
  *  rest. There is no background thread, no epoch registry and no hidden global state: registering
  *  and retiring a snapshot is linking a node the caller already owns, so a destructor may do it.
- *  The mark is the oldest snapshot on the clock's census, which cannot pass a snapshot somebody
+ *  The mark is a floor at or below every snapshot the census counts, which cannot pass one somebody
  *  still holds and follows the oldest reader up as readers leave. With nothing open the mark equals
  *  the published stamp, so a key falls back to a single entry on the next commit that touches it.
  *
@@ -469,8 +132,12 @@ class snapshot_clock_t {
  *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and
  *      providing a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock
  *      bounds and ranges.
+ *  @tparam order_type_ The commit order this store is a member of. The default is solitary, which a
+ *      store nobody shares builds for itself; a thread-safety wrapper rebinds its inner store to a
+ *      shared one, whose ring it sizes from the lock sets it serves.
  */
-template <typename collection_type_, isolation_t isolation_ = isolation_t::snapshot_k>
+template <typename collection_type_, isolation_t isolation_ = isolation_t::snapshot_k,
+          typename order_type_ = solitary_commit_order_t>
 class snapshot_store {
     static_assert(isolation_ == isolation_t::snapshot_k || isolation_ == isolation_t::serializable_k ||
                       isolation_ == isolation_t::strict_serializable_k,
@@ -506,7 +173,11 @@ class snapshot_store {
     static constexpr bool awaits_publication_k = isolation_ == isolation_t::strict_serializable_k;
 
     /** Where stamps and snapshots come from, which a shard set shares across its partitions. */
-    using clock_t = snapshot_clock_t;
+    using order_t = order_type_;
+
+    /** This same store, built into @p other_order_type_ instead, for a wrapper that shares one across its parts. */
+    template <typename other_order_type_>
+    using rebind_order = snapshot_store<collection_type_, isolation_, other_order_type_>;
 
     using allocator_t = typename collection_type_::allocator_type;
 
@@ -691,7 +362,7 @@ class snapshot_store {
      *
      *  @section snapshot_store_reader_costs Costs
      *
-     *  Opening and closing a reader take the clock's mutex once each, to link and unlink its claim
+     *  Opening a reader joins one bucket of the order's census and closing it leaves that bucket, which
      *  on the census. A read takes no lock and touches no atomic of its own; a point read costs a
      *  descent plus a step over every version its key still holds, and a range read a step over
      *  every version inside the window.
@@ -710,27 +381,27 @@ class snapshot_store {
         store_t const *store_ {nullptr};
 
         /** The claim pinning the stamp, empty for one partition of a sharded reader. */
-        mutable snapshot_clock_t::snapshot_lease_t lease_ {};
+        mutable typename order_type_::snapshot_claim_t claim_ {};
 
         /** The stamp every read is answered at. */
         generation_t snapshot_ {0};
 
         /** Pins the newest published stamp with a claim of this reader's own. */
         explicit reader_t(store_t const &store) noexcept
-            : store_(&store), snapshot_(store.clock_->take_snapshot(lease_)) {}
+            : store_(&store), snapshot_(store.order_().take_snapshot(claim_)) {}
 
         /** Reads at @p snapshot, which somebody else's claim pins. */
         reader_t(store_t const &store, generation_t snapshot) noexcept : store_(&store), snapshot_(snapshot) {}
 
       public:
         reader_t(reader_t &&other) noexcept
-            : store_(std::exchange(other.store_, nullptr)), lease_(std::move(other.lease_)),
+            : store_(std::exchange(other.store_, nullptr)), claim_(std::move(other.claim_)),
               snapshot_(other.snapshot_) {}
 
         reader_t &operator=(reader_t &&other) noexcept {
             if (this == &other) return *this;
             store_ = std::exchange(other.store_, nullptr);
-            lease_ = std::move(other.lease_);
+            claim_ = std::move(other.claim_);
             snapshot_ = other.snapshot_;
             return *this;
         }
@@ -834,7 +505,7 @@ class snapshot_store {
         /** This transaction's own claim on its snapshot, empty when a shard set holds one for it. A partition of a
          *  sharded transaction reads at a snapshot somebody else is answering for, so it registers nothing and
          *  retires nothing. */
-        snapshot_clock_t::snapshot_lease_t lease_ {};
+        typename order_type_::snapshot_claim_t claim_ {};
 
         /** The stamp every read of this transaction is answered at. */
         generation_t snapshot_ {0};
@@ -848,13 +519,13 @@ class snapshot_store {
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.next_generation_()), snapshot_(store.clock_->share_snapshot(reader.lease_, lease_)) {}
+              generation_(store.next_generation_()), snapshot_(store.order_().share_snapshot(reader.claim_, claim_)) {}
 
         transaction_t(store_t &store) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(store.next_generation_()), snapshot_(store.clock_->take_snapshot(lease_)) {}
+              generation_(store.next_generation_()), snapshot_(store.order_().take_snapshot(claim_)) {}
 
         /** Opens on a snapshot and a generation somebody else drew, for one partition of a sharded transaction whose
          *  other partitions must answer at the very same stamp. */
@@ -1027,7 +698,7 @@ class snapshot_store {
         void unwind_() noexcept {
             if (!store_) return;
             if (staging_ == staging_t::staged_k) unstage_(changed_identifiers_.size());
-            lease_.retire();
+            claim_.retire();
             staging_ = staging_t::pending_k;
             store_ = nullptr;
         }
@@ -1059,7 +730,7 @@ class snapshot_store {
             : store_(std::exchange(other.store_, nullptr)), changes_(std::move(other.changes_)),
               accesses_(std::move(other.accesses_)), read_set_(other.read_set_),
               changed_identifiers_(std::move(other.changed_identifiers_)), generation_(other.generation_),
-              lease_(std::move(other.lease_)), snapshot_(other.snapshot_),
+              claim_(std::move(other.claim_)), snapshot_(other.snapshot_),
               staging_(std::exchange(other.staging_, staging_t::pending_k)), committed_stamp_(other.committed_stamp_) {}
 
         transaction_t &operator=(transaction_t &&other) noexcept {
@@ -1071,7 +742,7 @@ class snapshot_store {
             read_set_ = other.read_set_;
             changed_identifiers_ = std::move(other.changed_identifiers_);
             generation_ = other.generation_;
-            lease_ = std::move(other.lease_);
+            claim_ = std::move(other.claim_);
             snapshot_ = other.snapshot_;
             staging_ = std::exchange(other.staging_, staging_t::pending_k);
             committed_stamp_ = other.committed_stamp_;
@@ -2060,7 +1731,7 @@ class snapshot_store {
          *
          *  The no-stamp half of the split, so a caller spanning several stores can ask all of them
          *  through @c validate_for_commit and only then tell each to write. The sibling engines
-         *  keeping no clock spell it the same way and order their own versions; this one draws a
+         *  joining no order spell it the same way and order their own versions; this one draws a
          *  stamp first.
          *
          *  @warning Only ever called after @c validate_for_commit answered success, with
@@ -2069,17 +1740,17 @@ class snapshot_store {
         void publish_under() noexcept {
             auto &store = store_ref();
 
-            snapshot_clock_t::commit_in_flight_t in_flight;
-            store.clock_->begin_commit(in_flight);
+            typename order_type_::commit_in_flight_t in_flight;
+            store.order_().begin_commit(in_flight);
             publish_under(in_flight.stamp());
-            store.clock_->end_commit(in_flight);
+            store.order_().end_commit(in_flight);
 
             // The snapshot moves to the stamp just published, so this transaction reads its own
             // writes and the mark is free to follow it once every other reader has left. A commit
             // drawn before this one and still writing itself out holds the watermark below both, so
             // the wait is what makes reading one's own writes whole rather than partial.
-            store.clock_->await_published(in_flight.stamp());
-            snapshot_ = store.clock_->take_snapshot(lease_);
+            store.order_().await_published(in_flight.stamp());
+            snapshot_ = store.order_().take_snapshot(claim_);
             prune_committed();
         }
 
@@ -2162,8 +1833,12 @@ class snapshot_store {
             return result;
         }
 
-        /** Discards everything staged and pending, and takes a fresh snapshot. */
-        status_t reset() noexcept { return reset_at(store_ref().clock_->take_snapshot(lease_)); }
+        /** Discards everything staged and pending, and takes a fresh snapshot; a part holding no claim of its own
+         *  keeps the snapshot its owner pins, rather than registering a second one. */
+        status_t reset() noexcept {
+            if (!claim_.held()) return reset_at(snapshot_);
+            return reset_at(store_ref().order_().take_snapshot(claim_));
+        }
 
         /** The same, at a snapshot a sharded transaction drew once for every one of its parts. */
         status_t reset_at(generation_t snapshot) noexcept {
@@ -2445,11 +2120,23 @@ class snapshot_store {
   private:
     dated_entries_t entries_;
 
-    /** The clock this store keeps for itself, and the one it uses until somebody attaches another. */
-    snapshot_clock_t owned_clock_ {};
+    /** Whether the order lives in this store, which it does exactly when nobody else could be sharing it. */
+    static constexpr bool owns_its_order_k = order_type_::sharing_k == order_sharing_t::solitary_k;
 
-    /** Where every stamp and every snapshot comes from, never null; a shard set repoints it at a shared one. */
-    snapshot_clock_t *clock_ {&owned_clock_};
+    /** A solitary order is this store's own and sits here; a shared one belongs to whoever built the store. */
+    using order_slot_t = std::conditional_t<owns_its_order_k, order_type_, order_type_ *>;
+
+    /** The order this store is a member of, held by value when it is its own and by pointer when it is not. */
+    ST_NO_UNIQUE_ADDRESS_ mutable order_slot_t order_slot_ {};
+
+    /** The order every stamp and every snapshot comes from, however it is held. */
+    [[nodiscard]] order_type_ &order_() const noexcept {
+        if constexpr (owns_its_order_k) return order_slot_;
+        else {
+            assert(order_slot_ && "a store built into a shared order names it at construction");
+            return *order_slot_;
+        }
+    }
 
     /** Keys whose newest published version says they are there. */
     std::size_t live_count_ {0};
@@ -2458,31 +2145,28 @@ class snapshot_store {
 
 #pragma region Stamps and Snapshots
 
-    /** Points this store's clock where @p other's pointed, and takes its counters when they were its own. A store
-     *  sharing somebody's clock simply keeps sharing it; one that owned its clock copies the counters over, since
-     *  the object the old one lives in is about to stop speaking for anything. */
-    void adopt_clock_of_(snapshot_store &other) noexcept {
-        if (other.clock_ != &other.owned_clock_) { clock_ = other.clock_; }
-        else {
-            owned_clock_.adopt(other.owned_clock_);
-            clock_ = &owned_clock_;
-        }
+    /** Takes over @p other's place in its order: the same order where somebody else owns it, and the counters
+     *  themselves where it was this store's own, since the object the old one lives in is about to stop speaking
+     *  for anything. */
+    void adopt_order_of_(snapshot_store &other) noexcept {
+        if constexpr (owns_its_order_k) order_slot_.adopt(other.order_slot_);
+        else order_slot_ = other.order_slot_;
     }
 
     /** Hands out the next generation, which dates a transaction rather than its visibility. */
-    generation_t next_generation_() noexcept { return clock_->next_generation(); }
+    generation_t next_generation_() noexcept { return order_().next_generation(); }
 
     /** The newest stamp every part of which is written, which is what a fresh read answers at. */
-    [[nodiscard]] generation_t published_stamp_() const noexcept { return clock_->published_stamp(); }
+    [[nodiscard]] generation_t published_stamp_() const noexcept { return order_().published_stamp(); }
 
     /** The newest stamp drawn, which is what a validator compares against. */
-    [[nodiscard]] generation_t drawn_stamp_() const noexcept { return clock_->drawn_stamp(); }
+    [[nodiscard]] generation_t drawn_stamp_() const noexcept { return order_().drawn_stamp(); }
 
     /** The stamp as a plain number, which is how two versions are ordered by recency. */
     static constexpr generation_t stamp_of(commit_stamp_t stamp) noexcept { return static_cast<generation_t>(stamp); }
 
     /** The newest snapshot no reader can be sitting below, so everything older is unreachable. */
-    [[nodiscard]] generation_t low_water_mark_() const noexcept { return clock_->low_water_mark(); }
+    [[nodiscard]] generation_t low_water_mark_() const noexcept { return order_().low_water_mark(); }
 
 #pragma endregion Stamps and Snapshots
 
@@ -2581,7 +2265,7 @@ class snapshot_store {
      *  whose newest version is a tombstone - an erase publishes one rather than leaving a hole,
      *  which is exactly the commit a range read has to notice.
      *
-     *  Pruning cannot hide a conflict here: reclamation never passes an open lease, so no version
+     *  Pruning cannot hide a conflict here: reclamation never passes an open claim, so no version
      *  stamped above a live reader's snapshot is reclaimable while that reader holds it.
      *
      *  @param[in] ends Which sides of the window run off the end, in which case the matching bound
@@ -2859,11 +2543,11 @@ class snapshot_store {
      *  whether the level waits for its own publication before answering its caller.
      */
     void stamp_as_one_commit_(identifier_t const *identifiers, std::size_t count, generation_t generation) noexcept {
-        snapshot_clock_t::commit_in_flight_t in_flight;
-        clock_->begin_commit(in_flight);
+        typename order_type_::commit_in_flight_t in_flight;
+        order_().begin_commit(in_flight);
         stamp_under_(identifiers, count, generation, in_flight.stamp());
-        clock_->end_commit(in_flight);
-        if constexpr (awaits_publication_k) clock_->await_published(in_flight.stamp());
+        order_().end_commit(in_flight);
+        if constexpr (awaits_publication_k) order_().await_published(in_flight.stamp());
     }
 
     /** Frees every version of every identifier in @p identifiers that no snapshot can still reach. */
@@ -2968,6 +2652,20 @@ class snapshot_store {
 
     snapshot_store() noexcept : entries_(build_entries_(comparator_t {}, allocator_t {})) {}
 
+    /** Builds a store into @p order, which every stamp and every snapshot then comes from. */
+    explicit snapshot_store(order_type_ &order) noexcept
+        requires(!owns_its_order_k)
+        : entries_(build_entries_(comparator_t {}, allocator_t {})) {
+        order_slot_ = &order;
+    }
+
+    /** The same, with an allocator for the entries. */
+    snapshot_store(order_type_ &order, allocator_t const &allocator) noexcept
+        requires(!owns_its_order_k)
+        : entries_(build_entries_(comparator_t {}, allocator)) {
+        order_slot_ = &order;
+    }
+
     /** Seeds the underlying core's allocator, which a stateful allocator needs. */
     explicit snapshot_store(allocator_t const &allocator) noexcept
         : entries_(build_entries_(comparator_t {}, allocator)) {}
@@ -2976,18 +2674,18 @@ class snapshot_store {
     snapshot_store(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
         : entries_(build_entries_(comparator, allocator)) {}
 
-    /** Takes over @p other's versions and its place on the clock. A store sharing a clock keeps pointing at it; one
-     *  keeping its own copies the counters across, since the moved-from object the old clock lives in is about to
+    /** Takes over @p other's versions and its place in its order. A store in somebody's order keeps pointing at
+     *  it; one whose order is its own copies the counters across, since the moved-from object it lives in is about to
      *  stop speaking for anything. */
     snapshot_store(snapshot_store &&other) noexcept
         : entries_(std::move(other.entries_)), live_count_(other.live_count_) {
-        adopt_clock_of_(other);
+        adopt_order_of_(other);
     }
 
     snapshot_store &operator=(snapshot_store &&other) noexcept {
         if (this == &other) return *this;
         entries_ = std::move(other.entries_);
-        adopt_clock_of_(other);
+        adopt_order_of_(other);
         live_count_ = other.live_count_;
         return *this;
     }
@@ -3033,7 +2731,7 @@ class snapshot_store {
     [[nodiscard]] generation_t low_water_mark() const noexcept { return low_water_mark_(); }
 
     /** How many transactions currently hold a snapshot. */
-    [[nodiscard]] std::size_t open_snapshots() const noexcept { return clock_->open_snapshots(); }
+    [[nodiscard]] std::size_t open_snapshots() const noexcept { return order_().open_snapshots(); }
 
     /** Whether a member equal to @p comparable is readable now. */
     template <typename comparable_type_ = identifier_t>
@@ -3060,7 +2758,7 @@ class snapshot_store {
      *  @brief Opens one part of a sharded transaction at a @p snapshot and @p generation
      *      drawn elsewhere.
      *
-     *  Registers nothing with the clock: the owner of the snapshot holds the one claim that answers
+     *  Joins no bucket of its own: the owner of the snapshot holds the one claim that answers
      *  for every part, so a claim per part would only make the low-water mark count the same reader
      *  sixteen times.
      */
@@ -3089,24 +2787,23 @@ class snapshot_store {
     [[nodiscard]] reader_t reader_at(generation_t stamp) const noexcept { return reader_t {*this, stamp}; }
 
     /**
-     *  @brief Draws every stamp and every snapshot from @p clock rather than from this store's own.
+     *  @brief Seats the order this store is a member of, for a wrapper that builds its parts and
+     *      then moves them into place.
      *
-     *  This is what makes a set of stores one snapshot: they share a stamp counter, a watermark and
-     *  a reader census, so a stamp drawn for a commit spanning them means the same thing in each,
-     *  and no one of them prunes a version a reader of another still names.
-     *
-     *  @warning @p clock has to be the clock that issued whatever stamps this store already holds,
-     *      which for a fresh store is vacuously true, and no reader may be open - its claim would
-     *      be left behind on the clock being dropped.
+     *  Only a store whose order is somebody else's has one to seat, so a solitary store cannot be
+     *  re-seated at all. Called once, by the wrapper that owns both, before any transaction opens.
      */
-    void attach_clock(snapshot_clock_t &clock) noexcept {
-        assert(clock_->open_snapshots() == 0 && "a reader would leave its claim on the clock being dropped");
-        clock_ = &clock;
+    void join_order(order_type_ &order) noexcept
+        requires(!owns_its_order_k)
+    {
+        assert((!order_slot_ || order_slot_->open_snapshots() == 0) &&
+               "a reader would leave its claim on the order being left");
+        order_slot_ = &order;
     }
 
-    /** The clock this store draws from, its own until one is attached. */
-    [[nodiscard]] snapshot_clock_t &clock() noexcept { return *clock_; }
-    [[nodiscard]] snapshot_clock_t const &clock() const noexcept { return *clock_; }
+    /** The order this store was built into. */
+    [[nodiscard]] order_type_ &order() noexcept { return order_(); }
+    [[nodiscard]] order_type_ const &order() const noexcept { return order_(); }
 
 #pragma endregion Transaction Management
 
@@ -3572,7 +3269,7 @@ class snapshot_store {
      *      transaction a number an open one already carries, and both are compared by value.
      */
     status_t clear() noexcept {
-        if (clock_->open_snapshots() != 0) return operation_not_permitted_k;
+        if (order_().open_snapshots() != 0) return operation_not_permitted_k;
         entries_.clear();
         live_count_ = 0;
         return success_k;

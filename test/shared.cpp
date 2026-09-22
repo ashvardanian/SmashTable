@@ -413,8 +413,8 @@ static_assert(waiting_policy<yielding_waiting_policy_t, std::uint64_t const *, s
 static_assert(waiting_policy<yielding_waiting_policy_t, std::uint32_t, std::uint32_t>,
               "one pause-only policy serves both watched shapes without knowing either");
 static_assert(sizeof(yielding_mutex_t) == sizeof(spin_shared_mutex_t), "a stateless policy costs the mutex no storage");
-static_assert(sizeof(yielding_slot_t) == sizeof(hash_atomic_slot_ref<std::uint64_t, default_hash_t>),
-              "a stateless policy costs the slot reference no storage");
+static_assert(sizeof(yielding_table_t) == sizeof(atomic_hash_set<std::uint64_t>),
+              "a stateless policy costs the pinned table no storage");
 
 /**
  *  @brief A reference offering the extended shapes, counting which one the mutex reached for.
@@ -471,6 +471,26 @@ struct counting_extended_ref {
     void clear_bits(value_type_ bits, std::memory_order order) const noexcept {
         posted_writes.fetch_add(1, std::memory_order_relaxed);
         std::atomic_ref<value_type_>(*word).fetch_and(static_cast<value_type_>(~bits), order);
+    }
+    [[nodiscard]] value_type_ fetch_and(value_type_ mask, std::memory_order order) const noexcept {
+        return std::atomic_ref<value_type_>(*word).fetch_and(mask, order);
+    }
+    [[nodiscard]] value_type_ fetch_xor(value_type_ bits, std::memory_order order) const noexcept {
+        return std::atomic_ref<value_type_>(*word).fetch_xor(bits, order);
+    }
+    [[nodiscard]] value_type_ fetch_min(value_type_ ceiling, std::memory_order order) const noexcept {
+        std::atomic_ref<value_type_> reference(*word);
+        value_type_ observed = reference.load(std::memory_order_acquire);
+        while (observed > ceiling &&
+               !reference.compare_exchange_weak(observed, ceiling, order, std::memory_order_acquire)) {}
+        return observed;
+    }
+    [[nodiscard]] value_type_ fetch_max(value_type_ floor, std::memory_order order) const noexcept {
+        std::atomic_ref<value_type_> reference(*word);
+        value_type_ observed = reference.load(std::memory_order_acquire);
+        while (observed < floor &&
+               !reference.compare_exchange_weak(observed, floor, order, std::memory_order_acquire)) {}
+        return observed;
     }
     void flip_bits(value_type_ bits, std::memory_order order) const noexcept {
         posted_flips.fetch_add(1, std::memory_order_relaxed);
@@ -828,6 +848,8 @@ static void transaction_group_torn_commit_stops_claiming_staged() {
     using store_t = recording_store<>;
     static_assert(!transaction_group<store_t, store_t, store_t>::asks_before_writing_k,
                   "a one-call commit is what leaves a group able to tear");
+    static_assert(!transaction_group<store_t, store_t, store_t>::shares_one_order_k,
+                  "a store in no order has no stamp for a group to share");
 
     std::vector<recorded_call_t> log;
     // Array members ascend in address, so the group visits these in the order they are named.

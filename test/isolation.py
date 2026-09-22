@@ -119,7 +119,7 @@ def test_a_snapshot_repeats_its_reads(keygen):
 def test_a_sharded_snapshot_repeats_reads_across_partitions(keygen):
     """Sharding does not cost a snapshot container its level, and the guarantee spans partitions.
 
-    Enough keys to reach every partition, so this fails if any one of them answers from a clock of
+    Enough keys to reach every partition, so this fails if any one of them answers in an order of
     its own rather than the shared one.
     """
     keys = keygen(64)

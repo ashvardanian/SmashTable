@@ -61,6 +61,10 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  @brief Hashes inputs to route them into separate sets, which can be concurrent, or have a
  *      separate state-full allocator attached.
  *
+ *  Every partition is a member of the one order this set owns, so a stamp means the same thing in
+ *  each and sixteen partitions embed one order rather than sixteen. As many commits may be in
+ *  flight as there are partitions to hold disjoint lock sets, and no more, which is what sizes it.
+ *
  *  @tparam store_type_ Type of the wrapped store, like @c monotonic_store.
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
  *  @tparam shared_mutex_type_ Mutex type to use for partition locking, like @c std::shared_mutex.
@@ -83,7 +87,8 @@ class partitioned_store {
     static constexpr std::size_t partitions_k = partitions_count_;
     using store_t = partitioned_store;
     using hash_t = hash_type_;
-    using inner_store_t = store_type_;
+    using order_t = basic_commit_order<partitions_count_>;
+    using inner_store_t = typename rebound_order_of<store_type_, order_t>::type;
     using inner_transaction_t = typename inner_store_t::transaction_t;
     using mutex_t = shared_mutex_type_;
     using shared_lock_t = shared_lock<mutex_t>;
@@ -116,21 +121,21 @@ class partitioned_store {
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
 
-    /** The clock every partition draws its stamps from, or @c no_clock_t where there are none. */
-    using clock_t = typename shared_clock_of<inner_store_t>::type;
+    /** The order every partition was built into, which is this set's own. */
+    using commit_order_t = order_t;
 
     /**
      *  @brief A reader takes and releases one partition's lock at a time, so it can catch a commit
      *      half-applied however the commit itself was written - unless what a reader sees is
      *      decided by a stamp rather than by what happens to be published when it looks.
      *
-     *  A part sharing a clock is stamped, and one stamp spans every partition of a commit: a reader
+     *  A part in a shared order is stamped, and one stamp spans every partition of a commit: a reader
      *  that fixed its snapshot below that stamp sees none of the commit and one at or above it sees
      *  all of it, whatever order the partitions were written in. Such a part keeps its own promise
      *  whole. A part deciding visibility any other way is capped at @c read_committed_k, which is
      *  the weakest level named and so the floor a cap can reach.
      */
-    static constexpr isolation_t isolation_k = partitions_k == 1 || offers_shared_clock<inner_store_t, clock_t>
+    static constexpr isolation_t isolation_k = partitions_k == 1 || draws_from_a_shared_order<inner_store_t>
                                                    ? inner_store_t::isolation_k
                                                    : isolation_t::read_committed_k;
 
@@ -143,13 +148,13 @@ class partitioned_store {
 
     /** Whether a partition answers reads at a stamp somebody else pinned, registering nothing itself. */
     static constexpr bool inner_reads_at_a_stamp_k =
-        offers_shared_clock<inner_store_t, clock_t> &&
+        draws_from_a_shared_order<inner_store_t> &&
         requires(inner_store_t const &store, generation_t stamp) { store.reader_at(stamp); };
 
     /** Whether a partition stages a window's writes invisibly and publishes them under a stamp it is handed, which
      *  is what lets one stamp span every partition of a store-level window write. */
     static constexpr bool inner_publishes_under_a_stamp_k =
-        offers_shared_clock<inner_store_t, clock_t> &&
+        draws_from_a_shared_order<inner_store_t> &&
         requires(typename inner_store_t::publication_t &publication, commit_stamp_t stamp) {
             publication.publish_under(stamp);
             publication.prune_published();
@@ -346,7 +351,7 @@ class partitioned_store {
     static void note_written_(epoch_t &epoch) noexcept {
         // Indivisible: `for_all` counts a whole-store write after releasing every partition, where it
         // can interleave with a single-partition write counting under its own lock.
-        atomic_ref<epoch_t>(epoch).fetch_add(1, memory_order_release_k);
+        atomic_post_add<atomic_ref>(epoch, epoch_t {1}, memory_order_release_k);
     }
 
     /** The count a reader last saw, paired with whatever it read under it. */
@@ -504,17 +509,17 @@ class partitioned_store {
                 staged += (*opened)[partition_index].staged_count();
             }
             if (succeeded(published) && staged != 0) {
-                typename clock_t::commit_in_flight_t in_flight;
-                clock_.begin_commit(in_flight);
+                typename order_t::commit_in_flight_t in_flight;
+                order_.begin_commit(in_flight);
                 for (publication_t &part : *opened) part.publish_under(in_flight.stamp());
-                clock_.end_commit(in_flight);
+                order_.end_commit(in_flight);
                 for (publication_t &part : *opened) part.prune_published();
                 stamp = in_flight.stamp();
             }
         }
         for (padded_epoch_t &epoch : epochs_) note_written_(epoch.writes);
         if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
-            if (succeeded(published) && staged != 0) clock_.await_published(stamp);
+            if (succeeded(published) && staged != 0) order_.await_published(stamp);
         return published;
     }
 
@@ -880,17 +885,17 @@ class partitioned_store {
      *  @brief A read-only view of every partition pinned at one stamp, which records nothing and
      *      settles nothing.
      *
-     *  One claim on the shared clock pins the stamp for every partition, and each read asks the
+     *  One claim on the shared order pins the stamp for every partition, and each read asks the
      *  partition owning its key at that stamp. No read writes to the reader, so any number of
      *  threads may read through one reader at once with no lock of their own; the partition locks
      *  every read already takes shared are what keep a writer out of the partition being read.
      *
      *  @section partitioned_store_reader_costs Costs
      *
-     *  Opening and closing take the clock's mutex once each. A point read takes one partition's
+     *  Opening joins one bucket of the order's census and closing leaves it. A point read takes one partition's
      *  lock shared, which uncontended is one compare-exchange to acquire and one subtraction to
      *  release; a range read takes every partition shared, ascending, for the length of its walk,
-     *  as @c range does. Neither touches the clock, marks a partition, allocates or
+     *  as @c range does. Neither touches the order, marks a partition, allocates or
      *  validates anything.
      *
      *  The claim holds the low-water mark at or below the stamp, so no partition prunes a version
@@ -907,23 +912,23 @@ class partitioned_store {
         partitioned_store const *store_ {nullptr};
 
         /** The one claim pinning the stamp for every partition. */
-        mutable typename clock_t::snapshot_lease_t lease_ {};
+        mutable typename order_t::snapshot_claim_t claim_ {};
 
         /** The stamp every read is answered at. */
         generation_t snapshot_ {0};
 
         explicit reader_t(partitioned_store const &store) noexcept
-            : store_(&store), snapshot_(store.clock_.take_snapshot(lease_)) {}
+            : store_(&store), snapshot_(store.order_.take_snapshot(claim_)) {}
 
       public:
         reader_t(reader_t &&other) noexcept
-            : store_(std::exchange(other.store_, nullptr)), lease_(std::move(other.lease_)),
+            : store_(std::exchange(other.store_, nullptr)), claim_(std::move(other.claim_)),
               snapshot_(other.snapshot_) {}
 
         reader_t &operator=(reader_t &&other) noexcept {
             if (this == &other) return *this;
             store_ = std::exchange(other.store_, nullptr);
-            lease_ = std::move(other.lease_);
+            claim_ = std::move(other.claim_);
             snapshot_ = other.snapshot_;
             return *this;
         }
@@ -989,7 +994,7 @@ class partitioned_store {
         partitioned_store *store_;
 
         /** One inner transaction per partition, opened on one snapshot and generation where
-         *  @c offers_shared_clock<inner_store_t, clock_t>, and otherwise each under its own lock at its own moment. */
+         *  @c draws_from_a_shared_order<inner_store_t>, and otherwise each under its own lock at its own moment. */
         partition_transactions_t partitions_;
 
         /**
@@ -1015,7 +1020,7 @@ class partitioned_store {
         /** The one claim on the snapshot every partition of this transaction reads at. A part registers nothing of
          *  its own, so the reader census counts this transaction once rather than once per partition, and the
          *  low-water mark answers for all of them together. */
-        ST_NO_UNIQUE_ADDRESS_ mutable typename clock_t::snapshot_lease_t lease_ {};
+        ST_NO_UNIQUE_ADDRESS_ mutable typename order_t::snapshot_claim_t claim_ {};
 
         /** The stamp this transaction's own commit published, which it may not read below. Zero whenever this
          *  transaction is already reading at or above whatever it committed. */
@@ -1040,8 +1045,8 @@ class partitioned_store {
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
                 writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
                 inner_transaction_t &part = partitions_[reached.index];
-                if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
-                    [[maybe_unused]] status_t const unwound = part.reset_at(lease_.snapshot());
+                if constexpr (draws_from_a_shared_order<inner_store_t>) {
+                    [[maybe_unused]] status_t const unwound = part.reset_at(claim_.snapshot());
                 }
                 else { [[maybe_unused]] status_t const unwound = part.reset(); }
             }
@@ -1059,11 +1064,11 @@ class partitioned_store {
          *    is paid by the next operation, and only when there is one.
          */
         void settle_snapshot_() const noexcept {
-            if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
+            if constexpr (draws_from_a_shared_order<inner_store_t>) {
                 if (unsettled_stamp_ == 0) return;
-                clock_t &clock = store_->clock_;
-                clock.await_published(static_cast<commit_stamp_t>(unsettled_stamp_));
-                generation_t const moved = clock.take_snapshot(lease_);
+                order_t &order = store_->order_;
+                order.await_published(static_cast<commit_stamp_t>(unsettled_stamp_));
+                generation_t const moved = order.take_snapshot(claim_);
                 // Where a transaction reads is its own state, which the const read paths below own as
                 // much as the writing ones do - the partitions themselves are not being written here.
                 auto &parts = const_cast<partition_transactions_t &>(partitions_);
@@ -1188,13 +1193,13 @@ class partitioned_store {
         /**
          *  @brief Publishes every reached partition, having first learned that all of them may.
          *
-         *  The engines behind this path stamp their own versions, so there is no shared clock and
+         *  The engines behind this path stamp their own versions, so there is no shared order and
          *  no one stamp to draw - but a partition can still refuse after its neighbours have
          *  written, because each re-checks its watches as it commits. Asking all of them while
          *  holding all of them is what keeps a refusal honest.
          */
         status_t commit_together_() noexcept
-            requires(!offers_shared_clock<inner_store_t, clock_t> && inner_transaction_splits_commit_k)
+            requires(!draws_from_a_shared_order<inner_store_t> && inner_transaction_splits_commit_k)
         {
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
             for (marked_partition_t reached = touched_.first_marked();
@@ -1229,21 +1234,21 @@ class partitioned_store {
          *  ascending, which is the order every other multi-partition walk here takes them in.
          */
         status_t commit_under_one_stamp_() noexcept
-            requires offers_shared_clock<inner_store_t, clock_t>
+            requires draws_from_a_shared_order<inner_store_t>
         {
-            clock_t &clock = store_->clock_;
+            order_t &order = store_->order_;
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                 if (status_t const refused = partitions_[reached.index].validate_for_commit(); failed(refused))
                     return refused;
 
-            typename clock_t::commit_in_flight_t in_flight;
-            clock.begin_commit(in_flight);
+            typename order_t::commit_in_flight_t in_flight;
+            order.begin_commit(in_flight);
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
                 partitions_[reached.index].publish_under(in_flight.stamp());
-            clock.end_commit(in_flight);
+            order.end_commit(in_flight);
             held.release();
 
             // Held is released first on purpose: the wait blocks on another thread finishing its own
@@ -1251,13 +1256,13 @@ class partitioned_store {
             // it costs is the tail of whatever older commit is still writing itself out, so it is a
             // property of how much the commits overlap rather than a constant.
             if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
-                clock.await_published(in_flight.stamp());
+                order.await_published(in_flight.stamp());
 
             // The claim on the old snapshot goes back at once, so a long-lived transaction committing
             // in a loop stops pinning the very versions it is superseding. Where this transaction
             // reads moves separately, in `settle_snapshot_`, once its own commit is whole - and every
             // entry point below settles before it does anything, so nothing observes the gap.
-            [[maybe_unused]] generation_t const released = clock.take_snapshot(lease_);
+            [[maybe_unused]] generation_t const released = order.take_snapshot(claim_);
             unsettled_stamp_ = static_cast<generation_t>(in_flight.stamp());
             committed_stamp_ = unsettled_stamp_;
 
@@ -1274,14 +1279,14 @@ class partitioned_store {
 
       public:
         transaction_t(partitioned_store &db, partition_transactions_t &&partition_transactions,
-                      typename clock_t::snapshot_lease_t &&lease = {}) noexcept
-            : store_(&db), partitions_(std::move(partition_transactions)), lease_(std::move(lease)) {}
+                      typename order_t::snapshot_claim_t &&claim = {}) noexcept
+            : store_(&db), partitions_(std::move(partition_transactions)), claim_(std::move(claim)) {}
 
         /** Takes over @p other entirely, leaving it holding nothing staged and reaching no store. */
         transaction_t(transaction_t &&other) noexcept
             : store_(std::exchange(other.store_, nullptr)), partitions_(std::move(other.partitions_)),
               touched_(other.touched_), staging_(std::exchange(other.staging_, staging_t::pending_k)),
-              lease_(std::move(other.lease_)), unsettled_stamp_(other.unsettled_stamp_),
+              claim_(std::move(other.claim_)), unsettled_stamp_(other.unsettled_stamp_),
               committed_stamp_(other.committed_stamp_) {}
 
         /** Unwinds whatever this transaction staged, under its partition locks, then takes over @p other. */
@@ -1292,7 +1297,7 @@ class partitioned_store {
             partitions_ = std::move(other.partitions_);
             touched_ = other.touched_;
             staging_ = std::exchange(other.staging_, staging_t::pending_k);
-            lease_ = std::move(other.lease_);
+            claim_ = std::move(other.claim_);
             unsettled_stamp_ = other.unsettled_stamp_;
             committed_stamp_ = other.committed_stamp_;
             return *this;
@@ -1314,7 +1319,7 @@ class partitioned_store {
          *  in the same order, so a caller may number commits by this.
          */
         [[nodiscard]] generation_t commit_stamp() const noexcept
-            requires offers_shared_clock<inner_store_t, clock_t>
+            requires draws_from_a_shared_order<inner_store_t>
         {
             return committed_stamp_;
         }
@@ -1323,9 +1328,9 @@ class partitioned_store {
             settle_snapshot_();
             // A reset discards the staged writes along with everything else, so the guard on them goes too.
             staging_ = staging_t::pending_k;
-            if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
+            if constexpr (draws_from_a_shared_order<inner_store_t>) {
                 // One snapshot for every partition, drawn once, exactly as opening the transaction did.
-                generation_t const snapshot = store_->clock_.take_snapshot(lease_);
+                generation_t const snapshot = store_->order_.take_snapshot(claim_);
                 auto status =
                     for_parts_([snapshot](inner_transaction_t &part) noexcept { return part.reset_at(snapshot); });
                 touched_.clear();
@@ -1396,13 +1401,13 @@ class partitioned_store {
          *
          *  Both paths ask every reached partition whether it may commit before any of them writes,
          *  so a refusal is reported over nothing and the transaction stays staged and retryable.
-         *  They differ only in where the stamp comes from: one clock shared across the partitions,
+         *  They differ only in where the stamp comes from: one order shared across the partitions,
          *  or each engine stamping its own versions.
          */
         status_t commit() noexcept {
             settle_snapshot_();
             status_t published = success_k;
-            if constexpr (offers_shared_clock<inner_store_t, clock_t>) published = commit_under_one_stamp_();
+            if constexpr (draws_from_a_shared_order<inner_store_t>) published = commit_under_one_stamp_();
             else published = commit_together_();
             if (succeeded(published)) staging_ = staging_t::pending_k;
             return published;
@@ -2060,10 +2065,10 @@ class partitioned_store {
     epochs_t epochs_ {};
     partitions_t partitions_;
 
-    /** The one clock every partition draws from, so a stamp means the same thing in each. Empty, and free, for a
-     *  part that keeps no stamps. Mutable because a reader of a const store still joins the clock's census, which is
+    /** The one order every partition is a member of, so a stamp means the same thing in each. Empty, and free, for
+     *  a part that keeps no stamps. Mutable because a reader of a const store still joins the census, which is
      *  bookkeeping rather than the store's contents. */
-    ST_NO_UNIQUE_ADDRESS_ mutable clock_t clock_ {};
+    ST_NO_UNIQUE_ADDRESS_ mutable order_t order_ {};
 
     // Held rather than default-constructed per call: a hasher or comparator carrying state answers
     // differently from a fresh one, so rebuilding either would discard what the store was given.
@@ -2074,54 +2079,54 @@ class partitioned_store {
 
     partitioned_store(partitions_t &&parts, hash_t const &hasher = {}, comparator_t const &comparator = {}) noexcept
         : partitions_(std::move(parts)), hasher_(hasher), comparator_(comparator) {
-        share_clock_with_parts_();
+        seat_order_in_parts_();
     }
 
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     partitioned_store &operator=(partitioned_store &&other) noexcept {
         every_part_lock<unique_lock_t> _ {mutexes_};
         partitions_ = std::move(other.partitions_);
-        adopt_clock_of_(other);
+        adopt_order_of_(other);
         hasher_ = other.hasher_;
         comparator_ = other.comparator_;
         return *this;
     }
 
-    /** Points every partition at this store's clock, which is what makes them one snapshot. */
-    void share_clock_with_parts_() noexcept {
-        if constexpr (offers_shared_clock<inner_store_t, clock_t>)
-            for (inner_store_t &part : partitions_) part.attach_clock(clock_);
+    /** Seats this set's order in every partition, which is what makes them one snapshot. */
+    void seat_order_in_parts_() noexcept {
+        if constexpr (requires(inner_store_t &part) { part.join_order(order_); })
+            for (inner_store_t &part : partitions_) part.join_order(order_);
     }
 
     /** Takes over @p other's stamps and readers, then re-points the partitions that came with them. */
-    void adopt_clock_of_(partitioned_store &other) noexcept {
-        if constexpr (offers_shared_clock<inner_store_t, clock_t>) clock_.adopt(other.clock_);
-        share_clock_with_parts_();
+    void adopt_order_of_(partitioned_store &other) noexcept {
+        if constexpr (draws_from_a_shared_order<inner_store_t>) order_.adopt(other.order_);
+        seat_order_in_parts_();
     }
 
     /**
-     *  @brief Opens one transaction per partition at @p snapshot, which @p lease already pins, or
+     *  @brief Opens one transaction per partition at @p snapshot, which @p claim already pins, or
      *      none at all.
      *
      *  A stamped part opens on that one snapshot and on one generation drawn here: reading two
      *  partitions at two stamps is what would make the snapshot a lie, and a commit landing between
      *  two of these locks is exactly how that would happen.
      */
-    expected<transaction_t> open_transaction_(typename clock_t::snapshot_lease_t &&lease,
+    expected<transaction_t> open_transaction_(typename order_t::snapshot_claim_t &&claim,
                                               [[maybe_unused]] generation_t snapshot) noexcept {
         [[maybe_unused]] generation_t generation = 0;
-        if constexpr (offers_shared_clock<inner_store_t, clock_t>) generation = clock_.next_generation();
+        if constexpr (draws_from_a_shared_order<inner_store_t>) generation = order_.next_generation();
 
         // Ascending order, one lock at a time, like every other all-partition walk here.
         auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
             writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
-            if constexpr (offers_shared_clock<inner_store_t, clock_t>)
+            if constexpr (draws_from_a_shared_order<inner_store_t>)
                 return partitions_[partition_index].transaction_at(snapshot, generation);
             else return partitions_[partition_index].transaction();
         });
         if (!maybe) return maybe.status();
 
-        return transaction_t(*this, std::move(*maybe), std::move(lease));
+        return transaction_t(*this, std::move(*maybe), std::move(claim));
     }
 
     static expected<partitions_t> new_parts() noexcept {
@@ -2151,12 +2156,12 @@ class partitioned_store {
     }
 
   public:
-    partitioned_store() noexcept { share_clock_with_parts_(); }
+    partitioned_store() noexcept { seat_order_in_parts_(); }
 
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     partitioned_store(partitioned_store &&other) noexcept
         : partitions_(std::move(other.partitions_)), hasher_(other.hasher_), comparator_(other.comparator_) {
-        adopt_clock_of_(other);
+        adopt_order_of_(other);
     }
 
     [[nodiscard]] std::size_t size() const noexcept {
@@ -2219,10 +2224,10 @@ class partitioned_store {
     /** Opens one transaction per partition, or none at all. Each partition is taken exclusively while its
      *  transaction is built, since opening one reads the live container and draws a fresh generation from it. */
     expected<transaction_t> transaction() noexcept {
-        typename clock_t::snapshot_lease_t lease;
+        typename order_t::snapshot_claim_t claim;
         [[maybe_unused]] generation_t snapshot = 0;
-        if constexpr (offers_shared_clock<inner_store_t, clock_t>) snapshot = clock_.take_snapshot(lease);
-        return open_transaction_(std::move(lease), snapshot);
+        if constexpr (draws_from_a_shared_order<inner_store_t>) snapshot = order_.take_snapshot(claim);
+        return open_transaction_(std::move(claim), snapshot);
     }
 
     /**
@@ -2238,9 +2243,9 @@ class partitioned_store {
         requires inner_reads_at_a_stamp_k
     {
         assert(reader.store_ == this && "a transaction adopts the stamp of a reader of its own store");
-        typename clock_t::snapshot_lease_t lease;
-        generation_t const snapshot = clock_.share_snapshot(reader.lease_, lease);
-        return open_transaction_(std::move(lease), snapshot);
+        typename order_t::snapshot_claim_t claim;
+        generation_t const snapshot = order_.share_snapshot(reader.claim_, claim);
+        return open_transaction_(std::move(claim), snapshot);
     }
 
     /** Opens a reader pinned at the newest published stamp, which records and settles nothing. */
@@ -2589,7 +2594,7 @@ class partitioned_store {
      *      under a stamp the first refusal, having published nothing; over any other part the last
      *      refusal, after every partition was attempted and an unreported subset erased.
      *
-     *  Over parts sharing a clock the window goes out under one stamp, so no reader sees it
+     *  Over parts in one order the window goes out under one stamp, so no reader sees it
      *  half erased.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -2647,7 +2652,7 @@ class partitioned_store {
      *      all partitions.
      *
      *  Every partition is held exclusively for the length of the walk, as @c erase_range holds
-     *  them, so the window is revised as one write rather than sixteen; over parts sharing a clock
+     *  them, so the window is revised as one write rather than sixteen; over parts in one order
      *  it also goes out under one stamp, so no reader sees it half revised.
      *
      *  @param[in] callback Invoked with (key const &, mapped &) per element. Must be @c noexcept.
@@ -2694,13 +2699,13 @@ class partitioned_store {
         // One snapshot, then one partition lock at a time against it: a commit spanning the partitions
         // is wholly below the snapshot or wholly above it, so the walk cannot meet half of one. Holding
         // every lock instead would stall every writer for as long as the caller takes to consume.
-        if constexpr (offers_shared_clock<inner_store_t, clock_t>) {
+        if constexpr (draws_from_a_shared_order<inner_store_t>) {
             auto reader = const_cast<partitioned_store &>(*this).transaction();
             if (!reader) return reader.status();
             return reader->for_each(std::forward<callback_type_>(callback));
         }
         else {
-            // No clock to draw from, which is why `isolation_k` answers `read_committed_k` here.
+            // No order to draw from, which is why `isolation_k` answers `read_committed_k` here.
             for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
                 shared_lock_t lock {mutexes_[partition_index]};
                 walk_control_t control = walk_control_t::resume_k;
@@ -2921,7 +2926,7 @@ class partitioned_store {
 
     /** The newest snapshot no open transaction sits below, which is what @c vacuum prunes to. The oldest of the
      *  partitions' answers, so no partition prunes past a reader another still counts - which for partitions sharing
-     *  one clock is the single answer all of them give. */
+     *  one order is the single answer all of them give. */
     [[nodiscard]] generation_t low_water_mark() const noexcept
         requires offers_low_water_mark<inner_store_t>
     {

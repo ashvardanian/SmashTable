@@ -86,6 +86,9 @@ using snapshot_heavy_set_t = snapshot_hash_set<heavy_key_t>;
  *  Tests: One snapshot and one stamp shared by sixteen independently locked partitions */
 using sharded_snapshot_map_t = partitioned_store<snapshot_avl_map_t>;
 
+/** The same map behind one mutex, which is what a group of stores on one order is made of. */
+using locked_snapshot_map_t = locked_store<snapshot_avl_map_t>;
+
 /** The same map behind one mutex, where sharding has nothing to weaken. */
 using monotonic_avl_map_t =
     monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
@@ -118,7 +121,7 @@ static_assert(!erases_open_ended<snapshot_hash_map_t>,
               "an unordered core refuses these exactly as it refuses `erase_range`");
 
 static_assert(sharded_snapshot_map_t::isolation_k == isolation_t::snapshot_k,
-              "sixteen partitions sharing one clock keep the promise the part makes alone");
+              "sixteen partitions sharing one order keep the promise the part makes alone");
 static_assert(partitioned_store<snapshot_avl_map_t, hash<trivial_key_t>, spin_shared_mutex_t, 1>::isolation_k ==
                   isolation_t::snapshot_k,
               "a single partition never had anything to weaken");
@@ -637,7 +640,9 @@ static generation_t oldest_open_snapshot(
     return oldest;
 }
 
-/** Tests that the mark equals the oldest open snapshot after every arrival and every departure */
+/** Tests that the mark never passes the oldest open snapshot, through every arrival and departure order.
+ *  It is a bound rather than an equality: readers are counted by bucket, so once two of them share one the
+ *  mark answers that bucket's floor, which is at or below the older of the two. */
 template <typename store_type_>
 static void test_low_water_mark_tracks_the_oldest_reader() {
     using transaction_t = typename store_type_::transaction_t;
@@ -655,19 +660,20 @@ static void test_low_water_mark_tracks_the_oldest_reader() {
             st_verify_(opened.has_value());
             readers[index].emplace(std::move(*opened));
             st_verify_eq_(store.open_snapshots(), index + 1);
-            st_verify_eq_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            st_verify_le_(store.low_water_mark(), oldest_open_snapshot(store, readers));
         }
 
         for (std::size_t position = 0; position != readers_k; ++position) {
             readers[closing_order[position]].reset();
             st_verify_eq_(store.open_snapshots(), readers_k - position - 1);
-            st_verify_eq_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            st_verify_le_(store.low_water_mark(), oldest_open_snapshot(store, readers));
             commit_write(store, 2, static_cast<int>(position));
-            st_verify_eq_(store.low_water_mark(), oldest_open_snapshot(store, readers));
+            st_verify_le_(store.low_water_mark(), oldest_open_snapshot(store, readers));
         }
 
         st_verify_eq_(store.open_snapshots(), 0);
-        st_verify_eq_(store.low_water_mark(), store.published_stamp());
+        st_verify_eq_(store.low_water_mark(), store.published_stamp(),
+                      "with every reader gone the mark catches the watermark exactly");
     } while (std::next_permutation(closing_order.begin(), closing_order.end()));
 }
 
@@ -696,7 +702,7 @@ static void test_rolling_readers_keep_reclamation_moving() {
         holding = std::move(next);
 
         st_verify_eq_(store.open_snapshots(), 1);
-        st_verify_eq_(store.low_water_mark(), holding->snapshot());
+        st_verify_le_(store.low_water_mark(), holding->snapshot());
         // The reader that left took its version with it, so the round keeps the write and its base.
         st_verify_eq_(store.versions_count(trivial_key_t {1}), 2);
     }
@@ -724,7 +730,7 @@ static void test_long_lived_reader_holds_its_own_snapshot() {
     st_verify_lt_(early->snapshot(), keeper->snapshot());
 
     early.reset();
-    st_verify_eq_(store.low_water_mark(), keeper->snapshot());
+    st_verify_le_(store.low_water_mark(), keeper->snapshot());
 
     for (int round = 2; round != 16; ++round) {
         commit_write(store, 1, round);
@@ -732,10 +738,10 @@ static void test_long_lived_reader_holds_its_own_snapshot() {
             auto churning = store.transaction();
             st_verify_(churning.has_value());
             st_verify_eq_(store.open_snapshots(), 2);
-            st_verify_eq_(store.low_water_mark(), keeper->snapshot());
+            st_verify_le_(store.low_water_mark(), keeper->snapshot());
         }
         st_verify_eq_(store.open_snapshots(), 1);
-        st_verify_eq_(store.low_water_mark(), keeper->snapshot());
+        st_verify_le_(store.low_water_mark(), keeper->snapshot());
         st_verify_eq_(mapped_or_absent(*keeper, 1), 1);
     }
 }
@@ -2533,7 +2539,7 @@ static void transaction_range_surface_sees_its_own_writes() {
 
 #pragma region Pinned Reader Tests
 
-/** Sixteen strictly serializable partitions over one clock, which is what the in-memory engine instantiates. */
+/** Sixteen strictly serializable partitions in one order, which is what the in-memory engine instantiates. */
 using sharded_strict_map_t = partitioned_store<strict_serializable_avl_map_t>;
 
 /** How long a threaded suite below may run before its writer stops early, so the binary fits a CI budget. */
@@ -2591,11 +2597,11 @@ static void test_commit_stamp_follows_commit_order() {
 }
 
 /** Tests that a store-level window write over every partition goes out under one stamp, which is the behaviour
- *  @c erase_range_policy_k names where the parts share a clock. */
+ *  @c erase_range_policy_k names where the parts share an order. */
 template <typename store_type_>
 static void test_window_writes_publish_under_one_stamp() {
     static_assert(store_type_::erase_range_policy_k == store_type_::refusal_policy_t::all_or_nothing_k,
-                  "this suite is for the sharded stores whose parts share a clock");
+                  "this suite is for the sharded stores whose parts share an order");
     store_type_ store;
     auto const identifiers = one_identifier_per_partition<store_type_>();
     trivial_id_t const upper = *std::max_element(identifiers.begin(), identifiers.end()) + 1;
@@ -3273,7 +3279,7 @@ int main(int, char **) {
     failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation.wb",
                          test_repeated_range_matches_isolation<snapshot_wb_map_t>);
 
-    // Sixteen partitions, one clock. The suites above pin what a single store promises; these pin
+    // Sixteen partitions, one order. The suites above pin what a single store promises; these pin
     // that sharding it does not quietly take that promise back.
     failures += run_test(filter, "convergence.insert_if_missing_reports_the_fresh_insert.snapshot",
                          test_insert_if_missing_reports_the_fresh_insert<snapshot_avl_map_t>);
@@ -3330,6 +3336,12 @@ int main(int, char **) {
                          []() { test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>(); });
     failures += run_test(filter, "sharded.commit_spans_partitions.monotonic",
                          []() { test_commit_spans_partitions_matches_isolation<sharded_monotonic_map_t>(); });
+    failures += run_test(filter, "group.publishes_under_one_stamp",
+                         test_group_publishes_under_one_stamp<locked_snapshot_map_t>);
+    failures += run_test(filter, "group.commit_with_runs_the_body",
+                         test_group_commit_with_runs_the_body<locked_snapshot_map_t>);
+    failures += run_test(filter, "group.commit_is_read_whole_across_stores",
+                         []() { test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>(); });
 
     failures += run_test(filter, "fuzz.writes_match_the_oracle.snapshot",
                          []() { test_random_writes_match_the_oracle<snapshot_avl_map_t>(); });

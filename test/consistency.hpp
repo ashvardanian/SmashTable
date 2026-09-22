@@ -1503,6 +1503,76 @@ void test_group_commits_participants_together() {
     st_verify_(second.find_copy(trivial_id_to_key<member_t>(2)).has_value());
 }
 
+/** Two stores in one order publish a group under one stamp: the watermark moves once, every participant reports
+ *  that stamp, and a participant on another order is refused before anything opens. */
+template <typename container_type_>
+void test_group_publishes_under_one_stamp() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using order_t = typename container_t::commit_order_t;
+    static_assert(transaction_group<container_t, container_t>::shares_one_order_k,
+                  "two stores in one order must take the one-stamp branch");
+
+    order_t order;
+    container_t first {order}, second {order}, apart;
+
+    generation_t const before = order.published_stamp();
+    auto group = make_transaction_group(first, second);
+    st_verify_((group.has_value()) && "a group over two stores in one order must open");
+    auto [ids, names] = group->participants();
+    st_verify_(ids.upsert(trivial_id_to_member<member_t>(1, 100)));
+    st_verify_(names.upsert(trivial_id_to_member<member_t>(2, 200)));
+    st_verify_(group->stage());
+    st_verify_(group->commit());
+
+    st_verify_eq_(order.published_stamp(), before + 1, "one commit draws one stamp, however many stores it spans");
+    st_verify_eq_(group->commit_stamp(), before + 1);
+    st_verify_eq_(ids.commit_stamp(), group->commit_stamp());
+    st_verify_eq_(names.commit_stamp(), group->commit_stamp());
+    st_verify_(first.find_copy(trivial_id_to_key<member_t>(1)).has_value());
+    st_verify_(second.find_copy(trivial_id_to_key<member_t>(2)).has_value());
+
+    auto mixed = make_transaction_group(first, apart);
+    st_verify_eq_(mixed.status(), status_t::invalid_argument_k, "a participant on another order cannot share a stamp");
+}
+
+/** @c commit_with runs the body over the participants and then stages and commits, and resets what refused. */
+template <typename container_type_>
+void test_group_commit_with_runs_the_body() {
+
+    using container_t = container_type_;
+    using member_t = typename container_t::value_type;
+    using order_t = typename container_t::commit_order_t;
+
+    order_t order;
+    container_t first {order}, second {order};
+
+    {
+        auto group = make_transaction_group(first, second);
+        st_verify_(group.has_value());
+        st_verify_(group->commit_with([&](auto &ids, auto &names) noexcept {
+            status_t const one = ids.upsert(trivial_id_to_member<member_t>(1, 100));
+            return failed(one) ? one : names.upsert(trivial_id_to_member<member_t>(2, 200));
+        }));
+    }
+    st_verify_(first.find_copy(trivial_id_to_key<member_t>(1)).has_value());
+    st_verify_(second.find_copy(trivial_id_to_key<member_t>(2)).has_value());
+
+    // A body that refuses publishes nothing and leaves no participant staged.
+    {
+        auto group = make_transaction_group(first, second);
+        st_verify_(group.has_value());
+        st_verify_eq_(group->commit_with([&](auto &ids, auto &) noexcept {
+            [[maybe_unused]] status_t const staged = ids.upsert(trivial_id_to_member<member_t>(3, 300));
+            return status_t::invalid_argument_k;
+        }),
+                      status_t::invalid_argument_k);
+        st_verify_(group->staging() == staging_t::pending_k);
+    }
+    st_verify_((!first.find_copy(trivial_id_to_key<member_t>(3)).has_value()) && "a refused body writes nothing");
+}
+
 /**
  *  @brief Drives one refused group stage, with @p refusing_index_ naming the participant
  *      that refuses.

@@ -270,10 +270,10 @@ static_assert(nesting_preserves_isolation<ranked_set_t>, "a transparent wrapper 
 
 /** Sharding a stamped store keeps its promise whole, and a wrapper between the two takes nothing from it. */
 static_assert(partitioned_store<snapshot_trivial_map_t>::isolation_k == snapshot_trivial_map_t::isolation_k,
-              "one clock across partitions carries the inner store's isolation");
+              "one order across partitions carries the inner store's isolation");
 static_assert(partitioned_store<locked_store<snapshot_trivial_map_t>>::isolation_k ==
                   snapshot_trivial_map_t::isolation_k,
-              "one clock across partitions carries the inner store's isolation");
+              "one order across partitions carries the inner store's isolation");
 
 /** A transaction has to survive being stored, which is what a deleted move assignment takes away. */
 static_assert(transaction_moves_as_a_value<locked_store<tree_trivial_set_t>>, "a transaction moves as a value");

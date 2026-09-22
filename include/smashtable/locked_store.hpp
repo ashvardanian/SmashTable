@@ -20,6 +20,9 @@ namespace ashvardanian::smashtable {
  *  the wrapped store, shared where it only reads that store and exclusive where it writes to it,
  *  and a call answered from the transaction's own staged state takes no lock at all.
  *
+ *  One mutex means one commit in flight, so the order this store makes for itself is sized for
+ *  exactly that, and the wrapped store is rebound to whichever order this one is a member of.
+ *
  *  @c stage and @c commit take the mutex separately and drop it in between, so the lock is not what
  *  spans them. The store-side reservation is: staging claims every key the transaction wrote, and
  *  no other transaction can take those keys until this one publishes or unwinds, which is what
@@ -40,7 +43,8 @@ class locked_store {
 
   public:
     using store_t = locked_store;
-    using inner_store_t = store_type_;
+    using order_t = basic_commit_order<1>;
+    using inner_store_t = typename rebound_order_of<store_type_, order_t>::type;
     using inner_transaction_t = typename inner_store_t::transaction_t;
     using mutex_t = shared_mutex_type_;
 
@@ -58,26 +62,11 @@ class locked_store {
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
 
-    /** The clock the wrapped store draws its stamps from, or @c no_clock_t where it keeps none. An outer wrapper
-     *  decides whether a set of stores can share one snapshot by looking for exactly this alias, so dropping it
-     *  would make a store weaker for being wrapped. */
-    using clock_t = typename shared_clock_of<inner_store_t>::type;
+    /** The order the wrapped store is a member of, which an outer wrapper looks for by exactly this alias. */
+    using commit_order_t = order_t;
 
-    /**
-     *  @brief Whether an open transaction can be driven as one part of a sharded commit, which asks
-     *      every part whether it may proceed before any of them publishes.
-     *
-     *  One gate over several methods, unlike the surfaces in @c shared.hpp: half a commit protocol
-     *  is not a weaker protocol, it is an unusable one, so there is nothing to keep by
-     *  asking separately.
-     */
-    static constexpr bool inner_transaction_shards_k = requires(inner_transaction_t &transaction, generation_t stamp) {
-        transaction.validate_for_commit();
-        transaction.publish_under(static_cast<commit_stamp_t>(stamp));
-        transaction.adopt_snapshot(stamp);
-        transaction.prune_committed();
-        transaction.reset_at(stamp);
-    };
+    /** Whether the wrapped transaction can be driven as one part of a commit under a stamp drawn elsewhere. */
+    static constexpr bool inner_transaction_shards_k = shards_its_commit<inner_transaction_t>;
 
     /** Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
@@ -108,6 +97,13 @@ class locked_store {
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
         generation_t generation() const noexcept { return inner_transaction_.generation(); }
+
+        /** The snapshot the wrapped transaction reads at, which is transaction-local. */
+        [[nodiscard]] generation_t snapshot() const noexcept
+            requires requires(inner_transaction_t const &transaction) { transaction.snapshot(); }
+        {
+            return inner_transaction_.snapshot();
+        }
 
         /** The stamp the wrapped transaction's last commit published under, which is transaction-local. */
         [[nodiscard]] generation_t commit_stamp() const noexcept
@@ -563,9 +559,25 @@ class locked_store {
 
   private:
     mutable mutex_t mutex_;
+
+    /** The order this store makes for itself when nobody hands it one, declared before the store it seats. */
+    ST_NO_UNIQUE_ADDRESS_ mutable order_t own_order_ {};
+
+    /** The order the wrapped store is a member of, which is the one above unless a caller named another. */
+    order_t *order_ {&own_order_};
     inner_store_t inner_store_;
 
-    locked_store(inner_store_t &&inner_store) noexcept : inner_store_(std::move(inner_store)) {}
+    /** Seats whichever order this store is a member of in the store it wraps, where there is one to seat. */
+    void seat_order_() noexcept {
+        if constexpr (requires { inner_store_.join_order(*order_); }) inner_store_.join_order(*order_);
+    }
+
+    locked_store(inner_store_t &&inner_store) noexcept : inner_store_(std::move(inner_store)) { seat_order_(); }
+
+    locked_store(order_t &order, inner_store_t &&inner_store) noexcept
+        : order_(&order), inner_store_(std::move(inner_store)) {
+        seat_order_();
+    }
 
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     locked_store &operator=(locked_store &&other) noexcept {
@@ -575,7 +587,10 @@ class locked_store {
     }
 
   public:
-    locked_store() noexcept = default;
+    locked_store() noexcept { seat_order_(); }
+
+    /** Builds a store that is a member of @p order rather than of one it made for itself. */
+    explicit locked_store(order_t &order) noexcept : order_(&order) { seat_order_(); }
 
     /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
     locked_store(locked_store &&other) noexcept : inner_store_(std::move(other.inner_store_)) {}
@@ -1150,25 +1165,19 @@ class locked_store {
 
 #pragma region Sharded Membership
 
-    /** Draws every stamp and every snapshot from @p clock rather than from the wrapped store's own. Called by an
-     *  outer shard set while it owns this store outright, before any transaction is open, so it takes the mutex for
-     *  symmetry rather than for a race it could lose. */
-    void attach_clock(clock_t &clock) noexcept
-        requires offers_shared_clock<inner_store_t, clock_t>
-    {
-        unique_lock _ {mutex_};
-        inner_store_.attach_clock(clock);
-    }
-
     /** Opens one part of a sharded transaction on a @p snapshot and @p generation drawn elsewhere. */
     expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept
-        requires offers_shared_clock<inner_store_t, clock_t>
+        requires draws_from_a_shared_order<inner_store_t>
     {
         unique_lock _ {mutex_};
         auto opened = inner_store_.transaction_at(snapshot, generation);
         if (!opened) return opened.status();
         return transaction_t {*this, std::move(*opened)};
     }
+
+    /** The order the wrapped store is a member of, which is fixed at construction and needs no lock. */
+    [[nodiscard]] order_t &order() noexcept { return *order_; }
+    [[nodiscard]] order_t const &order() const noexcept { return *order_; }
 
 #pragma endregion Sharded Membership
 };
