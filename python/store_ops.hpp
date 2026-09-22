@@ -14,7 +14,12 @@
  *  Every optional slot is therefore probed with @c requires before it is named.
  */
 #pragma once
+#include <cstddef> // `std::max_align_t`
+#include <cstdint> // `std::uintptr_t`
+#include <cstring> // `std::memcpy`
+
 #include <iterator> // `std::make_move_iterator`
+#include <memory>   // `std::construct_at`, `std::destroy_at`
 
 #include "shared.hpp"
 
@@ -24,6 +29,10 @@
 #include <smashtable/snapshot_store.hpp>
 
 namespace ashvardanian::smashtable::py {
+
+/** Whether a type asks for more alignment than @c PyObject_Malloc promises, which stops at @c max_align_t. */
+template <typename object_type_>
+concept over_aligned_for_python = alignof(object_type_) > alignof(std::max_align_t);
 
 #pragma region Bridge
 
@@ -93,17 +102,30 @@ struct store_bridge {
      *      accounted for by the same allocator every Python object uses and appear in
      *      @c tracemalloc.
      *
-     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t, which the
-     *  assertion below pins - an over-aligned store would otherwise be constructed on a boundary it
-     *  did not ask for.
+     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t and no further, so a
+     *  store padding its words to a cache line is allocated through the aligned operator instead. The
+     *  two allocators do not interchange, so @c release_python_storage asks the same question.
      */
     template <typename object_type_, typename... arguments_type_>
     [[nodiscard]] static object_type_ *own_in_python_storage(arguments_type_ &&...arguments) noexcept {
-        static_assert(alignof(object_type_) <= alignof(std::max_align_t),
-                      "an over-aligned type needs storage `PyObject_Malloc` does not promise");
-        void *raw = PyObject_Malloc(sizeof(object_type_));
-        if (!raw) return nullptr;
-        return std::construct_at(static_cast<object_type_ *>(raw), std::forward<arguments_type_>(arguments)...);
+        if constexpr (over_aligned_for_python<object_type_>) {
+            // Still CPython's allocator, so the block stays accounted for: it is over-allocated by
+            // the alignment plus room for the pointer it handed back, which sits directly below the
+            // aligned address for `release_python_storage` to read and return.
+            constexpr std::size_t alignment_k = alignof(object_type_);
+            void *block = PyObject_Malloc(sizeof(object_type_) + alignment_k + sizeof(void *));
+            if (!block) return nullptr;
+            std::uintptr_t address = reinterpret_cast<std::uintptr_t>(block) + sizeof(void *);
+            address = (address + alignment_k - 1) & ~static_cast<std::uintptr_t>(alignment_k - 1);
+            std::memcpy(reinterpret_cast<void *>(address - sizeof(void *)), &block, sizeof(void *));
+            return std::construct_at(reinterpret_cast<object_type_ *>(address),
+                                     std::forward<arguments_type_>(arguments)...);
+        }
+        else {
+            void *raw = PyObject_Malloc(sizeof(object_type_));
+            if (!raw) return nullptr;
+            return std::construct_at(static_cast<object_type_ *>(raw), std::forward<arguments_type_>(arguments)...);
+        }
     }
 
     /** Destroys and returns what @c own_in_python_storage handed out, tolerating a null. */
@@ -111,7 +133,12 @@ struct store_bridge {
     static void release_python_storage(void *owned) noexcept {
         if (!owned) return;
         std::destroy_at(static_cast<object_type_ *>(owned));
-        PyObject_Free(owned);
+        if constexpr (over_aligned_for_python<object_type_>) {
+            void *block = nullptr;
+            std::memcpy(&block, static_cast<std::byte *>(owned) - sizeof(void *), sizeof(void *));
+            PyObject_Free(block);
+        }
+        else PyObject_Free(owned);
     }
 
     /**
