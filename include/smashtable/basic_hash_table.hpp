@@ -54,23 +54,6 @@
  *  dense array, the keys and values are already contiguous at the start of the buffer, and the
  *  headers at the end can be discarded.
  *
- *  @section basic_hash_table_simd_acceleration_bulk SIMD Acceleration
- *
- *  Bulk operations can benefit from vectorized hashing:
- *  - AVX-512: Hash many strings in parallel
- *  - SIMD metadata scanning for iteration
- *  - Prefetching probe sequences to hide memory latency
- *
- *  Note: Line Fill Buffer (LFB) limits on x86 (10 concurrent L1D misses) can bottleneck gather
- *  instructions, so vectorized hashing provides more benefit than vectorized probing.
- *
- *  @section basic_hash_table_small_string_optimization_inline Small String Optimization
- *
- *  Inline storage for keys under 16 bytes can eliminate heap allocations and enable efficient vectorized
- *  hashing of fixed-size data. Two approaches possible:
- *  - Dual tables: separate @c basic_hash_table<array<char,16>, V> for short strings
- *  - Variant storage: @c union of inline buffer and pointer (standard SSO pattern)
- *
  *  @see https://en.wikipedia.org/wiki/Hash_table
  *  @see Google's SwissTable: https://abseil.io/docs/cpp/guides/container
  */

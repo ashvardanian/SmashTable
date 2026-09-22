@@ -183,6 +183,33 @@ assert_accepts "moved-from, a term of art rather than history" src/probe.hpp <<'
 int probe;
 FIXTURE
 
+assert_rejects "void discard" "casts a result to void" src/probe.hpp <<'FIXTURE'
+void probe() { (void)compute(); }
+FIXTURE
+
+assert_accepts "maybe_unused binding, and prose naming the cast" src/probe.hpp <<'FIXTURE'
+// A discarded result binds to a [[maybe_unused]] variable rather than a (void) cast.
+void probe() { [[maybe_unused]] int const answer = compute(); }
+FIXTURE
+
+assert_rejects "thread_local state" "declares a thread_local" src/probe.hpp <<'FIXTURE'
+static thread_local int probe;
+FIXTURE
+
+assert_accepts "prose naming thread_local" src/probe.hpp <<'FIXTURE'
+// Per-thread state lives in the module state rather than in a thread_local.
+int probe;
+FIXTURE
+
+assert_rejects "immediately invoked lambda" "invokes a lambda where it closes" src/probe.hpp <<'FIXTURE'
+int const probe = [] { return 1; }();
+FIXTURE
+
+assert_accepts "a named function, and prose about the lambda it replaces" src/probe.hpp <<'FIXTURE'
+// A lambda invoked where it closes hides a function; this one is named instead.
+int probe() { return 1; }
+FIXTURE
+
 assert_rejects "comment banner" "draws a comment banner" src/probe.hpp <<'FIXTURE'
 // ==========================
 int probe;

@@ -113,6 +113,40 @@ check_backward_references() {
         "$file has a backward-looking comment - describe the present, git holds the history:"
 }
 
+# A discarded result binds to a `[[maybe_unused]]` variable. The cast composes with nothing and
+# reads as hiding something.
+check_void_discards() {
+    local casts
+    casts=$(printf '%s\n' "$added" |
+        grep -vE '^\+[[:space:]]*(\*|//|/\*)' |
+        grep -E '\(void\)[[:space:]]*[A-Za-z_:(]' || true)
+    [ -z "$casts" ] || fail "$casts" \
+        "$file casts a result to void - bind it to a [[maybe_unused]] variable instead:"
+}
+
+# Per-thread state belongs to an object that owns it. A thread_local is global mutable state in its
+# worst form, and one whose type has a destructor emits a per-translation-unit initializer that the
+# Mach-O linker rejects outright.
+check_thread_local() {
+    local threaded
+    threaded=$(printf '%s\n' "$added" |
+        grep -vE '^\+[[:space:]]*(\*|//|/\*)' |
+        grep -E '\bthread_local\b' || true)
+    [ -z "$threaded" ] || fail "$threaded" \
+        "$file declares a thread_local - hand the state to an object that owns it:"
+}
+
+# A lambda called the moment it closes is a function denied a name and a docblock, usually hiding
+# a branch. Name it, constrained or overloaded where it forks at compile time.
+check_immediately_invoked_lambdas() {
+    local invoked
+    invoked=$(printf '%s\n' "$added" |
+        grep -vE '^\+[[:space:]]*(\*|//|/\*)' |
+        grep -E '[^{]\}\(\)' || true)
+    [ -z "$invoked" ] || fail "$invoked" \
+        "$file invokes a lambda where it closes - name the function it stands in for:"
+}
+
 # Comment banners drawn as rules. Sections are `#pragma region`, which folds in every editor.
 check_banner_rules() {
     local rules
@@ -573,6 +607,9 @@ while IFS= read -r -d '' file; do
         check_memcpy
         check_boolean_parameters
         check_backward_references
+        check_void_discards
+        check_thread_local
+        check_immediately_invoked_lambdas
         check_banner_rules
         check_region_names
         check_type_suffixes
@@ -615,8 +652,10 @@ while IFS= read -r -d '' file; do
     esac
 done < <(git diff --cached --name-only --diff-filter=ACM -z)
 
-# JSON and YAML must satisfy the checked-in .dprint.json. Skips without dprint, installed from https://dprint.dev/install.
-if command -v dprint > /dev/null 2>&1; then
+# JSON and YAML must satisfy the checked-in .dprint.json. Skips without dprint, installed from
+# https://dprint.dev/install, and skips where there is no config for it to check against - without one
+# `dprint check` exits non-zero on its own missing-config error, which reads exactly like unclean YAML.
+if command -v dprint > /dev/null 2>&1 && [ -e .dprint.json -o -e dprint.json -o -e .dprint.jsonc ]; then
     dprint_staged=()
     while IFS= read -r -d '' file; do dprint_staged+=("$file"); done \
         < <(git diff --cached --name-only -z --diff-filter=ACM -- '*.json' '*.jsonc' '*.yml' '*.yaml')
