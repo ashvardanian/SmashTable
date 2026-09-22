@@ -1046,7 +1046,7 @@ void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
                 auto pinned = first.transaction();
                 if (!pinned) continue;
                 // The peer reads at the very stamp the first transaction pinned, which its claim keeps retained.
-                auto peer = second.transaction_at(pinned->snapshot(), order.next_generation());
+                auto peer = second.transaction_at(opened_at_t {pinned->snapshot(), order.next_generation()});
                 if (!peer) continue;
                 commit_span_sweep_t const here = read_every_key<member_t>(*pinned, 2);
                 commit_span_sweep_t const there = read_every_key<member_t>(*peer, 2);

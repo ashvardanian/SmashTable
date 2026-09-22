@@ -1192,13 +1192,13 @@ class locked_store {
 #pragma region Sharded Membership
 
     /** Opens one part of a sharded transaction on a @p snapshot and @p generation drawn elsewhere. */
-    expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept
+    expected<transaction_t> transaction_at(opened_at_t opened) noexcept
         requires draws_from_a_shared_order<inner_store_t>
     {
         unique_lock _ {mutex_};
-        auto opened = inner_store_.transaction_at(snapshot, generation);
-        if (!opened) return opened.status();
-        return transaction_t {*this, std::move(*opened)};
+        auto inner = inner_store_.transaction_at(opened);
+        if (!inner) return inner.status();
+        return transaction_t {*this, std::move(*inner)};
     }
 
     /** The order the wrapped store is a member of, which is fixed at construction and needs no lock. */

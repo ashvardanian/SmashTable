@@ -989,6 +989,22 @@ inline constexpr generation_t latest_snapshot_k = std::numeric_limits<generation
 constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(stamp, latest_snapshot_k); }
 
 /**
+ *  @brief Where a transaction opens: the snapshot it reads at, and the generation dating its own versions.
+ *
+ *  One struct rather than two parameters, because both are @c generation_t and a caller swapping them
+ *  compiles today. Named members make the swap ill-formed wherever a designated initializer spells them,
+ *  since the language requires those in declaration order.
+ */
+struct opened_at_t {
+
+    /** The stamp every read under this transaction is answered at. */
+    generation_t snapshot {0};
+
+    /** The stamp dating the versions it stages, which orders nothing anyone else sees. */
+    generation_t generation {0};
+};
+
+/**
  *  @brief What a reader is promised, named as Jepsen names it and ordered by strength.
  *
  *  The top two differ only in when a commit becomes visible, never in what they refuse: both
@@ -2472,8 +2488,7 @@ struct rebound_order_of<store_type_, order_type_,
 
 /** Whether a store opens one part of a sharded transaction at a snapshot and a generation drawn elsewhere. */
 template <typename store_type_>
-concept offers_transaction_at =
-    requires(store_type_ &store, typename store_type_::generation_t stamp) { store.transaction_at(stamp, stamp); };
+concept offers_transaction_at = requires(store_type_ &store) { store.transaction_at(opened_at_t {}); };
 
 /** Whether a store was built into an order a shard set can stamp every part alike from. */
 template <typename store_type_>
@@ -2879,7 +2894,7 @@ class transaction_group {
         order_t &order = first_of(stores...).order();
         generation_t const snapshot = order.take_snapshot(claim);
         generation_t const generation = order.next_generation();
-        return opened_t {stores.transaction_at(snapshot, generation)...};
+        return opened_t {stores.transaction_at(opened_at_t {snapshot, generation})...};
     }
 
   public:

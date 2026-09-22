@@ -136,9 +136,29 @@ class partitioned_store {
                                                    ? inner_store_t::isolation_k
                                                    : isolation_t::read_committed_k;
 
+    /** A cap this set computes must be a property of the part, never an accident of a concept.
+     *  Every @c if @c constexpr on @c draws_from_a_shared_order has a clean @c else, so a concept
+     *  that stops binding drops @c isolation_k to @c read_committed_k and turns the one-stamp commit
+     *  off with no diagnostic anywhere. A transaction answering at a stamp is spelled independently
+     *  of the shard protocol's signature, so the two disagreeing says the cap was an accident. */
+    static_assert(!(requires(typename inner_store_t::transaction_t const &part) {
+        part.snapshot();
+    } && inner_store_t::isolation_k != isolation_t::read_committed_k) || draws_from_a_shared_order<inner_store_t>,
+                  "a part answering at a stamp must be reachable through the shard protocol");
+
     using comparator_t = typename inner_store_t::comparator_t;
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
+
+    /** A part that records its reads must be the part this set marks partitions for.
+     *  @c records_what_it_reads is an atomic constraint over @c isolation_k, so moving or renaming
+     *  that member leaves it unsatisfied rather than ill-formed. Ten of its uses here are an
+     *  @c if @c constexpr with no @c else, so going quiet stops every partition being marked, leaves
+     *  the read set empty, and lets a serializable part go on advertising a level nothing validates.
+     *  Naming the member the concept reads turns that silence into a hard error, since an absent
+     *  member is ill-formed here where it is merely unsatisfied inside the constraint. */
+    static_assert(std::is_same_v<decltype(inner_store_t::isolation_k), isolation_t const>,
+                  "a part names its level `isolation_k`, which is the member `records_what_it_reads` reads");
 
     /** Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
@@ -2118,7 +2138,7 @@ class partitioned_store {
         auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
             writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
             if constexpr (draws_from_a_shared_order<inner_store_t>)
-                return partitions_[partition_index].transaction_at(snapshot, generation);
+                return partitions_[partition_index].transaction_at(opened_at_t {snapshot, generation});
             else return partitions_[partition_index].transaction();
         });
         if (!maybe) return maybe.status();

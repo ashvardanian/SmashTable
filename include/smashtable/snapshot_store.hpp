@@ -529,11 +529,11 @@ class snapshot_store {
 
         /** Opens on a snapshot and a generation somebody else drew, for one partition of a sharded transaction whose
          *  other partitions must answer at the very same stamp. */
-        transaction_t(store_t &store, generation_t snapshot, generation_t generation) noexcept
+        transaction_t(store_t &store, opened_at_t opened) noexcept
             : store_(&store), changes_(store_t::build_changes_(store.entries_)),
               accesses_(accesses_allocator_t(storage_shape_t::allocator_of(store.entries_))),
               changed_identifiers_(changed_identifiers_allocator_t(storage_shape_t::allocator_of(store.entries_))),
-              generation_(generation), snapshot_(snapshot) {}
+              generation_(opened.generation), snapshot_(opened.snapshot) {}
 
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
@@ -2762,9 +2762,7 @@ class snapshot_store {
      *  for every part, so a claim per part would only make the low-water mark count the same reader
      *  sixteen times.
      */
-    expected<transaction_t> transaction_at(generation_t snapshot, generation_t generation) noexcept {
-        return transaction_t {*this, snapshot, generation};
-    }
+    expected<transaction_t> transaction_at(opened_at_t opened) noexcept { return transaction_t {*this, opened}; }
 
     /**
      *  @brief Opens a transaction reading at @p reader's stamp rather than at the newest one.
@@ -3771,5 +3769,22 @@ using strict_serializable_hash_map = strict_serializable_store<
     basic_hash_table<mapping<key_type_, mapped_type_>, hasher_type_, equals_type_, allocator_type_>>;
 
 #pragma endregion Aliases
+
+#pragma region Contract
+
+/** The shard protocol is part of a stamped store's contract, not an option a wrapper discovers.
+ *  @c partitioned_store reads @c draws_from_a_shared_order for its level and falls to
+ *  @c read_committed_k when it is false, and every @c if @c constexpr on that concept has a clean
+ *  @c else. So a concept that stops binding downgrades the advertised guarantee with no diagnostic
+ *  anywhere, and the surface parity fold cannot see it: @c parity_witness asserts an implication,
+ *  which a false antecedent satisfies. These turn that silence into a build failure. */
+static_assert(offers_transaction_at<snapshot_avl_map<int, int>>,
+              "a stamped store opens one part of a sharded transaction at a stamp drawn elsewhere");
+static_assert(draws_from_a_shared_order<snapshot_avl_map<int, int>>,
+              "a stamped store is a member of an order a shard set can stamp every part alike from");
+static_assert(snapshot_avl_map<int, int>::isolation_k == isolation_t::snapshot_k,
+              "a snapshot store promises snapshot isolation");
+
+#pragma endregion Contract
 
 } // namespace ashvardanian::smashtable
