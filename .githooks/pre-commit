@@ -532,6 +532,15 @@ check_docblock_brackets() {
         "            on its last line, a tagged block takes dedicated /** and */ lines:"
 }
 
+# A header's @date is when the file was created, not when it was last touched. Git records every edit
+# since; the header records the one fact git cannot show without archaeology.
+check_header_date() {
+    local rewritten
+    rewritten=$(git diff --cached -U0 -- "$file" | grep -E '^-[^-].*@date' || true)
+    [ -z "$rewritten" ] || fail "$rewritten" \
+        "$file rewrites the @date in its header - that is the creation date, and git holds the edits:"
+}
+
 # Member documentation is Doxygen: a bare `//` line directly above a declaration (a member or a type)
 # is the banned doc style - those entities get `/** @brief ... */`. The same `Type name = ...;` shape
 # inside a function body is a local variable and its `//` note is a legal implementation note, and
@@ -628,6 +637,7 @@ while IFS= read -r -d '' file; do
         check_lone_brief
         check_brief_length
         check_file_header
+        check_header_date
         check_docblock_brackets
         check_bare_member_docs
         check_mangled_literals

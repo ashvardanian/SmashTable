@@ -75,11 +75,39 @@ report_fail() { # report_fail <label> <detail>
     printf '%s\n' "$precommit_output" | sed 's/^/      | /' | head -6
 }
 
+# A fixture whose file is already in HEAD, so the staged diff carries removed lines as well as added
+# ones - the only shape a rule about rewriting an existing line can see.
+new_edited_fixture() { # new_edited_fixture <relative-path> <sed-expression>
+    fixture_ordinal=$((fixture_ordinal + 1))
+    fixture_dir="$scratch_root/fixture-$fixture_ordinal"
+    mkdir -p "$fixture_dir"
+    git -C "$fixture_dir" init --quiet
+    git -C "$fixture_dir" config user.email selftest@example.invalid
+    git -C "$fixture_dir" config user.name Selftest
+    fixture_path="$fixture_dir/$1"
+    mkdir -p "$(dirname "$fixture_path")"
+    {
+        printf '/**\n *  @file %s\n *  @author Selftest\n *  @date January 1, 2026\n' "$1"
+        printf ' *  @brief One staged fixture for one rule.\n *\n *  The case under test follows.\n */\n'
+        printf '#pragma once\n\nint settled = 0;\n'
+    } > "$fixture_path"
+    git -C "$fixture_dir" add -- "$1"
+    git -C "$fixture_dir" commit --quiet -m "Chore: Seed the fixture"
+    sed -i "$2" "$fixture_path"
+    git -C "$fixture_dir" add -- "$1"
+}
+
 # The bad fixture must be rejected, by this rule and by no other.
 assert_rejects() { # assert_rejects <label> <phrase-identifying-the-rule> <relative-path> <<< content
     local label=$1 phrase=$2 path=$3
     new_fixture "$path"
     run_precommit
+    expect_rejection "$label" "$phrase"
+}
+
+# The same verdict over a fixture somebody else staged, which the edited cases need.
+expect_rejection() { # expect_rejection <label> <phrase-identifying-the-rule>
+    local label=$1 phrase=$2
     if [ "$precommit_status" -eq 0 ]; then
         report_fail "$label" "expected a rejection, the hook accepted it"
     elif ! printf '%s\n' "$precommit_output" | grep -qF "$phrase"; then
@@ -96,11 +124,30 @@ assert_accepts() { # assert_accepts <label> <relative-path> <<< content
     local label=$1 path=$2
     new_fixture "$path"
     run_precommit
+    expect_acceptance "$label"
+}
+
+# The same verdict over a fixture somebody else staged, which the edited cases need.
+expect_acceptance() { # expect_acceptance <label>
+    local label=$1
     if [ "$precommit_status" -ne 0 ]; then
         report_fail "$label" "expected acceptance, $precommit_count rule(s) rejected it"
     else
         report_pass
     fi
+}
+
+# An edit that rewrites the header date must be rejected; one that leaves it alone must not.
+assert_edit_rejects() { # assert_edit_rejects <label> <phrase> <relative-path> <sed-expression>
+    new_edited_fixture "$3" "$4"
+    run_precommit
+    expect_rejection "$1" "$2"
+}
+
+assert_edit_accepts() { # assert_edit_accepts <label> <relative-path> <sed-expression>
+    new_edited_fixture "$2" "$3"
+    run_precommit
+    expect_acceptance "$1"
 }
 
 run_commit_msg() { # run_commit_msg <<< message
@@ -364,6 +411,12 @@ FIXTURE
 assert_rejects "generated artifact" "generated output" build/probe.pyc <<'FIXTURE'
 compiled
 FIXTURE
+
+assert_edit_rejects "header date rewritten to today" "rewrites the @date in its header" \
+    include/smashtable/probe.hpp 's/@date January 1, 2026/@date September 22, 2026/'
+
+assert_edit_accepts "an edit that leaves the header date alone" \
+    include/smashtable/probe.hpp 's/int settled = 0;/int settled = 1;/'
 
 # endregion Pre-commit fixtures
 
