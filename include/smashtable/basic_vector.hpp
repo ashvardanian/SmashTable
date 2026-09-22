@@ -37,8 +37,9 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <memory>  // `std::allocator_traits`
-#include <utility> // `std::exchange`, `std::forward`
+#include <concepts> // `std::invocable`
+#include <memory>   // `std::allocator_traits`
+#include <utility>  // `std::exchange`, `std::forward`
 
 #include "shared.hpp"
 
@@ -242,6 +243,91 @@ class basic_vector {
     void pop_back() noexcept {
         assert(size_ > 0 && "pop_back requires non-empty vector");
         data_[--size_].~value_t();
+    }
+
+    /**
+     *  @brief Inserts @p value at @p position into room already reserved, shifting the tail up by one.
+     *  @param[in] position Index the new element takes, at most @c size().
+     *  @param[in] value Element to insert (moved into the vector).
+     *  @return Always success, since nothing here can refuse.
+     */
+    status_t insert(assume_reserved_t, std::size_t position, value_t &&value) noexcept {
+        assert(position <= size_ && size_ < capacity_ &&
+               "insert with assume_reserved requires room and a position inside");
+        if (position == size_) return push_back(assume_reserved, std::move(value));
+
+        new (&data_[size_]) value_t(std::move(data_[size_ - 1]));
+        ++size_;
+        for (std::size_t index = size_ - 2; index != position; --index) data_[index] = std::move(data_[index - 1]);
+        data_[position] = std::move(value);
+        return success_k;
+    }
+
+    /**
+     *  @brief Inserts @p value at @p position, shifting the elements at and after it up by one.
+     *
+     *  Linear in the elements after @p position, which is what a sorted run of a few hundred entries
+     *  costs and why an ordered container built on this stays small.
+     *
+     *  @param[in] position Index the new element takes, at most @c size().
+     *  @param[in] value Element to insert (moved into the vector), never one of this vector's own.
+     *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
+     */
+    status_t insert(std::size_t position, value_t &&value) noexcept {
+        assert((&value < data_ || &value >= data_ + size_) && "insert cannot take an element of this very vector");
+        if (size_ >= capacity_)
+            if (status_t const grown = reserve(size_ + 1); failed(grown)) return grown;
+        return insert(assume_reserved, position, std::move(value));
+    }
+
+    /**
+     *  @brief Removes the element at @p position, handing it to @p callback first and shifting the rest down.
+     *  @param[in] position Index of the element to remove, below @c size().
+     *  @param[in] callback Receives the element before it is moved away. Must be @c noexcept.
+     */
+    template <typename callback_type_ = no_op_t>
+        requires std::invocable<callback_type_ &, value_t &>
+    void erase(std::size_t position, callback_type_ &&callback = {}) noexcept {
+        erase(position, 1, std::forward<callback_type_>(callback));
+    }
+
+    /**
+     *  @brief Removes @p count elements from @p position, handing each to @p callback first and shifting the rest down.
+     *  @param[in] position Index of the first element to remove.
+     *  @param[in] count Elements to remove, which must not run past the end.
+     *  @param[in] callback Receives each element before it is moved away. Must be @c noexcept.
+     */
+    template <typename callback_type_ = no_op_t>
+        requires std::invocable<callback_type_ &, value_t &>
+    void erase(std::size_t position, std::size_t count, callback_type_ &&callback = {}) noexcept {
+        assert(position <= size_ && count <= size_ - position && "erase requires a range inside the vector");
+        for (std::size_t index = position; index != position + count; ++index) callback(data_[index]);
+        for (std::size_t index = position; index + count != size_; ++index)
+            data_[index] = std::move(data_[index + count]);
+        for (std::size_t removed = 0; removed != count; ++removed) pop_back();
+    }
+
+    /**
+     *  @brief Removes every element @p predicate admits in one pass, keeping the order of the rest.
+     *  @param[in] predicate Decides which elements go. Must be @c noexcept.
+     *  @param[in] callback Receives each removed element before it is moved away. Must be @c noexcept.
+     *  @return How many elements were removed.
+     */
+    template <typename predicate_type_, typename callback_type_ = no_op_t>
+        requires std::invocable<callback_type_ &, value_t &>
+    std::size_t erase_if(predicate_type_ &&predicate, callback_type_ &&callback = {}) noexcept {
+        std::size_t kept = 0;
+        for (std::size_t index = 0; index != size_; ++index) {
+            if (predicate(data_[index])) {
+                callback(data_[index]);
+                continue;
+            }
+            if (kept != index) data_[kept] = std::move(data_[index]);
+            ++kept;
+        }
+        std::size_t const removed = size_ - kept;
+        for (std::size_t dropped = 0; dropped != removed; ++dropped) pop_back();
+        return removed;
     }
 
     /**

@@ -242,6 +242,174 @@ static void vector_copy_and_swap() {
     st_verify_eq_(budgeted.size(), 4u);
 }
 
+/** Positional inserts land where asked and shift the rest up, at both ends and in the middle. */
+static void vector_inserts_at_a_position() {
+    basic_vector<int> vector;
+    for (int value = 0; value < 5; ++value) st_verify_(vector.push_back(int {value}));
+
+    st_verify_(vector.insert(0, 99));
+    st_verify_eq_(vector.size(), 6u);
+    st_verify_eq_(vector[0], 99);
+    st_verify_eq_(vector[1], 0);
+    st_verify_eq_(vector[5], 4);
+
+    st_verify_(vector.insert(vector.size(), 77));
+    st_verify_eq_(vector.size(), 7u);
+    st_verify_eq_(vector[6], 77);
+
+    st_verify_(vector.insert(3, 55));
+    st_verify_eq_(vector.size(), 8u);
+    st_verify_eq_(vector[2], 1);
+    st_verify_eq_(vector[3], 55);
+    st_verify_eq_(vector[4], 2);
+
+    // An insert into an empty vector is the same call, not a special case for the caller.
+    basic_vector<int> empty;
+    st_verify_(empty.insert(0, 7));
+    st_verify_eq_(empty.size(), 1u);
+    st_verify_eq_(empty[0], 7);
+
+    // Every element survives an insert that had to grow the storage.
+    basic_vector<int> growing;
+    for (int value = 0; value < 64; ++value) st_verify_(growing.insert(0, int {value}));
+    st_verify_eq_(growing.size(), 64u);
+    for (std::size_t index = 0; index < growing.size(); ++index)
+        st_verify_eq_(growing[index], static_cast<int>(63 - index));
+}
+
+/** Positional erases remove exactly what was named and shift the rest down. */
+static void vector_erases_at_a_position() {
+    basic_vector<int> vector;
+    for (int value = 0; value < 6; ++value) st_verify_(vector.push_back(int {value}));
+
+    vector.erase(0);
+    st_verify_eq_(vector.size(), 5u);
+    st_verify_eq_(vector[0], 1);
+
+    vector.erase(vector.size() - 1);
+    st_verify_eq_(vector.size(), 4u);
+    st_verify_eq_(vector[3], 4);
+
+    vector.erase(1);
+    st_verify_eq_(vector.size(), 3u);
+    st_verify_eq_(vector[0], 1);
+    st_verify_eq_(vector[1], 3);
+    st_verify_eq_(vector[2], 4);
+
+    // A ranged erase takes a whole run out at once, including the run that reaches the end.
+    basic_vector<int> ranged;
+    for (int value = 0; value < 8; ++value) st_verify_(ranged.push_back(int {value}));
+    ranged.erase(2, 3);
+    st_verify_eq_(ranged.size(), 5u);
+    st_verify_eq_(ranged[1], 1);
+    st_verify_eq_(ranged[2], 5);
+    ranged.erase(3, 2);
+    st_verify_eq_(ranged.size(), 3u);
+    st_verify_eq_(ranged[2], 5);
+    ranged.erase(0, 3);
+    st_verify_eq_(ranged.size(), 0u);
+
+    // Erasing nothing is legal and moves nothing.
+    basic_vector<int> untouched;
+    for (int value = 0; value < 3; ++value) st_verify_(untouched.push_back(int {value}));
+    untouched.erase(1, 0);
+    st_verify_eq_(untouched.size(), 3u);
+    st_verify_eq_(untouched[1], 1);
+}
+
+/** A shift moves every element exactly once, so no value is duplicated or lost across the gap. */
+static void vector_shifts_every_element_once() {
+    basic_vector<fallible_element_t> vector;
+    for (int value = 0; value < 32; ++value) st_verify_(vector.emplace_back(value));
+
+    st_verify_(vector.insert(7, fallible_element_t {}));
+    vector[7].value = 999;
+    st_verify_eq_(vector.size(), 33u);
+    for (std::size_t index = 0; index < 7; ++index) st_verify_eq_(vector[index].value, static_cast<int>(index));
+    st_verify_eq_(vector[7].value, 999);
+    for (std::size_t index = 8; index < vector.size(); ++index)
+        st_verify_eq_(vector[index].value, static_cast<int>(index - 1));
+
+    vector.erase(7);
+    st_verify_eq_(vector.size(), 32u);
+    for (std::size_t index = 0; index < vector.size(); ++index)
+        st_verify_eq_(vector[index].value, static_cast<int>(index));
+}
+
+/** The reserved form shifts into room already secured and asks the allocator for nothing. */
+static void vector_inserts_into_reserved_room() {
+    basic_vector<int> vector;
+    st_verify_(vector.reserve(8));
+    for (int value = 0; value < 4; ++value) st_verify_(vector.push_back(int {value}));
+    std::size_t const capacity_before = vector.capacity();
+
+    st_verify_(vector.insert(assume_reserved, 2, 42));
+    st_verify_eq_(vector.size(), 5u);
+    st_verify_eq_(vector.capacity(), capacity_before);
+    st_verify_eq_(vector[1], 1);
+    st_verify_eq_(vector[2], 42);
+    st_verify_eq_(vector[3], 2);
+    st_verify_eq_(vector[4], 3);
+
+    st_verify_(vector.insert(assume_reserved, vector.size(), 77));
+    st_verify_eq_(vector.size(), 6u);
+    st_verify_eq_(vector[5], 77);
+}
+
+/** Every erased element reaches the callback exactly once, before the tail shifts over it. */
+static void vector_erases_hand_each_element_out() {
+    basic_vector<int> vector;
+    for (int value = 0; value < 8; ++value) st_verify_(vector.push_back(int {value}));
+
+    int handed[8] = {};
+    std::size_t handed_count = 0;
+    auto collect = [&](int &element) noexcept { handed[handed_count++] = element; };
+
+    vector.erase(2, 3, collect);
+    st_verify_eq_(handed_count, 3u);
+    st_verify_eq_(handed[0], 2);
+    st_verify_eq_(handed[1], 3);
+    st_verify_eq_(handed[2], 4);
+    st_verify_eq_(vector.size(), 5u);
+    st_verify_eq_(vector[1], 1);
+    st_verify_eq_(vector[2], 5);
+    st_verify_eq_(vector[4], 7);
+
+    vector.erase(0, collect);
+    st_verify_eq_(handed_count, 4u);
+    st_verify_eq_(handed[3], 0);
+    st_verify_eq_(vector[0], 1);
+
+    // A count beside the position is a count, never a callback.
+    vector.erase(1, 2);
+    st_verify_eq_(handed_count, 4u);
+    st_verify_eq_(vector.size(), 2u);
+    st_verify_eq_(vector[0], 1);
+    st_verify_eq_(vector[1], 7);
+}
+
+/** A predicate sweeps in one pass, keeps the survivors in order, and answers how many went. */
+static void vector_erase_if_compacts_in_one_pass() {
+    basic_vector<int> vector;
+    for (int value = 0; value < 10; ++value) st_verify_(vector.push_back(int {value}));
+
+    std::size_t handed_evens = 0;
+    auto count_even = [&](int &element) noexcept { handed_evens += element % 2 == 0; };
+    auto is_even = [](int const &element) noexcept { return element % 2 == 0; };
+
+    st_verify_eq_(vector.erase_if(is_even, count_even), 5u);
+    st_verify_eq_(handed_evens, 5u);
+    st_verify_eq_(vector.size(), 5u);
+    for (std::size_t index = 0; index < vector.size(); ++index)
+        st_verify_eq_(vector[index], static_cast<int>(2 * index + 1));
+
+    st_verify_eq_(vector.erase_if(is_even), 0u);
+    st_verify_eq_(vector.size(), 5u);
+
+    st_verify_eq_(vector.erase_if([](int const &) noexcept { return true; }), 5u);
+    st_verify_eq_(vector.size(), 0u);
+}
+
 /** Moves transfer ownership and leave the source empty rather than aliasing its storage. */
 static void vector_move_semantics() {
     auto made = basic_vector<int>::make(16);
@@ -291,6 +459,12 @@ int main() {
     failures += run_test(filter, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
     failures += run_test(filter, "vector.copy_and_swap", vector_copy_and_swap);
     failures += run_test(filter, "vector.move_semantics", vector_move_semantics);
+    failures += run_test(filter, "vector.inserts_at_a_position", vector_inserts_at_a_position);
+    failures += run_test(filter, "vector.erases_at_a_position", vector_erases_at_a_position);
+    failures += run_test(filter, "vector.shifts_every_element_once", vector_shifts_every_element_once);
+    failures += run_test(filter, "vector.inserts_into_reserved_room", vector_inserts_into_reserved_room);
+    failures += run_test(filter, "vector.erases_hand_each_element_out", vector_erases_hand_each_element_out);
+    failures += run_test(filter, "vector.erase_if_compacts_in_one_pass", vector_erase_if_compacts_in_one_pass);
     failures += run_test(filter, "vector.sequence_suite", vector_sequence_suite);
 
     return report_test_failures(failures);

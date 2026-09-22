@@ -18,7 +18,7 @@
 #include <memory>      // `std::allocator_traits`
 #include <span>        // `std::span`
 #include <type_traits> // `std::false_type`, `std::is_nothrow_move_assignable_v`
-#include <utility>     // `std::move`
+#include <utility>     // `std::forward`, `std::move`
 
 #include "basic_vector.hpp"
 #include "row_search.hpp"
@@ -219,7 +219,7 @@ class basic_flat_set {
     status_t insert(value_t element) noexcept {
         std::size_t const offset = rank(element);
         if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) return key_already_exists_k;
-        return insert_at_(offset, std::move(element));
+        return elements_.insert(offset, std::move(element));
     }
 
     /** Adds @p element, replacing an equivalent one if the set holds it. */
@@ -229,7 +229,7 @@ class basic_flat_set {
             elements_.data()[offset] = std::move(element);
             return success_k;
         }
-        return insert_at_(offset, std::move(element));
+        return elements_.insert(offset, std::move(element));
     }
 
     /**
@@ -289,11 +289,8 @@ class basic_flat_set {
     template <typename comparable_type_>
     status_t erase(comparable_type_ const &wanted) noexcept {
         std::size_t const offset = rank(wanted);
-        value_t *const elements = elements_.data();
-        if (offset == elements_.size() || comparator_(wanted, elements[offset])) return key_not_found_k;
-        for (std::size_t index = offset; index + 1 < elements_.size(); ++index)
-            elements[index] = std::move(elements[index + 1]);
-        elements_.pop_back();
+        if (offset == elements_.size() || comparator_(wanted, elements_[offset])) return key_not_found_k;
+        elements_.erase(offset);
         return success_k;
     }
 
@@ -303,11 +300,13 @@ class basic_flat_set {
         std::size_t const first = rank(lower);
         std::size_t const last = rank(upper);
         if (first >= last) return;
-        value_t *const elements = elements_.data();
-        for (std::size_t index = first; index < last; ++index) callback(elements[index]);
-        for (std::size_t index = last; index < elements_.size(); ++index)
-            elements[index - (last - first)] = std::move(elements[index]);
-        for (std::size_t removed = last - first; removed > 0; --removed) elements_.pop_back();
+        elements_.erase(first, last - first, std::forward<callback_type_>(callback));
+    }
+
+    /** Removes every element @p predicate admits, handing each to @p callback first, and answers how many went. */
+    template <typename predicate_type_, typename callback_type_ = no_op_t>
+    std::size_t erase_if(predicate_type_ &&predicate, callback_type_ &&callback = {}) noexcept {
+        return elements_.erase_if(std::forward<predicate_type_>(predicate), std::forward<callback_type_>(callback));
     }
 
 #pragma endregion Modifiers
@@ -341,7 +340,7 @@ class basic_flat_set {
                     offset < staged.size() && !staged.comparator_(candidate, staged.elements_[offset]);
                 if constexpr (policy_ == incumbent_policy_t::refuses_the_newcomer_k)
                     if (repeated) return key_already_exists_k;
-                return repeated ? success_k : staged.insert_at_(offset, std::move(candidate));
+                return repeated ? success_k : staged.elements_.insert(offset, std::move(candidate));
             }
         });
     }
@@ -398,18 +397,6 @@ class basic_flat_set {
     }
 
 #pragma endregion Staging
-
-    status_t insert_at_(std::size_t offset, value_t &&element) noexcept {
-        status_t const status = elements_.push_back(std::move(element));
-        if (failed(status)) return status;
-        value_t *const elements = elements_.data();
-        std::size_t index = elements_.size() - 1;
-        if (index == offset) return success_k;
-        value_t appended = std::move(elements[index]);
-        for (; index > offset; --index) elements[index] = std::move(elements[index - 1]);
-        elements[offset] = std::move(appended);
-        return success_k;
-    }
 };
 
 static_assert(ordered_collection<basic_flat_set<std::uint64_t>>,

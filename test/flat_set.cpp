@@ -218,6 +218,27 @@ void flat_set_batch_is_all_or_nothing() {
         [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
 }
 
+/** A predicate sweeps the array in one pass, keeps the survivors ordered, and hands each removed element out. */
+void flat_set_erase_if_keeps_order() {
+    basic_flat_set<std::uint64_t> set;
+    for (std::uint64_t value = 0; value < 16; ++value) st_verify_(set.insert(std::uint64_t {value}));
+
+    std::size_t handed = 0;
+    std::size_t const removed = set.erase_if([](std::uint64_t const &element) noexcept { return element % 4 == 0; },
+                                             [&](std::uint64_t &) noexcept { ++handed; });
+    st_verify_eq_(removed, 4u);
+    st_verify_eq_(handed, 4u);
+    st_verify_eq_(set.size(), 12u);
+    std::uint64_t previous = 0;
+    for (std::uint64_t const &element : set) {
+        st_verify_(element % 4 != 0);
+        st_verify_(previous < element || previous == 0);
+        previous = element;
+    }
+    st_verify_eq_(set.erase_if([](std::uint64_t const &) noexcept { return false; }), 0u);
+    st_verify_eq_(set.size(), 12u);
+}
+
 #pragma endregion Tests
 
 } // namespace
@@ -237,6 +258,7 @@ int main() {
     failures += run_test(filter, "flat_set.shared_suites", flat_set_shared_suites);
 
     failures += run_test(filter, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
+    failures += run_test(filter, "flat_set.erase_if_keeps_order", flat_set_erase_if_keeps_order);
 
     return report_test_failures(failures);
 }
