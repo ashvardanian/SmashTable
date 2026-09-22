@@ -1171,7 +1171,7 @@ class reference_store {
          *
          *  The second half of a commit, split out because a caller spanning several stores has to
          *  know that once the first of them writes, none of the rest can turn back. It draws its
-         *  own stamp rather than taking one, because these stores keep no shared clock - each
+         *  own stamp rather than taking one, because these stores join no shared order - each
          *  orders its own versions, and a caller spanning several of them is buying atomicity of
          *  the decision, not one instant across all of them.
          *
@@ -1210,11 +1210,17 @@ class reference_store {
     };
 
   private:
+    /** Every version of every key in one ordered set, which is what makes this the oracle. */
     entry_set_t entries_ {};
+
+    /** Dates a transaction's private versions; unique across concurrent openers. */
     alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
+
+    /** Draws the commit stamps this store publishes at, which order visibility. */
     alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
-    std::size_t visible_count_ {0};
-    std::size_t visible_deleted_count_ {0};
+
+    /** Published entries a reader would see, tombstones excluded, which is what @c size() answers. */
+    std::size_t live_count_ {0};
 
     friend class transaction_t;
 
@@ -1320,8 +1326,7 @@ class reference_store {
         while (current != end)
             if (visible_now(current->committed)) {
                 if (current->presence == presence_t::present_k) callback(current->payload);
-                --visible_count_;
-                visible_deleted_count_ -= current->presence == presence_t::erased_k;
+                live_count_ -= current->presence != presence_t::erased_k;
                 current = entries_.erase(current);
             }
             else ++current;
@@ -1340,8 +1345,6 @@ class reference_store {
         entry_iterator_t current = begin;
         while (current != end)
             if (visible_now(current->committed) && current->presence == presence_t::erased_k) {
-                --visible_count_;
-                --visible_deleted_count_;
                 current = entries_.erase(current);
                 ++reclaimed;
             }
@@ -1368,8 +1371,7 @@ class reference_store {
             ++next;
             if (current->generation == generation_to_unmask) {
                 if (!visible_now(current->committed)) {
-                    ++visible_count_;
-                    visible_deleted_count_ += current->presence == presence_t::erased_k;
+                    live_count_ += current->presence != presence_t::erased_k;
                     const_cast<commit_stamp_t &>(current->committed) = stamp;
                     outcome = unmask_outcome_t::unmasked_k;
                 }
@@ -1378,8 +1380,7 @@ class reference_store {
                 else outcome = unmask_outcome_t::already_published_k;
             }
             else if (visible_now(current->committed)) {
-                --visible_count_;
-                visible_deleted_count_ -= current->presence == presence_t::erased_k;
+                live_count_ -= current->presence != presence_t::erased_k;
                 entries_.erase(current);
             }
             current = next;
@@ -1417,7 +1418,7 @@ class reference_store {
             entry.committed = stamp;
             auto range_end = entries_.insert(std::move(entry)).first;
             auto range_start = entries_.lower_bound(range_end->payload);
-            ++visible_count_;
+            ++live_count_;
             erase_visible_(range_start, range_end, callback_replaced);
             callback_stored(range_end->payload);
         });
@@ -1443,8 +1444,7 @@ class reference_store {
     void insert_or_assign_(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
             bool const should_compact = visible_now(source->committed);
-            visible_count_ += should_compact;
-            visible_deleted_count_ += should_compact && source->presence == presence_t::erased_k;
+            live_count_ += should_compact && source->presence != presence_t::erased_k;
             auto source_node = sources.extract(source++);
             auto range_end = entries_.insert(std::move(source_node)).position;
             if (should_compact) {
@@ -1477,7 +1477,7 @@ class reference_store {
      *  @brief Returns the number of visible (committed) non-deleted elements in the container.
      *  @return Number of elements.
      */
-    [[nodiscard]] std::size_t size() const noexcept { return visible_count_ - visible_deleted_count_; }
+    [[nodiscard]] std::size_t size() const noexcept { return live_count_; }
 
     /**
      *  @brief Checks if the container has no visible elements.
@@ -2078,11 +2078,7 @@ class reference_store {
 
         // Check if there are no visible entries at all
         if (range.first == range.second || range.first->presence == presence_t::erased_k) {
-            if (range.first != range.second) {
-                --visible_count_;
-                --visible_deleted_count_;
-                entries_.erase(range.first);
-            }
+            if (range.first != range.second) entries_.erase(range.first);
             callback_missing();
             return status_t::key_not_found_k;
         }
@@ -2091,8 +2087,7 @@ class reference_store {
         callback_found(range.first->payload);
 
         // Erase the visible entry
-        --visible_count_;
-        visible_deleted_count_ -= range.first->presence == presence_t::erased_k;
+        --live_count_;
         entries_.erase(range.first);
         return success_k;
     }
@@ -2172,8 +2167,7 @@ class reference_store {
             if (!visible_now(cursor->committed)) return operation_not_permitted_k;
 
         entries_.clear();
-        visible_count_ = 0;
-        visible_deleted_count_ = 0;
+        live_count_ = 0;
         return success_k;
     }
 

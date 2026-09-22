@@ -1306,7 +1306,7 @@ class monotonic_store {
          *
          *  The second half of a commit, split out because a caller spanning several stores has to
          *  know that once the first of them writes, none of the rest can turn back. It draws its
-         *  own stamp rather than taking one, because these stores keep no shared clock - each
+         *  own stamp rather than taking one, because these stores join no shared order - each
          *  orders its own versions, and a caller spanning several of them is buying atomicity of
          *  the decision, not one instant across all of them.
          *
@@ -1346,11 +1346,18 @@ class monotonic_store {
   private:
     /** Version nodes reserved by a staging pass and not yet moved into a chain. */
     version_node_t *spare_versions_ {nullptr};
+
+    /** One version chain per key, ordered by the core this store was built over. */
     versioned_chains_t entries_;
+
+    /** Dates a transaction's private versions; unique across concurrent openers. */
     alignas(atomic_alignment<generation_t>) generation_t generation_ {0};
+
+    /** Draws the commit stamps this store publishes at, which order visibility. */
     alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
-    std::size_t visible_count_ {0};
-    std::size_t visible_deleted_count_ {0};
+
+    /** Published versions a reader would see, tombstones excluded, which is what @c size() answers. */
+    std::size_t live_count_ {0};
 
     friend class transaction_t;
     using chain_node_t = typename storage_node_of<versioned_chains_t>::type;
@@ -1572,8 +1579,7 @@ class monotonic_store {
     detach_outcome_t retire_visible_(versioned_chain_t &chain) noexcept {
         versioned_t const *const visible = visible_version_(chain);
         if (!visible) return detach_outcome_t::not_found_k;
-        --visible_count_;
-        visible_deleted_count_ -= visible->presence == presence_t::erased_k;
+        live_count_ -= visible->presence != presence_t::erased_k;
         return chain_detach_(chain, visible->generation, nullptr);
     }
 
@@ -1590,8 +1596,6 @@ class monotonic_store {
                 ++cursor;
                 continue;
             }
-            --visible_count_;
-            --visible_deleted_count_;
             cursor = entries_.erase(cursor).next;
             ++reclaimed;
         }
@@ -1624,12 +1628,13 @@ class monotonic_store {
      *  versions has to lengthen, which is the one way a direct write can run out of memory.
      *
      *  @param[inout] chain The key's version chain, which already exists in the index.
-     *  @param[in] version The published version to store.
+     *  @param[in] version The published version to store, present and never a tombstone, which is
+     *      why displacing one raises the live count.
      *  @return Success, or @c out_of_memory_heap_k when the chain cannot lengthen.
      */
     status_t publish_directly_(versioned_chain_t &chain, versioned_t &&version) noexcept {
         if (versioned_t const *const displaced = visible_version_(chain)) {
-            visible_deleted_count_ -= displaced->presence == presence_t::erased_k;
+            live_count_ += displaced->presence == presence_t::erased_k;
             mutable_ref_(*displaced) = std::move(version);
             return success_k;
         }
@@ -1639,7 +1644,7 @@ class monotonic_store {
         if (!node) return out_of_memory_heap_k;
         chain.others = new (node) version_node_t {std::move(version), chain.others};
         chain.allocator = allocator;
-        ++visible_count_;
+        ++live_count_;
         return success_k;
     }
 
@@ -1688,8 +1693,7 @@ class monotonic_store {
             generation_t const doomed_generation = doomed->generation;
             bool const doomed_was_erased = doomed->presence == presence_t::erased_k;
             auto const outcome = chain_detach_(chain, doomed_generation, nullptr);
-            --visible_count_;
-            visible_deleted_count_ -= doomed_was_erased;
+            live_count_ -= !doomed_was_erased;
             if (outcome == detach_outcome_t::detached_and_emptied_k) {
                 entries_.erase(identifier);
                 return unmask_outcome_t::version_missing_k;
@@ -1707,8 +1711,7 @@ class monotonic_store {
         // which is settled rather than missing.
         if (visible_now(unmasked->committed)) return unmask_outcome_t::already_published_k;
         unmasked->committed = stamp;
-        ++visible_count_;
-        if (unmasked->presence == presence_t::erased_k) visible_deleted_count_++;
+        live_count_ += unmasked->presence != presence_t::erased_k;
         return unmask_outcome_t::unmasked_k;
     }
 
@@ -1752,8 +1755,7 @@ class monotonic_store {
         : entries_(storage_shape_t::template build<versioned_chain_t>(comparator, allocator)) {}
     monotonic_store(monotonic_store &&other) noexcept
         : spare_versions_(std::exchange(other.spare_versions_, nullptr)), entries_(std::move(other.entries_)),
-          generation_(other.generation_), commits_(other.commits_), visible_count_(other.visible_count_),
-          visible_deleted_count_(other.visible_deleted_count_) {}
+          generation_(other.generation_), commits_(other.commits_), live_count_(other.live_count_) {}
 
     monotonic_store &operator=(monotonic_store &&other) noexcept {
         if (this == &other) return *this;
@@ -1765,8 +1767,7 @@ class monotonic_store {
         entries_ = std::move(other.entries_);
         generation_ = other.generation_;
         commits_ = other.commits_;
-        visible_count_ = other.visible_count_;
-        visible_deleted_count_ = other.visible_deleted_count_;
+        live_count_ = other.live_count_;
         return *this;
     }
 
@@ -1783,7 +1784,7 @@ class monotonic_store {
      *  @brief Returns the number of visible (committed) non-deleted elements in the tree.
      *  @return Number of elements.
      */
-    [[nodiscard]] std::size_t size() const noexcept { return visible_count_ - visible_deleted_count_; }
+    [[nodiscard]] std::size_t size() const noexcept { return live_count_; }
 
     /**
      *  @brief Checks if the tree has no visible elements.
@@ -1988,7 +1989,7 @@ class monotonic_store {
 
         auto result = storage_shape_t::upsert(entries_, versioned_chain_t {std::move(versioned)});
         if (failed(result)) return out_of_memory_heap_k;
-        ++visible_count_;
+        ++live_count_;
         return success_k;
     }
 
@@ -2393,11 +2394,7 @@ class monotonic_store {
                 if (!reclaimed_identifier) return out_of_memory_heap_k;
                 if (failed(doomed.push_back(std::move(*reclaimed_identifier)))) return out_of_memory_heap_k;
             }
-            for (identifier_t const &identifier : doomed) {
-                --visible_count_;
-                --visible_deleted_count_;
-                entries_.erase(identifier);
-            }
+            for (identifier_t const &identifier : doomed) entries_.erase(identifier);
             return doomed.size();
         }
     }
@@ -2609,8 +2606,7 @@ class monotonic_store {
             if (holds_staged_version_(*cursor)) return operation_not_permitted_k;
 
         entries_.clear();
-        visible_count_ = 0;
-        visible_deleted_count_ = 0;
+        live_count_ = 0;
         return success_k;
     }
 
