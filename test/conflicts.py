@@ -6,6 +6,10 @@ Baselines:
 
 Run:
     python -m pytest test/conflicts.py -v
+
+File: test/conflicts.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import threading

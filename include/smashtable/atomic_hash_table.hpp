@@ -94,7 +94,7 @@ class atomic_hash_table {
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
 
   public:
-    /** The whole stored element: the key itself for a set, a @c mapping view of both halves for a map. */
+    /** Every stored element: the key itself for a set, a @c mapping of both halves for a map. */
     using value_t = typename layout_t::value_t;
 
     /** The key half, which is the whole element for a set. */
@@ -128,7 +128,7 @@ class atomic_hash_table {
                   "Hash value must be an unsigned integer, like std::uint32_t or std::uint64_t!");
 
   public:
-    // STL-compatibility definitions, narrowed to what a pinned table can honestly provide.
+    /** STL-compatibility definitions, narrowed to what a pinned table can honestly provide. */
     using key_type = key_t;
     using mapped_type = mapped_t;
     using value_type = value_t;
@@ -139,7 +139,7 @@ class atomic_hash_table {
     using allocator_type = allocator_t;
     using storage_type = storage_t;
 
-    // Traits the transactional adapters dispatch on.
+    /** Traits the transactional adapters dispatch on. */
     using is_associative = std::bool_constant<has_values_k>;
     using is_transactional = std::false_type;
 
@@ -185,8 +185,8 @@ class atomic_hash_table {
 
 #pragma region Metadata
 
-    /** Live elements. Read atomically but relaxed, so it may lag a concurrent writer - the count is a statistic
-     *  here, and other threads are moving it while this returns. */
+    /** Live elements. Read atomically but relaxed, so it may lag a concurrent writer - the count is
+     *  a statistic here, and other threads are moving it while this returns. */
     constexpr offset_t size() const noexcept { return atomic_load(storage_.populated_count); }
     constexpr bool empty() const noexcept { return size() == 0; }
 
@@ -194,8 +194,8 @@ class atomic_hash_table {
     constexpr offset_t capacity() const noexcept { return larger_of(storage_.growth_threshold, size()); }
     constexpr offset_t slots_count() const noexcept { return storage_.slots_count; }
 
-    /** Tombstones left by @c erase, which only ever grow while the table is pinned. Compaction needs a rehash, so
-     *  this is the signal to hand the storage to a growable table. */
+    /** Tombstones left by @c erase, which only ever grow while the table is pinned. Compaction
+     *  needs a rehash, so this is the signal to hand the storage to a growable table. */
     constexpr offset_t deleted_count() const noexcept { return atomic_load(storage_.deleted_count); }
 
     hasher hash_function() const noexcept { return hasher_; }
@@ -206,8 +206,9 @@ class atomic_hash_table {
 
 #pragma region Lookups
 
-    /** Invokes one of the two callbacks, the found one under the matching slot's lock. Reads arrive through a
-     *  callback rather than a reference, since a concurrent erase would invalidate anything handed back. */
+    /** Invokes one of the two callbacks, the found one under the matching slot's lock. Reads arrive
+     *  through a callback rather than a reference, since a concurrent erase would invalidate
+     *  anything handed back. */
     template <typename comparable_key_type_, typename callback_found_type_, typename callback_missing_type_ = no_op_t>
     constexpr status_t find(comparable_key_type_ &&wanted, callback_found_type_ &&callback_found,
                             callback_missing_type_ &&callback_missing = {}) const noexcept {
@@ -261,8 +262,7 @@ class atomic_hash_table {
 
     /**
      *  @brief Inserts the key, doing nothing when an equal one is already present.
-     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence
-     *      was free.
+     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the sequence was free.
      */
     template <typename convertible_key_type_>
     constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
@@ -314,10 +314,8 @@ class atomic_hash_table {
 #pragma region Probes
 
     /**
-     *  @brief Walks the probe sequence of @p wanted, invoking @p callback under the matching
-     *      slot's lock.
-     *  @tparam slot_ref_type_ The mutable or the read-only atomic reference, depending on
-     *      the caller.
+     *  @brief Walks the probe sequence of @p wanted, invoking @p callback under the matching lock.
+     *  @tparam slot_ref_type_ The mutable or read-only atomic reference, depending on the caller.
      *  @return Whether a match was found. A free slot ends the sequence, a tombstone continues it.
      */
     template <typename slot_ref_type_, typename comparable_key_type_, typename callback_type_>
@@ -363,12 +361,12 @@ class atomic_hash_table {
     }
 
     /**
-     *  @brief Walks the probe sequence of @p wanted, building an element or overwriting the
-     *      equal one.
+     *  @brief Walks the probe sequence of @p wanted, building or overwriting the equal one.
      *  @return @c success_k, or @c capacity_exhausted_k when no slot along the sequence was free.
-     *      The heap is never touched here, so the refusal names the exhausted probe rather than an
-     *      allocation: a table saturated with tombstones needs a rehash, and no amount of free
-     *      memory changes its answer.
+     *
+     *  The heap is never touched here, so the refusal names the exhausted probe rather than an
+     *  allocation: a table saturated with tombstones needs a rehash, and no amount of free memory
+     *  changes its answer.
      *
      *  Exactly one slot is locked at a time. A tombstone is walked past rather than held: probe
      *  order is monotone only modulo the slot count, so a thread carrying a lock across the wrap

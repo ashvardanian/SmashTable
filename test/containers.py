@@ -6,6 +6,10 @@ Baselines:
 
 Run:
     python -m pytest test/containers.py -v
+
+File: test/containers.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import pytest
@@ -32,10 +36,11 @@ from .base import (
     value_types,
 )
 
-# Every algebra and comparison method has a second implementation, taken when the right-hand side
-# is a container of this one's exact type: the keys stay stored scalars and never become Python
-# objects. Sweeping both sides through one test is what holds the two paths to one set of answers.
 counterpart_kinds = [pytest.param("stdlib", id="vs-stdlib"), pytest.param("twin", id="vs-twin")]
+"""Every algebra and comparison method has a second implementation, taken when the right-hand side is
+a container of this one's exact type: the keys stay stored scalars and never become Python
+objects. Sweeping both sides through one test is what holds the two paths to one set of answers.
+"""
 
 
 @pytest.fixture
@@ -331,9 +336,10 @@ def test_repr_names_the_class_and_the_layout(populated):
     assert f"key={container.key_type!r}" in rendered, f"repr reads {rendered}"
 
 
-# How many elements `repr` spells out before it elides, matching `repr_limit_k` in
-# python/container.cpp. The three tests below sit at that boundary, above it, and far above it.
 repr_limit = 64
+"""How many elements `repr` spells out before it elides, matching `repr_limit_k` in
+python/container.cpp. The three tests below sit at that boundary, above it, and far above it.
+"""
 
 
 def rendered_elements(container) -> list[str]:

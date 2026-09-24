@@ -2,20 +2,19 @@
  *  @file include/smashtable/hash_layout.hpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
- *  @brief Shared vocabulary of the open-addressed hash tables: bucket metadata, slot
- *      references, storage.
+ *  @brief Shared vocabulary of open-addressed hash tables: bucket metadata, slot refs, storage.
  *
  *  @section hash_layout_overview Overview
  *
  *  Two tables are carved from the same memory layout - a growable single-threaded one and a pinned
  *  concurrently-readable one - and this header is everything they have in common. Neither table
- *  names the other, and the only thing that travels between them is a @c hash_storage, moved as
- *  a value.
+ *  names the other; the only thing that travels between them is a @c hash_storage, moved by value.
  *
  *  @section hash_layout_memory Memory Layout
  *
  *  One allocation, three regions at cache-line offsets, so compaction can keep the keys and values
  *  and drop the headers without copying:
+ *
  *  @code{.cpp}
  *  // Layout: [keys_region | values_region | headers_region]
  *  key_t *keys = (key_t *)memory;                          // Direct indexing: keys[slot]
@@ -30,11 +29,12 @@
  *  @section hash_layout_bucket Bucket Size
  *
  *  Each slot costs 2 bits of metadata, and 32 slots share one 64-bit header. That is 4× denser than
- *  SwissTable's byte per slot, it keeps every metadata update inside a single 64-bit atomic, and it
- *  matches an Nvidia warp for cooperative-group probing.
+ *  Google's SwissTable, which spends a byte per slot; the update stays inside a single 64-bit
+ *  atomic, and it matches an NVIDIA warp for the cooperative-group probing that NVIDIA's
+ *  cuCollections targets.
  *
  *  @see Google's SwissTable: https://abseil.io/docs/cpp/guides/container
- *  @see Nvidia's GPU-friendly cuCollections: https://github.com/NVIDIA/cuCollections
+ *  @see NVIDIA's GPU-friendly cuCollections: https://github.com/NVIDIA/cuCollections
  */
 #pragma once
 #include <cassert> // `assert`
@@ -60,8 +60,7 @@ inline constexpr std::size_t hash_bucket_capacity_k = 32;
 /**
  *  @brief Bucket header containing metadata for @c hash_bucket_capacity_k slots.
  *
- *  Two parallel 32-bit bitmasks - population and deletion - give each slot two bits, and so
- *  four states.
+ *  Two parallel 32-bit bitmasks - population, deletion - give each slot two bits, four states.
  *
  *  @section hash_layout_slot_state_encoding Slot State Encoding
  *
@@ -136,13 +135,12 @@ constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t ma
  *  Caps the load factor at 75%, through a 4/3 multiplier, so linear probing cannot degenerate, and
  *  rounds every slot count up to a power of two so the modulo is a bitwise AND.
  *
- *  @note The 75% load factor strikes a balance between memory efficiency and probe length:
+ *  The 75% load factor strikes a balance between memory efficiency and probe length:
  *  - Too high (>85%): Linear probing degrades into long search chains
  *  - Too low (<60%): Wastes memory without significant performance gain
  *  - 75%: Industry standard, keeps average probe length under 2 hops
  *
- *  @note The minimum slot count equals @c hash_bucket_capacity_k to ensure at least one
- *      full bucket.
+ *  @note The minimum slot count equals @c hash_bucket_capacity_k, at least one full bucket.
  *
  *  @c raw carries the widened count itself. The primary constructor budgets for a target @b element
  *  count and applies the load factor, while @c from_slots takes the slot count directly, for
@@ -198,15 +196,15 @@ struct hash_slots_count_t {
  *  Computes element types, sizes and alignment requirements from the element and hasher parameters,
  *  and takes the hasher's return type as the @c offset_t that indexes slots.
  *
+ *  Provides three views of a stored element:
+ *  - @c value_t: mutable reference pair `mapping<key const&, mapped&>` for iteration.
+ *  - @c value_const_t: immutable reference pair `mapping<key const&, mapped const&>` for lookups.
+ *  - @c value_copy_t: owned pair `mapping<key, mapped>` for extraction.
+ *
  *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, must be callable with the key type.
  *
- *  @note Provides three views of a stored element:
- *    - @c value_t: Mutable reference pair @code mapping<key const&, mapped&> @endcode for iteration
- *    - @c value_const_t: Immutable reference pair @code mapping<key const&, mapped const&> @endcode for lookups
- *    - @c value_copy_t: Owned pair @code mapping<key, mapped> @endcode for extraction operations
- *
- *  @see https://en.cppreference.com/w/cpp/utility/hash
+ *  @see std::hash reference: https://en.cppreference.com/w/cpp/utility/hash
  */
 template <typename value_type_, typename hasher_type_>
 struct hash_layout_for {
@@ -292,7 +290,7 @@ struct hash_layout_for<value_type_ const, hasher_type_> {
 static_assert(hash_layout_for<int, hash<int>>::will_memcpy_keys());
 static_assert(hash_layout_for<mapping<int, int>, hash<int>>::will_memcpy_keys());
 
-/** Defers to @c hash for whatever key it is finally handed, rather than fixing one at declaration. */
+/** Defers to @c hash for whatever key arrives, rather than fixing one at declaration. */
 struct default_hash_t {
 
     template <typename key_type_>
@@ -384,8 +382,8 @@ struct hash_slot_ref {
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *  @tparam waiting_policy_type_ Decides what a core does between the attempts of @c lock(). The
  *      default spends nothing, leaving the spin a bare retry loop.
- *  @tparam atomic_reference_ The reference the header word is owned through, for one operation at
- *      a time. One spelling the extended verbs posts the release rather than reading it back.
+ *  @tparam atomic_reference_ The reference the header word is owned through, for one operation at a
+ *      time. One spelling the extended verbs posts the release rather than reading it back.
  *
  *  Ideally, we would want to avoid Compare-And-Swap @b (CAS) loops for locking individual slots. On
  *  the locking path, we can use a @c fetch_or atomic operation to set both bits (populated +
@@ -404,9 +402,9 @@ struct hash_slot_ref {
  *
  *  Neither path is lock-free in the technical sense: @c lock() spins until it wins the slot, so a
  *  thread stopped between @c lock() and @c unlock() blocks every prober that reaches that slot.
- *  What the pair buys is that the whole table is never locked, and that no slot state needs a
- *  CAS retry. What a losing prober does with its core in the meantime is @c waiting_policy_type_,
- *  which is where a caller that owns the hardware spends a stall instead of an issue slot.
+ *  What the pair buys is that the whole table is never locked, and that no slot state needs a CAS
+ *  retry. What a losing prober does with its core in the meantime is @c waiting_policy_type_, which
+ *  is where a caller that owns the hardware spends a stall instead of an issue slot.
  *
  *  This doesn't resolve @b false-sharing issues native to such a densely packed design, but still
  *  results in very low contention if the duration of atomic operations under the lock is comparable
@@ -419,7 +417,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
 
     using base_t = hash_slot_ref<value_type_, hasher_type_>;
 
-    /** The reference every operation below wraps around the header word, for one operation and no longer. */
+    /** The reference each operation below wraps the header word in, scoped to a single use. */
     using word_ref_t = atomic_reference_<std::uint64_t>;
 
     /** State the slot will be driven into once @c unlock() lands. */
@@ -473,9 +471,9 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
      *  @brief Spins on @c fetch_or until this thread is the one that observed a non-locked slot.
      *  @warning On a device this spin only makes progress under independent thread scheduling,
      *      since 32 slots share one header and a warp probing one bucket serializes through here.
-     *  @note The reference is a temporary rather than a named variable because a @c constexpr function
-     *      may not define a variable of non-literal type before C++23. It costs nothing - the reference
-     *      only carries the address it was handed.
+     *  @note The reference is a temporary rather than a named variable because a @c constexpr
+     *      function may not define a variable of non-literal type before C++23. It costs nothing -
+     *      the reference only carries the address it was handed.
      */
     constexpr void lock() const noexcept {
         hash_bucket_head_t const header_mask = header_mask_();
@@ -529,7 +527,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
  *
  *  Skips empty and deleted slots outright through @c countr_zero, rather than walking every one.
  *
- *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified during
+ *  @param[inout] slot Reference to a slot in the bucket. Its @c slot_ field is modified during
  *      iteration to point to each populated slot sequentially.
  *  @param[in] callback Functor invoked for each populated slot, receiving @c hash_slot_ref.
  *  @return Whether the bucket ran out or a halting callback stopped the walk first.

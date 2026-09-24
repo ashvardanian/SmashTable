@@ -37,8 +37,8 @@ namespace {
 
 #pragma region Instrumented Value
 
-/** A value that tallies every construction and destruction, so a leak or a double free shows up as an imbalance
- *  rather than as a sanitizer report alone. */
+/** A value that tallies every construction and destruction, so a leak or a double free shows up as
+ *  an imbalance rather than as a sanitizer report alone. */
 struct counted_t {
     static inline std::size_t constructions = 0;
     static inline std::size_t destructions = 0;
@@ -316,9 +316,9 @@ static void shared_mutex_excludes() {
     st_verify_eq_(guarded_right, guarded_left);
 }
 
-/** Several writers under a steady read load all finish, which is what the waiting tally buys. One writer taking the
- *  lock must not erase the intent of the writers still queued, or a reader stream slips back in and parks them
- *  forever. */
+/** Several writers under a steady read load all finish, which is what the waiting tally buys. One
+ *  writer taking the lock must not erase the intent of the writers still queued, or a reader stream
+ *  slips back in and parks them forever. */
 static void shared_mutex_admits_every_writer() {
     // The readers re-enter fast enough that their count effectively never reaches zero, so a writer
     // only gets in by turning them away; the budget is fifty times the deepest run seen.
@@ -428,13 +428,13 @@ struct counting_extended_ref {
     /** How many bounded adds the mutex asked for, which is once per acquire attempt. */
     static inline std::atomic<std::size_t> bounded_adds {0};
 
-    /** How many writes it posted without reading anything back, which is once per writer release. */
+    /** How many writes it posted without reading anything back, once per writer release. */
     static inline std::atomic<std::size_t> posted_writes {0};
 
     /** How many xors it posted, which is once per slot the pinned table lets go. */
     static inline std::atomic<std::size_t> posted_flips {0};
 
-    /** The word this reference owns, for one operation and no longer. */
+    /** The word this reference owns for the span of one operation. */
     value_type_ *word;
 
     explicit counting_extended_ref(value_type_ &owned) noexcept : word(&owned) {}
@@ -521,7 +521,8 @@ struct counting_extended_ref {
 /** The same mutex, owning its word through a reference that spells the extended shapes. */
 using extended_mutex_t = spin_shared_mutex<standard_waiting_policy_t, counting_extended_ref>;
 
-/** The pinned table over the same reference, so its slot lock and counters are seen going through it. */
+/** The pinned table over the same reference, so its slot lock and counters are seen going through
+ *  it. */
 using extended_table_t = atomic_hash_set<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t,
                                          bare_waiting_policy_t, counting_extended_ref>;
 
@@ -560,7 +561,7 @@ static void extended_atomics_take_the_bounded_path() {
     mutex.unlock();
 }
 
-/** The pinned table lets every slot go with one posted xor, and moves its counters by posted adds. */
+/** The pinned table lets every slot go with one posted xor, and moves counters by posted adds. */
 static void extended_atomics_reach_the_pinned_table() {
 
     counting_extended_ref<std::uint64_t>::posted_flips.store(0);
@@ -586,7 +587,7 @@ static void extended_atomics_reach_the_pinned_table() {
                   "an erase moves both counters by posted writes");
 }
 
-/** The mutex asks the policy it was handed once per attempt, and parks only once the spin is spent. */
+/** The mutex asks the policy it was handed once per attempt, parking once the spin is spent. */
 static void waiting_policy_substitutes_in_the_mutex() {
     yielding_waiting_policy_t::pauses.store(0);
 
@@ -603,7 +604,8 @@ static void waiting_policy_substitutes_in_the_mutex() {
     st_verify_ge_(yielding_waiting_policy_t::pauses.load(), std::size_t {64}, "one pause per spent attempt");
 }
 
-/** The slot lock asks the same policy, reached through the table, while a prober waits for a held slot. */
+/** The slot lock asks the same policy, reached through the table, while a prober waits for a held
+ *  slot. */
 static void waiting_policy_substitutes_in_the_slot_lock() {
     yielding_waiting_policy_t::pauses.store(0);
 
@@ -663,8 +665,8 @@ enum class commit_shape_t : bool {
     split_k,
 };
 
-/** What one store hands back from each step, so a group can be steered into any refusal. Every member is that step's
- *  own status, and @c success_k lets it through. */
+/** What one store hands back from each step, so a group can be steered into any refusal. Every
+ *  member is that step's own status, and @c success_k lets it through. */
 struct refusals_t {
     status_t opening {success_k};
     status_t stage {success_k};
@@ -1108,7 +1110,7 @@ static void per_version_equals_separates_versions() {
     st_verify_(collapsing(older, newer));
 }
 
-// Both shipped stores are optimistically concurrent, and the seams they are read through exist.
+/** Both shipped stores are optimistically concurrent, and the seams they are read through exist. */
 using avl_store_t = monotonic_avl_set<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
 using std_store_t = reference_store<std::size_t, std::less<std::size_t>, std::allocator<std::size_t>>;
 
@@ -1117,7 +1119,8 @@ static_assert(optimistically_concurrent_store<std_store_t>, "and so does the `st
 static_assert(!optimistically_concurrent_store<counted_t>, "a plain value is not a store");
 static_assert(at_least(avl_store_t::isolation_k, isolation_t::read_committed_k), "the floor the concept states");
 
-/** A transaction whose commit refuses with a planned status a set number of times, counting every call. */
+/** A transaction whose commit refuses with a planned status a set number of times, counting every
+ *  call. */
 struct conflicting_transaction_t {
 
     /** How many more commits refuse. */
@@ -1156,8 +1159,8 @@ struct conflicting_transaction_t {
     }
 };
 
-/** Tests that a bounded retry restages after every conflict, gives up once its attempts run out, and returns any
- *  other failure at once. */
+/** Tests that a bounded retry restages after every conflict, gives up once its attempts run out,
+ *  and returns any other failure at once. */
 static void commit_with_retries_is_bounded() {
     std::size_t restaged = 0;
     auto const stage_changes = [&](conflicting_transaction_t &) noexcept {
@@ -1215,7 +1218,8 @@ static void commit_with_retries_is_bounded() {
     st_verify_eq_(untouched.stages + untouched.commits + untouched.resets, 0u);
 }
 
-/** Every status the vocabulary names, so a new one has to be classified here rather than fall through. */
+/** Every status the vocabulary names, so a new one has to be classified here rather than fall
+ *  through. */
 constexpr status_t every_status_k[] = {
     status_t::success_k,
     status_t::unknown_k,
@@ -1233,8 +1237,8 @@ constexpr status_t every_status_k[] = {
     status_t::key_not_found_k,
 };
 
-/** Tests that the conflict statuses are exactly the three a retry can overcome, over the whole vocabulary, and that
- *  the I/O status names and numbers itself. */
+/** Tests that the conflict statuses are exactly the three a retry can overcome, over the whole
+ *  vocabulary, and that the I/O status names and numbers itself. */
 static void status_vocabulary_names_conflicts_and_input_output() {
     for (status_t const status : every_status_k) {
         bool const retryable = status == status_t::write_conflict_k || status == status_t::read_conflict_k ||

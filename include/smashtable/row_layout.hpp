@@ -69,7 +69,8 @@ concept row_searchable_key = std::same_as<key_type_, std::uint32_t> || std::same
  */
 inline constexpr std::size_t default_row_bytes_k = 512;
 
-/** How many keys of @p key_type_ fill @p medium_bytes, counting both columns of a split 16-byte row. */
+/** How many keys of @p key_type_ fill @p medium_bytes, counting both columns of a split 16-byte
+ *  row. */
 template <typename key_type_>
 [[nodiscard]] constexpr std::size_t keys_per_row(std::size_t medium_bytes) noexcept {
     return medium_bytes / sizeof(key_type_);

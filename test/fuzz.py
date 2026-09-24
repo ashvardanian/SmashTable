@@ -13,6 +13,10 @@ Matches C++ suite:
 Run:
     python -m pytest test/fuzz.py -v
     SMASHTABLE_TESTS_SEED=42 python -m pytest test/fuzz.py -v
+
+File: test/fuzz.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import enum

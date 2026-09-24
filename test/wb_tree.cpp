@@ -33,75 +33,156 @@ namespace {
 
 #pragma region Type Aliases
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✗
- *  Tests: Baseline non-transparent comparator path */
+/**
+ *  Tests: Baseline non-transparent comparator path.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✗.
+ */
 using trivial_set_t = wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✗
- *  Tests: Resource accounting, allocation failure injection */
+/**
+ *  Tests: Resource accounting, allocation failure injection.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial.
+ *  Memory: Tracked.
+ *  Transaction: ✗.
+ */
 using tracking_set_t = wb_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✗
- *  Tests: Identifier extraction, composite_key_compare_t::value_type lookups */
+/**
+ *  Tests: Identifier extraction, @c composite_key_compare_t::value_type lookups.
+ *  Heterogeneous lookup: ✓, over @c uint64_t.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✗.
+ */
 using composite_set_t = wb_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
- *  Transaction: ✗ Tests: OOM during .copy(), string_view lookups without materialization */
+/**
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() → expected<T>.
+ *  Memory: Heap |.
+ *  Transaction: ✗ Tests: OOM during .copy(), string_view lookups without materialization.
+ */
 using heavy_set_t = wb_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✗
- *  Value: int | Tests: Baseline map operations, non-transparent path */
+/**
+ *  Tests: Baseline map operations, non-transparent path.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ *  Transaction: ✗.
+ *  Value: int.
+ */
 using trivial_map_t = wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✗
- *  Value: int | Tests: Map resource accounting, POCCA/POCMA on key-value pairs */
+/**
+ *  Tests: Map resource accounting, POCCA/POCMA on key-value pairs.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Tracked.
+ *  Transaction: ✗.
+ *  Value: int.
+ */
 using tracking_map_t = wb_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) |
- *  Transaction: ✗ Value: guarded_payload_t | Tests: Mixed trivial/non-trivial, value OOM scenarios */
+/**
+ *  Tests: Mixed trivial and non-trivial members, value OOM scenarios.
+ *  Lookup: heterogeneous over uint64_t.
+ *  Copy: key trivial, value .copy().
+ *  Memory: heap value. Transactions: ✗.
+ *  Value: guarded_payload_t.
+ */
 using composite_map_t = wb_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
                                std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
- *  Transaction: ✗ Value: guarded_payload_t | Tests: Dual-heap OOM, worst-case complexity */
+/**
+ *  Tests: Dual-heap OOM, worst-case complexity.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() on key & value.
+ *  Memory: Heap, over @c both |.
+ *  Transaction: ✗ Value: guarded_payload_t.
+ */
 using heavy_map_t =
     wb_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Baseline transactional correctness, isolation levels */
+/**
+ *  Tests: Baseline transactional correctness, isolation levels.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ */
 using transactional_trivial_set_t =
     monotonic_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
- *  Tests: Transaction resource accounting, OOM during stage/commit */
+/**
+ *  Tests: Transaction resource accounting, OOM during stage/commit.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial.
+ *  Memory: Tracked.
+ *  Transaction: ✓.
+ */
 using transactional_tracking_set_t = monotonic_wb_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Heterogeneous watch/find in transactions */
+/**
+ *  Tests: Heterogeneous watch/find in transactions.
+ *  Heterogeneous lookup: ✓, over @c uint64_t.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ */
 using transactional_composite_set_t =
     monotonic_wb_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
- *  Transaction: ✓ Tests: Watch copy OOM, transaction rollback with heap types */
+/**
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() → expected<T>.
+ *  Memory: Heap |.
+ *  Transaction: ✓ Tests: Watch copy OOM, transaction rollback with heap types.
+ */
 using transactional_heavy_set_t = monotonic_wb_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
- *  Value: int | Tests: Transactional map operations, value overwrites */
+/**
+ *  Tests: Transactional map operations, value overwrites.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ *  Value: int.
+ */
 using transactional_trivial_map_t =
     monotonic_wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
- *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA */
+/**
+ *  Tests: Transaction allocation patterns, map POCCA/POCMA.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Tracked.
+ *  Transaction: ✓.
+ *  Value: int.
+ */
 using transactional_tracking_map_t = monotonic_wb_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) |
- *  Transaction: ✓ Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values */
+/**
+ *  Tests: Transaction rollback with non-trivial values.
+ *  Heterogeneous lookup: ✓, over @c uint64_t.
+ *  Copy: Key trivial, value .copy().
+ *  Memory: Heap, over @c value |.
+ *  Transaction: ✓ Value: guarded_payload_t.
+ */
 using transactional_composite_map_t = monotonic_wb_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
                                                        std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
- *  Transaction: ✓ Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap
- *  rollback */
+/**
+ *  Tests: Worst-case transactional complexity, dual-heap rollback.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() on key & value.
+ *  Memory: Heap, over @c both |.
+ *  Transaction: ✓ Value: guarded_payload_t.
+ */
 using transactional_heavy_map_t = monotonic_wb_map<heavy_key_t, guarded_payload_t, std::less<void>,
                                                    std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
@@ -544,9 +625,9 @@ struct subtree_counts_t {
     std::size_t augmented_size = 0;
 };
 
-/** Recomputes one subtree's counts while checking every structural invariant. Δ=3 over @c size+1 weights, @c size
- *  @c = @c 1 @c + @c size(left) @c + @c size(right), and - where the tree carries an augmentation - the same recurrence
- *  over the policy's per-entry count. */
+/** Recomputes one subtree's counts while checking every structural invariant. Δ=3 over @c size+1
+ *  weights, size = 1 + size(left) + size(right), and, where the tree carries an augmentation, the
+ *  same recurrence over the policy's per-entry count. */
 template <typename node_type_>
 static subtree_counts_t verify_invariants(node_type_ *node) noexcept {
     if (!node) return {};
@@ -567,7 +648,7 @@ static subtree_counts_t verify_invariants(node_type_ *node) noexcept {
     return counts;
 }
 
-/** Checks the tree against a @c std::set oracle: invariants, element count, and in-order contents. */
+/** Checks the tree against a @c std::set oracle: invariants, size, and in-order contents. */
 static void verify_against_oracle(ordered_set_t &tree, std::set<int> const &oracle) noexcept {
     st_verify_eq_(verify_invariants(tree.root()).size, oracle.size());
     st_verify_eq_(tree.size(), oracle.size());
@@ -747,9 +828,9 @@ static void weight_balance_randomized_mutations() {
 
 #pragma region Augmented Order Statistics
 
-/** Counts only the entries whose mapped value is non-zero. Stands in for a wrapper's "this entry is the answer for
- *  its key" predicate: a property of the entry, decided outside the tree, and free to flip while the entry sits in
- *  place. */
+/** Counts only the entries whose mapped value is non-zero. Stands in for a wrapper's "this entry is
+ *  the answer for its key" predicate: a property of the entry, decided outside the tree, and free
+ *  to flip while the entry sits in place. */
 struct live_augmentation_t {
     static std::size_t augmented_count(mapping<int, int> const &entry) noexcept { return entry.mapped != 0 ? 1u : 0u; }
 };
@@ -773,8 +854,7 @@ static_assert(alignof(ordered_node_t) == alignof(unaugmented_reference_layout_t)
               "The default augmentation must not change the node's alignment");
 
 /**
- *  @brief The layout an unaugmented @b map node must match, whose element is a pair rather than
- *      a key.
+ *  @brief The layout an unaugmented @b map node must match, whose element is a pair, not a key.
  *
  *  Kept apart from the set's reference because the two only agree where the padding after a lone
  *  @c int happens to swallow the difference: on LP64 both come to 32 bytes, and on a 32-bit target
@@ -819,9 +899,9 @@ static void verify_augmented_against_oracle(augmented_map_t &tree, std::map<int,
     st_verify_eq_(tree.select_augmented(live.size()), nullptr);
 }
 
-/** The same mutation fuzz the plain tree runs, plus in-place predicate flips. A flip changes an entry the tree
- *  already holds, which is the transition a version store makes when a newer version supersedes an older one, and it
- *  must cost a path repair rather than a rescan. */
+/** The same mutation fuzz the plain tree runs, plus in-place predicate flips. A flip changes an
+ *  entry the tree already holds, which is the transition a version store makes when a newer version
+ *  supersedes an older one, and it must cost a path repair rather than a rescan. */
 static void augmented_randomized_mutations() {
     using placement_t = augmented_map_t::node_t::node_placement_t;
     std::mt19937 generator(test_seed_for(__func__));
@@ -916,8 +996,7 @@ static std::size_t floor_log2(std::size_t count) noexcept {
  *
  *  Ascending keys and a power-of-two count leave the tree perfectly balanced, so its height is
  *  exactly @c log2(n) and every count below is an equality rather than a bound. The probe is
- *  exhaustive because the defect this guards is one pathological path, which a sample is free to
- *  walk past.
+ *  exhaustive because the defect this guards is one pathological path, which a sample could miss.
  */
 static void augmented_select_is_logarithmic() {
     for (std::size_t element_count : {std::size_t(4096), std::size_t(262144)}) {

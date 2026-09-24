@@ -7,8 +7,8 @@
  *  @section basic_hash_table_overview Overview
  *
  *  This file implements @c basic_hash_table, a high-performance open-addressing hash table designed
- *  for both CPU and GPU execution. Unlike STL containers, like @c std::unordered_map,
- *  this implementation:
+ *  for both CPU and GPU execution. Unlike STL containers, like @c std::unordered_map, this
+ *  implementation:
  *  - Never throws exceptions (all operations are @c noexcept)
  *  - Uses only 2 bits of metadata per slot (vs 1 byte in Google's SwissTable)
  *  - Organizes data in Structure-of-Arrays layout for better cache efficiency
@@ -37,7 +37,7 @@
  *
  *  @section basic_hash_table_load_and_probing_strategy Load and Probing Strategy
  *
- *  Uses linear probing with step size 1: @code (hash + i) % capacity @endcode.
+ *  Uses linear probing with step size 1, visiting slot (hash + i) mod capacity for increasing i.
  *  While simpler than quadratic probing or double hashing, linear probing offers:
  *  - Excellent cache locality (sequential memory access)
  *  - Predictable patterns for hardware prefetchers
@@ -76,7 +76,7 @@ namespace ashvardanian::smashtable {
 
 #pragma region Iterators
 
-/** Detects iterators by the presence of an @c iterator_category, without hard-erroring on other types. */
+/** Detects iterators by their @c iterator_category, without hard-erroring on other types. */
 template <typename type_, typename = void>
 struct is_iterator_type : std::false_type {};
 
@@ -163,8 +163,7 @@ struct hash_table_iterator : public hash_slot_ref<value_type_, hasher_type_> {
  *      @c std::unordered_set interface. See file header for detailed design rationale.
  *
  *  @tparam value_type_ Hashable and equality-comparable key type, or @c mapping<K,V> for maps.
- *  @tparam hasher_type_ Hash function type. Must be copy-constructible. Defaults to a @c
- *      std::hash wrapper.
+ *  @tparam hasher_type_ Hash function type; copy-constructible, defaults to a @c std::hash wrapper.
  *  @tparam equals_type_ Equality predicate supporting heterogeneous lookups. Must be
  *      copy-constructible. Defaults to a transparent @c std::equal_to.
  *  @tparam allocator_type_ Allocator for internal memory management. Defaults to
@@ -180,7 +179,7 @@ class basic_hash_table {
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
 
   public:
-    /** The whole stored element: the key itself for a set, a @c mapping view of both halves for a map. */
+    /** The whole stored element: the key for a set, a @c mapping view of both halves for a map. */
     using value_t = typename layout_t::value_t;
 
     /** The key half, which is the whole element for a set. */
@@ -276,7 +275,9 @@ class basic_hash_table {
         failed_k,
     };
 
-    /*  STL-compatibility definitions, identical to that of `std::unordered_map`:
+    /*
+     *  STL-compatibility definitions, identical to that of @c std::unordered_map.
+     *
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map
      */
     using key_type = key_t;
@@ -298,13 +299,13 @@ class basic_hash_table {
     using key_equal = equals_t;
     using storage_type = storage_t;
 
-    // Traits the transactional adapters dispatch on.
+    /** Traits the transactional adapters dispatch on. */
     using is_associative = std::bool_constant<has_values_k>;
     using is_transactional = std::false_type;
 
-    /** Restates this table over a different element type, hasher and equality. A store that decorates its elements -
-     *  wrapping them in version metadata, say - needs the equality restated alongside the hasher, since both must
-     *  address the decorated shape. */
+    /** Restates this table over a different element type, hasher and equality. A store that
+     *  decorates its elements - wrapping them in version metadata, say - needs the equality
+     *  restated alongside the hasher, since both must address the decorated shape. */
     template <typename other_element_type_, typename other_hasher_type_, typename other_equals_type_ = equals_t>
     using rebind = basic_hash_table<other_element_type_, other_hasher_type_, other_equals_type_, allocator_t>;
 
@@ -318,13 +319,13 @@ class basic_hash_table {
     /** Decides whether a probed key matches the wanted one. */
     ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
-    /** Allocates and zeroes a table of the requested slot count. On allocation failure the table is left empty,
-     *  which the factories report as an error. */
+    /** Allocates and zeroes a table of the requested slot count. On allocation failure the table is
+     *  left empty, which the factories report as an error. */
     basic_hash_table(hash_slots_count_t slots, hasher_t hasher, equals_t equals, allocator_t allocator) noexcept
         : storage_(storage_t::make(slots, std::move(allocator))), hasher_(std::move(hasher)),
           equals_(std::move(equals)) {}
 
-    /** What an insertion that stored nothing reports: the end position, and why it stored nothing. */
+    /** What a failed insertion reports: the end position, and why it stored nothing. */
     insert_result_t missed_position_(upsert_result_t outcome) noexcept {
         insert_result_t result;
         unsafe_retarget(result.position, storage_.slots_count);
@@ -340,8 +341,8 @@ class basic_hash_table {
      *  slot before the probe has established the key is absent turns a plain overwrite into an
      *  allocation failure the caller has no way to satisfy.
      *
-     *  @tparam tags_types_ Markers for special acceleration: @c assume_unique_t has already answered
-     *      the question the presence probe would ask, so the growth is decided without one.
+     *  @tparam tags_types_ Markers for special acceleration: @c assume_unique_t skips the presence
+     *      probe, so growth is decided without one.
      *  @return @c unchanged_k when nothing had to move, @c reallocated_k after a growth, and
      *      @c failed_k when a growth the table genuinely needed was refused.
      */
@@ -380,8 +381,7 @@ class basic_hash_table {
     basic_hash_table(offset_t, hasher_t = {}, equals_t = {}, allocator_t = {}) noexcept = delete;
 
     /**
-     *  @brief Most commonly used @b constructor-like interface, sized by the element count you plan
-     *      to store.
+     *  @brief Most commonly used @b constructor-like interface, sized by the planned element count.
      *  @return An empty-status @c expected if the allocation has failed.
      */
     static expected<basic_hash_table> make(offset_t planned_elements, hasher_t hasher = {}, equals_t equals = {},
@@ -490,9 +490,8 @@ class basic_hash_table {
      *      or @c probe_to_upsert, doesn't track "deleted" slots.
      *
      *  @param[in] wanted Hashable and comparable with key object.
-     *  @param[in] call A callback receiving a @c const_slot_ref_t to an initialized
-     *      matching object.
-     *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     *  @param[in] call A callback receiving a @c const_slot_ref_t to the matching slot's object.
+     *  @tparam tags_types_ Markers for acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
     void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept
@@ -543,7 +542,7 @@ class basic_hash_table {
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call Receives each @c const_slot_ref_t and returns @c walk_control_t. Must be
      *      @c noexcept.
-     *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     *  @tparam tags_types_ Markers for acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
     void probe_to_visit(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) const noexcept
@@ -592,7 +591,7 @@ class basic_hash_table {
      *
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call A callback receiving a @c slot_ref_t to an initialized matching object.
-     *  @tparam tags_types_ Markers for special acceleration: @c assume_reserved_t avoids null checks.
+     *  @tparam tags_types_ Markers for acceleration: @c assume_reserved_t avoids null checks.
      */
     template <typename comparable_key_type_, typename callback_type_, typename... tags_types_>
     void probe_to_find(comparable_key_type_ &&wanted, callback_type_ &&call, tags_types_...) noexcept
@@ -678,8 +677,7 @@ class basic_hash_table {
      *  @param[in] wanted Hashable and comparable with key object.
      *  @param[in] call_unused A callback receiving a @c slot_ref_t to UN-initialized memory, where
      *      an element should be built.
-     *  @param[in] call_equal A callback receiving a @c slot_ref_t to an initialized
-     *      matching object.
+     *  @param[in] call_equal A callback receiving a @c slot_ref_t to the matching slot's object.
      *  @return What the probe managed to do; @c no_slot_k when every slot holds a different key.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_,
@@ -769,8 +767,7 @@ class basic_hash_table {
      *  @brief Reports whether a key equivalent to @p wanted is present.
      *  @param[in] wanted Key to probe for.
      *  @param[in] tags Dispatch tags the probe understands.
-     *  @return Whether the key is present. A probe over owned slots allocates nothing, so it
-     *      never refuses.
+     *  @return Whether the key is present; a probe over owned slots never allocates or refuses.
      */
     template <typename comparable_key_type_, typename... tags_types_>
     expected<bool> contains(comparable_key_type_ &&wanted, tags_types_... tags) const noexcept
@@ -1123,7 +1120,8 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Inserts every element of [ @p begin, @p end ) whose key is free, leaving incumbents alone.
+     *  @brief Inserts every element of [ @p begin, @p end ) whose key is free, leaving each
+     *      incumbent key alone.
      *  @return @c success_k however many keys were already here, or the first refusal.
      *
      *  All-or-nothing over this table from the first element on, on the same terms as @c upsert.
@@ -1137,8 +1135,9 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Inserts every element of [ @p begin, @p end ), refusing the batch over a key already here.
-     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the staging.
+     *  @brief Inserts every element of [ @p begin, @p end ), refusing the batch when a key is
+     *      already present here.
+     *  @return @c key_already_exists_k when any key is taken, or the first refusal while staging.
      *
      *  All-or-nothing over this table from the first element on, a taken key included: every key is
      *  checked against the table before the first of them is written.
@@ -1169,8 +1168,9 @@ class basic_hash_table {
      *  @param[in] element Element to file, moved into the table.
      *  @return @c out_of_memory_heap_k when a @b new key needed a larger table and the allocator
      *      refused, @c capacity_exhausted_k when the bounded probe found no slot for it and only a
-     *      rehash can make one, and @c success_k otherwise - including the overwrite of a key
-     *      already stored, which needs no room and therefore never asks the allocator for any.
+     *      rehash can make one, and @c success_k otherwise.
+     *
+     *  Overwriting a key already stored needs no room, so it never asks the allocator for any.
      */
     template <typename convertible_element_type_>
     status_t upsert(convertible_element_type_ &&element) noexcept {
@@ -1228,7 +1228,8 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief Stages [ @p begin, @p end ) where an element's duplication can refuse, then writes it in.
+     *  @brief Stages [ @p begin, @p end ) where an element's duplication can refuse, then writes
+     *      each one in.
      *  @tparam policy_ What a key already here does to the element arriving over it.
      *  @return The first refusal, or @c success_k for the whole range.
      */
@@ -1288,8 +1289,7 @@ class basic_hash_table {
      *      iterator, use the faster overload that avoids the search entirely.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/erase
      *
-     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t assumes a
-     *      non-empty table.
+     *  @param[in] tags Markers for special acceleration: @c assume_reserved_t assumes non-empty.
      *  @return True if the wanted key was found.
      *
      *  @note Erasures never deallocate; memory stays cluttered until the next @c force_resize().
@@ -1339,8 +1339,7 @@ class basic_hash_table {
     }
 
     /**
-     *  @brief The recommended entry point for bulk insertions, sizing for the elements
-     *      already present.
+     *  @brief The recommended entry point for bulk insertions, sized for what is present already.
      *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
      */
     reserve_result_t reserve_more(offset_t new_elements) noexcept {

@@ -3,6 +3,10 @@
 A stub cannot be verified by running it, and it drifts silently the moment a method is added or
 renamed in the C layer. These tests compare the two surfaces directly, so a missing entry is a
 red test rather than a wrong completion in somebody's editor.
+
+File: test/stubs.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import ast
@@ -53,16 +57,18 @@ def declared_classes(stub: ast.Module) -> dict[str, set[str]]:
     }
 
 
-# What every heap type carries whatever its methods are, plus the constructor the stub spells as
-# `__init__`, so stating any of them would say nothing about this module.
 UNIVERSAL_WAIVERS = frozenset({"__doc__", "__module__", "__new__"})
+"""What every heap type carries whatever its methods are, plus the constructor the stub spells as
+`__init__`, so stating any of them would say nothing about this module.
+"""
 
-# One `tp_richcompare` slot fills all six comparison names, so a map answering NotImplemented for
-# the ordering four still carries them; `__setitem__` on a set exists only to raise.
 CLASS_WAIVERS = {
     "SortedMap": frozenset({"__lt__", "__le__", "__gt__", "__ge__"}),
     "SortedSet": frozenset({"__setitem__"}),
 }
+"""One `tp_richcompare` slot fills all six comparison names, so a map answering NotImplemented for
+the ordering four still carries them; `__setitem__` on a set exists only to raise.
+"""
 
 
 def runtime_members(subject: type, class_name: str) -> set[str]:
@@ -80,9 +86,10 @@ def runtime_members(subject: type, class_name: str) -> set[str]:
 
 # region Surface Parity
 
-# The lazy views are returned by `keys`, `values` and `items` rather than exported, so the stub
-# names them privately and they are reached through an instance instead of through the module.
 VIEW_NAMES = ["_KeysView", "_ValuesView", "_ItemsView"]
+"""The lazy views are returned by `keys`, `values` and `items` rather than exported, so the stub
+names them privately and they are reached through an instance instead of through the module.
+"""
 TRANSACTION_NAMES = ["Transaction", "Participant"]
 
 

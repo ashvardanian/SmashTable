@@ -2,8 +2,7 @@
  *  @file python/store_ops_sorted.cpp
  *  @author Ash Vardanian
  *  @date August 18, 2026
- *  @brief The @c store_ops_t tables for the ordered cores, and the resolver every constructor
- *      goes through.
+ *  @brief The @c store_ops_t tables for the ordered cores, and the resolver every constructor uses.
  *
  *  One translation unit per core, because the cores are what pull in the heavy templates: an
  *  isolation level and a sharing strategy each double the instantiation count, and keeping both

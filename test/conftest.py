@@ -1,4 +1,9 @@
-"""Fixtures and the session banner. No test functions and no oracle live here."""
+"""Fixtures and the session banner. No test functions and no oracle live here.
+
+File: test/conftest.py
+Author: Ash Vardanian
+Date: August 22, 2026
+"""
 
 import concurrent.futures
 import os

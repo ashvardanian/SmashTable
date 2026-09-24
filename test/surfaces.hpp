@@ -9,14 +9,15 @@
  *  A suite used to reach a container because somebody typed its name into that container's file, so
  *  a container added later got whatever its author remembered and a suite added later reached only
  *  the files somebody updated. The concepts already say what a container offers, so they decide
- *  instead: a container satisfying a surface runs the suite that proves it, and one that does not is
- *  not asked to.
+ *  instead: a container satisfying a surface runs the suite that proves it, and one that does not
+ *  is not asked to.
  *
  *  @section test_surfaces_waivers What Is Deliberately Not Covered
  *
- *  Dispatching on a concept cannot tell a surface that never applied from one that quietly vanished,
- *  so a surface offered without a suite behind it is a mistake rather than a gap. @c suite_waived_for
- *  names the exceptions, defaulting to none, the way the wrapper parity fold already names its own.
+ *  Dispatching on a concept cannot tell a surface that never applied from one that quietly
+ *  vanished, so a surface offered without a suite behind it is a mistake rather than a gap. @c
+ *  suite_waived_for names the exceptions, defaulting to none, the way the wrapper parity fold
+ *  already names its own.
  */
 #pragma once
 #include <cstddef> // `std::size_t`
@@ -42,8 +43,8 @@ enum class suite_t : std::uint8_t {
 };
 
 /**
- *  @brief Whether @p suite_ is deliberately not run over @p container_type_, despite it offering the
- *      surface that suite proves.
+ *  @brief Whether @p suite_ is deliberately not run over @p container_type_, despite it offering
+ *      the surface that suite proves.
  *
  *  Specialize with a docblock saying why. An unspecialized pair is covered, which is what makes a
  *  missing suite a compile-time question rather than a silence in the output.

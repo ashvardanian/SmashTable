@@ -2,13 +2,11 @@
  *  @file python/transactions.cpp
  *  @author Ash Vardanian
  *  @date October 30, 2025
- *  @brief @c Transaction and @c View - the transaction that makes one update span
- *      several containers.
+ *  @brief @c Transaction and @c View - the update that spans several containers in one transaction.
  *
  *  The unit of atomicity is the group, not the store: a @c with block opens one participant per
  *  container, and the block either publishes every change or abandons every one. Publication walks
- *  the participants in turn, so the group is all-or-nothing against failure rather than
- *  one instant.
+ *  the participants in turn, so the group is all-or-nothing against failure, not one instant.
  *
  *  @section transactions_alternatives Why the Participants Are Type-Erased
  *
@@ -64,10 +62,8 @@ static participant_t *part_of_or_raise(view_object_t *view, module_state_t *stat
 }
 
 /**
- *  @brief Runs one participant operation under its transaction's lock, refusing once the group
- *      has finished.
- *  @return 0 when @p operation ran; -1 with a @c StateError set when the transaction was
- *      already finished.
+ *  @brief Runs one participant op under its transaction's lock, refusing once the group finishes.
+ *  @return 0 when @p operation ran; -1 with a @c StateError when the transaction already finished.
  *
  *  The state test and the operation are one span, so a concurrent commit either happens entirely
  *  before this or entirely after, never between the test and the write it guards. A write reaching
@@ -148,8 +144,7 @@ static PyObject *View_subscript(PyObject *self, PyObject *key) noexcept {
 }
 
 /**
- *  @brief Stages a tombstone for every member of a window named by a slice, with either
- *      end optional.
+ *  @brief Stages a tombstone for every member of a window named by a slice, either end optional.
  *
  *  Nothing is visible until the transaction commits, which is the whole difference from the store's
  *  own slice delete: a window erased here is a window this transaction read, so a key another
@@ -566,8 +561,8 @@ static int Transaction_clear(PyObject *self) noexcept {
     return 0;
 }
 
-/** Discards every participant's staged and pending changes and closes the handle for good. Every participant is back
- *  to pending afterwards, which is what @c open_k says. */
+/** Discards every participant's staged and pending changes and closes the handle for good. Every
+ *  participant is back to pending afterwards, which is what @c open_k says. */
 static void transaction_finish(transaction_object_t *group) noexcept {
     run_over_values(group_mode(group), group->lock, [&]() noexcept {
         for (auto &participant : group->parts) [[maybe_unused]]

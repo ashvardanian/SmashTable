@@ -113,12 +113,10 @@ static bool sharing_from_python(PyObject *specification, sharing_choice_t &choic
 }
 
 /**
- *  @brief The shared constructor body, which every class reaches with its own core and
- *      element shape.
+ *  @brief The shared constructor body, which every class reaches with its own core and shape.
  *
  *  Keywords are walked by hand rather than through @c PyArg_ParseTupleAndKeywords, which parses a
- *  format string at runtime and cannot express the fast calling convention the rest of this
- *  file uses.
+ *  format string at runtime and cannot express the fast calling convention used everywhere else.
  */
 static PyObject *container_new(PyTypeObject *type, PyObject *args, PyObject *keywords, core_t core,
                                associativity_t associativity) noexcept {
@@ -788,7 +786,7 @@ static PyObject *Set_update(PyObject *self, PyObject *other) noexcept {
 
 #pragma region Algebra
 
-/** Builds a fresh set of the same class, layout and store configuration, ready to receive results. */
+/** Builds a fresh set of the same class, layout and store configuration, ready to hold results. */
 static PyObject *set_like(PyObject *self) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
@@ -1153,18 +1151,15 @@ static PyObject *Unordered_repr(PyObject *self) noexcept {
 }
 
 /**
- *  @brief Compares against another map of this build or a @c dict, by content and never by
- *      arrival order.
+ *  @brief Compares against another map of this build or a @c dict, by content, never by order.
  *
  *  Walks this store's store once and probes the other side per key. Against another map of the same
  *  layout the key never becomes a Python object at all - it is compared as a stored scalar, through
  *  the same function pointer the tree orders by. Against a @c dict the key is built once and looked
- *  up through the C hash API. Neither path materializes a copy or dispatches through
- *  the interpreter.
+ *  up through the C hash API. Neither path copies or dispatches through the interpreter.
  *
  *  Values do go through @c PyObject_RichCompareBool, deliberately: that is what keeps @c {k: 1}
- *  equal to @c {k: 1.0} as it is for @c dict, without reimplementing cross-type numeric
- *  comparison here.
+ *  equal to @c {k: 1.0} as it is for @c dict, without reimplementing cross-type numeric comparison.
  *
  *  @c dict itself answers @c NotImplemented against a foreign mapping and defers to the other
  *  operand, so implementing this is the convention rather than an extra - without it two containers

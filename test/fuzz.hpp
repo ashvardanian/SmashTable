@@ -2,11 +2,9 @@
  *  @file test/fuzz.hpp
  *  @author Ash Vardanian
  *  @date August 20, 2026
- *  @brief Randomized differential suites - one engine against the oracle, and groups
- *      against tearing.
+ *  @brief Randomized differential suites: one engine against the oracle, groups against tearing.
  *
- *  Included by @c test/snapshot_store.cpp and by no other binary, so a suite added here
- *  runs exactly once.
+ *  Included by @c test/snapshot_store.cpp and no other binary, so a suite added here runs once.
  *
  *  @section fuzz_oracle The Oracle
  *
@@ -15,8 +13,7 @@
  *  divergence names the operation that caused it instead of the walk that noticed. Groups Against
  *  Tearing compares each participant against what its round intended instead: the snapshot taken
  *  before a refused commit, and a @c reference_store advanced by the same write after an accepted
- *  one. Never one participant against the other, which two stores that published nothing
- *  would satisfy.
+ *  one. Never one participant against the other, which two stores publishing nothing would pass.
  *
  *  @section fuzz_seed Reproducing a Failure
  *
@@ -37,14 +34,14 @@ namespace ashvardanian::smashtable::test {
 
 #pragma region Shared Fixtures
 
-/** How many keys a fuzz round draws from, kept small so collisions and reuse are the common case. */
+/** How many keys a fuzz round draws from, kept small so collisions and reuse are common. */
 inline constexpr trivial_id_t fuzz_keyspace_k = 24;
 
 /** The oracle every engine here is checked against, over the same key and mapped types. */
 using fuzz_oracle_t =
     reference_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** What one engine and the oracle both hold, so a divergence is one comparison rather than a walk. */
+/** What one engine and the oracle both hold, so a divergence is one comparison, not a walk. */
 struct fuzz_snapshot_t {
     std::size_t size {0};
     std::size_t checksum {0};
@@ -73,8 +70,7 @@ fuzz_snapshot_t fuzz_snapshot_of(store_type_ &store) noexcept {
 #pragma region One Engine Against the Oracle
 
 /**
- *  @brief Drives a random write sequence through an engine and the oracle, comparing after
- *      every step.
+ *  @brief Drives a random write sequence through an engine and the oracle, comparing at each step.
  *
  *  The strict writers are the point rather than @c upsert: @c insert, @c insert_if_missing and
  *  @c update each answer a question about what the caller can already see, and an engine consulting
@@ -152,8 +148,7 @@ void test_random_writes_match_the_oracle(std::size_t rounds = 400) {
 }
 
 /**
- *  @brief Drives whole-window mutators, which reach every partition where a store has more
- *      than one.
+ *  @brief Drives whole-window mutators, which reach every partition of a partitioned store.
  *
  *  A sharded store answers these by walking every partition rather than the one a key hashes to, so
  *  a window mutator that never records which partitions it reached stages tombstones the commit
@@ -284,8 +279,7 @@ void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
 }
 
 /**
- *  @brief Commits random groups that nothing refuses, and checks every participant
- *      advanced together.
+ *  @brief Commits random groups that nothing refuses, and checks all participants advanced as one.
  *
  *  The mirror of the refusal case: a group that publishes must publish all of itself, so the pair
  *  is compared against a model advanced only when the commit answered success.

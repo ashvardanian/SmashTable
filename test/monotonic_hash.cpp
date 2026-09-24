@@ -32,24 +32,48 @@ namespace {
 
 #pragma region Type Aliases
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Baseline transactional correctness over the cheapest possible key */
+/**
+ *  Tests: Baseline transactional correctness over the cheapest possible key.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ */
 using transactional_trivial_set_t = monotonic_hash_set<trivial_key_t>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
- *  Transaction: ✓ Tests: Watch copy OOM, rollback with a heap-allocating key */
+/**
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() → expected<T>.
+ *  Memory: Heap |.
+ *  Transaction: ✓ Tests: Watch copy OOM, rollback with a heap-allocating key.
+ */
 using transactional_heavy_set_t = monotonic_hash_set<heavy_key_t>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
- *  Value: int | Tests: Transactional map operations, value overwrites */
+/**
+ *  Tests: Transactional map operations, value overwrites.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ *  Value: int.
+ */
 using transactional_trivial_map_t = monotonic_hash_map<trivial_key_t, int>;
 
-/** Heterogeneous lookup: ✗ | Copy: Key trivial, value .copy() | Memory: Heap (value) | Transaction:
- *  ✓ Value: guarded_payload_t | Tests: Rollback with non-trivial values */
+/**
+ *  Tests: Rollback with non-trivial values.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Key trivial, value .copy().
+ *  Memory: Heap, over @c value Transaction: ✓ Value: guarded_payload_t.
+ */
 using transactional_composite_map_t = monotonic_hash_map<composite_key_t, guarded_payload_t>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
- *  Transaction: ✓ Value: guarded_payload_t | Tests: Dual-heap staging and rollback */
+/**
+ *  Tests: Dual-heap staging and rollback.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() on key & value.
+ *  Memory: Heap, over @c both |.
+ *  Transaction: ✓ Value: guarded_payload_t.
+ */
 using transactional_heavy_map_t = monotonic_hash_map<heavy_key_t, guarded_payload_t>;
 
 #pragma endregion Type Aliases
@@ -423,8 +447,8 @@ static void transactional_consistency_repeated_read_matches_isolation() {
     test_repeated_read_matches_isolation<transactional_heavy_map_t>();
 }
 
-// Only the map with an arithmetic value: both anomalies total the mapped values to see whether the
-// invariant survived, which `guarded_payload_t` cannot answer.
+/** Only the map with an arithmetic value: both anomalies total the mapped values to see whether the
+ *  invariant survived, which @c guarded_payload_t cannot answer. */
 static void transactional_consistency_write_skew_matches_isolation() {
     test_write_skew_matches_isolation<transactional_trivial_map_t>();
 }

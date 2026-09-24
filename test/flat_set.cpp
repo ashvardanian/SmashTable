@@ -28,7 +28,7 @@ namespace {
 
 #pragma region Element Types
 
-/** A read request ordered by descriptor and then offset, the shape of a comparator the kits never see. */
+/** A read request ordered by descriptor then offset, a comparator shape the kits never see. */
 struct request_t {
     int descriptor {0};
     std::uint64_t offset {0};
@@ -40,10 +40,10 @@ struct request_order_t {
     }
 };
 
-/** How many distinct elements a suite draws from, small enough that a presence table is the oracle. */
+/** How many distinct elements a suite draws from, small enough for a presence-table oracle. */
 constexpr std::size_t domain_size_k = 512;
 
-/** Maps a domain index to an element so that the map preserves order and crosses each type's sign boundary. */
+/** Maps a domain index to an element, preserving order and crossing each type's sign boundary. */
 template <typename value_type_>
 [[nodiscard]] constexpr value_type_ element_at(std::size_t index) noexcept {
     std::uint64_t const position = static_cast<std::uint64_t>(index);
@@ -218,7 +218,7 @@ void flat_set_batch_is_all_or_nothing() {
         [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
 }
 
-/** A predicate sweeps the array in one pass, keeps the survivors ordered, and hands each removed element out. */
+/** One predicate sweep keeps the survivors ordered and yields each removed element in turn. */
 void flat_set_erase_if_keeps_order() {
     basic_flat_set<std::uint64_t> set;
     for (std::uint64_t value = 0; value < 16; ++value) st_verify_(set.insert(std::uint64_t {value}));

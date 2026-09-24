@@ -42,7 +42,7 @@ namespace ashvardanian::smashtable {
 
 #pragma region Kit Selection
 
-/** The kits, one enumerator per microarchitecture, newest instruction sets after their baselines. */
+/** The kits, one enumerator per microarchitecture, newest instruction sets after the baseline. */
 enum class row_kit_t : std::uint8_t {
     serial_k,
     haswell_k,
@@ -79,8 +79,7 @@ enum class row_kit_t : std::uint8_t {
 }
 
 /** Whether this build carries @p kit and the running processor and operating system can execute it.
- *  Probes the processor on every call, so a caller asks once, at open or construction, and keeps
- *  the answer. */
+ *  Probes the processor on every call, so ask once at open or construction and keep the answer. */
 #if ST_TARGET_X8664_ && (defined(__GNUC__) || defined(__clang__))
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     __builtin_cpu_init();
@@ -142,7 +141,7 @@ enum class row_kit_t : std::uint8_t {
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept { return kit == row_kit_t::serial_k; }
 #endif
 
-/** The newest kit this build carries and the running processor executes, falling back to @c serial_k. */
+/** The newest kit this build carries and the processor can run, falling back to @c serial_k. */
 [[nodiscard]] inline row_kit_t detect_row_kit() noexcept {
     for (row_kit_t const kit :
          {row_kit_t::skylake_k, row_kit_t::haswell_k, row_kit_t::sve_k, row_kit_t::neon_k, row_kit_t::rvv_k})
@@ -154,7 +153,7 @@ enum class row_kit_t : std::uint8_t {
 
 #pragma region Serial Kit
 
-/** The reference kit every other kit must agree with, and the one each of them finishes a partial chunk with. */
+/** The reference kit every kit must agree with, the one each finishes a partial chunk with. */
 struct serial_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::serial_k;
     static constexpr bool compiled_k = true;
@@ -169,7 +168,8 @@ struct serial_row_kit_t {
         return below;
     }
 
-    /** How many keys of a split row order below @p wanted, reading a low word only where its high word ties. */
+    /** How many keys of a split row order below @p wanted, reading a low word only where its high
+     *  word ties. */
     template <std::size_t extent_>
     [[nodiscard]] static constexpr std::size_t count_below(std::span<std::uint64_t const, extent_> high_words,
                                                            std::span<std::uint64_t const, extent_> low_words,
@@ -195,7 +195,7 @@ struct serial_row_kit_t {
 #pragma GCC target("avx2", "bmi", "bmi2", "popcnt")
 #endif
 
-/** AVX2 over four 64-bit or eight 32-bit keys per load, unsigned order taken by flipping the sign bit. */
+/** AVX2 over four 64-bit or eight 32-bit keys per load, unsigned order by flipping the sign bit. */
 struct haswell_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::haswell_k;
     static constexpr bool compiled_k = true;
@@ -338,8 +338,8 @@ struct haswell_row_kit_t {
 #endif
 #else
 
-/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
- * branches. */
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
 struct haswell_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::haswell_k;
     static constexpr bool compiled_k = false;
@@ -359,7 +359,7 @@ struct haswell_row_kit_t {
 #pragma GCC target("avx2", "avx512f", "avx512vl", "avx512bw", "avx512dq", "bmi", "bmi2", "popcnt")
 #endif
 
-/** AVX-512 over eight 64-bit or sixteen 32-bit keys per load, with masked loads in place of a scalar tail. */
+/** AVX-512 over eight 64-bit or sixteen 32-bit keys per load, masked loads over a scalar tail. */
 struct skylake_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::skylake_k;
     static constexpr bool compiled_k = true;
@@ -482,8 +482,8 @@ struct skylake_row_kit_t {
 #endif
 #else
 
-/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
- * branches. */
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
 struct skylake_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::skylake_k;
     static constexpr bool compiled_k = false;
@@ -492,7 +492,7 @@ struct skylake_row_kit_t {
 
 #pragma endregion Skylake Kit
 
-#pragma region Neon Kit
+#pragma region NEON Kit
 
 #if ST_TARGET_NEON
 #if defined(__clang__)
@@ -502,7 +502,7 @@ struct skylake_row_kit_t {
 #pragma GCC target("arch=armv8-a+simd")
 #endif
 
-/** Advanced SIMD over two 64-bit or four 32-bit keys per load, deinterleaving 16-byte keys on the load. */
+/** Advanced SIMD over two 64-bit or four 32-bit keys per load, deinterleaving keys as it loads. */
 struct neon_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::neon_k;
     static constexpr bool compiled_k = true;
@@ -605,17 +605,17 @@ struct neon_row_kit_t {
 #endif
 #else
 
-/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
- * branches. */
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
 struct neon_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::neon_k;
     static constexpr bool compiled_k = false;
 };
 #endif
 
-#pragma endregion Neon Kit
+#pragma endregion NEON Kit
 
-#pragma region Sve Kit
+#pragma region SVE Kit
 
 #if ST_TARGET_SVE
 #if defined(__clang__)
@@ -625,7 +625,7 @@ struct neon_row_kit_t {
 #pragma GCC target("arch=armv8.2-a+sve")
 #endif
 
-/** Scalable vectors at whatever length the processor offers, with a loop predicate in place of a scalar tail. */
+/** Scalable vectors sized to whatever the processor offers, a loop predicate over a scalar tail. */
 struct sve_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::sve_k;
     static constexpr bool compiled_k = true;
@@ -726,17 +726,17 @@ struct sve_row_kit_t {
 #endif
 #else
 
-/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
- * branches. */
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
 struct sve_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::sve_k;
     static constexpr bool compiled_k = false;
 };
 #endif
 
-#pragma endregion Sve Kit
+#pragma endregion SVE Kit
 
-#pragma region Rvv Kit
+#pragma region RVV Kit
 
 #if ST_TARGET_RVV
 #if defined(__clang__)
@@ -847,15 +847,15 @@ struct rvv_row_kit_t {
 #endif
 #else
 
-/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of preprocessor
- * branches. */
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
 struct rvv_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::rvv_k;
     static constexpr bool compiled_k = false;
 };
 #endif
 
-#pragma endregion Rvv Kit
+#pragma endregion RVV Kit
 
 #pragma region Kit Dispatch
 
@@ -873,7 +873,7 @@ concept row_kit = kit_type_::compiled_k &&
                       { kit_type_::count_below(words, words, key128_t {}) } -> std::same_as<std::size_t>;
                   };
 
-/** The newest kit the compiler's own flags promise, for code that selects at compile time rather than at open. */
+/** The newest kit the compiler's flags promise, for code selecting at compile time, not at open. */
 #if ST_TARGET_SKYLAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && defined(__AVX512DQ__)
 using native_row_kit_t = skylake_row_kit_t;
 #elif ST_TARGET_HASWELL && defined(__AVX2__) && defined(__BMI2__)
@@ -889,9 +889,9 @@ using native_row_kit_t = serial_row_kit_t;
 #endif
 
 /**
- *  Calls @p callback with an instance of the kit @p kit names, or of the serial kit when this build
- *  lacks it. The callback is instantiated once per compiled kit, so a structure it builds calls
- *  that kit with no dispatch.
+ *  @brief Calls @p callback with an instance of the kit @p kit names, or of the serial kit when
+ *      this build lacks it. The callback is instantiated once per compiled kit, so a structure it
+ *      builds calls that kit with no dispatch.
  *
  *  @warning Visiting a kit the processor cannot run faults on its first search; pass a kit
  *      @c row_kit_supported accepted, such as the one @c detect_row_kit returns.
@@ -971,7 +971,7 @@ template <row_kit row_kit_type_, typename key_type_, std::size_t extent_>
     return low + row_kit_type_::count_below(sorted.subspan(low, length), wanted);
 }
 
-/** The lower bound of @p wanted in a sorted split row of any length, windowed by 256 bytes of high words. */
+/** The lower bound of @p wanted in a sorted split row of any length, by 256 bytes of high words. */
 template <row_kit row_kit_type_, std::size_t extent_>
 [[nodiscard]] std::size_t count_below_sorted(std::span<std::uint64_t const, extent_> high_words,
                                              std::span<std::uint64_t const, extent_> low_words,
@@ -990,8 +990,8 @@ template <row_kit row_kit_type_, std::size_t extent_>
     return low + row_kit_type_::count_below(high_words.subspan(low, length), low_words.subspan(low, length), wanted);
 }
 
-/** The lower bound of @p wanted in the sorted row at @p row, laid out by @p format_type_ and searched by
- *  @p row_kit_type_. */
+/** The lower bound of @p wanted in the sorted row at @p row, laid out by @p format_type_ and
+ *  searched by @p row_kit_type_. */
 template <typename format_type_, row_kit row_kit_type_>
 [[nodiscard]] std::size_t count_below_in_row(typename format_type_::word_t const *row,
                                              typename format_type_::key_t wanted) noexcept {

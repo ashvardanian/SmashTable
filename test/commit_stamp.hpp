@@ -116,9 +116,9 @@ void test_lost_update_is_refused() {
     st_verify_eq_(int(maybe_final->mapped), 101);
 }
 
-/** A read recorded through @c find_and_watch on a key that is not there is still a read. Whoever creates that key
- *  afterwards invalidates it, which is what stops two transactions from both believing they are the one inserting
- *  it. */
+/** A read recorded through @c find_and_watch on a key that is not there is still a read. Whoever
+ *  creates that key afterwards invalidates it, which is what stops two transactions from both
+ *  believing they are the one inserting it. */
 template <typename container_type_>
 void test_find_and_watch_records_absence() {
 

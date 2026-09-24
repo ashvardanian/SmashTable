@@ -64,7 +64,7 @@ template <typename key_type_>
     else return key == std::numeric_limits<key_type_>::min() ? key : static_cast<key_type_>(key - 1);
 }
 
-/** Fills @p keys from @p shape: ties land in the high word of a 16-byte key and as repeats in an integer. */
+/** Fills @p keys from @p shape: a tie sits in a 16-byte key's high word, repeats in an integer. */
 template <typename key_type_>
 void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &generator) {
     std::uint64_t const all_ones = std::numeric_limits<std::uint64_t>::max();
@@ -89,7 +89,7 @@ void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &ge
     }
 }
 
-/** Collects the keys worth asking about: the extremes, the boundary, and a sample of the row with its neighbours. */
+/** Collects the keys worth asking about: extremes, the boundary, and the row's own neighbours. */
 template <typename key_type_>
 void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator, basic_vector<key_type_> &wanted) {
     std::uint64_t const all_ones = std::numeric_limits<std::uint64_t>::max();
@@ -276,7 +276,7 @@ void verify_kit_layouts(kit_type_) {
 
 #pragma region Tests
 
-/** Whether @p kit runs here, printing what happened to it either way so a log lists the kits that ran. */
+/** Whether @p kit runs here, printing what happened either way so a log lists the kits that ran. */
 [[nodiscard]] bool kit_runs_here(row_kit_t kit) {
     if (!row_kit_compiled(kit)) print_line(stdout, "  {} kit: not compiled into this build", name_of(kit));
     else if (!row_kit_supported(kit))
@@ -298,7 +298,7 @@ void verify_layouts_through(row_kit_t kit) {
         visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit_layouts(kit_instance); });
 }
 
-/** The serial kit is the reference, so it answers to the definitions directly: byte order, bounds and widths. */
+/** The serial kit is the reference, answering the definitions: byte order, bounds and widths. */
 void row_search_serial_matches_definitions() {
     std::mt19937_64 generator(test_seed_for(__func__));
     for (std::size_t draw = 0; draw < 4096; ++draw) {
@@ -360,7 +360,7 @@ void layouts_neon_kit() { verify_layouts_through(row_kit_t::neon_k); }
 void layouts_sve_kit() { verify_layouts_through(row_kit_t::sve_k); }
 void layouts_rvv_kit() { verify_layouts_through(row_kit_t::rvv_k); }
 
-/** A map form answers the keys its set twin answers, and hands back the value each key arrived with. */
+/** A map form answers its set twin's keys and returns the value each key arrived with. */
 void layouts_mapped_values() {
     test_ordered_readonly_mapping<immutable_b_map<std::uint64_t, std::uint64_t>, immutable_b_set<std::uint64_t>>();
     test_ordered_readonly_mapping<immutable_splus_map<std::uint64_t, std::uint64_t>,

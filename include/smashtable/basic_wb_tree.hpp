@@ -8,8 +8,7 @@
  *  @section basic_wb_tree_weight_balanced_trees Weight-Balanced Trees
  *
  *  Weight-balanced trees maintain balance based on subtree sizes rather than heights. Rebalancing
- *  uses parameters Δ=3 and Γ=2, which are the only proven integer solution (Hirai &
- *  Yamamoto, 2011).
+ *  uses parameters Δ=3 and Γ=2, the only proven integer solution (Hirai & Yamamoto, 2011).
  *
  *  Balance invariant: for every node, weight(left) ≤ Δ × weight(right) AND weight(right) ≤ Δ ×
  *  weight(left), where weight is size+1.
@@ -23,9 +22,8 @@
  *  Use cases: pagination (OFFSET/LIMIT), percentiles, window functions, quantile estimation.
  *
  *  A wrapper that answers for only some of the stored entries supplies an augmentation policy, and
- *  the tree keeps a second subtree count over that predicate - @c select_augmented and
- *  @c rank_augmented descend on it in O(log n). An unaugmented tree keeps neither the field nor
- *  the work.
+ *  the tree keeps a second subtree count over that predicate - @c select_augmented and @c
+ *  rank_augmented descend on it in O(log n); an unaugmented tree keeps neither field nor work.
  *
  *  @section basic_wb_tree_performance Performance
  *
@@ -77,20 +75,20 @@ struct no_augmented_count_t {};
  *
  *  @tparam value_type_ Type of elements stored in nodes.
  *  @tparam comparator_type_ Comparator defining ordering. For heterogeneous lookups, define:
- *    @code using is_transparent = void; @endcode inside the comparator.
+ *      `using is_transparent = void;` inside the comparator.
  *
  *  @section basic_wb_tree_rebalancing_parameters Rebalancing Parameters
  *
  *  Δ=3: Rotation threshold. Rebalance if weight(left) > 3×weight(right) or vice versa, with weight
- *  = size+1. Γ=2: Rotation type selector. Single rotation if weight(heavy.inner)
- *  < 2×weight(heavy.outer).
+ *  = size+1. Γ=2: Rotation type selector. Single rotation if weight(heavy.inner) <
+ *  2×weight(heavy.outer).
  *
  *  These are the @b only valid integer parameters, proven in Coq by Hirai and Yamamoto in 2011, and
  *  are exposed as @c delta_k and @c gamma_k.
  *
- *  Layout: @c payload is the stored entry, @c left and @c right the links, and @c size the number of
- *  nodes in the subtree rooted here - invariant @c size @c = @c 1 @c + @c size(left) @c +
- *  @c size(right), which is what makes @c select and @c rank logarithmic.
+ *  Layout: @c payload is the stored entry, @c left and @c right the links, and @c size the number
+ *  of nodes in the subtree rooted here - invariant @c size @c = @c 1 @c + @c size(left) @c + @c
+ *  size(right), which is what makes @c select and @c rank logarithmic.
  *
  *  @tparam augmentation_type_ Policy carrying a second per-subtree count, kept over a predicate of
  *      the wrapper's choosing. The default @c no_augmentation_t adds no field and no work.
@@ -279,6 +277,7 @@ class basic_wb_node {
      *  @par Complexity O(log n) expected, where n = size(node).
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto median = select(root, size/2, comp);  // Find median
      *  auto q1 = select(root, size/4, comp);      // First quartile
@@ -303,6 +302,7 @@ class basic_wb_node {
      *  @par Complexity O(log n) expected.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto position = rank(root, value, comp);
      *  // position elements are smaller than value
@@ -333,8 +333,7 @@ class basic_wb_node {
      *  @param[in] k Index among counted entries, 0 for the smallest.
      *  @return Pointer to the k-th counted node, or nullptr when fewer than k+1 are counted.
      *
-     *  @par Complexity O(log n), following one root-to-node path and reading only the
-     *      stored counts.
+     *  @par Complexity O(log n): one root-to-node path, reading only the stored counts.
      */
     static node_t *select_augmented(node_t *node, size_t k) noexcept {
         while (node) {
@@ -375,8 +374,7 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Repairs the augmented counts on the path to @p comparable after its
-     *      predicate flipped.
+     *  @brief Repairs augmented counts on the path to @p comparable after its predicate flipped.
      *  @return True when the entry was found, which is when anything was repaired.
      *
      *  @par Complexity O(log n), touching only the ancestors whose counts could have moved.
@@ -450,15 +448,16 @@ class basic_wb_node {
 
 #pragma region Rotations and Rebalancing
 
-    /** Update size field to match children. Must be called after any operation that modifies children. */
+    /** Update size field to match children. Must be called after any operation that modifies
+     *  children. */
     static void update_size(node_t *node) noexcept {
         if (!node) return;
         node->size = 1 + get_size(node->left) + get_size(node->right);
         update_augmented_size(node);
     }
 
-    /** Recomputes only the augmented count, for a node whose shape is already correct. Used where an entry's own
-     *  predicate changed but no link moved. */
+    /** Recomputes only the augmented count, for a node whose shape is already correct. Used where
+     *  an entry's own predicate changed but no link moved. */
     static void update_augmented_size(node_t *node) noexcept {
         if constexpr (is_augmented_k) {
             if (!node) return;
@@ -487,12 +486,12 @@ class basic_wb_node {
         /** Why the build stopped: a refused node, a refused element copy, or @c success_k. */
         status_t status = success_k;
 
-        /** How many nodes hang off @c root, which a partial build leaves short of the range length. */
+        /** How many nodes hang off @c root; a partial build leaves this short of the range. */
         std::size_t count = 0;
     };
 
     /**
-     *  @brief Builds a balanced tree from the sorted range [ @p first, @p first + @p count ) in O(n).
+     *  @brief Builds a balanced tree from sorted range [ @p first, @p first + @p count ) in O(n).
      *  @param[in] allocate_node Hands back a raw node, or @c nullptr when it cannot.
      *  @return What was built and why the build stopped.
      *  @warning An unsorted range builds a tree whose structure is undefined.
@@ -603,8 +602,8 @@ class basic_wb_node {
     }
 
     /**
-     *  @brief Rebalance node if weight invariant violated. Uses Δ=3, Γ=2 parameters (only valid
-     *      integer solution).
+     *  @brief Rebalances a node whose weight invariant is violated. Uses Δ = 3 and Γ = 2, the only
+     *      valid integer solution.
      *
      *  @par Algorithm
      *  - If left too heavy, with weight(left) > 3×weight(right):
@@ -754,8 +753,7 @@ class basic_wb_node {
     };
 
     /**
-     *  @brief Inserts an existing node into the tree. Used by merge operation to insert
-     *      extracted nodes.
+     *  @brief Inserts an existing node into the tree. Used by merge to insert extracted nodes.
      *  @param[in] node Root of subtree to insert into.
      *  @param[in] new_child Pre-allocated node to insert.
      *  @param[in] comparator Comparator for element comparison.
@@ -805,8 +803,7 @@ class basic_wb_node {
      *  @param[in] node Root of subtree.
      *  @param[in] payload Entry to insert or assign (moved).
      *  @param[in] comparator Comparator for element comparison.
-     *  @param[in] node_allocator Allocator function that returns new node pointer or nullptr
-     *      on failure.
+     *  @param[in] node_allocator Allocator that returns a new node pointer, or nullptr on failure.
      *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
     template <typename node_allocator_type_>
@@ -867,9 +864,9 @@ class basic_wb_node {
         std::size_t count = 0;
     };
 
-    /** Drops every node satisfying @p predicate, returning the new root and surviving count. Both halves may shed
-     *  any number of nodes, so the two survivors are re-joined rather than stitched back in place - rotating once
-     *  could not close a gap of many weight classes. */
+    /** Drops every node satisfying @p predicate, returning the new root and surviving count. Both
+     *  halves may shed any number of nodes, so the two survivors are re-joined rather than stitched
+     *  back in place - rotating once could not close a gap of many weight classes. */
     template <typename predicate_type_, typename node_deallocator_type_>
     static erase_if_result_t erase_if(node_t *node, predicate_type_ &&predicate,
                                       node_deallocator_type_ &&node_deallocator,
@@ -994,6 +991,7 @@ class basic_wb_node {
      *  @par Complexity O(log n) expected.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto [left, right] = split(root, 5, comp);
      *  // left: all elements < 5
@@ -1051,21 +1049,20 @@ class basic_wb_tree {
     using allocator_t = node_allocator_type_;
     using allocator_type = allocator_t; // ? STL compatibility
 
-    // SFINAE to extract key_type for maps, or use value_type for sets.
+    /** SFINAE to extract key_type for maps, or use value_type for sets. */
     using key_t = typename mapping_key_type_or_itself<value_t>::type;
     using key_type = key_t; // ? STL compatibility
 
-    // SFINAE to extract mapped_type for maps, or void for sets.
+    /** SFINAE to extract mapped_type for maps, or void for sets. */
     using mapped_t = typename mapped_value_type_or_void<value_t>::type;
     using mapped_type = mapped_t; // ? STL compatibility
 
-    // Trait to indicate this container uses iterator-based reads (not callbacks)
-
+    /** Trait to indicate this container uses iterator-based reads, not callbacks. */
     using is_associative = std::bool_constant<is_mapping<value_t>>;
 
     /**
-     *  @brief Rebind this tree type to different element and comparator types. Follows STL allocator
-     *      rebind pattern for type transformations.
+     *  @brief Rebind this tree type to different element and comparator types. Follows STL
+     *      allocator rebind pattern for type transformations.
      *
      *  @tparam other_value_type_ New element type for the rebound tree.
      *  @tparam other_comparator_ New comparator type for the rebound tree.
@@ -1127,8 +1124,8 @@ class basic_wb_tree {
 
 #pragma region Modifiers
 
-    /** The node an upsert settled on, and how it got there. Assigning to the result overwrites that node's entry,
-     *  which is what makes it usable as a handle rather than a report. */
+    /** The node an upsert settled on, and how it got there. Assigning to the result overwrites that
+     *  node's entry, which is what makes it usable as a handle rather than a report. */
     struct [[nodiscard]] upserted_node_t {
         node_t *node = nullptr;
         typename node_t::node_placement_t placement = node_t::node_placement_t::refused_k;
@@ -1230,6 +1227,7 @@ class basic_wb_tree {
      *  @par Complexity O(log n) expected.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto median_node = tree.select(tree.size() / 2);
      *  if (median_node) {
@@ -1245,12 +1243,13 @@ class basic_wb_tree {
     /**
      *  @brief Find rank (position) of element in sorted order.
      *  @param[in] payload Entry to find rank of.
-     *  @return Number of elements < @p payload. If element exists, this is its 0-based index. Returns
-     *      size() if element is greater than all elements in tree.
+     *  @return Number of elements < @p payload. If element exists, this is its 0-based index.
+     *      Returns size() if element is greater than all elements in tree.
      *
      *  @par Complexity O(log n) expected.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto position = tree.rank(42);
      *  // position elements are smaller than 42
@@ -1258,15 +1257,14 @@ class basic_wb_tree {
      */
     size_t rank(value_t const &payload) const noexcept { return node_t::rank(root_, payload, comparator_); }
 
-    /** Number of entries the augmentation policy counts across the whole tree. Exact for the counts as they stand
-     *  now. One scalar per node cannot encode a function of a parameter, so a reader whose predicate differs from
-     *  the one currently materialized in the entries - an older snapshot, say - gets no answer from this count and
-     *  none of the descents built on it. */
+    /** Number of entries the augmentation policy counts across the whole tree. Exact for the counts
+     *  as they stand now. One scalar per node cannot encode a function of a parameter, so a reader
+     *  whose predicate differs from the one currently materialized in the entries - an older
+     *  snapshot, say - gets no answer from this count and none of the descents built on it. */
     [[nodiscard]] size_t augmented_size() const noexcept { return node_t::get_augmented_size(root_); }
 
     /**
-     *  @brief Select the k-th smallest entry among those the augmentation policy counts, in
-     *      O(log n).
+     *  @brief Select the k-th smallest entry among those the augmentation policy counts, O(log n).
      *  @return Pointer to the node, or nullptr when @c augmented_size() is at most @p k.
      */
     node_t *select_augmented(size_t k) noexcept { return node_t::select_augmented(root_, k); }
@@ -1286,6 +1284,7 @@ class basic_wb_tree {
      *
      *  A wrapper calls this once per retagged entry, which may be several per write when one
      *  publish supersedes another entry.
+     *
      *  @return True when the entry was found.
      */
     template <typename comparable_type_>
@@ -1331,8 +1330,8 @@ class basic_wb_tree {
         return removed;
     }
 
-    /** Erases the half-open range [lower, upper), invoking @p callback for each element. Splitting twice and
-     *  re-joining keeps this O(log N + K) rather than K separate erases. */
+    /** Erases the half-open range [lower, upper), invoking @p callback for each element. Splitting
+     *  twice and re-joining keeps this O(log N + K) rather than K separate erases. */
     template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
     void erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept {
         if (!root_) return;
@@ -1356,8 +1355,8 @@ class basic_wb_tree {
 
 #pragma region Extraction and Merging
 
-    /** RAII wrapper for extracted nodes. Owns the extracted node and deallocates it when destroyed (unless
-     *  released). */
+    /** RAII wrapper for extracted nodes. Owns the extracted node and deallocates it when destroyed
+     *  (unless released). */
     struct extract_result_t {
         basic_wb_tree *tree_ = nullptr;
         node_t *node_ptr_ = nullptr;
@@ -1399,6 +1398,7 @@ class basic_wb_tree {
      *  @par Complexity O(log n) expected.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto extracted = tree.extract(42);
      *  if (extracted) {
@@ -1432,8 +1432,7 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Checks if all keys from other tree exist in this tree using O(m+n)
-     *      simultaneous traversal.
+     *  @brief Checks if all keys from other tree exist in this tree, using O(m+n) traversal.
      *  @param[in] other Tree whose keys to check.
      *  @return True if all keys from other exist in this tree, false otherwise.
      */
@@ -1453,10 +1452,10 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Merges another tree into this one with upsert semantics, overwriting the keys already here.
+     *  @brief Merges another tree into this one, upsert semantics: overwrites keys already here.
      *
-     *  Every node travels across by relinking, so nothing is allocated and nothing can be refused, which
-     *  is what lets a batch modifier promise all-or-nothing once its staging tree is built.
+     *  Every node travels across by relinking, so nothing is allocated and nothing can be refused,
+     *  which is what lets a batch modifier promise all-or-nothing once its staging tree is built.
      *
      *  @param[inout] other Tree to merge from, left empty.
      *  @note Complexity: O(m log n) where m is @p other 's size and n is this tree's.
@@ -1613,8 +1612,8 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
-    /** Where an insertion settled, and how it got there. Names the same three outcomes as @c upserted_node_t, one
-     *  level up from the nodes. */
+    /** Where an insertion settled, and how it got there. Names the same three outcomes as @c
+     *  upserted_node_t, one level up from the nodes. */
     struct [[nodiscard]] inserted_iterator_t {
 
         /** The element's position, which is @c end() when nothing was stored. */
@@ -1649,7 +1648,7 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element outside this tree.
+     *  @brief Fills @p staged with [ @p first, @p last ), duplicating elements outside the tree.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
      */
@@ -1687,7 +1686,7 @@ class basic_wb_tree {
 
   public:
     /**
-     *  @brief Inserts every element of [ @p first, @p last ) whose key is free, leaving incumbents alone.
+     *  @brief Inserts [ @p first, @p last ) where the key is free, leaving incumbents alone.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @return @c success_k however many keys were already here, or the first refusal.
      *
@@ -1712,7 +1711,7 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Inserts every element of [ @p first, @p last ), refusing the batch over a key already here.
+     *  @brief Inserts [ @p first, @p last ), refusing the batch on any key already here.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
      *
@@ -1759,7 +1758,8 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /** Result of an erase operation on an iterator. Combines iterator to next element with operation status. */
+    /** Result of an erase operation on an iterator. Combines iterator to next element with
+     *  operation status. */
     struct [[nodiscard]] erase_result_t {
 
         /** Iterator to the element following the erased one, or @c end(). */
@@ -1818,7 +1818,8 @@ class basic_wb_tree {
         bool operator!=(iterator const &other) const noexcept { return node_ != other.node_; }
     };
 
-    /** Const bidirectional iterator for WB tree. Provides in-order traversal of tree elements (read-only). */
+    /** Const bidirectional iterator for WB tree. Provides in-order traversal of tree elements
+     *  (read-only). */
     class const_iterator {
         friend class basic_wb_tree;
 
@@ -2022,7 +2023,8 @@ class basic_wb_tree {
 
 #pragma region Split and Join Operations
 
-    /** Result of splitting a tree at a key. Contains two trees: left (all < key) and right (all >= key). */
+    /** Result of splitting a tree at a key. Contains two trees: left (all < key) and right (all >=
+     *  key). */
     struct split_result_t {
 
         /** Tree with all elements ordered before the split key. */
@@ -2045,6 +2047,7 @@ class basic_wb_tree {
      *  @par Complexity O(log n) expected.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto split = tree.split(5);
      *  // split.left has elements < 5
@@ -2083,6 +2086,7 @@ class basic_wb_tree {
      *      general merging with duplicate handling, use merge() instead.
      *
      *  @par Example
+     *
      *  @code{.cpp}
      *  auto right = tree.split(5);  // tree: [0,5), right: [5,∞)
      *  tree.join(right);            // tree: [0,∞)

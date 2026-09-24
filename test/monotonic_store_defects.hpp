@@ -16,8 +16,8 @@ namespace ashvardanian::smashtable::test {
 
 #pragma region Staging Window
 
-/** A direct write lands on the published version and leaves the staged one for its own commit. The staged version
- *  wins at commit, since commit order decides and not generation order. */
+/** A direct write lands on the published version and leaves the staged one for its own commit. The
+ *  staged version wins at commit, since commit order decides and not generation order. */
 template <typename container_type_>
 void test_direct_write_spares_staged_version() {
 
@@ -311,7 +311,7 @@ void test_vacuum_spares_staged_versions() {
     st_verify_eq_(container.contains(trivial_id_to_key<member_t>(5)), true);
 }
 
-/** The windowed overload reclaims only its own slice, so a caller can walk the keyspace in steps. */
+/** The windowed overload reclaims only its own slice, so a caller can step through the keyspace. */
 template <typename container_type_>
 void test_windowed_vacuum_reclaims_one_slice() {
 
@@ -349,8 +349,8 @@ void test_windowed_vacuum_reclaims_one_slice() {
 
 #pragma region Transaction Reads
 
-/** A transaction's own range is one sorted sequence, however its staged keys interleave with the committed ones, and
- *  a staged tombstone hides the committed key underneath it. */
+/** A transaction's own range is one sorted sequence, however its staged keys interleave with the
+ *  committed ones, and a staged tombstone hides the committed key underneath it. */
 template <typename container_type_>
 void test_transaction_range_interleaves_staged_and_committed() {
 
@@ -499,13 +499,11 @@ void test_second_stage_is_rejected() {
 }
 
 /**
- *  @brief A refused validation writes nothing, so a caller spanning several stores can still
- *      turn back.
+ *  @brief A refused validation writes nothing, so a caller spanning several stores can turn back.
  *
  *  The half a commit can refuse and the half that applies are separate calls, because a wrapper
  *  committing across partitions has to ask every one of them before any of them writes. Asking
- *  after the first has written is how a refusal ends up reported over writes a reader can
- *  already see.
+ *  after the first has written is how a refusal ends up reported over writes readers already see.
  */
 template <typename container_type_>
 void test_validate_refuses_before_publishing() {

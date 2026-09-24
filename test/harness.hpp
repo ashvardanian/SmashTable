@@ -6,15 +6,13 @@
  *
  *  @section test_environment_variables Environment Variables
  *
- *  - @c SMASHTABLE_FILTER : substring matched against a test's "suite.name" label; only matching
- *    tests run. Unset or empty runs everything. Honored by @c run_test, which announces what it
- *    skipped, and a filter that matched nothing fails the binary rather than reporting an empty
- *    suite as passing.
+ *  @c SMASHTABLE_FILTER is a substring matched against a test's "suite.name" label; only matching
+ *  tests run. Unset or empty runs everything. Honored by @c run_test, which announces what it
+ *  skipped, and a filter that matched nothing fails the binary rather than passing an empty suite.
  *
- *  - @c SMASHTABLE_SEED : the seed every randomized suite draws from, so a failure names the run
- *    that produced it. Unset means @c default_seed_k, which keeps an unattended build
- *    deterministic, while a value that is not a whole number aborts rather than quietly reproducing
- *    the default run.
+ *  @c SMASHTABLE_SEED is the seed every randomized suite draws from, so a failure names the run
+ *  that produced it. Unset means @c default_seed_k, which keeps an unattended build deterministic,
+ *  while a value that is not a whole number aborts rather than quietly reproducing the default run.
  *
  *  @section test_failure_model Failure Model
  *
@@ -139,8 +137,7 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
 }
 
 /**
- *  @brief Verification that stays active regardless of @c NDEBUG - a test's oracle must never
- *      compile out.
+ *  @brief Verification that stays active regardless of @c NDEBUG - an oracle never compiles out.
  *
  *  Wrapped in @c do/while(0) so the macro is one statement: it demands its terminating semicolon
  *  and swallows a dangling @c else. Context belongs inside the condition as @c &&"text", which the

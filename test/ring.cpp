@@ -28,7 +28,7 @@ namespace {
 
 #pragma region Tests
 
-/** Capacities are powers of two up to the limit, zero holds nothing, and a refused allocation is reported. */
+/** Capacities are powers of two up to the limit, zero holds nothing, and a refusal is reported. */
 void ring_capacity_rules() {
     st_verify_eq_(basic_ring<int>::make(3).status(), status_t::invalid_argument_k);
     st_verify_eq_(basic_ring<int>::make(basic_ring<int>::capacity_limit_k * 2).status(), status_t::invalid_argument_k);
@@ -52,7 +52,7 @@ void ring_capacity_rules() {
     st_verify_eq_(ring->free_space(), 0u);
 }
 
-/** Random pushes and pops across many wraparounds match an unbounded queue drawn in a plain array. */
+/** Random pushes and pops across many wraparounds match an unbounded queue in a plain array. */
 void ring_order_across_wraparound() {
     std::mt19937_64 generator(test_seed_for(__func__));
     auto ring = basic_ring<std::uint64_t>::make(16);
@@ -128,8 +128,7 @@ void ring_bulk_push_and_pop() {
     st_verify_(ring->empty());
 }
 
-/** Every element constructed into a slot is destroyed exactly once, whether popped, cleared or dropped with the ring.
- */
+/** Every element in a slot is destroyed exactly once: popped, cleared, or dropped with the ring. */
 void ring_element_lifetimes() {
     counted_key_t::reset();
     {
@@ -159,7 +158,7 @@ void ring_element_lifetimes() {
     counted_key_t::verify_balanced();
 }
 
-/** The suite every sequence answers, over a ring of counted elements and one of tracked allocations. */
+/** The suite every sequence answers, over rings of counted elements and tracked allocations. */
 void ring_sequence_suite() {
     test_sequence_tags<basic_ring<counted_key_t>>();
     test_sequence_order<basic_ring<counted_key_t>>();

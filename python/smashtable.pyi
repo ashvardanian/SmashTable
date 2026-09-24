@@ -6,6 +6,10 @@ description a type checker or an editor ever sees. Requires Python 3.12, so the 
 
 Each closed set of names the constructors accept is a `Literal`, so a misspelling is a
 type error rather than the `ValueError` the parser raises at runtime.
+
+File: python/smashtable.pyi
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 from types import TracebackType
@@ -15,33 +19,36 @@ __version__: str
 
 # region Names the Constructors Accept
 
-# The key layout a store is built around, which decides how a key is compared and hashed.
 _KeyTypeName = Literal["int", "uint", "str", "bytes"]
+"""The key layout a store is built around, which decides how a key is compared and hashed."""
 
-# Whether a map holds scalars it can store inline, or arbitrary Python objects.
 _ValueModeName = Literal["scalar", "object"]
+"""Whether a map holds scalars it can store inline, or arbitrary Python objects."""
 
-# What a reader is promised, named as Jepsen names it and ordered by strength. The top two
-# refuse the same schedules; the stricter one additionally waits for its own publication, so a
-# transaction opening after a commit returned cannot be ordered before it.
 _IsolationName = Literal["monotonic_atomic_view", "snapshot", "serializable", "strict_serializable"]
+"""What a reader is promised, named as Jepsen names it and ordered by strength. The top two refuse
+the same schedules; the stricter one additionally waits for its own publication, so a transaction
+opening after a commit returned cannot be ordered before it.
+"""
 
-# How a store is shared between threads: one lock over the whole store, or a shard per bucket.
 _SharingName = Literal["locked", "partitioned"]
+"""How a store is shared between threads: one lock over the whole store, or a shard per bucket."""
 
-# What a store reports it actually delivers, which is wider than what may be asked for: sharding a
-# store in no order falls back to a rung the constructor does not accept.
 _DeliveredIsolationName = _IsolationName | Literal["read_committed"]
+"""What a store reports it actually delivers, which is wider than what may be asked for: sharding a
+store in no order falls back to a rung the constructor does not accept.
+"""
 
-# A key may be named by its layout or by the Python type standing for it, so `key=int` and
-# `key="int"` build the same store. There is no Python type for an unsigned key.
 _KeySpec = _KeyTypeName | type[int] | type[str] | type[bytes]
+"""A key may be named by its layout or by the Python type standing for it, so `key=int` and
+`key="int"` build the same store. There is no Python type for an unsigned key.
+"""
 
-# A value mode may likewise be named by `object` itself rather than by the string.
 _ValueSpec = _ValueModeName | type[object]
+"""A value mode may likewise be named by `object` itself rather than by the string."""
 
-# Whatever the key layout admits. A store built for one layout refuses the others.
 _Key = int | str | bytes
+"""Whatever the key layout admits. A store built for one layout refuses the others."""
 
 # endregion Names the Constructors Accept
 
@@ -144,8 +151,8 @@ class SortedMap:
     def __repr__(self) -> str: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __ne__(self, other: object, /) -> bool: ...
-    # Mutable and compared by content, so it is deliberately unhashable.
     __hash__: ClassVar[None]  # type: ignore[assignment]
+    """Mutable and compared by content, so it is deliberately unhashable."""
     def get(self, key: _Key, default: Any = None, /) -> Any: ...
     def pop(self, key: _Key, default: Any = ..., /) -> Any: ...
     def popmin(self) -> tuple[_Key, Any]: ...
@@ -183,7 +190,6 @@ class SortedSet:
         """A set is subscripted only by a slice, which erases the window it names."""
     # `__setitem__` exists at runtime only to raise, so it is deliberately absent here: a checker
     # rejecting `members[key] = value` outright is the answer, not a signature that always fails.
-
     def __repr__(self) -> str: ...
     def __eq__(self, other: object, /) -> bool: ...
     def __ne__(self, other: object, /) -> bool: ...
@@ -192,8 +198,8 @@ class SortedSet:
     def __le__(self, other: SortedSet | set[_Key] | frozenset[_Key], /) -> bool: ...
     def __gt__(self, other: SortedSet | set[_Key] | frozenset[_Key], /) -> bool: ...
     def __ge__(self, other: SortedSet | set[_Key] | frozenset[_Key], /) -> bool: ...
-    # Mutable and compared by content, so it is deliberately unhashable.
     __hash__: ClassVar[None]  # type: ignore[assignment]
+    """Mutable and compared by content, so it is deliberately unhashable."""
     def add(self, member: _Key, /) -> None: ...
     def discard(self, member: _Key, /) -> None: ...
     def remove(self, member: _Key, /) -> None: ...

@@ -24,9 +24,8 @@ namespace ashvardanian::smashtable::test {
  *  @brief Every key a container constructs, it must destroy.
  *
  *  Drives the paths where a container moves elements around rather than merely holding them -
- *  growth, overwrite, erase, and teardown - and asserts the tally returns to zero. A defect count
- *  above zero means a key was read after destruction or destroyed twice, which the per-object magic
- *  word catches.
+ *  growth, overwrite, erase, and teardown - and asserts the tally returns to zero. A nonzero defect
+ *  count means a key was read after destruction or destroyed twice, as the magic word reveals.
  */
 template <typename container_type_>
 void test_container_balances_counted_keys(std::size_t size = 128) {
@@ -219,8 +218,7 @@ void test_container_honours_over_alignment(std::size_t size = 64) {
  *  @brief A copy that refuses must surface as a status, not as a silently truncated result.
  *
  *  @c find_copy is the one read that materializes a value, so it is the one read that can fail. A
- *  key whose @c copy() is refused on a schedule is what makes that path reachable without
- *  real exhaustion.
+ *  key whose @c copy() is refused on a schedule reaches that path without real exhaustion.
  */
 template <typename container_type_>
 void test_find_copy_reports_a_refused_copy() {

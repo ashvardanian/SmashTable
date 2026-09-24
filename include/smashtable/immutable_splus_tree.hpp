@@ -36,11 +36,11 @@
 namespace ashvardanian::smashtable {
 
 /**
- *  An immutable S+ tree over @p value_type_, built once from a sorted span, whose nodes are rows of
- *  @p keys_per_row_ keys searched by @p row_kit_type_. A set holds one allocation of rows; a map
- *  holds a second one of mapped values, indexed by rank.
+ *  @brief An immutable S+ tree over @p value_type_, built once from a sorted span, whose nodes are
+ *      rows of @p keys_per_row_ keys searched by @p row_kit_type_. A set holds one allocation of
+ *      rows; a map holds a second one of mapped values, indexed by rank.
  *
- *  @tparam keys_per_row_ Keys per node, which is @c default_row_bytes_k worth by default.
+ *  @tparam keys_per_row_ Keys per node, which is @p default_row_bytes_k worth by default.
  */
 template <typename value_type_,
           std::size_t keys_per_row_ =
@@ -48,7 +48,7 @@ template <typename value_type_,
           row_kit row_kit_type_ = native_row_kit_t, typename allocator_type_ = default_allocator<value_type_>>
 class immutable_splus_tree {
   public:
-    /** The whole stored element: the key itself for a set, a @c mapping of both halves for a map. */
+    /** Every stored element: the key itself for a set, a @c mapping of both halves for a map. */
     using value_t = value_type_;
     using value_type = value_t; // ? STL compatibility
 
@@ -60,7 +60,7 @@ class immutable_splus_tree {
     using mapped_t = typename mapped_value_type_or_void<value_t>::type;
     using mapped_type = mapped_t; // ? STL compatibility
 
-    /** What one entry of the mapped array holds, which is an empty stand-in when the tree is a set. */
+    /** What one entry of the mapped array holds: an empty stand-in when the tree is a set. */
     using mapped_slot_t = std::conditional_t<is_mapping<value_t>, mapped_t, placeholder_t>;
 
     using is_associative = std::bool_constant<is_mapping<value_t>>;
@@ -153,8 +153,8 @@ class immutable_splus_tree {
     immutable_splus_tree &operator=(immutable_splus_tree const &) = delete;
 
     /**
-     *  Builds the tree over @p sorted, which may repeat keys. A map keeps the mapped values in the
-     *  order they arrive, so a repeated key reads back the value that came first.
+     *  @brief Builds the tree over @p sorted, which may repeat keys. A map keeps the mapped values
+     *      in the order they arrive, so a repeated key reads back the value that came first.
      *
      *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or
      *      @c out_of_memory_heap_k.
@@ -219,8 +219,8 @@ class immutable_splus_tree {
         return words_.size() * sizeof(word_t) + mapped_.size() * sizeof(mapped_slot_t);
     }
 
-    /** The bytes a tree over @p keys_count elements stores: whole rows on every level, and a value per key for a
-     *  map. */
+    /** The bytes a tree over @p keys_count elements stores: whole rows on every level, and a value
+     *  per key for a map. */
     [[nodiscard]] static constexpr std::size_t size_bytes(std::size_t keys_count) noexcept {
         level_nodes_t leaf_counts {};
         std::size_t const levels_count = count_levels_(keys_count, leaf_counts);
@@ -282,7 +282,8 @@ class immutable_splus_tree {
         return words_.data() + (level_firsts_[level] + node) * format_t::words_per_row_k;
     }
 
-    /** Fills @p leaf_counts with the nodes on each level from the leaves up, and returns how many levels there are. */
+    /** Fills @p leaf_counts with the nodes on each level from the leaves up, and returns how many
+     *  levels there are. */
     static constexpr std::size_t count_levels_(std::size_t keys_count, level_nodes_t &leaf_counts) noexcept {
         std::size_t nodes = keys_count / keys_per_row_k + (keys_count % keys_per_row_k != 0);
         std::size_t levels_count = 0;

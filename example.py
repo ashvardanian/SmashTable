@@ -13,6 +13,10 @@ Every diagram has one shape: what happens, then a rule, then what everyone outsi
 
 Run:
     pip install -e . && python example.py
+
+File: example.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import smashtable as st

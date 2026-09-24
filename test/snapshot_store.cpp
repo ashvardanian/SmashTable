@@ -43,8 +43,12 @@ namespace {
 
 #pragma region Type Aliases
 
-/** Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
- *  Tests: Snapshot reads, phantom-free ranges, run-based reclamation on a linked core */
+/**
+ *  Tests: Snapshot reads, phantom-free ranges, run-based reclamation on a linked core.
+ *  Ordering: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ */
 using snapshot_avl_map_t =
     snapshot_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
@@ -64,34 +68,54 @@ using budgeted_snapshot_avl_map_t =
 using strict_serializable_avl_map_t = strict_serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>,
                                                                   std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
- *  Tests: The same suites over the weight-balanced core */
+/**
+ *  Tests: The same suites over the weight-balanced core.
+ *  Ordering: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ */
 using snapshot_wb_map_t =
     snapshot_wb_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
- *  Tests: What an order statistic costs, since every comparison this comparator makes is counted */
+/**
+ *  Tests: What an order statistic costs, since every comparison this comparator makes is counted.
+ *  Ordering: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ */
 using snapshot_ranked_map_t =
     snapshot_wb_map<trivial_key_t, int, counting_comparator_t, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Ordering: ✗ | Copy: Trivial (key & value) | Memory: Stack
- *  Tests: Composite keys on the open-addressed core, where equality separates versions */
+/**
+ *  Tests: Composite keys on the open-addressed core, where equality separates versions.
+ *  Ordering: ✗.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ */
 using snapshot_hash_map_t = snapshot_hash_map<trivial_key_t, int>;
 
-/** Ordering: ✗ | Copy: .copy() → expected<T> | Memory: Heap
- *  Tests: Staging and reclamation with a key that allocates */
+/**
+ *  Tests: Staging and reclamation with a key that allocates.
+ *  Ordering: ✗.
+ *  Copy: .copy() → expected<T>.
+ *  Memory: Heap.
+ */
 using snapshot_heavy_set_t = snapshot_hash_set<heavy_key_t>;
 
-/** Ordering: ✓ | Copy: Trivial (key & value) | Memory: Stack
- *  Tests: One snapshot and one stamp shared by sixteen independently locked partitions */
+/**
+ *  Tests: One snapshot and one stamp shared by sixteen independently locked partitions.
+ *  Ordering: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ */
 using sharded_snapshot_map_t = partitioned_store<snapshot_avl_map_t>;
 
 /** The same map behind one mutex, which is what a group of stores on one order is made of. */
 using locked_snapshot_map_t = locked_store<snapshot_avl_map_t>;
 
-/** The same two cores built into a shared order rather than each making its own, which is what a group of
- *  stores is. No mutex around them: a group fuzzer writes to a store while a group over it sits staged, and
- *  a wrapper's lock is not recursive. */
+/** The same two cores built into a shared order rather than each making its own, which is what a
+ *  group of stores is. No mutex around them: a group fuzzer writes to a store while a group over it
+ *  sits staged, and a wrapper's lock is not recursive. */
 using grouped_snapshot_map_t = typename snapshot_avl_map_t::template rebind_order<commit_order_t>;
 using grouped_serializable_map_t = typename serializable_avl_map_t::template rebind_order<commit_order_t>;
 
@@ -99,7 +123,7 @@ using grouped_serializable_map_t = typename serializable_avl_map_t::template reb
 using monotonic_avl_map_t =
     monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** A part that decides visibility by what is published rather than by a stamp, so sharding caps it. */
+/** A part that decides visibility by what is published, not by a stamp, so sharding caps it. */
 using sharded_monotonic_map_t = partitioned_store<monotonic_avl_map_t>;
 
 /** The @c std::set-backed oracle, which the range surfaces are checked against. */
@@ -349,7 +373,7 @@ static void test_first_committer_wins() {
     st_verify_eq_(mapped_or_absent(store, 1), 111);
 }
 
-/** Tests that a conflict is caught at commit when both transactions staged before either published */
+/** A conflict is caught at commit when both transactions staged before either published. */
 template <typename store_type_>
 static void test_conflict_caught_after_staging() {
     using member_t = typename store_type_::value_type;
@@ -646,9 +670,9 @@ static generation_t oldest_open_snapshot(
     return oldest;
 }
 
-/** Tests that the mark never passes the oldest open snapshot, through every arrival and departure order.
- *  It is a bound rather than an equality: readers are counted by bucket, so once two of them share one the
- *  mark answers that bucket's floor, which is at or below the older of the two. */
+/** Tests that the mark never passes the oldest open snapshot, through every arrival and departure
+ *  order. It is a bound rather than an equality: readers are counted by bucket, so once two of them
+ *  share one the mark answers that bucket's floor, which is at or below the older of the two. */
 template <typename store_type_>
 static void test_low_water_mark_tracks_the_oldest_reader() {
     using transaction_t = typename store_type_::transaction_t;
@@ -1480,7 +1504,7 @@ static void test_ranked_size_tracks_every_write() {
 
 #pragma region Enumeration Tests
 
-/** The identifiers an unordered enumeration reports, sorted so an ordered core cannot flatter it. */
+/** Identifiers an unordered enumeration reports, sorted so an ordered core cannot flatter it. */
 template <typename readable_type_>
 static std::vector<trivial_id_t> keys_enumerated(readable_type_ const &readable) {
     std::vector<trivial_id_t> seen;
@@ -1667,7 +1691,7 @@ constexpr bool update_range_reports_a_status =
                                  std::declval<typename store_type_::identifier_t const &>(),
                                  std::declval<typename store_type_::identifier_t const &>(), std::declval<no_op_t>()))>;
 
-/** Whether a sweep answers with a count or with the reason it could not run, never one zero for both. */
+/** Whether a sweep answers with a count, or the reason it could not run, never zero for both. */
 template <typename store_type_>
 constexpr bool vacuum_reports_through_expected =
     std::is_same_v<expected<std::size_t>, decltype(std::declval<store_type_ &>().vacuum())>;
@@ -1692,8 +1716,8 @@ constexpr bool refuses_an_absent_key =
         store.update(cursor, cursor);
     };
 
-/** Whether a store and its transactions both answer for a first key, without being asked an ordinal. Spelled from
- *  the level pairs the parity fold already drives, so the two levels have one definition. */
+/** Whether a store and its transactions both answer for a first key, without being asked an
+ *  ordinal. Spelled from the level pairs the parity fold drives, so both levels share one. */
 template <typename store_type_>
 constexpr bool answers_a_smallest =
     smallest_pair_t::at_store<store_type_> && smallest_pair_t::at_transaction<store_type_>;
@@ -1793,7 +1817,7 @@ static void test_insert_if_missing_reports_the_fresh_insert() {
     st_verify_eq_(mapped_or_absent(store, 1), 10);
 }
 
-/** A strict write refuses a key that is not there, singly and in a batch, and changes nothing when it does. */
+/** A strict write refuses an absent key, singly and in a batch, changing nothing when it does. */
 template <typename store_type_>
 static void test_update_refuses_an_absent_key() {
     using member_t = typename store_type_::value_type;
@@ -1911,8 +1935,7 @@ static void test_sample_one_draws_from_the_visible_window() {
 }
 
 /**
- *  @brief The smallest key is the one a full walk reports first, and nothing at all when none
- *      is readable.
+ *  @brief The smallest key is the one a full walk reports first, and nothing when none is readable.
  *
  *  Driven over a store whose entries are all tombstoned as well, since a key whose newest published
  *  version is an erase is present in the core and readable by nobody.
@@ -1956,7 +1979,7 @@ static void test_smallest_opens_the_walk() {
     st_verify_eq_(missing_count, 1);
 }
 
-/** A transaction opens on its own snapshot and on its own staged writes, not on the newest commit. */
+/** A transaction opens on its own snapshot and staged writes, not on the newest commit. */
 template <typename store_type_>
 static void test_smallest_answers_at_the_readers_snapshot() {
     using member_t = typename store_type_::value_type;
@@ -2062,8 +2085,7 @@ static void test_sharded_reader_holds_one_snapshot() {
 }
 
 /**
- *  @brief Tests that a transaction reused after its own commit reads that commit, in
- *      every partition
+ *  @brief Tests that a transaction reused after its own commit reads that commit in every partition
  *
  *  The snapshot a commit creates is taken on the way into the next operation rather than on the way
  *  out of the commit, so this is what proves the deferral is invisible.
@@ -2270,8 +2292,7 @@ static void test_phantom_erase_refuses_the_walker() {
  *  @brief A scan by repeated bounds is refused by a key that appears in the window it crossed.
  *
  *  Navigating by @c lower_bound is the natural way to walk an ordered store, so each bound has to
- *  record the span it crossed - otherwise a key landing behind the scan leaves the
- *  commit unrefused.
+ *  record the span it crossed, otherwise a key landing behind the scan leaves the commit unrefused.
  */
 static void test_phantom_refuses_a_bounded_scan() {
     using store_t = serializable_avl_map_t;
@@ -2499,8 +2520,7 @@ static void serializable_reset_clears_a_whole_keyspace_read() {
  *
  *  A store-level walk inside a transaction would read past its own staging and write around it,
  *  which is the whole reason these exist at the transaction at all. Each is asked to see a staged
- *  write the store has not published, and each erasing walk is asked to stage rather than
- *  to publish.
+ *  write the store has not published, and each erasing walk to stage rather than publish.
  */
 template <typename store_type_>
 static void transaction_range_surface_sees_its_own_writes() {
@@ -2545,10 +2565,12 @@ static void transaction_range_surface_sees_its_own_writes() {
 
 #pragma region Pinned Reader Tests
 
-/** Sixteen strictly serializable partitions in one order, which is what the in-memory engine instantiates. */
+/** Sixteen strictly serializable partitions in one order, which is what the in-memory engine
+ *  instantiates. */
 using sharded_strict_map_t = partitioned_store<strict_serializable_avl_map_t>;
 
-/** How long a threaded suite below may run before its writer stops early, so the binary fits a CI budget. */
+/** How long a threaded suite below may run before its writer stops early, so the binary fits a CI
+ *  budget. */
 inline constexpr std::chrono::milliseconds threaded_budget_k {1500};
 
 /** Rounds a threaded suite runs before the budget may cut it short, so a slow build still races. */
@@ -2565,8 +2587,8 @@ template <typename transaction_type_>
     return failed(staged) ? staged : transaction.commit();
 }
 
-/** Tests that a transaction's commit stamp follows the order commits went out in, whichever transaction opened
- *  first. */
+/** Tests that a transaction's commit stamp follows the order commits went out in, whichever
+ *  transaction opened first. */
 template <typename store_type_>
 static void test_commit_stamp_follows_commit_order() {
     using member_t = typename store_type_::value_type;
@@ -2602,8 +2624,8 @@ static void test_commit_stamp_follows_commit_order() {
     st_verify_gt_(first->commit_stamp(), kept);
 }
 
-/** Tests that a store-level window write over every partition goes out under one stamp, which is the behaviour
- *  @c erase_range_policy_k names where the parts share an order. */
+/** Tests that a store-level window write over every partition goes out under one stamp, which is
+ *  the behaviour @c erase_range_policy_k names where the parts share an order. */
 template <typename store_type_>
 static void test_window_writes_publish_under_one_stamp() {
     static_assert(store_type_::erase_range_policy_k == store_type_::refusal_policy_t::all_or_nothing_k,
@@ -2672,8 +2694,8 @@ static void test_reader_holds_its_stamp() {
     st_verify_eq_(store.versions_count(), keys_k - 1, "one version per live key, and none for the erased one");
 }
 
-/** Tests that one reader serves several threads with no lock of their own while writers commit, erase windows and
- *  reclaim. */
+/** Tests that one reader serves several threads with no lock of their own while writers commit,
+ *  erase windows and reclaim. */
 template <typename store_type_>
 static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
     using member_t = typename store_type_::value_type;
@@ -2749,8 +2771,8 @@ static void test_reader_serves_threads_without_a_lock(std::size_t rounds = 60) {
     st_verify_gt_(adoptions.load(), 0u);
 }
 
-/** Tests that a transaction adopting a reader's stamp reads what the reader reads and is validated against every
- *  later commit. */
+/** Tests that a transaction adopting a reader's stamp reads what the reader reads and is validated
+ *  against every later commit. */
 template <typename store_type_>
 static void test_adopted_stamp_is_validated() {
     using member_t = typename store_type_::value_type;
@@ -2797,7 +2819,8 @@ static void test_adopted_stamp_is_validated() {
     }
 }
 
-/** Tests that an adopting transaction keeps the stamp pinned after the reader it adopted from closes */
+/** Tests that an adopting transaction keeps the stamp pinned after the reader it adopted from
+ *  closes */
 template <typename store_type_>
 static void test_adoption_outlives_the_reader() {
     constexpr trivial_id_t keys_k = 8;
@@ -2821,7 +2844,8 @@ static void test_adoption_outlives_the_reader() {
 /** The three ordered walks a page can be read through. */
 enum class page_walk_t : std::uint8_t { range_k, range_from_k, range_up_to_k };
 
-/** Reads @p page_size members from the smallest key through @p walk, answering the last key handed over. */
+/** Reads @p page_size members from the smallest key through @p walk, answering the last key handed
+ *  over. */
 template <typename transaction_type_>
 static trivial_id_t read_a_page(transaction_type_ const &transaction, page_walk_t walk, std::size_t page_size,
                                 trivial_id_t upper) {
@@ -2840,8 +2864,8 @@ static trivial_id_t read_a_page(transaction_type_ const &transaction, page_walk_
     return last;
 }
 
-/** Tests that a page read through any ordered walk records only what it handed over, so commits past it refuse
- *  nothing. */
+/** Tests that a page read through any ordered walk records only what it handed over, so commits
+ *  past it refuse nothing. */
 template <typename store_type_>
 static void test_page_ignores_commits_past_its_last_key() {
     using member_t = typename store_type_::value_type;
@@ -2961,8 +2985,8 @@ static void test_window_writes_are_never_seen_half_applied(std::size_t rounds = 
     st_verify_gt_(saw_empty.load(), 0u);
 }
 
-/** Tests that a staged sharded transaction destroyed, reset or assigned over takes its versions back under the
- *  partition locks. */
+/** Tests that a staged sharded transaction destroyed, reset or assigned over takes its versions
+ *  back under the partition locks. */
 template <typename store_type_>
 static void test_staged_transaction_unwinds_under_partition_locks(std::size_t rounds = 150) {
     using member_t = typename store_type_::value_type;

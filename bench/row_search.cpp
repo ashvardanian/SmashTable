@@ -6,8 +6,8 @@
  *      and a binary search.
  *
  *  Prints a machine block, then one block per phase: the kits over single rows of each medium
- *  width, and both layouts over the same sorted keys. Flags are @c --rows, @c --keys and
- *  @c --queries, all counts.
+ *  width, and both layouts over the same sorted keys. The `--rows`, `--keys` and `--queries` flags
+ *  all take counts.
  */
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
@@ -65,7 +65,8 @@ struct options_t {
 
 #pragma region Machine
 
-/** Copies the processor's model name into @p model, or leaves it unknown where the system does not say. */
+/** Copies the processor's model name into @p model, or leaves it unknown where the system does not
+ *  say. */
 void read_cpu_model(std::span<char> model) {
     std::snprintf(model.data(), model.size(), "unknown");
     std::FILE *const cpuinfo = std::fopen("/proc/cpuinfo", "r");
@@ -115,7 +116,8 @@ void print_machine(options_t const &options) {
 
 #pragma region Workloads
 
-/** How the 16-byte keys are drawn: independent words, or integer identities whose high words all tie. */
+/** How the 16-byte keys are drawn: independent words, or integer identities whose high words all
+ *  tie. */
 enum class key_draw_t : std::uint8_t {
     uniform_k,
     integer_identities_k,

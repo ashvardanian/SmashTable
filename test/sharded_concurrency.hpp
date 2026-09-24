@@ -37,8 +37,7 @@
  *  depends on that store. The thresholds are @c whole_commits_from_k, @c repeatable_reads_from_k
  *  and @c validated_reads_from_k from @c test_consistency.hpp, and each is asserted from both
  *  sides: an anomaly a level permits is a promise that level makes. Only the wait a strict commit
- *  performs is one-sided, because the cheaper level answering sooner is a measurement rather than
- *  an assertion.
+ *  performs is one-sided, because the cheaper level answering sooner is a measurement, not a claim.
  */
 #pragma once
 #include <cstddef> // `std::size_t`
@@ -226,8 +225,7 @@ void test_sharded_lower_bound_probes_twice(std::size_t key_span = 128, std::size
  *
  *  The oracle is ThreadSanitizer, because the race is a read of freed bytes rather than a wrong
  *  answer. A walker crossing the eraser breaks off wherever the churn leaves it, so how far the
- *  threaded walks get is not a number this can pin; the walk after the join is, and it is
- *  asserted exactly.
+ *  threaded walks get is not a number this can pin; only the post-join walk is asserted exactly.
  */
 template <typename container_type_>
 void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::size_t rounds = 200) {
@@ -293,8 +291,7 @@ void test_sharded_walks_never_race_erasures(std::size_t key_span = 400, std::siz
 }
 
 /**
- *  @brief The scratch storage a partition array is assembled in must be aligned, and must
- *      be emptied.
+ *  @brief The scratch storage a partition array is assembled in must be aligned and emptied.
  *
  *  Partitions and their transactions are placement-new'd into a local buffer and then moved into
  *  the array that gets returned. The buffer is raw storage the builder owns, so every element it
@@ -801,8 +798,7 @@ void test_sharded_enumeration_sees_every_stable_element(std::size_t stable_count
 }
 
 /**
- *  @brief Pauses one comparison so a commit can be caught between drawing its stamp and
- *      publishing it.
+ *  @brief Pauses one comparison, catching a commit between drawing its stamp and publishing it.
  *
  *  A commit's stamp holds the watermark down for every commit drawn after it, and the only
  *  injectable thing called between @c begin_commit and @c end_commit is the comparator the publish
@@ -851,8 +847,7 @@ struct gated_less_t {
  *  Serializability alone does not promise it: a commit drawn earlier and still writing itself out
  *  holds the watermark below the stamp just published, so a transaction opening afterwards can read
  *  at a snapshot that predates a commit which has already answered its caller. The gate makes that
- *  window deliberate rather than hoped for, by stopping an earlier commit inside its
- *  own publication.
+ *  window deliberate rather than hoped for, by stopping an earlier commit mid-publication.
  */
 template <typename container_type_>
 void test_commit_is_visible_to_what_opens_after_it() {
@@ -945,13 +940,11 @@ void test_commit_is_visible_to_what_opens_after_it() {
 }
 
 /**
- *  @brief A window a sharded transaction read is validated at commit, where the level says
- *      reads are.
+ *  @brief A window a sharded transaction read is validated at commit, where the level says so.
  *
  *  A partitioned transaction publishes only the partitions it marked, so an ordered read that seeds
  *  every partition and marks none files its window where the commit never looks. The key committed
- *  into that window is then missed by a store advertising the level whose whole point is
- *  catching it.
+ *  into that window is then missed by a store advertising the very level meant to catch it.
  *
  *  Timeline:
  *      T1:  range(20, 80) over every partition  →  upsert(a key outside it)
@@ -1003,8 +996,8 @@ void test_sharded_window_read_is_validated() {
     else { st_verify_(answered); }
 }
 
-/** A group over two stores in one order is read whole: a reader pinning one store's snapshot and reading the other
- *  at the same stamp sees one round in both, however the commit and the two reads interleave. */
+/** A group over two stores in one order is read whole: a reader pinning one store's snapshot and
+ *  reading the other at the same stamp sees one round in both, whatever the interleaving. */
 template <typename container_type_>
 void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
 

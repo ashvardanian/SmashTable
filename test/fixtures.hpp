@@ -3,16 +3,14 @@
  *  @author Ash Vardanian
  *  @date October 25, 2025
  *  @brief The fixture library the whole tree draws on - keys, payloads, budgets, tallies,
- *      allocators and comparators - plus the suites for basic container operations written
- *      over them.
+ *      allocators and comparators - plus the basic container operation suites built over them.
  *
  *  @section test_basic_fixtures Fixtures
  *
  *  Most of the file is fixtures rather than suites. Keys range from a trivial identifier to a
  *  heap-backed one whose copy can fail, values the same way, and the allocator, comparator and
  *  payload types carry budgets and tallies so a refusal can be aimed at one call. Every other test
- *  header includes this one for those types, so a change here is a change to every binary in
- *  the tree.
+ *  header includes this one for those types, so a change here touches every binary in the tree.
  *
  *  @section test_basic_suites Suites
  *
@@ -43,9 +41,9 @@ namespace ashvardanian::smashtable::test {
 
 #pragma region Keys and Associations
 
-/** Even when testing some non-trivial keys, to make tests more uniform, they should be constructible from a single
- *  unsigned integer identifier and comparable to it, unless we are explicitly testing a non-heterogeneous
- *  comparator. */
+/** Even when testing some non-trivial keys, to make tests more uniform, they should be
+ *  constructible from a single unsigned integer identifier and comparable to it, unless we are
+ *  explicitly testing a non-heterogeneous comparator. */
 using trivial_id_t = std::size_t;
 
 /** Strongly-typed trivial key @b without any payload or heterogenous comparisons. */
@@ -67,9 +65,9 @@ struct trivial_key_t {
     bool operator>=(trivial_key_t const &other) const noexcept { return unique_id >= other.unique_id; }
 };
 
-/** Strongly-typed lightweight key that explicitly converts to the inner identifier. The identifier is inferred from
- *  comparator - @c composite_key_compare_t::value_type. Both the key and the underlying identifier are @c noexcept
- *  copyable. */
+/** Strongly-typed lightweight key that explicitly converts to the inner identifier. The identifier
+ *  is inferred from comparator - @c composite_key_compare_t::value_type. Both the key and the
+ *  underlying identifier are @c noexcept copyable. */
 struct composite_key_t {
     std::uint64_t some_metadata = 0;
     trivial_id_t unique_id = 0;
@@ -107,7 +105,7 @@ struct composite_key_compare_t {
  *      provides @c ::make(...) and @c .copy() interfaces for safe construction and copying.
  *
  *  For compatibility with integer-based tests, provides @c ::make(trivial_id_t) that encodes the
- *  integer as a hexadecimal string and @c <=> and @c == operators for comparisons.
+ *  integer as a hexadecimal string, and the `<=>` and `==` operators for comparisons.
  */
 struct heavy_key_t {
 
@@ -185,8 +183,8 @@ struct heavy_key_t {
     }
     bool operator==(heavy_key_t const &other) const noexcept { return compare_bytes(view(), other.view()) == 0; }
 
-    // The rewritten candidates C++20 synthesizes from these cover `string_view` on the left too,
-    // so a transparent comparator probing both orders needs no free-standing reversal.
+    // The rewritten candidates C++20 synthesizes from these cover `string_view` on the left too, so
+    // a transparent comparator probing both orders needs no free-standing reversal.
     std::strong_ordering operator<=>(std::string_view other) const noexcept { return compare_bytes(view(), other); }
     bool operator==(std::string_view other) const noexcept { return compare_bytes(view(), other) == 0; }
 };
@@ -214,8 +212,10 @@ class guarded_payload_t {
         destroyed_k = 0xDE      // Destructor was called
     };
 
-    // Canaries to detect buffer overflows and memcpy misuse
+    /** Canary marking the front of the buffer, to catch overflows and memcpy misuse. */
     static constexpr std::uint32_t canary_front_k = 0xCAFEBABE;
+
+    /** Canary marking the back of the buffer, to catch overflows and memcpy misuse. */
     static constexpr std::uint32_t canary_back_k = 0xDEADC0DE;
 
     std::uint32_t canary_front_ = 0;
@@ -365,15 +365,14 @@ class guarded_payload_t {
 
 #pragma region Budgets
 
-/** How a budgeted resource answered one request, named so a log entry never reads as a bare flag. */
+/** How a budgeted resource answered a request, named so a log entry never reads as a flag. */
 enum class budget_outcome_t : bool { granted_k, refused_k };
 
 /** The countdown that never runs out, as opposed to @c 0, which refuses the very next request. */
 inline constexpr std::size_t unlimited_budget_k = std::numeric_limits<std::size_t>::max();
 
 /**
- *  @brief Countdown arming @c budgeted_key_t::copy, so a rollback or a watch copy can be failed
- *      on demand.
+ *  @brief Countdown arming @c budgeted_key_t::copy, so a rollback or watch copy can fail on demand.
  *
  *  The budget is process-wide because the key it governs is copied deep inside a container, where a
  *  test has no reference to hand it.
@@ -505,7 +504,7 @@ struct counted_key_t {
         return static_cast<std::ptrdiff_t>(constructions_count()) - static_cast<std::ptrdiff_t>(destructions_count());
     }
 
-    /** Aborts unless every object built has been destroyed exactly once, and none used after that. */
+    /** Aborts unless every built object was destroyed exactly once, and none used afterward. */
     static void verify_balanced() noexcept {
         st_verify_eq_(alive(), std::ptrdiff_t {0});
         st_verify_eq_(defects_count(), std::size_t {0});
@@ -555,8 +554,8 @@ struct colliding_key_t {
 /** The alignment @c overaligned_key_t demands, wider than @c ::operator @c new promises. */
 inline constexpr std::size_t overaligned_alignment_k = 64;
 
-/** Element demanding cache-line alignment, which a node allocator over plain @c ::operator @c new cannot meet, so
- *  the misalignment shows up where the element sits rather than where it was asked for. */
+/** Element demanding cache-line alignment, which a node allocator over plain @c ::operator @c new
+ *  cannot meet, so the misalignment shows up where the element sits, not where it was asked for. */
 struct alignas(overaligned_alignment_k) overaligned_key_t {
     trivial_id_t unique_id {0};
 
@@ -636,7 +635,8 @@ struct budgeted_key_t {
 /** Which way a @c stateful_comparator orders, named so a call site never reads as a bare flag. */
 enum class stateful_comparator_ordering_t : bool { ascending_k, descending_k };
 
-/** Stateful comparator with runtime configuration. Tests that comparators with member state work correctly. */
+/** Stateful comparator with runtime configuration, testing that comparators with member state work
+ *  correctly. */
 template <typename baseline_comparator_ = std::less<void>>
 struct stateful_comparator {
     using baseline_comparator_t = baseline_comparator_;
@@ -665,8 +665,7 @@ using stateful_comparator_t = stateful_comparator<>;
  *  @brief Process-wide tallies of ordering, equality and hashing invocations.
  *
  *  Reset immediately before the operation under test and read immediately after: a comparator is
- *  copied by value into every container that holds one, so there is nowhere else the count
- *  could live.
+ *  copied by value into every container that holds one, so nowhere else could the count live.
  */
 struct counting_call_tally_t {
     static inline std::atomic<std::size_t> comparisons {0};
@@ -722,8 +721,8 @@ struct counting_equals {
 
 using counting_equals_t = counting_equals<>;
 
-/** Transparent hasher counting every invocation, forwarding to the library's @c hash. Heterogeneous by construction,
- *  so a probe by a bare identifier is counted the same way. */
+/** Transparent hasher counting every invocation, forwarding to the library's @c hash. Heterogeneous
+ *  by construction, so a probe by a bare identifier is counted the same way. */
 struct counting_hash_t {
     using is_transparent = void;
 
@@ -786,8 +785,7 @@ struct allocation_request_t {
  *  @brief Shared state behind @c stateful_allocator - a budget, the tallies, and the request log.
  *
  *  Lives outside the allocator because a container rebinds and copies its allocator freely, and
- *  counts kept in the allocator itself would be scattered across those copies instead
- *  of accumulating.
+ *  counts kept in the allocator itself would scatter across those copies instead of accumulating.
  */
 struct allocation_ledger_t {
     std::size_t allocations_till_fail {unlimited_budget_k};
@@ -899,7 +897,8 @@ struct stateful_allocator {
 
 using stateful_allocator_t = stateful_allocator<std::byte>;
 
-/** An allocator that refuses every request, so a container's out-of-memory path is the only one left. */
+/** An allocator that refuses every request, so a container's out-of-memory path is the only one
+ *  left. */
 template <typename value_type_>
 struct refusing_allocator {
     using value_type = value_type_;
@@ -1169,9 +1168,9 @@ void test_erase_range_head_state(std::size_t size = 100) {
 
 #pragma region Heterogeneous Lookup Test Templates
 
-/** Tests heterogeneous lookup for @c composite_key_t by @c trivial_id_t identifier. @c composite_key_t stores
- *  metadata + unique_id, but supports lookup by just the identifier. Verifies transparent comparator allows
- *  searching without materializing full key. */
+/** Tests heterogeneous lookup for @c composite_key_t by @c trivial_id_t identifier. @c
+ *  composite_key_t stores metadata plus unique_id, but supports lookup by just the identifier.
+ *  Verifies transparent comparator allows searching without materializing full key. */
 template <typename container_type_>
 void test_heterogeneous_composite_find() {
 
@@ -1216,9 +1215,9 @@ void test_heterogeneous_composite_find() {
     }
 }
 
-/** Tests heterogeneous lookup for @c heavy_key_t by @c std::string_view. @c heavy_key_t stores heap-allocated text,
- *  but supports lookup by @c string_view. Verifies transparent comparator allows searching without materializing
- *  full key. */
+/** Tests heterogeneous lookup for @c heavy_key_t by @c std::string_view. @c heavy_key_t stores
+ *  heap-allocated text, but supports lookup by @c string_view. Verifies transparent comparator
+ *  allows searching without materializing full key. */
 template <typename container_type_>
 void test_heterogeneous_heavy_string_view_find() {
 
@@ -1269,7 +1268,7 @@ void test_heterogeneous_heavy_string_view_find() {
 
 } // namespace ashvardanian::smashtable::test
 
-/** Hashes for the fixture keys, so the partitioned collection can shard them. */
+/*  Hashes for the fixture keys, so the partitioned collection can shard them. */
 namespace ashvardanian::smashtable {
 
 template <>

@@ -27,9 +27,8 @@ void commit_erase_of(container_type_ &container, trivial_id_t identifier) {
 /**
  *  @brief A committed erase must leave nothing behind that @c vacuum can still find twice.
  *
- *  The tombstone a transactional erase publishes answers every read as absence, so the only way to
- *  observe it is to sweep for it: the first sweep reclaims one entry per erased key, the second
- *  finds none.
+ *  The tombstone a transactional erase publishes answers every read as absence, so only a sweep
+ *  observes it: the first sweep reclaims one entry per erased key, and the second finds none.
  */
 template <typename container_type_>
 void test_committed_tombstones_are_reclaimable(std::size_t size = 32) {
@@ -149,13 +148,12 @@ void test_vacuum_leaves_staged_entries() {
 #pragma region Commit Reporting
 
 /**
- *  @brief Staged versions cannot be wiped out from under the transaction that is about to
- *      publish them.
+ *  @brief Staged versions cannot be wiped out from under the transaction about to publish them.
  *
  *  Dropping one would make publishing fallible, and a publish that can refuse is how a commit
  *  spanning several stores ends up reporting a refusal over writes an earlier store already made
- *  visible. Emptying is the only path that could reach a staged version, so it is refused while
- *  one exists.
+ *  visible. Emptying is the only path that could reach a staged version, so it is refused while any
+ *  version is staged.
  */
 template <typename container_type_>
 void test_staged_versions_survive_a_clear() {
@@ -341,7 +339,7 @@ void test_insert_reports_the_stored_element() {
     st_verify_eq_(existing_reports, 5u);
 }
 
-/** A key erased inside a transaction is gone for that transaction, so an insert may take it back. */
+/** A key erased in a transaction is gone for that transaction, so an insert can take it back. */
 template <typename container_type_>
 void test_insert_after_local_erase_succeeds() {
     using member_t = typename container_type_::value_type;

@@ -2,12 +2,10 @@
  *  @file include/smashtable/reference_store.hpp
  *  @author Ash Vardanian
  *  @date October 12, 2022
- *  @brief Transactional set promising Monotonic Atomic View, built on @c std::set as a
- *      baseline oracle.
+ *  @brief Transactional set with Monotonic Atomic View, built on @c std::set as a baseline oracle.
  *
- *  Provides 2-phase commit transactions with optimistic concurrency control through watch/CAS
- *  operations. All operations use callback-based APIs and are exception-safe via @c
- *  noexcept wrappers.
+ *  Provides 2-phase commit transactions with optimistic concurrency control via watch/CAS
+ *  operations, all callback-based and exception-safe through @c noexcept wrappers.
  */
 #pragma once
 #include <cassert> // `assert`
@@ -48,7 +46,7 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
 }
 
 /**
- *  @brief  Transactional set providing 2-phase commit and watch/CAS operations at Monotonic Atomic View.
+ *  @brief Transactional set providing 2-phase commit and watch/CAS at Monotonic Atomic View.
  *
  *  Built on @c std::set as a baseline reference implementation. Not thread-safe by itself.
  *
@@ -72,23 +70,24 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *
  *  @section reference_store_api_overview API Overview
  *
- *  - All lookups are heterogeneous: you can provide any type comparable to @p value_type_.
- *    Your comparator
- *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
- *  - No iterators are provided to keep the implementation simple and avoid complexity of
+ *  - All lookups are heterogeneous: you can provide any type comparable to @p value_type_. Your
+ *    comparator must define `using is_transparent = void;` to enable it, as @c std::map and
+ *    @c std::set both do.
+ *  - No iterators are provided to keep the implementation simple and avoid the complexity of
  *    maintaining persistent iterator validity across transactions and modifications.
- *  - All operations use callback-based APIs for consistency and exception safety via @c
- *    noexcept wrappers.
+ *  - All operations use callback-based APIs for consistency and exception safety via @c noexcept
+ *    wrappers, avoiding raw pointers.
  *
  *  @section reference_store_insert_strategies Insert Strategies
  *
  *  Three distinct insert strategies with different failure handling:
  *
- *  | Method               | Key Exists?     | Returns               | Use Case                              |
- *  |----------------------|-----------------|-----------------------|---------------------------------------|
- *  | insert()             | Fails (error)   | key_already_exists_k  | Strict: ensure key is new             |
- *  | insert_if_missing()  | Skips (success) | success_k             | Lenient: insert only if absent        |
- *  | insert_or_assign()   | Overwrites      | success_k             | Upsert: always update                 |
+ *  @verbatim
+ *  Method                 Existing key        Returns
+ *  insert()               fails               key_already_exists_k
+ *  insert_if_missing()    skips, succeeds     success_k
+ *  insert_or_assign()     overwrites          success_k
+ *  @endverbatim
  *
  *  The @c upsert method is an alias for @c insert_or_assign, following a more DBMS-like naming
  *  convention. The @c try_emplace is deleted in favor of the more explicit @c insert_if_missing.
@@ -97,20 +96,20 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *
  *  @section reference_store_element_type Element Type
  *
- *  - Nothrow default-constructible and nothrow move constructible/assignable (required)
- *  - For watch operations: Nothrow copy-constructible OR provides
- *      @code .copy() const -> expected<T> @endcode for safe copying of identifiers
+ *  - Nothrow default-constructible and nothrow move constructible/assignable, required
+ *  - For watch operations: Nothrow copy-constructible OR provides `.copy() const->expected<T>` for
+ *    safe copying of identifiers.
  *
  *  @section reference_store_comparator_type Comparator Type
  *
- *  - Must define @code bool operator()(value_type const &, value_type const &) const @endcode
- *  - For heterogeneous lookups: Define @code using is_transparent = void; @endcode and
- *      @code using value_type = ...; @endcode (optional but recommended)
+ *  - Must define `bool operator()(value_type const &, value_type const &) const`
+ *  - For heterogeneous lookups: add `using is_transparent = void;` and `using value_type = ...;`,
+ *    optional but recommended.
  *
  *  @section reference_store_allocator_type Allocator Type
  *
- *  - Must be "rebindable" for internal structures, which are @c std::set nodes and @c
- *    std::vector arrays
+ *  - Must be "rebindable" for internal structures, which are @c std::set nodes and @c std::vector
+ *    arrays
  *  - Standard allocator propagation traits respected for move/copy operations
  *
  *  @tparam value_type_ Type of the elements stored in the set.
@@ -178,8 +177,9 @@ class reference_store {
         generation_t generation_ {0};
         staging_t staging_ {staging_t::pending_k};
 
-        // The local change set must order exactly as the store does, so it borrows the store's comparator
-        // rather than default-constructing one - otherwise a stateful comparator would sort the two apart.
+        // The local change set must order exactly as the store does, so it borrows the store's
+        // comparator rather than default-constructing one - otherwise a stateful comparator would
+        // sort the two apart.
         transaction_t(store_t &set) noexcept(false)
             : store_(&set), changes_(set.entries_.key_comp()), generation_(set.next_generation_()) {
             // A stamp of `absent_generation_k` would make a staged entry indistinguishable from the
@@ -188,8 +188,7 @@ class reference_store {
         }
 
         /**
-         *  @brief Files @p element under this transaction's generation, replacing whatever it
-         *      staged before.
+         *  @brief Files @p element under this transaction's generation, replacing what it staged.
          *
          *  The generation is part of the set's key, so it is stamped onto the entry @b before
          *  insertion and never touched afterwards. Every entry in one change set carries the same
@@ -246,9 +245,8 @@ class reference_store {
         /**
          *  @brief Reports the first element of the merged order, staged writes taking precedence.
          *
-         *  @param[in] internal_iterator Where this transaction's own bound landed in the
-         *      change set.
-         *  @param[in] probe_store Invoked as @c probe_store(previous,on_found,on_missing) , with a
+         *  @param[in] internal_iterator Where this transaction's bound landed in the change set.
+         *  @param[in] probe_store Invoked as `probe_store(previous, on_found, on_missing)`, with a
          *      null @p previous asking for the caller's own bound in the store and a non-null one
          *      asking for the first element strictly after it. Must be @c noexcept.
          *  @note A store element this transaction erased is not skipped by re-asking for the same
@@ -295,9 +293,9 @@ class reference_store {
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
 
-        /** Whether every watched key still carries the version this transaction read. Asked twice - once when
-         *  staging, once when publishing - because a commit landing in between is the only thing that can invalidate
-         *  a read after it was validated. */
+        /** Whether every watched key still carries the version this transaction read. Asked twice -
+         *  once when staging, once when publishing - because a commit landing in between is the
+         *  only thing that can invalidate a read after it was validated. */
         status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
             return validate_watches(watches_, [&](auto const &identifier, auto &&on_found, auto &&on_missing) noexcept {
@@ -331,14 +329,12 @@ class reference_store {
         }
 
         /**
-         *  @brief Hands @p callback every element this transaction reads, in the container's
-         *      own order.
+         *  @brief Hands @p callback every element this transaction reads, in the container's order.
          *
          *  Both sides are ordered sets, so they are merged as the walk goes rather than
          *  concatenated - which is what an ordinal needs and what the unordered @c for_each cannot
          *  promise. A key this transaction touched is answered from its own staged version, and the
-         *  committed side skips whatever @c changes_ already speaks for, so no key is
-         *  visited twice.
+         *  committed side skips whatever @c changes_ already speaks for, so no key repeats.
          *
          *  @param[in] callback Callback invoked for each element. Must be @c noexcept.
          */
@@ -418,8 +414,7 @@ class reference_store {
          *  @param[in] callback_inserted Invoked with the staged element. Must be @c noexcept.
          *  @param[in] callback_existing Invoked with the element already under the key, which keeps
          *      its value. Must be @c noexcept.
-         *  @return Success, @c key_already_exists_k when the key is taken, or an
-         *      allocation failure.
+         *  @return Success, @c key_already_exists_k for a taken key, or an allocation failure.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
         status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -549,8 +544,7 @@ class reference_store {
         }
 
         /**
-         *  @brief Pre-allocates memory for watch operations to reduce allocation failures
-         *      during transaction.
+         *  @brief Pre-allocates memory for watches, reducing allocation failures mid-transaction.
          *
          *  @param[in] size Expected number of watches.
          *  @return Success or error code (e.g., out of memory).
@@ -560,9 +554,8 @@ class reference_store {
         }
 
         /**
-         *  @brief Registers a watch on the element with the given identifier for optimistic
-         *      concurrency control. The transaction will fail at @c stage() if the watched
-         *      element changes.
+         *  @brief Registers a watch on the element for optimistic concurrency control; @c stage()
+         *      fails if the watched element changes.
          *
          *  @param[in] identifier Identifier of the element to watch.
          *  @return Success or error code (e.g., out of memory).
@@ -635,8 +628,8 @@ class reference_store {
             return success_k;
         }
 
-        /** Finds a member equal to @p comparable and records what it saw into the read set. The watching counterpart
-         *  to @c find: this one can fail, because a read set is memory. */
+        /** Finds a member equal to @p comparable and records what it saw into the read set. The
+         *  watching counterpart to @c find: this one can fail, because a read set is memory. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -650,8 +643,7 @@ class reference_store {
         }
 
         /**
-         *  @brief Copies out the member equal to @p comparable, including this transaction's
-         *      own writes.
+         *  @brief Copies out the member equal to @p comparable, counting this transaction's writes.
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
@@ -769,8 +761,7 @@ class reference_store {
 
         /**
          *  @brief Iterates over all entries in the range [ @p lower, @p upper), including
-         *      transaction changes. Degrades to @c equal_range() if @p lower and @p upper are
-         *      the same.
+         *      transaction changes. Degrades to @c equal_range() if @p lower equals @p upper.
          *
          *  @param[in] lower Lower bound of the range (inclusive).
          *  @param[in] upper Upper bound of the range (exclusive).
@@ -935,7 +926,8 @@ class reference_store {
             return *present ? std::size_t {1} : std::size_t {0};
         }
 
-        /** Copies out the first member at or after @p comparable, this transaction's writes included. */
+        /** Copies out the first member at or after @p comparable, this transaction's writes
+         *  included. */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
@@ -960,12 +952,10 @@ class reference_store {
         }
 
         /**
-         *  @brief Stages a tombstone for every member this transaction reads in [ @p lower,
-         *      @p upper ).
+         *  @brief Tombstones every member this transaction reads in [ @p lower, @p upper ).
          *
          *  The window is walked first and staged afterwards, because a staged tombstone changes
-         *  what the merged walk answers and a walk revising itself would step over its
-         *  own neighbours.
+         *  what the merged walk answers, and a walk revising itself would skip its own neighbours.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -992,13 +982,13 @@ class reference_store {
                                    std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member this transaction reads, so a commit empties the store. Unlike the
-         *  bounded erases it names no key at all, so it serves an unordered core too. */
+        /** Stages a tombstone for every member this transaction reads, so a commit empties the
+         *  store. Unlike the bounded erases it names no key, so it serves an unordered core too. */
         status_t clear() noexcept {
             return erase_accepted_([](value_t const &) noexcept { return true; }, no_op_t {});
         }
 
-        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
+        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, then stages it. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
@@ -1022,7 +1012,8 @@ class reference_store {
             return success_k;
         }
 
-        /** Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes included. */
+        /** Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes
+         *  included. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1066,8 +1057,7 @@ class reference_store {
 #pragma endregion Transaction Range Operations
 
         /**
-         *  @brief Validates every watch and moves all changes into the main store,
-         *      still uncommitted.
+         *  @brief Validates every watch and moves all changes, uncommitted, into the main store.
          *  @return Success, @c operation_not_permitted_k when already staged, or @c read_conflict_k
          *      when a watched key moved under this transaction.
          */
@@ -1107,9 +1097,8 @@ class reference_store {
         }
 
         /**
-         *  @brief Rolls back a previously staged transaction, moving changes from the store back to
-         *      the transaction. Can only be called on staged transactions. Watches are preserved
-         *      (read concerns persist across rollback), allowing retry patterns.
+         *  @brief Rolls back a staged transaction, moving its changes from the store back into it.
+         *      Only valid on a staged transaction; watches persist across rollback for a retry.
          *
          *  New generation is assigned.
          *
@@ -1152,15 +1141,13 @@ class reference_store {
         }
 
         /**
-         *  @brief Whether this transaction may still publish what it staged, refusing before it
-         *      writes anything.
+         *  @brief Whether this transaction can still publish its staged changes, before any write.
          *
          *  A watch is asked again here as well as at staging: another transaction may have
          *  committed over a watched key while this one sat staged, and publishing on top of it
          *  would be the lost update the watch was taken to prevent. Nothing is written until this
          *  answers, so a refusal leaves the transaction staged and retryable - and a caller
-         *  spreading one commit across several stores asks every one of them before any of
-         *  them writes.
+         *  spreading one commit across several stores asks every one before any of them writes.
          *
          *  @return Success, @c read_conflict_k when a watched key moved under this transaction, or
          *      @c operation_not_permitted_k when nothing was staged.
@@ -1183,11 +1170,9 @@ class reference_store {
          *  a staged one alone: an erase retires only the published version, reclamation passes over
          *  any entry still carrying one, another transaction's unmasking walks only visible
          *  versions, and @c clear refuses outright while one is outstanding. So a version staged by
-         *  this transaction is still where staging put it, and the outcome is an assertion rather
-         *  than a status.
+         *  this transaction is still where staging put it, so the outcome is an assertion.
          *
-         *  @warning Only ever called after @c validate_for_commit answered success, with
-         *      nothing since.
+         *  @warning Only called right after @c validate_for_commit answered success.
          */
         void publish_under() noexcept {
             assert(staging_ == staging_t::staged_k && "publishing what was never staged");
@@ -1205,7 +1190,7 @@ class reference_store {
             staging_ = staging_t::pending_k;
         }
 
-        /** Validates and then publishes, which is the whole commit for a caller spanning one store. */
+        /** Validates then publishes: the whole commit for a caller spanning one store. */
         status_t commit() noexcept {
             if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
             publish_under();
@@ -1223,7 +1208,7 @@ class reference_store {
     /** Draws the commit stamps this store publishes at, which order visibility. */
     alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
 
-    /** Published entries a reader would see, tombstones excluded, which is what @c size() answers. */
+    /** Published entries a reader would see, tombstones excluded, which @c size() answers. */
     std::size_t live_count_ {0};
 
     friend class transaction_t;
@@ -1245,13 +1230,11 @@ class reference_store {
     }
 
     /**
-     *  @brief Hands out the stamp a write becomes visible under, which is the store's
-     *      only ordering.
+     *  @brief Hands out the stamp a write becomes visible under, the store's only ordering.
      *
      *  Drawn once per commit rather than once per write, so every key one transaction touched
      *  becomes visible under the same number and a reader can never see half of it. Counted apart
-     *  from @c generation_, which dates a transaction's opening and says nothing about what
-     *  is current.
+     *  from @c generation_, which dates a transaction's opening, not what is current.
      */
     commit_stamp_t next_commit_stamp_() noexcept {
         return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
@@ -1318,11 +1301,9 @@ class reference_store {
     }
 
     /**
-     *  @brief Drops every published entry in [ @p begin, @p end), leaving other transactions'
-     *      staged ones.
+     *  @brief Drops every published entry in [ @p begin, @p end), leaving others' staged ones.
      *  @note Only entries a reader could have seen reach @p callback: a published tombstone is
-     *      erased silently, since reporting it would hand the caller a key it just told them
-     *      was gone.
+     *      erased silently, since reporting it would hand the caller a key already reported gone.
      */
     template <typename callback_type_ = no_op_t>
     void erase_visible_(entry_iterator_t begin, entry_iterator_t end, callback_type_ &&callback = {}) noexcept {
@@ -1357,8 +1338,7 @@ class reference_store {
     }
 
     /**
-     *  @brief Publishes the version stamped @p generation_to_unmask and drops every other
-     *      visible one.
+     *  @brief Publishes the version stamped @p generation_to_unmask, dropping other visible ones.
      *  @return Whether that version was there to publish, which a commit reports to its caller.
      *
      *  The unmasked entry survives wherever it sits in the order. Keeping whichever came last would
@@ -1529,9 +1509,8 @@ class reference_store {
 #pragma region Transaction Management
 
     /**
-     *  @brief Creates a new transaction with a fresh generation number. Transaction can be reset
-     *      and reused after commit/rollback to avoid reallocations. Returns error status on
-     *      allocation failure.
+     *  @brief Creates a new transaction with a fresh generation number, resettable and reusable
+     *      after commit or rollback to avoid reallocations. Returns an error on allocation failure.
      *
      *  @return Transaction instance, or empty on allocation failure.
      */
@@ -1642,18 +1621,16 @@ class reference_store {
      *      counterpart to @c insert_or_assign(), which takes the key either way.
      *
      *  @param[in] element Element to write (moved into the container when the key is present).
-     *  @return Success, @c key_not_found_k when no visible element carries the key, or an
-     *      allocation failure.
+     *  @return Success, @c key_not_found_k for a missing key, or an allocation failure.
      */
     status_t update(value_t &&element) noexcept {
         if (find_visible_present_(mapping_key_or_itself(element)) == entries_.end()) return key_not_found_k;
         return insert_or_assign(std::move(element));
     }
 
-    /** Deleted: Use @c insert_if_missing() instead for "insert only if missing" semantics. The
-     *  @c std::map::try_emplace() name doesn't clearly communicate insert failure strategies. We provide three explicit
-     *  alternatives: - @c insert(): Fails with error if key exists - @c insert_if_missing(): Silently skips if key
-     *  exists (use this instead of try_emplace) - @c insert_or_assign(): Always overwrites if key exists */
+    /** Deleted, use @c insert_if_missing() instead. @c std::map::try_emplace() does not name its
+     *  insert failure strategy, so this type spells out three alternatives: @c insert() fails on an
+     *  existing key, @c insert_if_missing() skips it, and @c insert_or_assign() overwrites it. */
     template <typename... args_types_>
     status_t try_emplace(args_types_ &&...) noexcept = delete;
 
@@ -1687,8 +1664,7 @@ class reference_store {
     }
 
     /**
-     *  @brief Alias for batch @c insert_or_assign(). Atomically inserts or assigns a batch
-     *      of elements.
+     *  @brief Alias for batch @c insert_or_assign(), atomically inserting or assigning a batch.
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
      *  @return Success or error code (e.g., out of memory).
@@ -1898,8 +1874,7 @@ class reference_store {
 #pragma region Order Statistics
 
     /**
-     *  @brief Hands @p callback_found the @p ordinal -th smallest visible element, counting
-     *      from zero.
+     *  @brief Hands @p callback_found the zero-based @p ordinal -th smallest visible element.
      *
      *  A linear walk of the whole store, and deliberately so: this is the oracle the ranked engines
      *  are checked against, so it is written to be obviously right rather than fast. Nothing here
@@ -1971,8 +1946,7 @@ class reference_store {
 #pragma region Enumeration
 
     /**
-     *  @brief Hands @p callback every element the store shows, in whatever order the core
-     *      holds them.
+     *  @brief Hands @p callback every element the store shows, in the order the core holds them.
      *
      *  The one walk an unordered core can offer, so it promises no ordering even where the core has
      *  one. Every element a @c find would answer with at the moment of the call is visited
@@ -2020,8 +1994,7 @@ class reference_store {
     }
 
     /**
-     *  @brief Hands @p callback each visible member of [ @p lower, @p upper ) to revise,
-     *      re-stamping each.
+     *  @brief Hands @p callback each visible member of [ @p lower, @p upper ) to revise and stamp.
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
@@ -2067,8 +2040,7 @@ class reference_store {
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      *  @return @c key_not_found_k if no visible entry matched, otherwise success.
      *  @note A committed tombstone is not a match, but it is still reclaimed here - nothing else
-     *      would ever reach it, and leaving it behind is how a key that was erased twice keeps its
-     *      memory forever.
+     *      would reach it, and leaving it behind lets a key erased twice keep its memory forever.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -2156,8 +2128,7 @@ class reference_store {
     }
 
     /**
-     *  @brief Removes all elements from the container, refusing while any transaction has
-     *      something staged.
+     *  @brief Removes every element, refusing while any transaction has something staged.
      *
      *  @return Success, or @c operation_not_permitted_k while a staged version would be dropped.
      *  @note The generation and stamp counters keep running. Rewinding either would hand a future
@@ -2184,7 +2155,6 @@ class reference_store {
      *  real work while this one has nothing to reserve. Reserving here would therefore promise a
      *  later insert cannot run out of memory, which it still can.
      *
-     *  Suggested capacity, ignored.
      *  @return Always succeeds.
      */
     status_t reserve(std::size_t) noexcept { return {}; }
@@ -2247,9 +2217,8 @@ class reference_store {
     }
 
     /**
-     *  @brief Uniformly samples entries from [ @p lower, @p upper) using reservoir sampling
-     *      algorithm. Fills a reservoir buffer with up to @p reservoir_capacity randomly
-     *      selected elements.
+     *  @brief Reservoir-samples entries from [ @p lower, @p upper), filling a reservoir buffer with
+     *      up to @p reservoir_capacity randomly selected elements.
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).

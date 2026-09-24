@@ -1,8 +1,8 @@
 /**
- *  @brief Device-side suites for the pinned atomic hash table, over one table in managed memory.
- *  @author Ash Vardanian
  *  @file test/atomic_cuda.cu
+ *  @author Ash Vardanian
  *  @date August 17, 2026
+ *  @brief Device-side suites for the pinned atomic hash table, over one table in managed memory.
  *
  *  @section test_atomic_cuda_what_is_tested What Is Tested
  *
@@ -12,15 +12,15 @@
  *
  *  @section test_atomic_cuda_helpers What The Caller Supplies
  *
- *  The library's defaults reach @c std::hash and @c std::allocator, neither of which a device has, so
- *  the helpers below stand in. They are ordinary @c constexpr callables rather than annotated device
- *  functions, which is the same rule the headers follow.
+ *  The library's defaults reach @c std::hash and @c std::allocator, neither of which a device has,
+ *  so the helpers below stand in. They are ordinary @c constexpr callables rather than annotated
+ *  device functions, which is the same rule the headers follow.
  *
  *  @section test_atomic_cuda_scheduling Hardware Requirements
  *
- *  The slot spin needs independent thread scheduling, so @c sm_70 and newer. The mixed host-and-device
- *  suite additionally needs concurrent managed access, which the runtime is asked about rather than
- *  assumed - a device without it skips that one suite instead of faulting.
+ *  The slot spin needs independent thread scheduling, so @c sm_70 and newer. The mixed
+ *  host-and-device suite additionally needs concurrent managed access, which the runtime is asked
+ *  about rather than assumed - a device without it skips that one suite instead of faulting.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 
@@ -39,7 +39,7 @@ using namespace ashvardanian::smashtable::test;
 
 #pragma region Device Helpers
 
-/** @brief Aborts the process when a CUDA call reports a failure, naming the call site. */
+/** Aborts the process when a CUDA call reports a failure, naming the call site. */
 #define st_verify_cuda_(call)                                                                                 \
     do {                                                                                                      \
         cudaError_t const error = (call);                                                                     \
@@ -50,12 +50,13 @@ using namespace ashvardanian::smashtable::test;
         }                                                                                                     \
     } while (0)
 
-/** @brief The table's key. A distinct type, so a key and a value cannot be swapped at a call site. */
+/** The table's key. A distinct type, so a key and a value cannot be swapped at a call site. */
 enum class user_id_t : std::uint64_t {};
 
-/** @brief The table's mapped value, naming the one state a failed lookup reports. */
+/** The table's mapped value, naming the one state a failed lookup reports. */
 enum class session_id_t : std::uint64_t {
-    /** @brief No session, which @c session_of never produces and so cannot collide with a real one. */
+
+    /** No session, which @c session_of never produces and so cannot collide with a real one. */
     missing_k = 0,
 };
 
@@ -80,7 +81,7 @@ struct user_id_hash_t {
     }
 };
 
-/** @brief Equality over the key, replacing @c std::equal_to. */
+/** Equality over the key, replacing @c std::equal_to. */
 struct user_id_equals_t {
     constexpr bool operator()(user_id_t first, user_id_t second) const noexcept { return first == second; }
 };
@@ -100,23 +101,20 @@ struct managed_allocator_t {
 using table_t = atomic_hash_map<user_id_t, session_id_t, user_id_hash_t, user_id_equals_t, managed_allocator_t>;
 using storage_t = table_t::storage_type;
 
-/**
- *  @brief Objects in managed memory, which the host and a kernel address alike.
- *    Both constructors construct and the destructor destroys, so the table's storage is released
- *    through the same path an array of keys is.
- */
+/** Objects in managed memory, which the host and a kernel address alike. The constructors construct
+ *  and the destructor destroys, so the table's storage is released the way an array of keys is. */
 template <typename element_type_>
 struct managed {
     element_type_ *data {};
     std::size_t count {};
 
-    /** @brief An array of @p elements value-initialized objects. */
+    /** An array of @p elements value-initialized objects. */
     explicit managed(std::size_t elements) noexcept : count(elements) {
         data = allocate_(elements);
         for (std::size_t index = 0; index != elements; ++index) new (data + index) element_type_ {};
     }
 
-    /** @brief One object, moved in from @p value. */
+    /** One object, moved in from @p value. */
     explicit managed(element_type_ &&value) noexcept : count(1) {
         data = allocate_(1);
         new (data) element_type_(std::move(value));
@@ -141,7 +139,7 @@ struct managed {
     }
 };
 
-/** @brief A pinned table of @p slots slots, the object and its storage both in managed memory. */
+/** A pinned table of @p slots slots, the object and its storage both in managed memory. */
 static managed<table_t> make_table(std::size_t slots) noexcept {
     storage_t storage = storage_t::make(hash_slots_count_t::from_slots(slots), managed_allocator_t {});
     st_verify_(storage.is_allocated() && "Managed storage allocation failed");
@@ -173,16 +171,16 @@ __global__ void erase_kernel(table_t *table, user_id_t const *users, std::size_t
         status_t const erased = table->erase(users[index]);
 }
 
-/** @brief Threads per block, one warp's multiple, so a block covers whole buckets. */
+/** Threads per block, one warp's multiple, so a block covers whole buckets. */
 constexpr unsigned threads_per_block_k = 128;
 
-/** @brief Blocks needed to give @p count elements one thread each, never zero. */
+/** Blocks needed to give @p count elements one thread each, never zero. */
 constexpr unsigned blocks_for(std::size_t count) noexcept {
     unsigned const blocks = static_cast<unsigned>((count + threads_per_block_k - 1) / threads_per_block_k);
     return blocks ? blocks : 1u;
 }
 
-/** @brief Runs a key-only kernel over @p users and waits for it. */
+/** Runs a key-only kernel over @p users and waits for it. */
 static void launch_over(void (*kernel)(table_t *, user_id_t const *, std::size_t), managed<table_t> const &table,
                         managed<user_id_t> const &users, std::size_t count) noexcept {
     kernel<<<blocks_for(count), threads_per_block_k>>>(table.data, users.data, count);
@@ -194,15 +192,15 @@ static void launch_over(void (*kernel)(table_t *, user_id_t const *, std::size_t
 
 #pragma region Suites
 
-/** @brief Keys per suite - enough to span many buckets, few enough to verify one by one on the host. */
+/** Keys per suite - enough to span many buckets, few enough to verify one by one on the host. */
 constexpr std::size_t keys_count_k = 20000;
 
-/** @brief Fills @p users with the @p count identifiers starting at @p first. */
+/** Fills @p users with the @p count identifiers starting at @p first. */
 static void number_users(managed<user_id_t> const &users, std::size_t count, std::uint64_t first) noexcept {
     for (std::size_t index = 0; index != count; ++index) users[index] = static_cast<user_id_t>(first + index);
 }
 
-/** @brief Verifies on the host that @p user maps to its expected session. */
+/** Verifies on the host that @p user maps to its expected session. */
 static void verify_present(managed<table_t> const &table, user_id_t user) noexcept {
     session_id_t session = session_id_t::missing_k;
     bool found = false;
@@ -217,7 +215,7 @@ static void verify_present(managed<table_t> const &table, user_id_t user) noexce
     st_verify_eq_(session, session_of(user));
 }
 
-/** @brief Tests that keys a kernel inserted are all visible to the host, with the right values */
+/** Tests that keys a kernel inserted are all visible to the host, with the right values. */
 static void cuda_device_inserts_host_reads() {
     std::size_t const count = keys_count_k;
     managed<table_t> table = make_table(count * 2);
@@ -230,7 +228,7 @@ static void cuda_device_inserts_host_reads() {
     for (std::size_t index = 0; index != count; ++index) verify_present(table, users[index]);
 }
 
-/** @brief Tests that keys the host inserted are all visible to a kernel, with the right values */
+/** Tests that keys the host inserted are all visible to a kernel, with the right values. */
 static void cuda_host_inserts_device_reads() {
     std::size_t const count = keys_count_k;
     managed<table_t> table = make_table(count * 2);
@@ -249,7 +247,7 @@ static void cuda_host_inserts_device_reads() {
     for (std::size_t index = 0; index != count; ++index) st_verify_eq_(found[index], session_of(users[index]));
 }
 
-/** @brief Tests that a device erase tombstones exactly its own keys, leaving the rest findable */
+/** Tests that a device erase tombstones exactly its own keys, leaving the rest findable. */
 static void cuda_device_insert_find_erase_cycle() {
     std::size_t const count = keys_count_k;
     managed<table_t> table = make_table(count * 2);
@@ -274,8 +272,8 @@ static void cuda_device_insert_find_erase_cycle() {
 
 /**
  *  @brief Tests that host threads and a kernel inserting disjoint ranges into one table both land.
- *  @note Skipped on a device without concurrent managed access, where touching the allocation from the
- *    host while a kernel runs is not merely slow but a fault.
+ *  @note Skipped on a device without concurrent managed access, where touching the allocation from
+ *      the host while a kernel runs is not merely slow but a fault.
  */
 static void cuda_host_and_device_insert_together() {
     std::size_t const count = keys_count_k;

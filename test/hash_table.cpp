@@ -3,8 +3,7 @@
  *  @author Ash Vardanian
  *  @date August 16, 2026
  *  @brief Test instantiations for the open-addressing hash table. Covers sets and maps over trivial
- *      and heap-allocating key and value types, and the per-slot atomic operations exercised from
- *      several threads.
+ *      and heap-allocating key and value types, and per-slot atomics exercised from many threads.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 
@@ -23,36 +22,76 @@ namespace {
 
 #pragma region Type Aliases
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: ✗
- *  Tests: Baseline probing, growth and tombstone reuse on the cheapest possible key */
+/**
+ *  Tests: Baseline probing, growth and tombstone reuse on the cheapest possible key.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Values: ✗.
+ */
 using trivial_set_t = hash_set<std::size_t>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: ✗
- *  Tests: A strongly-typed key reaching the table through its @c std::hash specialization */
+/**
+ *  Tests: A strongly-typed key reaching the table through its @c std::hash specialization.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Values: ✗.
+ */
 using strong_set_t = hash_set<trivial_key_t>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: @c std::size_t
- *  Tests: Baseline map operations, value overwrites, the whole atomic surface */
+/**
+ *  Tests: Baseline map operations, value overwrites, the whole atomic surface.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Values: @c std::size_t.
+ */
 using trivial_map_t = hash_map<std::size_t, std::size_t>;
 
-/** Heterogeneous lookup: ✗ | Copy: Non-trivial value | Memory: Stack | Values: @c guarded_payload_t
- *  Tests: Value construction, destruction and move paths under a lifecycle-checking payload */
+/**
+ *  Tests: Value construction, destruction and move paths under a lifecycle-checking payload.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Non-trivial value.
+ *  Memory: Stack.
+ *  Values: @c guarded_payload_t.
+ */
 using guarded_map_t = hash_map<std::size_t, guarded_payload_t>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: Heap | Memory: Heap | Values: ✗
- *  Tests: Non-trivial key destructors, the non-memcpy rehash path */
+/**
+ *  Tests: Non-trivial key destructors, the non-memcpy rehash path.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: Heap.
+ *  Memory: Heap.
+ *  Values: ✗.
+ */
 using string_set_t = hash_set<std::string>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: Heap | Memory: Heap | Values: @c std::string
- *  Tests: Dual-heap lifetimes, heterogeneous lookup, atomics over non-trivial elements */
+/**
+ *  Tests: Dual-heap lifetimes, heterogeneous lookup, atomics over non-trivial elements.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: Heap.
+ *  Memory: Heap.
+ *  Values: @c std::string.
+ */
 using string_map_t = hash_map<std::string, std::string>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: ✗
- *  Tests: Insertion into a table whose allocator refuses to let it grow */
+/**
+ *  Tests: Insertion into a table whose allocator refuses to let it grow.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Values: ✗.
+ */
 using capped_set_t = hash_set<std::size_t, default_hash_t, equal_to_t, stateful_allocator<std::byte>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Values: @c std::size_t
- *  Tests: The same refusal path with a mapped value to place alongside the key */
+/**
+ *  Tests: The same refusal path with a mapped value to place alongside the key.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Values: @c std::size_t.
+ */
 using capped_map_t = hash_map<std::size_t, std::size_t, default_hash_t, equal_to_t, stateful_allocator<std::byte>>;
 
 #pragma endregion Type Aliases

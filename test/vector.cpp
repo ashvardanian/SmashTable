@@ -2,8 +2,7 @@
  *  @file test/vector.cpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
- *  @brief Tests for @c basic_vector - the fallible-construction path, growth arithmetic,
- *      and rollback.
+ *  @brief Tests for @c basic_vector - the fallible-construction path, growth arithmetic, rollback.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
 #define ST_STRICT_CALLBACK_CHECKS_ 1
@@ -27,8 +26,8 @@ namespace {
 
 #pragma region Element Types
 
-/** An element only constructible through @c make, which is what drives @c emplace_back's slow path. Its value
- *  constructor is deliberately throwing, so the nothrow branch cannot claim it. */
+/** An element only constructible through @c make, which is what drives @c emplace_back's slow path.
+ *  Its value constructor is deliberately throwing, so the nothrow branch cannot claim it. */
 struct fallible_element_t {
     int value {0};
 
@@ -78,9 +77,9 @@ struct budgeted_element_t {
     }
 };
 
-/** An allocator that refuses every request and remembers the largest one it was asked for. A hand-written allocator
- *  that multiplies without checking would answer a wrapping byte count with a small block, so the vector must never
- *  put such a count in front of one. */
+/** An allocator that refuses every request and remembers the largest one it was asked for. A
+ *  hand-written allocator that multiplies without checking would answer a wrapping byte count with
+ *  a small block, so the vector must never put such a count in front of one. */
 template <typename value_type_>
 struct recording_allocator {
     // Read only for the instantiation a test names; the rebound ones only ever record.
@@ -435,7 +434,8 @@ static void vector_move_semantics() {
     st_verify_eq_(assigned.at(16), nullptr);
 }
 
-/** The suite every sequence answers, over a vector of counted elements and one of tracked allocations. */
+/** The suite every sequence answers, over a vector of counted elements and one of tracked
+ *  allocations. */
 void vector_sequence_suite() {
     test_sequence_tags<basic_vector<counted_key_t>>();
     test_sequence_order<basic_vector<counted_key_t>>();

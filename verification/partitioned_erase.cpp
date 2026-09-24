@@ -9,9 +9,9 @@
  *  writes both tombstones under it and lands the stamp once through @c end_commit, which is what
  *  @c publish_every_part_ does for @c erase_range and its neighbours. A reader takes a claim and
  *  reads each partition under that partition's mutex; a watcher holds nothing and claims nothing,
- *  reading the watermark with acquire and the tombstones relaxed, which is what shows the one
- *  stamp rather than the mutual exclusion makes the window whole. @c -Dwithout_one_stamp draws and
- *  lands a stamp per partition, and both of them catch the window half erased.
+ *  reading the watermark with acquire and the tombstones relaxed, which is what shows the one stamp
+ *  rather than the mutual exclusion makes the window whole. @c -Dwithout_one_stamp draws and lands
+ *  a stamp per partition, and both of them catch the window half erased.
  *
  *  No census, as in @c partitioned_erase.pml: nothing here prunes, so a claim is the stamp
  *  @c take_snapshot hands back and the buckets, the floors and the low-water mark are left out.
@@ -20,7 +20,7 @@
 
 #include "genmc.hpp"
 
-/** A mutex as one word, taken by an acquiring exchange from zero and given back by a releasing store. */
+/** A mutex as one word, taken by an acquiring exchange from zero, released by a releasing store. */
 struct spin_mutex_t {
     std::atomic<int> word {0};
 

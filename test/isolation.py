@@ -10,6 +10,10 @@ Matches C++ suite:
 
 Run:
     python -m pytest test/isolation.py -v
+
+File: test/isolation.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import pytest

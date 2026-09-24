@@ -82,11 +82,10 @@ void verify_ordered_readonly(container_type_ const &layout, std::span<typename c
 }
 
 /**
- *  @brief Tests that a map form holds the keys its set twin holds, and the value each key arrived with.
+ *  @brief Tests that a map form holds the keys its set twin holds, and each key's arriving value.
  *
  *  Both forms take the same keys in the same order, so a repeated key reads back the first value
- *  written for it - which is what makes the rank-ordered array of values load-bearing rather than
- *  incidental.
+ *  written for it, which makes the rank-ordered array of values load-bearing, not incidental.
  */
 template <typename map_type_, typename set_type_>
 void test_ordered_readonly_mapping(std::size_t size = 300) {

@@ -27,9 +27,8 @@
  *  is the defect @c scripts/test_surface_parity.hpp exists to catch. Composites are spelled from
  *  those atoms rather than beside them.
  *
- *  Each concept detects a method, never what the method promises: a docblock naming a contract
- *  names the method's, and a store whose @c update creates an absent key satisfies @c
- *  offers_update anyway.
+ *  Each concept detects a method, never a promise: a docblock naming a contract names the method's,
+ *  and a store whose @c update creates an absent key still satisfies @c offers_update.
  *
  *  @section shared_device_code Reaching Device Code
  *
@@ -165,7 +164,7 @@
 #define ST_TARGET_RVV 0
 #endif
 
-// GCC on RISC-V rejects `#pragma GCC target`, so its RVV functions carry the attribute one by one.
+/** GCC on RISC-V rejects `#pragma GCC target`, so RVV functions carry the attribute one by one. */
 #if ST_TARGET_RVV && !defined(__clang__) && defined(__GNUC__)
 #define ST_TARGET_RVV_ATTRIBUTE_ __attribute__((target("arch=+v")))
 #else
@@ -4247,10 +4246,10 @@ expected<bool> is_disjoint(first_type_ &first, second_type_ &second) noexcept {
 
 #pragma region Structured Bindings
 
-// What `auto [value, status] = ...` looks up. The members live in a `union`, so the compiler cannot
-// decompose the class itself and the tuple protocol is the only route.
 namespace std {
 
+/** What `auto [value, status] = ...` looks up. The members live in a @c union, so the compiler
+ *  cannot decompose the class itself and the tuple protocol is the only route. */
 template <typename value_type_>
 struct tuple_size<::ashvardanian::smashtable::expected<value_type_>> : integral_constant<size_t, 2> {};
 

@@ -110,7 +110,7 @@ void verify_batch_refuses_whole(factory_type_ &&make_container, std::size_t seed
 }
 
 /**
- *  @brief Refuses the allocator at every point the batch asks, covering its first, its last and the rest.
+ *  @brief Refuses the allocator at every point the batch asks: its first, its last and the rest.
  *
  *  A batch that fits the room the container already holds asks for nothing, and a container growing
  *  in large steps holds a lot of it - so the size is grown until the batch reaches the allocator

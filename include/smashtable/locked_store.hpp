@@ -31,13 +31,13 @@ namespace ashvardanian::smashtable {
  *
  *  @warning Every callback runs with the mutex held, and it is not recursive, so a callback that
  *      calls back into this store - or into anything that eventually does - deadlocks against
- *      itself. Copy out what a callback needs and do the rest after it returns. The same holds for
- *      a value's destructor, which runs under the mutex wherever the store displaces or reclaims
- *      what it holds: a value whose teardown can re-enter must record the drop and perform it after
- *      the call returns.
+ *      itself. Copy out what a callback needs and do the rest after it returns.
  *  @warning Moving a store leaves every open transaction pointing at the husk, whose contents are
  *      empty and whose mutex guards nothing, so commits land nowhere and report success. Move only
  *      a store no transaction is open on and no other thread is touching.
+ *
+ *  A value's destructor also runs under the mutex wherever the store displaces or reclaims what it
+ *  holds, so a value whose teardown can re-enter must record the drop and perform it afterwards.
  */
 template <typename store_type_, typename shared_mutex_type_ = spin_shared_mutex_t,
           typename order_type_ = basic_commit_order<1>>
@@ -47,7 +47,8 @@ class locked_store {
     using store_t = locked_store;
     using order_t = order_type_;
 
-    /** The same store in another order, which is how a shard set builds its partitions into its own. */
+    /** The same store in another order, which is how a shard set builds its partitions into its
+     *  own. */
     template <typename other_order_type_>
     using rebind_order = locked_store<store_type_, shared_mutex_type_, other_order_type_>;
 
@@ -62,14 +63,16 @@ class locked_store {
     using is_associative = std::bool_constant<is_mapping<value_t>>;
     using is_transactional = std::true_type;
 
-    /** The staging reservation carries the inner store's promise over, not the mutex; see the class note. */
+    /** The staging reservation carries the inner store's promise over, not the mutex; see the class
+     *  note. */
     static constexpr isolation_t isolation_k = inner_store_t::isolation_k;
 
     using comparator_t = typename inner_store_t::comparator_t;
     using identifier_t = typename inner_store_t::identifier_t;
     using generation_t = typename inner_store_t::generation_t;
 
-    /** Whether the wrapped transaction can be driven as one part of a commit under a stamp drawn elsewhere. */
+    /** Whether the wrapped transaction can be driven as one part of a commit under a stamp drawn
+     *  elsewhere. */
     static constexpr bool inner_transaction_shards_k = shards_its_commit<inner_transaction_t>;
 
     /** Whether the wrapped transaction decides and writes in two steps rather than one. */
@@ -78,15 +81,15 @@ class locked_store {
     class transaction_t {
         friend class locked_store;
 
-        /** The store this transaction reaches through, never null after construction. A pointer rather than a
-         *  reference, which would delete the defaulted move assignment. */
+        /** The store this transaction reaches through, never null after construction. A pointer
+         *  rather than a reference, which would delete the defaulted move assignment. */
         locked_store *store_;
 
         /** The inner store's own transaction, which stages entirely outside the mutex. */
         inner_transaction_t inner_transaction_;
 
-        /** The hold @c validate_for_commit leaves on the mutex for the publication, rollback or reset that answers
-         *  it; empty between such pairs, and released with the transaction. */
+        /** The hold @c validate_for_commit leaves on the mutex for the publication, rollback or
+         *  reset that answers it; empty between such pairs, and released with the transaction. */
         unique_lock<mutex_t> validation_;
         static_assert(std::is_nothrow_move_constructible<inner_transaction_t>());
 
@@ -109,7 +112,8 @@ class locked_store {
             return inner_transaction_.snapshot();
         }
 
-        /** The stamp the wrapped transaction's last commit published under, which is transaction-local. */
+        /** The stamp the wrapped transaction's last commit published under, which is
+         *  transaction-local. */
         [[nodiscard]] generation_t commit_stamp() const noexcept
             requires requires(inner_transaction_t const &transaction) { transaction.commit_stamp(); }
         {
@@ -124,7 +128,7 @@ class locked_store {
         status_t reserve(std::size_t size) noexcept { return inner_transaction_.reserve(size); }
         status_t upsert(value_t &&element) noexcept { return inner_transaction_.upsert(std::move(element)); }
 
-        /** Stages an erase, reporting @c key_not_found_k when this transaction reads no such key. */
+        /** Stages an erase, reporting @c key_not_found_k when this transaction has no such key. */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t erase(identifier_t const &id, callback_found_type_ &&callback_found = {},
                        callback_missing_type_ &&callback_missing = {}) noexcept {
@@ -133,9 +137,9 @@ class locked_store {
                                             std::forward<callback_missing_type_>(callback_missing));
         }
 
-        /** Stages @p element only if its key is free, refusing rather than writing over it. Takes the lock, unlike
-         *  @c upsert: a strict insert reads the store to learn whether the key is already there, and only staging
-         *  itself lives outside the mutex. */
+        /** Stages @p element only if its key is free, refusing rather than writing over it. Takes
+         *  the lock, unlike @c upsert: a strict insert reads the store to learn whether the key is
+         *  already there, and only staging itself lives outside the mutex. */
         status_t insert(value_t &&element) noexcept
             requires transaction_offers_insert<inner_store_t>
         {
@@ -146,8 +150,7 @@ class locked_store {
         /**
          *  @brief Stages @p element only if its key is free, and says which branch was taken.
          *  @param[in] callback_inserted Receives the element once staged.
-         *  @param[in] callback_existing Receives the element already under the key, which refused
-         *      the insert.
+         *  @param[in] callback_existing Receives the element present, which refused the insert.
          */
         template <typename callback_inserted_type_, typename callback_existing_type_>
         status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
@@ -216,8 +219,8 @@ class locked_store {
             return inner_transaction_.contains(std::forward<comparable_type_>(comparable));
         }
 
-        /** Finds the member equal to @p comparable and records what it saw into the read set. The watching
-         *  counterpart to @c find, and the one that can fail, because a read set is memory. */
+        /** Finds the member equal to @p comparable and records what it saw into the read set. The
+         *  watching twin of @c find, and the one that can fail because a read set is memory. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -298,8 +301,7 @@ class locked_store {
         }
 
         /**
-         *  @brief Hands @p callback every member equal to @p comparable, this transaction's
-         *      writes included.
+         *  @brief Hands @p callback every member equal to @p comparable, writes included.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -312,8 +314,7 @@ class locked_store {
         }
 
         /**
-         *  @brief Hands @p callback every member of [ @p lower, @p upper ), this transaction's
-         *      writes included.
+         *  @brief Hands @p callback every member of [ @p lower, @p upper ), writes included.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -340,8 +341,7 @@ class locked_store {
         }
 
         /**
-         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no
-         *      lower end.
+         *  @brief Hands @p callback every member before @p upper, excluded, with no lower end.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -354,8 +354,7 @@ class locked_store {
         }
 
         /**
-         *  @brief Hands @p callback every member this transaction reads, in whatever order the
-         *      store keeps.
+         *  @brief Hands @p callback every member this transaction reads, in the store's own order.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename callback_type_ = no_op_t>
@@ -442,7 +441,8 @@ class locked_store {
             return inner_transaction_.clear();
         }
 
-        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
+        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the
+         *  result. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
@@ -521,7 +521,8 @@ class locked_store {
             return inner_transaction_.validate_for_commit();
         }
 
-        /** Publishes everything staged under @p stamp, which the shard set drew for the whole commit. */
+        /** Publishes everything staged under @p stamp, which the shard set drew for the whole
+         *  commit. */
         void publish_under(commit_stamp_t stamp) noexcept
             requires inner_transaction_shards_k
         {
@@ -566,14 +567,17 @@ class locked_store {
   private:
     mutable mutex_t mutex_;
 
-    /** The order this store makes for itself when nobody hands it one, declared before the store it seats. */
+    /** The order this store makes for itself when nobody hands it one, declared before the store it
+     *  seats. */
     ST_NO_UNIQUE_ADDRESS_ mutable order_t own_order_ {};
 
-    /** The order the wrapped store is a member of, which is the one above unless a caller named another. */
+    /** The order the wrapped store is a member of, which is the one above unless a caller named
+     *  another. */
     order_t *order_ {&own_order_};
     inner_store_t inner_store_;
 
-    /** Seats whichever order this store is a member of in the store it wraps, where there is one to seat. */
+    /** Seats whichever order this store is a member of in the store it wraps, where there is one to
+     *  seat. */
     void seat_order_() noexcept {
         if constexpr (requires { inner_store_.join_order(*order_); }) inner_store_.join_order(*order_);
     }
@@ -592,7 +596,9 @@ class locked_store {
         seat_order_();
     }
 
-    /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
+    /**
+     *  @warning @p other must be untouched: no open transaction, no other thread; see class notes.
+     */
     locked_store &operator=(locked_store &&other) noexcept {
         unique_lock _ {mutex_};
         inner_store_ = std::move(other.inner_store_);
@@ -618,7 +624,9 @@ class locked_store {
         seat_order_();
     }
 
-    /** @warning @p other must have no open transaction and no other thread touching it; see the class note. */
+    /**
+     *  @warning @p other must be untouched: no open transaction, no other thread; see class notes.
+     */
     locked_store(locked_store &&other) noexcept : inner_store_(std::move(other.inner_store_)) {
         adopt_order_of_(other);
     }
@@ -633,9 +641,9 @@ class locked_store {
         return inner_store_.empty();
     }
 
-    /** Builds the inner store from @p arguments and takes ownership of it. Forwards whatever the core needs - a
-     *  comparator for a tree, a hasher and equality for a table - so a store whose comparator has no default
-     *  constructor is still constructible. */
+    /** Builds the inner store from @p arguments and takes ownership of it. Forwards whatever the
+     *  core needs - a comparator for a tree, a hasher and equality for a table - so a store whose
+     *  comparator has no default constructor is still constructible. */
     template <typename... arguments_type_>
     static expected<locked_store> make(arguments_type_ &&...arguments) noexcept {
         expected<inner_store_t> inner_store = inner_store_t::make(std::forward<arguments_type_>(arguments)...);
@@ -655,8 +663,8 @@ class locked_store {
         return inner_store_.upsert(std::forward<value_t>(element));
     }
 
-    /** Erases whatever equals @p comparable, reporting through the callbacks so presence needs no second probe.
-     *  Takes any type the inner store compares against, not only an identifier. */
+    /** Erases whatever equals @p comparable, reporting through the callbacks so presence needs no
+     *  second probe. Takes any type the inner store compares against, not only an identifier. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     status_t erase(comparable_type_ &&comparable, callback_found_type_ &&callback_found = {},
@@ -676,8 +684,7 @@ class locked_store {
     /**
      *  @brief Inserts @p element only if its key is absent, and says which branch was taken.
      *  @param[in] callback_inserted Receives the element once stored.
-     *  @param[in] callback_existing Receives the element already present, which is what declined
-     *      the insert.
+     *  @param[in] callback_existing Receives the element present, which declined the insert.
      */
     template <typename callback_inserted_type_, typename callback_existing_type_>
     status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted,
@@ -699,8 +706,7 @@ class locked_store {
     /**
      *  @brief Inserts @p element only if its key is free, and says which branch was taken.
      *  @param[in] callback_inserted Receives the element once stored.
-     *  @param[in] callback_existing Receives the element already under the key, which refused
-     *      the insert.
+     *  @param[in] callback_existing Receives the already-present element that refused the insert.
      */
     template <typename callback_inserted_type_, typename callback_existing_type_>
     status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted,
@@ -754,7 +760,8 @@ class locked_store {
         return *present ? std::size_t {1} : std::size_t {0};
     }
 
-    /** Inherits the inner store's all-or-nothing batch, held under this store's write lock throughout. */
+    /** Inherits the inner store's all-or-nothing batch, held under this store's write lock
+     *  throughout. */
     template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
     status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         unique_lock _ {mutex_};
@@ -778,8 +785,7 @@ class locked_store {
      *
      *  The position is a key rather than an iterator, so a write between two steps cannot
      *  invalidate it: the next step re-probes from the last key handed over. That is what lets the
-     *  walk survive concurrent change, and it is why a step costs a lookup rather than
-     *  an increment.
+     *  walk survive concurrent change, and it is why a step costs a lookup, not an increment.
      */
     class ordered_cursor_t {
         friend class locked_store;
@@ -887,8 +893,8 @@ class locked_store {
                                      std::forward<callback_missing_type_>(callback_missing));
     }
 
-    /** Removes the smallest member and hands it over, or reports the store is empty. The choice and the removal
-     *  happen under one exclusive hold, so no writer can take the member between the two. */
+    /** Removes the smallest member and hands it over, or reports the store is empty. The choice and
+     *  the removal happen under one exclusive hold, so no writer can slip in between. */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     status_t pop_smallest(callback_found_type_ &&callback_found = {},
                           callback_missing_type_ &&callback_missing = {}) noexcept
@@ -971,8 +977,7 @@ class locked_store {
     }
 
     /**
-     *  @brief Hands @p callback every member of [ @p lower, @p upper ), the walk under one
-     *      shared hold.
+     *  @brief Hands @p callback every member of [ @p lower, @p upper ), one shared lock held.
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
@@ -1016,8 +1021,7 @@ class locked_store {
     /**
      *  @brief Rewrites the mapped side of every element in [ @p lower, @p upper ).
      *  @param[in] callback Invoked with (key const &, mapped &) per element. Must be @c noexcept.
-     *  @return Success, or an allocation failure. A store whose own walk cannot fail
-     *      always succeeds.
+     *  @return Success, or an allocation failure. A store whose walk cannot fail always succeeds.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -1193,7 +1197,7 @@ class locked_store {
 
 #pragma region Sharded Membership
 
-    /** Opens one part of a sharded transaction on a @p snapshot and @p generation drawn elsewhere. */
+    /** Opens one part of a sharded transaction on @p snapshot and @p generation drawn elsewhere. */
     expected<transaction_t> transaction_at(opened_at_t opened) noexcept
         requires draws_from_a_shared_order<inner_store_t>
     {
@@ -1203,7 +1207,8 @@ class locked_store {
         return transaction_t {*this, std::move(*inner)};
     }
 
-    /** The order the wrapped store is a member of, which is fixed at construction and needs no lock. */
+    /** The order the wrapped store is a member of, which is fixed at construction and needs no
+     *  lock. */
     [[nodiscard]] order_t &order() noexcept { return *order_; }
     [[nodiscard]] order_t const &order() const noexcept { return *order_; }
 
@@ -1224,7 +1229,8 @@ class locked_store {
 template <set_shaped_store set_store_type_, typename shared_mutex_type_ = spin_shared_mutex_t>
 using locked_set = locked_store<set_store_type_, shared_mutex_type_>;
 
-/** A map-shaped store behind one shared mutex, spelled @c locked_map<monotonic_avl_map<key_t, value_t>>. */
+/** A map-shaped store behind one shared mutex, spelled @c locked_map<monotonic_avl_map<key_t,
+ *  value_t>>. */
 template <map_shaped_store map_store_type_, typename shared_mutex_type_ = spin_shared_mutex_t>
 using locked_map = locked_store<map_store_type_, shared_mutex_type_>;
 

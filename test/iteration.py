@@ -7,6 +7,10 @@ Baselines:
 
 Run:
     python -m pytest test/iteration.py -v
+
+File: test/iteration.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import gc
@@ -104,14 +108,16 @@ def test_deletion_ahead_of_the_cursor_is_skipped(container_class):
     assert walked == [1, 3]
 
 
-# One sequence drives the two tests that contrast a container with a dict: walk a store holding
-# `seeded_keys` and insert `key_above_the_seed`, which every seeded key sorts below, so an ordered
-# walk can still reach it.
 seeded_keys = list(range(10))
+"""One sequence drives the two tests that contrast a container with a dict: walk a store holding
+`seeded_keys` and insert `key_above_the_seed`, which every seeded key sorts below, so an ordered
+walk can still reach it.
+"""
 key_above_the_seed = 100
 
-# A walk that has not ended by here is not going to, and the assertion after the loop never runs.
 runaway_ceiling = 100
+"""A walk that has not ended by here is not going to, and the assertion after the loop never runs.
+"""
 
 
 @pytest.mark.parametrize("class_name", enumerable_class_names)

@@ -36,76 +36,158 @@ namespace {
 
 #pragma region Type Aliases
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✗
- *  Tests: Baseline non-transparent comparator path */
+/**
+ *  Tests: Baseline non-transparent comparator path.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✗.
+ */
 using trivial_set_t = avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✗
- *  Tests: Resource accounting, allocation failure injection */
+/**
+ *  Tests: Resource accounting, allocation failure injection.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial.
+ *  Memory: Tracked.
+ *  Transaction: ✗.
+ */
 using tracking_set_t = avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✗
- *  Tests: Identifier extraction, composite_key_compare_t::value_type lookups */
+/**
+ *  Tests: Identifier extraction, @c composite_key_compare_t::value_type lookups.
+ *  Heterogeneous lookup: ✓, over @c uint64_t.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✗.
+ */
 using composite_set_t = avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
- *  Transaction: ✗ Tests: OOM during .copy(), string_view lookups without materialization */
+/**
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() → expected<T>.
+ *  Memory: Heap |.
+ *  Transaction: ✗ Tests: OOM during .copy(), string_view lookups without materialization.
+ */
 using heavy_set_t = avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✗
- *  Value: int | Tests: Baseline map operations, non-transparent path */
+/**
+ *  Tests: Baseline map operations, non-transparent path.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ *  Transaction: ✗.
+ *  Value: int.
+ */
 using trivial_map_t =
     avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✗
- *  Value: int | Tests: Map resource accounting, POCCA/POCMA on key-value pairs */
+/**
+ *  Tests: Map resource accounting, POCCA/POCMA on key-value pairs.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Tracked.
+ *  Transaction: ✗.
+ *  Value: int.
+ */
 using tracking_map_t = avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) |
- *  Transaction: ✗ Value: guarded_payload_t | Tests: Mixed trivial/non-trivial, value OOM scenarios */
+/**
+ *  Tests: Mixed trivial and non-trivial members, value OOM scenarios.
+ *  Heterogeneous lookup: ✓ uint64_t.
+ *  Copy: Key trivial, value .copy().
+ *  Memory: Heap value.
+ *  Transaction: ✗.
+ *  Value: guarded_payload_t.
+ */
 using composite_map_t = avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
                                 std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
- *  Transaction: ✗ Value: guarded_payload_t | Tests: Dual-heap OOM, worst-case complexity */
+/**
+ *  Tests: Dual-heap OOM, worst-case complexity.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() on key & value.
+ *  Memory: Heap, over @c both |.
+ *  Transaction: ✗ Value: guarded_payload_t.
+ */
 using heavy_map_t =
     avl_map<heavy_key_t, guarded_payload_t, std::less<void>, std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Baseline transactional correctness, isolation levels */
+/**
+ *  Tests: Baseline transactional correctness, isolation levels.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ */
 using transactional_trivial_set_t =
     monotonic_avl_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial | Memory: Tracked | Transaction: ✓
- *  Tests: Transaction resource accounting, OOM during stage/commit */
+/**
+ *  Tests: Transaction resource accounting, OOM during stage/commit.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial.
+ *  Memory: Tracked.
+ *  Transaction: ✓.
+ */
 using transactional_tracking_set_t = monotonic_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Trivial | Memory: Stack | Transaction: ✓
- *  Tests: Heterogeneous watch/find in transactions */
+/**
+ *  Tests: Heterogeneous watch/find in transactions.
+ *  Heterogeneous lookup: ✓, over @c uint64_t.
+ *  Copy: Trivial.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ */
 using transactional_composite_set_t =
     monotonic_avl_set<composite_key_t, composite_key_compare_t, std::allocator<composite_key_t>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() → expected<T> | Memory: Heap |
- *  Transaction: ✓ Tests: Watch copy OOM, transaction rollback with heap types */
+/**
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() → expected<T>.
+ *  Memory: Heap |.
+ *  Transaction: ✓ Tests: Watch copy OOM, transaction rollback with heap types.
+ */
 using transactional_heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
 
-/** Heterogeneous lookup: ✗ | Copy: Trivial (key & value) | Memory: Stack | Transaction: ✓
- *  Value: int | Tests: Transactional map operations, value overwrites */
+/**
+ *  Tests: Transactional map operations, value overwrites.
+ *  Heterogeneous lookup: ✗.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Stack.
+ *  Transaction: ✓.
+ *  Value: int.
+ */
 using transactional_trivial_map_t =
     monotonic_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 
-/** Heterogeneous lookup: ✓ | Copy: Trivial (key & value) | Memory: Tracked | Transaction: ✓
- *  Value: int | Tests: Transaction allocation patterns, map POCCA/POCMA */
+/**
+ *  Tests: Transaction allocation patterns, map POCCA/POCMA.
+ *  Heterogeneous lookup: ✓.
+ *  Copy: Trivial, over `key & value`.
+ *  Memory: Tracked.
+ *  Transaction: ✓.
+ *  Value: int.
+ */
 using transactional_tracking_map_t = monotonic_avl_map<trivial_key_t, int, stateful_comparator_t, stateful_allocator_t>;
 
-/** Heterogeneous lookup: ✓ (uint64_t) | Copy: Key trivial, value .copy() | Memory: Heap (value) |
- *  Transaction: ✓ Value: guarded_payload_t | Tests: Transaction rollback with non-trivial values */
+/**
+ *  Tests: Transaction rollback with non-trivial values.
+ *  Heterogeneous lookup: ✓, over @c uint64_t.
+ *  Copy: Key trivial, value .copy().
+ *  Memory: Heap, over @c value |.
+ *  Transaction: ✓ Value: guarded_payload_t.
+ */
 using transactional_composite_map_t = monotonic_avl_map<composite_key_t, guarded_payload_t, composite_key_compare_t,
                                                         std::allocator<mapping<composite_key_t, guarded_payload_t>>>;
 
-/** Heterogeneous lookup: ✓ (string_view) | Copy: .copy() on key & value | Memory: Heap (both) |
- *  Transaction: ✓ Value: guarded_payload_t | Tests: Worst-case transactional complexity, dual-heap
- *  rollback */
+/**
+ *  Tests: Worst-case transactional complexity, dual-heap rollback.
+ *  Heterogeneous lookup: ✓, over @c string_view.
+ *  Copy: .copy() on key & value.
+ *  Memory: Heap, over @c both |.
+ *  Transaction: ✓ Value: guarded_payload_t.
+ */
 using transactional_heavy_map_t = monotonic_avl_map<heavy_key_t, guarded_payload_t, std::less<void>,
                                                     std::allocator<mapping<heavy_key_t, guarded_payload_t>>>;
 
@@ -894,7 +976,7 @@ static void structure_node_equal_range() {
     test_node_equal_range<trivial_map_t>();
 }
 
-/** Erasing through a @c const_iterator must compile, unlink the node, and leave the tree balanced. */
+/** Erasing via a @c const_iterator must compile, unlink the node, and leave the tree balanced. */
 static void structure_erase_const_iterator() {
     trivial_set_t tree;
     for (trivial_id_t identifier : {1u, 2u, 3u}) st_verify_(tree.upsert(trivial_key_t(identifier)));

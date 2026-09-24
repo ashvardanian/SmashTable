@@ -58,17 +58,21 @@ using transactional_composite_map_t = partitioned_store<tree_composite_map_t>;
 using tree_tracking_set_t = monotonic_avl_set<trivial_key_t, stateful_comparator_t, stateful_allocator_t>;
 using self_tracking_set_t = partitioned_store<tree_tracking_set_t>;
 
-/** Sharded on @c std::shared_mutex rather than the library's own.
+/**
+ *  @brief Sharded on @c std::shared_mutex rather than the library's own.
  *
  *  The mutex is a template parameter, so the default is a choice and not the only thing that fits;
- *  running the concurrency suites against the standard one is what keeps the substitution honest. */
+ *  running the concurrency suites against the standard one is what keeps the substitution honest.
+ */
 using standard_mutex_set_t = partitioned_store<tree_composite_set_t, hash<composite_key_t>, std::shared_mutex, 16>;
 using standard_mutex_map_t = partitioned_store<tree_composite_map_t, hash<composite_key_t>, std::shared_mutex, 16>;
 
-/** Wrapped around a hash-backed store, which offers no ordering at all.
+/**
+ *  @brief Wrapped around a hash-backed store, which offers no ordering at all.
  *
  *  The wrappers forward the ordered surface, so an unordered inner store must lose it at overload
- *  resolution rather than inside an instantiation of a body that cannot compile. */
+ *  resolution rather than inside an instantiation of a body that cannot compile.
+ */
 using hash_store_t = monotonic_hash_set<trivial_key_t, hash<trivial_key_t>, equal_to_t, std::allocator<std::byte>>;
 
 static_assert(offers_ordered_surface<tree_trivial_set_t>, "the tree-backed store is ordered");
@@ -84,8 +88,7 @@ static_assert(!offers_ordered_surface<partitioned_store<hash_store_t>>,
               "the partitioned wrapper must not claim an ordering its inner store denies");
 
 /**
- *  @brief An ordered store that erases no window, which is what tells a per-method gate from
- *      a composite.
+ *  @brief An ordered store that erases no window, which tells a per-method gate from a composite.
  *
  *  Every ordered forward once asked for the whole composite, so a store missing any one of its four
  *  methods lost the other three through every wrapper. Reading a bound and stepping a cursor ask
@@ -128,7 +131,8 @@ static_assert(
     requires(locked_store<unerasable_ordered_set_t> const &store) { store.cursor_from(trivial_key_t {}); },
     "a cursor steps with the bounds, so erasing no window costs it nothing");
 
-/** Backed by a weight-balanced core, the only one that sums the subtree counts @c select descends on. */
+/** Backed by a weight-balanced core, the only one that sums the subtree counts @c select descends
+ *  on. */
 using ranked_set_t = snapshot_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 using monotonic_ranked_set_t = monotonic_wb_set<trivial_key_t, std::less<trivial_key_t>, std::allocator<trivial_key_t>>;
 
@@ -201,8 +205,7 @@ using transactional_tracking_set_t = locked_set<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
 
 /** The shape-naming aliases wrap one class each, so what distinguishes them is which stores they
- *  accept: an alias that took every store would name the same type as its sibling and catch
- *  nothing. */
+ *  accept: an alias taking every store would name its sibling's type and catch nothing. */
 template <typename store_type_>
 constexpr bool names_locked_set = requires { typename locked_set<store_type_>; };
 template <typename store_type_>
@@ -221,7 +224,7 @@ static_assert(names_partitioned_map<tree_trivial_map_t>, "the map alias takes a 
 static_assert(!names_partitioned_map<tree_trivial_set_t>, "the map alias must refuse a set-shaped store");
 static_assert(!names_partitioned_set<tree_trivial_map_t>, "the set alias must refuse a map-shaped store");
 
-/** A wrapper names itself @c store_t, which is what every engine calls its own self-alias, so one
+/*  A wrapper names itself @c store_t, which is what every engine calls its own self-alias, so one
  *  name means one thing whichever kind of store a generic caller is handed. */
 static_assert(std::is_same<typename locked_store<tree_trivial_set_t>::store_t, locked_store<tree_trivial_set_t>>(),
               "a store names itself");
@@ -248,10 +251,10 @@ using serializable_trivial_map_t =
     serializable_avl_map<trivial_key_t, int, std::less<trivial_key_t>, std::allocator<mapping<trivial_key_t, int>>>;
 using sharded_serializable_map_t = partitioned_store<serializable_trivial_map_t>;
 
-/** Every public surface of every shipped store, against every wrapper nesting.
+/*  Every public surface of every shipped store, against every wrapper nesting.
  *
  *  One line per store: the fold names the surface, the wrapper and the store in the diagnostic, so
- *  a forward that goes missing fails here rather than at whatever call site happened to want it. */
+ *  a missing forward fails here rather than at whatever call site happened to want it. */
 static_assert(every_wrapper_keeps_surfaces<tree_trivial_set_t>, "a wrapper must keep what its store offers");
 static_assert(every_wrapper_keeps_surfaces<tree_trivial_map_t>, "a wrapper must keep what its store offers");
 static_assert(every_wrapper_keeps_surfaces<monotonic_ranked_set_t>, "a wrapper must keep what its store offers");
@@ -262,26 +265,27 @@ static_assert(every_wrapper_keeps_surfaces<snapshot_trivial_map_t>, "a wrapper m
 static_assert(every_wrapper_keeps_surfaces<ranked_set_t>, "a wrapper must keep what its store offers");
 static_assert(every_wrapper_keeps_surfaces<snapshot_hash_store_t>, "a wrapper must keep what its store offers");
 
-/** A wrapper meant to be invisible must not change what an outer wrapper concludes about isolation. */
+/*  An invisible wrapper must not change what an outer wrapper concludes about isolation. */
 static_assert(nesting_preserves_isolation<tree_trivial_set_t>, "a transparent wrapper decides nothing");
 static_assert(nesting_preserves_isolation<snapshot_trivial_set_t>, "a transparent wrapper decides nothing");
 static_assert(nesting_preserves_isolation<snapshot_trivial_map_t>, "a transparent wrapper decides nothing");
 static_assert(nesting_preserves_isolation<ranked_set_t>, "a transparent wrapper decides nothing");
 
-/** Sharding a stamped store keeps its promise whole, and a wrapper between the two takes nothing from it. */
+/*  Sharding a stamped store keeps its promise whole, and a wrapper between the two takes nothing
+ *  from it. */
 static_assert(partitioned_store<snapshot_trivial_map_t>::isolation_k == snapshot_trivial_map_t::isolation_k,
               "one order across partitions carries the inner store's isolation");
 static_assert(partitioned_store<locked_store<snapshot_trivial_map_t>>::isolation_k ==
                   snapshot_trivial_map_t::isolation_k,
               "one order across partitions carries the inner store's isolation");
 
-/** A transaction has to survive being stored, which is what a deleted move assignment takes away. */
+/*  A transaction must survive being stored, which a deleted move assignment takes away. */
 static_assert(transaction_moves_as_a_value<locked_store<tree_trivial_set_t>>, "a transaction moves as a value");
 static_assert(transaction_moves_as_a_value<partitioned_store<tree_trivial_set_t>>, "a transaction moves as a value");
 static_assert(transaction_moves_as_a_value<partitioned_store<locked_store<snapshot_trivial_map_t>>>,
               "a transaction moves as a value");
 
-/** The wrappers stay in the group the concept describes, which now also asks how a transaction moves. */
+/*  The wrappers stay in the concept's group, which also asks how a transaction moves. */
 static_assert(optimistically_concurrent_store<locked_store<tree_trivial_set_t>>, "the lock wrapper stays in the group");
 static_assert(optimistically_concurrent_store<partitioned_store<tree_trivial_set_t>>,
               "the partitioned wrapper stays in the group");
@@ -326,12 +330,10 @@ static void sharded_concurrency_stage_unwinds_on_partial_failure() {
 }
 
 /**
- *  @brief What a commit spanning partitions looks like to a reader, at both levels a shard
- *      set reaches.
+ *  @brief What a commit spanning partitions looks like to a reader, at both shard-set levels.
  *
  *  A stamped part keeps its promise whole through the sharding, and a part without a stamp is
- *  capped at @c read_committed_k - so the same walk must tear against one and never against
- *  the other.
+ *  capped at @c read_committed_k, so the same walk must tear against one and never the other.
  */
 static void sharded_concurrency_commit_spans_partitions() {
     test_commit_spans_partitions_matches_isolation<transactional_trivial_map_t>();
@@ -342,8 +344,7 @@ static void sharded_concurrency_commit_spans_partitions() {
  *  @brief Both sides of whether a sharded window read is validated at commit.
  *
  *  The snapshot store records no reads, so a key landing in a window it walked cannot refuse it;
- *  the serializable one records the window and must. One walk, one key, two levels,
- *  opposite answers.
+ *  the serializable one records the window and must. One walk, one key, two opposite answers.
  */
 static void sharded_concurrency_window_read_is_validated() {
     test_sharded_window_read_is_validated<sharded_snapshot_map_t>();
@@ -609,8 +610,7 @@ static expected<store_type_> built_store() {
 }
 
 /**
- *  @brief A strict insert through a wrapper must refuse an occupied key with the bare
- *      store's status.
+ *  @brief A strict insert through a wrapper refuses an occupied key with the bare store's status.
  *
  *  The status is read off the bare store rather than spelled out, so the suite stays true whichever
  *  refusal a store family picks - what is under test is that the wrapper hands the same one back.
@@ -967,8 +967,9 @@ static void test_forwarded_equal_range() {
     st_verify_eq_(matched, 1u);
 }
 
-/** An erase through a wrapper must take whatever the inner store compares against. A composite key is looked up by
- *  its identifier alone, which a wrapper narrowed to @c identifier_t refuses before the store is ever asked. */
+/** An erase through a wrapper must take whatever the inner store compares against. A composite key
+ *  is looked up by its identifier alone, which a wrapper narrowed to @c identifier_t refuses before
+ *  the store is ever asked. */
 template <typename wrapper_type_>
 static void test_forwarded_heterogeneous_erase() {
 
@@ -1195,8 +1196,7 @@ static transactional_trivial_set_t seeded_sharded_set(std::size_t size) {
 }
 
 /**
- *  @brief A range over an ordered container answers in one ascending order, not sixteen
- *      sorted runs.
+ *  @brief A range over an ordered container answers in one ascending order, not sixteen runs.
  *
  *  Concatenating each partition's run passes every membership check ever written for @c range,
  *  which is how it survived: only asking whether the sequence rises catches it.
@@ -1246,7 +1246,8 @@ static void merged_order_range_matches_stepping() {
         st_verify_eq_(walked[position], stepped[position]);
 }
 
-/** An inclusive bound answers with the key itself when it is there, and its successor when it is not. */
+/** An inclusive bound answers with the key itself when it is there, and its successor when it is
+ *  not. */
 static void merged_order_inclusive_bound_is_one_probe() {
     transactional_trivial_set_t store = seeded_sharded_set(64);
 
@@ -1301,8 +1302,7 @@ static void ordered_cursor_matches_the_range() {
 }
 
 /**
- *  @brief A cursor begun at a bound starts there, rather than at the smallest key of
- *      each partition.
+ *  @brief A cursor begun at a bound starts there, not at the smallest key of each partition.
  *
  *  Every front is read against the bound when the cursor settles, so the bound has to be in place
  *  before that happens - a walk seeded from a default key hands over members ordered below it.
@@ -1349,7 +1349,7 @@ static void test_cursor_stops_at_its_bound(std::size_t count = 64) {
         st_verify_eq_(walked[position], position, "an unbounded start must ascend from the smallest key");
 }
 
-/** The bounded and unbounded walks read the same on both wrappers, which is what one shape means. */
+/** Bounded and unbounded walks read the same on both wrappers; one shape covers both paths. */
 static void ordered_cursor_stops_at_its_bound() {
     test_cursor_stops_at_its_bound<locked_store<tree_trivial_set_t>>();
     test_cursor_stops_at_its_bound<partitioned_store<tree_trivial_set_t>>();
@@ -1462,8 +1462,7 @@ template <typename store_type_>
 constexpr std::size_t partitions_of_v = store_type_::partitions_k;
 
 /**
- *  @brief A cursor costs one partition acquisition per element, where stepping a bound costs
- *      all sixteen.
+ *  @brief A cursor costs one partition acquisition per element, where stepping a bound costs 16.
  *
  *  Asserted rather than measured: the whole reason the cursor caches a front per partition is that
  *  re-probing every partition per element is what an ordered walk used to cost, and a cache that
@@ -1649,7 +1648,7 @@ static void test_make_reports_why_it_could_not_build() {
                   "the wrapper must relay the reason rather than lose it to a default");
 }
 
-/** A wrapper that cannot open a transaction reports why, rather than a default-constructed reason. */
+/** A wrapper that cannot open a transaction reports why, not a default-constructed reason. */
 template <typename wrapper_type_>
 static void test_transaction_reports_why_it_could_not_open() {
 
@@ -1670,8 +1669,7 @@ static void sharded_ops_transaction_reports_its_reason() {
 }
 
 /**
- *  @brief A wrapper hands back the reason a read could not be recorded rather than
- *      answering success.
+ *  @brief A wrapper hands back why a read could not be recorded rather than answering success.
  *
  *  A validated read is written down before it can be validated, and writing it down allocates. The
  *  wrapper sits between the caller and the engine that lost the record, so a wrapper answering

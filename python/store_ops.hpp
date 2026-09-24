@@ -4,14 +4,14 @@
  *  @date August 18, 2026
  *  @brief Turns one store instantiation into a @c store_ops_t table of function pointers.
  *
- *  Every operation the binding performs on a store passes through here exactly once, at compile time.
- *  The bridge is what lets @c container.cpp name no concrete store: it resolves the callback-shaped,
- *  template-typed C++ surface into plain function pointers over @c void*, and reports what the core
- *  could not supply as a null slot rather than as a runtime refusal.
+ *  Every operation the binding performs on a store passes through here exactly once, at compile
+ *  time. The bridge is what lets @c container.cpp name no concrete store: it resolves the
+ *  callback-shaped, template-typed C++ surface into plain function pointers over @c void*, and
+ *  reports what the core could not supply as a null slot rather than as a runtime refusal.
  *
- *  The ordered surface is gated on the C++ side by trailing @c requires clauses, so naming an absent
- *  member in an unguarded template is ill-formed rather than quietly removed from overload resolution.
- *  Every optional slot is therefore probed with @c requires before it is named.
+ *  The ordered surface is gated on the C++ side by trailing @c requires clauses, so naming an
+ *  absent member in an unguarded template is ill-formed rather than quietly removed from overload
+ *  resolution. Every optional slot is therefore probed with @c requires before it is named.
  */
 #pragma once
 #include <cstddef> // `std::max_align_t`
@@ -30,19 +30,18 @@
 
 namespace ashvardanian::smashtable::py {
 
-/** Whether a type asks for more alignment than @c PyObject_Malloc promises, which stops at @c max_align_t. */
+/** Whether a type asks for more alignment than @c PyObject_Malloc promises, which stops at
+ *  @c max_align_t. */
 template <typename object_type_>
 concept over_aligned_for_python = alignof(object_type_) > alignof(std::max_align_t);
 
 #pragma region Bridge
 
 /**
- *  @brief Deep-copies @p source into @p target, answering why it could not rather than half
- *      writing it.
+ *  @brief Deep-copies @p source into @p target, answering why it could not instead of half-writing.
  *
  *  The assigning counterpart to @c copy_safely, for the callbacks a store hands elements to: those
- *  are @c noexcept and return @c void, so a failed copy has nowhere to go but a status the caller
- *  reads after.
+ *  are @c noexcept and return @c void, so a failed copy can only become a status the caller reads.
  */
 template <typename target_type_, typename source_type_>
 static status_t copy_into(target_type_ &target, source_type_ const &source) noexcept {
@@ -102,9 +101,9 @@ struct store_bridge {
      *      accounted for by the same allocator every Python object uses and appear in
      *      @c tracemalloc.
      *
-     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t and no further, so a
-     *  store padding its words to a cache line is allocated through the aligned operator instead. The
-     *  two allocators do not interchange, so @c release_python_storage asks the same question.
+     *  @c PyObject_Malloc guarantees alignment for anything up to @c max_align_t and no further, so
+     *  a store padding its words to a cache line is allocated through the aligned operator instead.
+     *  The two allocators do not interchange, so @c release_python_storage asks the same question.
      */
     template <typename object_type_, typename... arguments_type_>
     [[nodiscard]] static object_type_ *own_in_python_storage(arguments_type_ &&...arguments) noexcept {
@@ -327,8 +326,7 @@ struct store_bridge {
      *  @brief Walks the window @p lower and @p upper name, whichever ends they leave open.
      *
      *  Four named calls rather than one taking a bound that stands for "no bound", because that is
-     *  how the engine spells it and there is no greatest key the text layouts could close an open
-     *  end with.
+     *  how the engine spells it and no greatest key exists to close a text layout's open end.
      */
     template <typename readable_type_, typename callback_type_>
     static status_t walk_window(readable_type_ &self, key_variant_t const *lower, key_variant_t const *upper,
@@ -339,7 +337,8 @@ struct store_bridge {
         return self.for_each(step);
     }
 
-    /** Erases the window @p lower and @p upper name, on the same four terms @c walk_window reads it. */
+    /** Erases the window @p lower and @p upper name, on the same four terms @c walk_window reads
+     *  it. */
     template <typename writable_type_>
     static status_t erase_window(writable_type_ &self, key_variant_t const *lower,
                                  key_variant_t const *upper) noexcept {
@@ -356,8 +355,7 @@ struct store_bridge {
      *  and the level is validated against exactly what was recorded: a closed window records that
      *  window, an open end records one running to that end of the keyspace, and a window with no
      *  ends at all is the whole keyspace and says so. Each is one store call, so the window a
-     *  commit is validated against is the one the caller asked for rather than one this
-     *  layer chose.
+     *  commit is validated against is the one the caller asked for, not one this layer picked.
      */
     static status_t collect_window(transaction_t &self, key_variant_t const *lower, key_variant_t const *upper,
                                    std::size_t limit, basic_vector<entry_t> &collected) noexcept
@@ -535,9 +533,9 @@ struct store_bridge {
         return collect_window(transaction_of(transaction), lower, upper, limit, collected);
     }
 
-    /** Stages a tombstone for every member of that same window. One engine call per shape, so the read a commit is
-     *  validated against is the one the window named - and a window with no ends at all is the whole store, which
-     *  @c clear answers for. */
+    /** Stages a tombstone for every member of that same window. One engine call per shape, so the
+     *  read a commit is validated against is the one the window named - and a window with no ends
+     *  at all is the whole store, which @c clear answers for. */
     static status_t transaction_erase_range(releases_t &releases, void *transaction, key_variant_t const *lower,
                                             key_variant_t const *upper) noexcept
         requires ordered_k
@@ -546,9 +544,9 @@ struct store_bridge {
         return erase_window(transaction_of(transaction), lower, upper);
     }
 
-    /** Forwards one argument-free lifecycle call with the container's release ledger held. The whole family differs
-     *  only in which member it names, so the member is the parameter and the return type follows it -
-     *  @c publish_under answers nothing and the rest a @c status_t. */
+    /** Forwards one argument-free lifecycle call with the container's release ledger held. The
+     *  whole family differs only in which member it names, so the member is the parameter and the
+     *  return type follows it - @c publish_under answers nothing and the rest a @c status_t. */
     template <auto member_>
     static auto transaction_lifecycle(releases_t &releases, void *transaction) noexcept {
         shared_lock deferral {releases};

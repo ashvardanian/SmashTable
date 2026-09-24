@@ -12,6 +12,10 @@ they all run in one subprocess rather than one each.
 Run:
     python -m pytest test/finalizers.py -v
     python -m test.finalizers            # the same cases, directly, for debugging a hang
+
+File: test/finalizers.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import gc

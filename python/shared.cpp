@@ -2,8 +2,7 @@
  *  @file python/shared.cpp
  *  @author Ash Vardanian
  *  @date August 17, 2026
- *  @brief Machinery every container shares - key layouts, scalar conversion, errors, and
- *      the cursor.
+ *  @brief Machinery every container shares: key layouts, scalar conversion, errors, the cursor.
  *
  *  Mirrors @c include/smashtable/shared.hpp on the C++ side: one place for the vocabulary the
  *  container files are written in, so they contain only their Python protocol and nothing else.
@@ -55,9 +54,9 @@ static bool key_less_bytes(key_variant_t const &first, key_variant_t const &seco
     return assume_layout<bytes_t>(first).data < assume_layout<bytes_t>(second).data;
 }
 
-// An unbounded walk needs a value strictly below every stored key, and a default-constructed variant
-// would carry the wrong alternative for three of the four layouts - reading a `std::string` out of an
-// `int64_t`. Each layout names its own floor instead.
+/* An unbounded walk needs a value strictly below every stored key, and a default-constructed
+ * variant would carry the wrong alternative for three of the four layouts, reading a @c std::string
+ * out of an @c int64_t. Each layout names its own floor instead. */
 
 #pragma endregion Key Layout Functions
 
@@ -608,8 +607,8 @@ static PyType_Slot mapping_view_slots[] = {
     {0, nullptr},
 };
 
-// Three names over one layout, because a traceback saying `KeysView` says which of the three the
-// caller is holding, and `_View` beside the transaction handle's `View` said nothing and collided.
+/** Three names over one layout, because a traceback saying @c KeysView says which of the three the
+ *  caller is holding, and @c _View beside the handle's @c View said nothing and collided. */
 PyType_Spec keys_view_spec = {"smashtable.KeysView", sizeof(mapping_view_object_t), 0,
                               Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_DISALLOW_INSTANTIATION,
                               mapping_view_slots};

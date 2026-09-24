@@ -68,7 +68,7 @@ void test_sequence_order(std::size_t size = 64) {
     st_verify_ge_(container.capacity(), size);
 }
 
-/** Tests that every element a sequence holds is destroyed exactly once, by a clear or by teardown. */
+/** Tests every element a sequence holds is destroyed exactly once, by a clear or by teardown. */
 template <typename container_type_>
 void test_sequence_element_lifetimes(std::size_t size = 32) {
 

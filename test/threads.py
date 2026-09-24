@@ -7,6 +7,10 @@ Baselines:
 Run:
     python -m pytest test/threads.py -v
     python -m pytest test/threads.py -v -m "not slow"
+
+File: test/threads.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import contextlib

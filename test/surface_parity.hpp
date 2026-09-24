@@ -13,8 +13,8 @@
 
 namespace ashvardanian::smashtable::test {
 
-/** A key type no store's identifier is constructible from, so only a genuinely heterogeneous entry point accepts it.
- *  A surface narrowed to @c identifier_t refuses it at the declaration. */
+/** A key type no store's identifier is constructible from, so only a genuinely heterogeneous entry
+ *  point accepts it. A surface narrowed to @c identifier_t refuses it at the declaration. */
 struct alien_key_t {};
 
 #pragma region Store Surfaces
@@ -148,9 +148,9 @@ struct heterogeneous_erase_surface_t {
 
 #pragma region Transaction Surfaces
 
-/** The same, over the transaction a store opens rather than over the store itself. Spelled against @c store_type_ so
- *  one fold drives both families, and so a store whose transaction type is missing entirely fails as loudly as one
- *  whose method is. */
+/** The same, over the transaction a store opens rather than over the store itself. Spelled against
+ *  @c store_type_ so one fold drives both families, and so a store whose transaction type is
+ *  missing entirely fails as loudly as one whose method is. */
 struct transaction_insert_if_missing_surface_t {
     template <typename store_type_>
     static constexpr bool offered = transaction_offers_insert_if_missing<store_type_>;
@@ -208,9 +208,9 @@ struct transaction_smallest_surface_t {
 
 #pragma region Wrapper Nestings
 
-/** One wrapper nesting, named so a parity failure can print which of them dropped the surface. @c waiver_group_t is
- *  the wrapper whose waivers apply, which for a nesting is the outer one - the inner wrapper is transparent by
- *  construction, so it adds no refusals of its own. */
+/** One wrapper nesting, named so a parity failure can print which of them dropped the surface.
+ *  @c waiver_group_t is the wrapper whose waivers apply, which for a nesting is the outer one - the
+ *  inner wrapper is transparent by construction, so it adds no refusals of its own. */
 struct locked_wrapper_t {
     template <typename store_type_>
     using wrapped = locked_store<store_type_>;
@@ -231,28 +231,31 @@ struct partitioned_over_locked_wrapper_t {
 
 #pragma region Waivers
 
-/** The surfaces a wrapper refuses on purpose. Every entry below states why, and there are no others: anything not
- *  listed here must survive every nesting. */
+/** The surfaces a wrapper refuses on purpose. Every entry below states why, and there are no
+ *  others: anything not listed here must survive every nesting. */
 template <typename surface_, typename wrapper_>
 constexpr bool waives_surface = false;
 
-/** An ordinal spans partitions, and no partition knows the other fifteen's counts. What @c partitioned_store::select
- *  indexes is a merged order taken under every partition's lock, not the augmented count a core keeps over its own
- *  subtree, so a sum of the parts would name a size the merged order never has. */
+/** An ordinal spans partitions, and no partition knows the other fifteen's counts. What
+ *  @c partitioned_store::select indexes is a merged order taken under every partition's lock, not
+ *  the augmented count a core keeps over its own subtree, so a sum of the parts would name a size
+ *  the merged order never has. */
 template <>
 constexpr bool waives_surface<ranked_size_surface_t, partitioned_wrapper_t> = true;
 
-/** A cursor outlives the call that produced it and holds iterators into the entries a writer may reallocate, so
- *  handing one out past a mutex is handing out a dangling reader, not merely an unsynchronized one. Both wrappers
- *  refuse it; a caller that wants to walk uses @c for_each or @c range, which keep the lock for the walk. */
+/** A cursor outlives the call that produced it and holds iterators into the entries a writer may
+ *  reallocate, so handing one out past a mutex is handing out a dangling reader, not merely an
+ *  unsynchronized one. Both wrappers refuse it; a caller that wants to walk uses @c for_each or
+ *  @c range, which keep the lock for the walk. */
 template <>
 constexpr bool waives_surface<visible_cursor_surface_t, locked_wrapper_t> = true;
 template <>
 constexpr bool waives_surface<visible_cursor_surface_t, partitioned_wrapper_t> = true;
 
-/** A shard set owns exactly one order and seats every partition in it, so it consumes the protocol rather than
- *  re-exporting it. Letting an outer set replace that order would strand the stamps and reader claims the partitions
- *  already hold. @c locked_store forwards it instead, which is what lets a shard set be built over one. */
+/** A shard set owns exactly one order and seats every partition in it, so it consumes the protocol
+ *  rather than re-exporting it. Letting an outer set replace that order would strand the stamps and
+ *  reader claims the partitions already hold. @c locked_store forwards it instead, which is what
+ *  lets a shard set be built over one. */
 template <>
 constexpr bool waives_surface<shard_protocol_surface_t, partitioned_wrapper_t> = true;
 
@@ -260,9 +263,9 @@ constexpr bool waives_surface<shard_protocol_surface_t, partitioned_wrapper_t> =
 
 #pragma region Parity Fold
 
-/** One assertion: if @c store_type_ offers @c surface_, so must @c wrapper_ over it. A struct rather than a bare
- *  @c constexpr @c bool so the diagnostic names all three - the status quo is an overload-resolution error at the call
- *  site, which names none of them. */
+/** One assertion: if @c store_type_ offers @c surface_, so must @c wrapper_ over it. A struct
+ *  rather than a bare @c constexpr @c bool so the diagnostic names all three - the status quo is an
+ *  overload-resolution error at the call site, which names none of them. */
 template <typename surface_, typename wrapper_, typename store_type_>
 struct parity_witness {
     static_assert(!surface_::template offered<store_type_> ||
@@ -317,18 +320,17 @@ constexpr bool every_wrapper_keeps_surfaces =
 /**
  *  @brief A transparent wrapper must not change what an outer wrapper concludes.
  *
- *  Not "a wrapper never lowers @c isolation_k" - @c partitioned_store legitimately lowers it over a
- *  store whose visibility is not decided by a stamp. The honest property is that inserting a
- *  wrapper meant to be invisible changes nothing, which is what fails the moment a trait alias
- *  stops being forwarded.
+ *  Not "a wrapper never lowers @c isolation_k", since @c partitioned_store legitimately lowers it
+ *  over a store whose visibility no stamp decides. The honest property is that inserting a wrapper
+ *  meant to be invisible changes nothing, which fails once a trait alias stops being forwarded.
  */
 template <typename store_type_>
 constexpr bool nesting_preserves_isolation =
     partitioned_store<locked_store<store_type_>>::isolation_k == partitioned_store<store_type_>::isolation_k;
 
-/** A transaction that moves must move-assign, and must not copy. Movable-but-not-move-assignable is almost always a
- *  defaulted operator the compiler deleted over a reference member, and it fails where the transaction is stored
- *  rather than where it is declared. */
+/** A transaction that moves must move-assign, and must not copy. Movable-but-not-move-assignable is
+ *  almost always a defaulted operator the compiler deleted over a reference member, and it fails
+ *  where the transaction is stored rather than where it is declared. */
 template <typename store_type_>
 constexpr bool transaction_moves_as_a_value =
     std::is_nothrow_move_constructible_v<typename store_type_::transaction_t> &&
@@ -369,8 +371,7 @@ struct vacuum_pair_t {
  *
  *  A store drops every version outright and refuses while a reader would watch its own versions
  *  vanish - on @c snapshot_store that is any open snapshot, on the others anything staged. A
- *  transaction stages a tombstone per member instead, so it refuses nothing and empties only
- *  on commit.
+ *  transaction stages a tombstone per member instead, refusing nothing, emptying only on commit.
  */
 struct clear_pair_t {
     template <typename store_type_>
@@ -498,16 +499,16 @@ struct smallest_pair_t {
 
 #pragma region Transaction Refusals
 
-/** The store surfaces a transaction refuses on purpose, each with the reason it cannot carry. These are decisions.
- *  Anything absent for want of an implementation belongs in the list below, which is a to-do rather than a refusal,
- *  and the two must never be read as the same thing. */
+/** The store surfaces a transaction refuses on purpose, each with the reason it cannot carry. These
+ *  are decisions. Anything absent for want of an implementation belongs in the list below, which is
+ *  a to-do rather than a refusal, and the two must never be read as the same thing. */
 template <typename pair_>
 constexpr bool refuses_at_transaction = false;
 
-/** Reclamation frees versions no live reader can still name, which is a fact about the store and every reader open
- *  on it rather than about one transaction. A transaction cannot know what its peers still hold, so a
- *  transaction-level sweep would either free what somebody reads or free nothing, and both are worse than asking the
- *  store. */
+/** Reclamation frees versions no live reader can still name, which is a fact about the store and
+ *  every reader open on it rather than about one transaction. A transaction cannot know what its
+ *  peers still hold, so a transaction-level sweep would either free what somebody reads or free
+ *  nothing, and both are worse than asking the store. */
 template <>
 constexpr bool refuses_at_transaction<vacuum_pair_t> = true;
 
@@ -526,8 +527,8 @@ constexpr bool unimplemented_at_transaction = false;
 
 #pragma region Level Parity Fold
 
-/** One assertion: a surface a store offers should be reachable from its transaction too. Named the same way the
- *  wrapper witness is, so a failure prints the surface and the store. */
+/** One assertion: a surface a store offers should be reachable from its transaction too. Named the
+ *  same way the wrapper witness is, so a failure prints the surface and the store. */
 template <typename pair_, typename store_type_>
 struct level_witness {
     static_assert(!pair_::template at_store<store_type_> || pair_::template at_transaction<store_type_> ||

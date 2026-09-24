@@ -12,6 +12,10 @@ Run:
     python -m pytest test/ -v
     SMASHTABLE_TESTS_SEED=42 python -m pytest test/ -v
     python -m pytest test/ -k "sortedmap and str"
+
+File: test/base.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import dataclasses
@@ -28,47 +32,51 @@ import smashtable as st
 
 # region Matrices
 
-# Container classes named as strings and resolved by a fixture, so a class this build does not
-# export yet skips loudly under its own id instead of vanishing from the matrix.
 map_class_names = [
     pytest.param("SortedMap", id="sortedmap"),
     pytest.param("HashMap", id="hashmap"),  # phase 2
 ]
+"""Container classes named as strings and resolved by a fixture, so a class this build does not
+export yet skips loudly under its own id instead of vanishing from the matrix.
+"""
 set_class_names = [
     pytest.param("SortedSet", id="sortedset"),
     pytest.param("HashSet", id="hashset"),  # phase 2
 ]
 all_class_names = map_class_names + set_class_names
-# Every container the stub declares, whether or not this build exports it yet.
 container_class_names = ("SortedMap", "SortedSet", "HashMap", "HashSet")
+"""Every container the stub declares, whether or not this build exports it yet."""
 sorted_map_names = [map_class_names[0]]
 sorted_set_names = [set_class_names[0]]
 sorted_class_names = [map_class_names[0], set_class_names[0]]
 hash_map_names = [map_class_names[1]]
 hash_set_names = [set_class_names[1]]
 
-# Classes whose contents can be walked, which is what the structural oracle needs: it compares
-# against `dict` and `set`, and cannot run against a container it cannot enumerate.
-#
-# A separate axis from `sorted_*` even though the two name the same classes today. Ordering and
-# enumerability are different properties - an unordered core that gains a `for_each` becomes
-# enumerable without becoming ordered - and a test that needs to list a container should say so
-# rather than borrowing a name that happens to coincide.
 enumerable_map_names = [map_class_names[0]]
+"""Classes whose contents can be walked, which is what the structural oracle needs: it compares
+against `dict` and `set`, and cannot run against a container it cannot enumerate.
+
+A separate axis from `sorted_*` even though the two name the same classes today. Ordering and
+enumerability are different properties - an unordered core that gains a `for_each` becomes
+enumerable without becoming ordered - and a test that needs to list a container should say so
+rather than borrowing a name that happens to coincide.
+"""
 enumerable_set_names = [set_class_names[0]]
 enumerable_class_names = enumerable_map_names + enumerable_set_names
 
-# Every key type the containers accept. Floats and booleans are deliberately absent and are swept
-# as rejections in test/types.py instead.
 key_types = [pytest.param(name, id=name) for name in ("int", "uint", "str", "bytes")]
+"""Every key type the containers accept. Floats and booleans are deliberately absent and are swept as
+rejections in test/types.py instead.
+"""
 
-# Every value type: the four key layouts plus the two that may only ever be values.
 value_types = [pytest.param(name, id="v" + name) for name in ("int", "uint", "float", "bool", "str", "bytes")]
+"""Every value type: the four key layouts plus the two that may only ever be values."""
 
-# A container either admits only scalars, releasing the GIL around every store call, or admits any
-# object and holds it. The axis exists because the second is the path where a missed acquisition
-# corrupts rather than fails.
 value_modes = [pytest.param("scalar", id="scalar"), pytest.param("object", id="object")]
+"""A container either admits only scalars, releasing the GIL around every store call, or admits any
+object and holds it. The axis exists because the second is the path where a missed acquisition
+corrupts rather than fails.
+"""
 
 sizes = [pytest.param(0, id="n0"), pytest.param(1, id="n1"), pytest.param(7, id="n7"), pytest.param(64, id="n64")]
 
@@ -76,16 +84,17 @@ group_sizes = [pytest.param(1, id="g1"), pytest.param(2, id="g2"), pytest.param(
 
 transaction_styles = [pytest.param("context", id="with"), pytest.param("explicit", id="phases")]
 
-# What a reader is promised, and how the store is shared between threads. Two independent axes: the
-# level is asked for at construction, while the sharing decides how far up it actually survives.
 isolation_levels = [
     pytest.param("monotonic_atomic_view", id="monotonic"),
     pytest.param("snapshot", id="snapshot"),
     pytest.param("serializable", id="serializable"),
     pytest.param("strict_serializable", id="strict"),
 ]
-# The levels whose reader answers at a stamp, which is what lets its reads repeat.
+"""What a reader is promised, and how the store is shared between threads. Two independent axes: the
+level is asked for at construction, while the sharing decides how far up it actually survives.
+"""
 stamped_isolation_levels = ("snapshot", "serializable", "strict_serializable")
+"""The levels whose reader answers at a stamp, which is what lets its reads repeat."""
 sharing_modes = [pytest.param("locked", id="locked"), pytest.param("partitioned", id="partitioned")]
 
 # endregion Matrices

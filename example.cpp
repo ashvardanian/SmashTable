@@ -1,8 +1,8 @@
 /**
- *  @brief Compile-time tour of the API every container family shares.
- *  @author Ash Vardanian
  *  @file example.cpp
+ *  @author Ash Vardanian
  *  @date October 16, 2022
+ *  @brief Compile-time tour of the API every container family shares.
  *
  *  Instantiating @c api() over each container is the point: the store, both trees and both
  *  thread-safety wrappers have to answer the same calls, so a surface that drifts between them

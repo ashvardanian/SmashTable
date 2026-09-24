@@ -54,9 +54,8 @@ namespace ashvardanian::smashtable {
  *
  *  @section monotonic_store_api_overview API Overview
  *
- *  - All lookups are heterogeneous: you can provide any type comparable to the element type.
- *    Your comparator
- *    MUST define @code using is_transparent = void; @endcode to enable this, just like std::map and std::set.
+ *  - All lookups are heterogeneous, taking any type comparable to the element type, as long as the
+ *    comparator defines `using is_transparent = void;`, like @c std::map and @c std::set.
  *  - No iterators are provided to keep the implementation simple and avoid complexity of
  *    maintaining persistent iterator validity across transactions and modifications.
  *  - All operations use callback-based APIs for consistency, with all callbacks expected to be
@@ -66,12 +65,13 @@ namespace ashvardanian::smashtable {
  *
  *  Four distinct modification strategies with different failure handling:
  *
- *  | Method               | Key Exists?     | Returns              | Use Case                                   |
- *  |----------------------|-----------------|----------------------|--------------------------------------------|
- *  | insert()             | Fails (error)   | key_already_exists_k | Strict: ensure key is new                  |
- *  | insert_if_missing()  | Skips (success) | success_k            | Lenient: insert only if absent, else no-op |
- *  | upsert()             | Overwrites      | success_k            | Always update regardless of existence      |
- *  | update()             | Fails (error)   | key_not_found_k      | Strict: ensure key exists before updating  |
+ *  @verbatim
+ *  Method                 Existing key    Returns                 Use case
+ *  insert()               fails           key_already_exists_k    strict: key must be new
+ *  insert_if_missing()    skips           success_k               lenient: skip if present
+ *  upsert()               overwrites      success_k               always writes
+ *  update()               fails           key_not_found_k         strict: key must exist
+ *  @endverbatim
  *
  *  @tparam collection_type_ The underlying core, satisfying @c key_addressable_collection and
  *      providing a @c rebind template alias. Cores that also satisfy @c ordered_collection unlock
@@ -191,13 +191,13 @@ class monotonic_store {
         /** The version left the chain, which still holds others. */
         detached_k,
 
-        /** The version left the chain, which is now empty and no longer worth an entry. */
+        /** The version left the chain, which is now empty and not worth an entry. */
         detached_and_emptied_k,
     };
 
-    // The store keys one entry per identifier and hangs that identifier's versions off it. The
-    // transaction stages into a plain tree of versions, where its own generation makes every key
-    // unique, so only the store needs chains.
+    /** The store keys one entry per identifier and hangs that identifier's versions off it. The
+     *  transaction stages into a plain tree of versions, where its own generation makes every key
+     *  unique, so only the store needs chains. */
     using versioned_chains_t = typename storage_shape_t::template rebind<versioned_chain_t>;
     using versioned_set_t = typename storage_shape_t::template rebind<versioned_t>;
 
@@ -232,8 +232,7 @@ class monotonic_store {
 
         /**
          *  @brief Drops this transaction's version of the first @p processed changed identifiers.
-         *      Nothing else can carry this generation, so a key that has no other
-         *      version disappears.
+         *      Nothing else can carry this generation, so a key with no other version disappears.
          *  @param[in] processed How many leading entries of the changed-identifier list to undo.
          */
         void unstage_(std::size_t processed) noexcept {
@@ -246,9 +245,10 @@ class monotonic_store {
         store_t &store_ref() noexcept { return *store_; }
         store_t const &store_ref() const noexcept { return *store_; }
 
-        /** Stages @p versioned under this transaction's generation, recording @p identifier as changed. Refuses once
-         *  the transaction is staged: staging reserved and validated exactly the changes it found, so a later write
-         *  would publish behind that check or be dropped by @c commit. */
+        /** Stages @p versioned under this transaction's generation, recording @p identifier as
+         *  changed. Refuses once the transaction is staged: staging reserved and validated exactly
+         *  the changes it found, so a later write would publish behind that check or be dropped by
+         *  @c commit. */
         status_t stage_(identifier_t &&identifier, versioned_t &&versioned) noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
             // A key written twice replaces its own staged version rather than adding one, so listing
@@ -266,8 +266,8 @@ class monotonic_store {
             return success_k;
         }
 
-        /** Hands the smaller of a staged and a committed candidate to @p callback_found. Either may be null, and two
-         *  nulls mean the merged view has nothing left to show. */
+        /** Hands the smaller of a staged and a committed candidate to @p callback_found. Either may
+         *  be null, and two nulls mean the merged view has nothing left to show. */
         template <typename callback_found_type_, typename callback_missing_type_>
         void merge_first_(versioned_t const *staged, versioned_t const *committed,
                           callback_found_type_ &&callback_found,
@@ -289,9 +289,9 @@ class monotonic_store {
             else callback_found(staged->payload);
         }
 
-        /** Whether every watched key still carries the version this transaction read. Asked twice - once when
-         *  reserving, once when publishing - because a commit landing in between is the only thing that can
-         *  invalidate a read after it was validated. */
+        /** Whether every watched key still carries the version this transaction read. Asked twice -
+         *  once when reserving, once when publishing - because a commit landing in between is the
+         *  only thing that can invalidate a read after it was validated. */
         status_t validate_watches_() const noexcept {
             auto const &store = store_ref();
             return validate_watches(watches_, [&](auto const &identifier, auto &&on_found, auto &&on_missing) noexcept {
@@ -375,13 +375,11 @@ class monotonic_store {
 
       public:
         /**
-         *  @brief Stages @p value only where this transaction sees no such key, refusing where
-         *      it does.
+         *  @brief Stages @p value only where this transaction sees no such key, refusing otherwise.
          *
          *  Asked of the transaction's own @c contains rather than the store's, so a key this
          *  transaction erased reads as absent here exactly as its @c find reports it. Consulting
-         *  the store directly would let the three strict writers disagree with the reads
-         *  beside them.
+         *  the store directly would let the strict writers disagree with the reads beside them.
          *
          *  @param[in] value Element to insert (moved into the transaction).
          *  @return Success, or @c key_already_exists_k if key exists, or OOM error.
@@ -430,8 +428,7 @@ class monotonic_store {
          *      it does not.
          *
          *  Asked of the transaction's own @c contains, for the reason @c insert gives - so a key
-         *  this transaction erased cannot be resurrected by an update that only the store can
-         *  still see.
+         *  this transaction erased cannot be resurrected by an update only the store can still see.
          *
          *  @param[in] value Element to update (moved into the transaction).
          *  @return Success, or @c key_not_found_k if key doesn't exist.
@@ -445,8 +442,7 @@ class monotonic_store {
 
         /**
          *  @brief Stages an erase of @p identifier, which only a commit turns into an absence.
-         *  @return @c key_not_found_k when this transaction reads no such key, so a caller need not
-         *      look first.
+         *  @return @c key_not_found_k when this transaction reads no such key, so no lookup first.
          *
          *  The look happens whether or not callbacks were passed, so the answer never depends on
          *  how the call was spelled.
@@ -488,8 +484,7 @@ class monotonic_store {
          *
          *  @param[in] identifier Identifier to watch, borrowed and copied into the read set - the
          *      read set outlives the call, and a caller's identifier is never consumed by a read.
-         *  @return Success unless the read set could not grow, or the identifier could not
-         *      be copied.
+         *  @return Success unless the read set could not grow or the identifier failed to copy.
          */
         status_t watch(identifier_t const &identifier) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
@@ -503,8 +498,8 @@ class monotonic_store {
             return watches_.push_back({std::move(*maybe_identifier), shape});
         }
 
-        /** Finds a member equal to @p comparable and records what it saw into the read set. The watching counterpart
-         *  to @c find: this one can fail, because a read set is memory. */
+        /** Finds a member equal to @p comparable and records what it saw into the read set. The
+         *  watching counterpart to @c find: this one can fail, because a read set is memory. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -713,12 +708,11 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Hands @p callback every member before @p upper, @p upper excluded, with no
-         *      lower end.
+         *  @brief Hands @p callback every member before @p upper, excluded, with no lower end.
          *
          *  The walk needs a key to start from and this level names no floor, so the lowest member
-         *  the transaction reads supplies one - which is why a caller never has to spell a layout's
-         *  least key.
+         *  the transaction reads supplies one, and a caller never spells a layout's least key.
+         *
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
@@ -751,8 +745,7 @@ class monotonic_store {
          *      tombstone for each.
          *
          *  The walk finishes before the first tombstone is staged, because a staged write changes
-         *  what the merged view answers and a walk revising itself would step over its
-         *  own neighbours.
+         *  what the merged view answers, and a walk revising itself would skip its neighbours.
          */
         template <typename walk_type_, typename callback_type_>
         status_t erase_walked_(walk_type_ &&walk, callback_type_ &&callback) noexcept {
@@ -780,8 +773,7 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Merges the staged and committed sides from @p lower, while @p within accepts
-         *      the candidate.
+         *  @brief Merges the staged and committed sides from @p lower while @p within accepts.
          *
          *  The bounds are compared through the transparent comparator rather than materialized as
          *  an @c identifier_t, which a move-only key cannot copy into. A key this transaction
@@ -884,8 +876,7 @@ class monotonic_store {
 
         /**
          *  @brief Finds the @p ordinal -th smallest element, merging staged changes with the store.
-         *      Walks both sides in order, since a subtree weight counts versions rather than
-         *      visible values.
+         *      Walks both sides in order, as a subtree weight counts versions, not visible values.
          *
          *  Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
          *
@@ -944,9 +935,8 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Finds the rank (position) of an element, merging staged changes with the store.
-         *      Walks both sides in order, since a subtree weight counts versions rather than
-         *      visible values.
+         *  @brief Finds the rank, or position, of an element, merging staged changes with the
+         *      store. Walks both sides in order, as a subtree weight counts versions, not values.
          *
          *  Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
          *
@@ -1022,7 +1012,8 @@ class monotonic_store {
             return *present ? std::size_t {1} : std::size_t {0};
         }
 
-        /** Copies out the first member at or after @p comparable, this transaction's writes included. */
+        /** Copies out the first member at or after @p comparable, this transaction's writes
+         *  included. */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
             requires ordered_collection<versioned_chains_t>
@@ -1094,13 +1085,14 @@ class monotonic_store {
                 std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member this transaction reads, so a commit empties the store. Unlike the
-         *  bounded erases it names no key at all, so it serves an unordered core too. */
+        /** Stages a tombstone for every member this transaction reads, so a commit empties the
+         *  store. Unlike the bounded erases it names no key, so it serves an unordered core too. */
         status_t clear() noexcept {
             return erase_walked_([&](auto &&step) noexcept { return for_each(step); }, no_op_t {});
         }
 
-        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the result. */
+        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, and stages the
+         *  result. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
@@ -1128,7 +1120,8 @@ class monotonic_store {
             return success_k;
         }
 
-        /** Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes included. */
+        /** Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes
+         *  included. */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1249,8 +1242,7 @@ class monotonic_store {
          *  @brief Pulls every staged version back into the transaction, leaving it retryable. The
          *      watches are kept, since a read concern outlives the write that failed on it.
          *  @return Success, @c operation_not_permitted_k when nothing was staged, @c consistency_k
-         *      when a staged version went missing before the rollback reached it, or an
-         *      allocation failure.
+         *      when a staged version went missing before the rollback reached it, or out of memory.
          */
         status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1283,15 +1275,13 @@ class monotonic_store {
         }
 
         /**
-         *  @brief Whether this transaction may still publish what it staged, refusing before it
-         *      writes anything.
+         *  @brief Whether this transaction may still publish what it staged, refusing pre-write.
          *
          *  A watch is asked again here as well as at staging: another transaction may have
          *  committed over a watched key while this one sat staged, and publishing on top of it
          *  would be the lost update the watch was taken to prevent. Nothing is written until this
          *  answers, so a refusal leaves the transaction staged and retryable - and a caller
-         *  spreading one commit across several stores asks every one of them before any of
-         *  them writes.
+         *  spreading one commit across several stores asks every one of them before any writes.
          *
          *  @return Success, @c read_conflict_k when a watched key moved under this transaction, or
          *      @c operation_not_permitted_k when nothing was staged.
@@ -1317,8 +1307,7 @@ class monotonic_store {
          *  this transaction is still where staging put it, and the outcome is an assertion rather
          *  than a status.
          *
-         *  @warning Only ever called after @c validate_for_commit answered success, with
-         *      nothing since.
+         *  @warning Only called right after @c validate_for_commit answered success.
          */
         void publish_under() noexcept {
             assert(staging_ == staging_t::staged_k && "publishing what was never staged");
@@ -1335,7 +1324,7 @@ class monotonic_store {
             staging_ = staging_t::pending_k;
         }
 
-        /** Validates and then publishes, which is the whole commit for a caller spanning one store. */
+        /** Validates and publishes, the whole commit for a caller spanning one store. */
         status_t commit() noexcept {
             if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
             publish_under();
@@ -1356,7 +1345,7 @@ class monotonic_store {
     /** Draws the commit stamps this store publishes at, which order visibility. */
     alignas(atomic_alignment<generation_t>) generation_t commits_ {0};
 
-    /** Published versions a reader would see, tombstones excluded, which is what @c size() answers. */
+    /** Published versions a reader would see, tombstones excluded, which @c size() answers. */
     std::size_t live_count_ {0};
 
     friend class transaction_t;
@@ -1373,13 +1362,11 @@ class monotonic_store {
     generation_t next_generation_() noexcept { return atomic_add_fetch<generation_t>(generation_, 1); }
 
     /**
-     *  @brief Hands out the stamp a write becomes visible under, which is the store's
-     *      only ordering.
+     *  @brief Hands out the stamp a write becomes visible under, the store's only ordering.
      *
      *  Drawn once per commit rather than once per write, so every key one transaction touched
      *  becomes visible under the same number and a reader can never see half of it. Counted apart
-     *  from @c generation_, which dates a transaction's opening and says nothing about what
-     *  is current.
+     *  from @c generation_, which dates a transaction's opening and says nothing of what is live.
      */
     commit_stamp_t next_commit_stamp_() noexcept {
         return static_cast<commit_stamp_t>(atomic_add_fetch<generation_t>(commits_, 1));
@@ -1496,8 +1483,7 @@ class monotonic_store {
 
     /**
      *  @brief Unlinks the version of @p chain carrying @p generation.
-     *  @param[inout] chain The key's version chain, shortened by one entry when the generation
-     *      is present.
+     *  @param[inout] chain The key's version chain, one entry shorter if the generation is present.
      *  @param[in] generation The generation to unlink.
      *  @param[out] destination Receives the unlinked version, or null to discard it.
      *  @return Whether anything was unlinked, and whether the chain is now empty.
@@ -1572,8 +1558,7 @@ class monotonic_store {
      *  entitled to decide its fate - only the commit that owns it is. Generations are unique within
      *  a chain, so the published one is named by its own stamp.
      *
-     *  @param[inout] chain The key's version chain, shortened by its published version if it
-     *      has one.
+     *  @param[inout] chain The key's version chain, shortened by its published version, if any.
      *  @return Whether anything was dropped, and whether the entry must now leave the index.
      */
     detach_outcome_t retire_visible_(versioned_chain_t &chain) noexcept {
@@ -1621,8 +1606,7 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Files @p version into @p chain as its one published version, retiring the one
-     *      it replaces.
+     *  @brief Files @p version into @p chain as its one published version, retiring the old one.
      *
      *  Overwriting the published slot in place costs nothing; a chain that holds only staged
      *  versions has to lengthen, which is the one way a direct write can run out of memory.
@@ -1672,11 +1656,9 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Publishes the version of @p identifier carrying @p generation_to_unmask, retiring the
-     *      one it replaces.
+     *  @brief Publishes @p identifier's version at @p generation_to_unmask, retiring the old one.
      *  @param[in] stamp The stamp this commit publishes under, shared by every key it touched.
-     *  @return Whether the version was found and published, which a caller reports as its
-     *      own success.
+     *  @return Whether the version was found and published, which a caller reports as success.
      */
     unmask_outcome_t unmask_and_compact_(identifier_t const &identifier, generation_t generation_to_unmask,
                                          commit_stamp_t stamp) noexcept {
@@ -1722,8 +1704,7 @@ class monotonic_store {
      *
      *  @param[in] first Beginning of the range to write.
      *  @param[in] last End of the range to write.
-     *  @param[in] stage_one Invoked with the open transaction and one element, reporting what
-     *      it staged.
+     *  @param[in] stage_one Stages one element into the open transaction, reporting the outcome.
      *  @return The first failure any step reported, or the status of the commit.
      */
     template <typename input_iterator_type_, typename stage_one_type_>
@@ -1750,7 +1731,7 @@ class monotonic_store {
     explicit monotonic_store(allocator_t const &allocator) noexcept
         : entries_(storage_shape_t::template build<versioned_chain_t>(allocator)) {}
 
-    /** Seeds the comparator as well, which a comparator carrying state or a dispatch pointer needs. */
+    /** Seeds the comparator too, needed when it carries state or a dispatch pointer. */
     monotonic_store(comparator_t const &comparator, allocator_t const &allocator = {}) noexcept
         : entries_(storage_shape_t::template build<versioned_chain_t>(comparator, allocator)) {}
     monotonic_store(monotonic_store &&other) noexcept
@@ -1881,8 +1862,7 @@ class monotonic_store {
     /**
      *  @brief Factory method to create a new transactional binary tree without throwing exceptions.
      *  @param[in] allocator Optional allocator instance.
-     *  @return Container instance, wrapped in an @c expected that is always engaged - construction
-     *      cannot fail.
+     *  @return Container instance in an always-engaged @c expected, as construction cannot fail.
      */
     static expected<store_t> make(allocator_t const &allocator = {}) noexcept { return store_t {allocator}; }
 
@@ -1890,8 +1870,7 @@ class monotonic_store {
      *  @brief Builds a container around a specific comparator, for comparators that carry state.
      *  @param[in] comparator The instance every comparison will consult.
      *  @param[in] allocator Optional allocator instance.
-     *  @return Container instance, wrapped in an @c expected that is always engaged - construction
-     *      cannot fail.
+     *  @return Container instance in an always-engaged @c expected, as construction cannot fail.
      */
     static expected<store_t> make(comparator_t const &comparator, allocator_t const &allocator) noexcept {
         return store_t {comparator, allocator};
@@ -2030,9 +2009,8 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Bulk insert from iterator range (atomic lenient semantics). Skips keys that already
-     *      exist. All new elements inserted atomically - if any allocation fails, no changes
-     *      are made.
+     *  @brief Bulk insert from an iterator range with atomic lenient semantics. Skips keys that
+     *      already exist and inserts the rest atomically, so a failed allocation changes nothing.
      *
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
@@ -2118,8 +2096,7 @@ class monotonic_store {
      *  @brief Hands @p callback_found the smallest member any committed write left visible.
      *
      *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens
-     *  with: it asks for a first key rather than an ordinal, so a core keeping no subtree counts
-     *  can answer.
+     *  with: it asks for a first key, not an ordinal, so a core keeping no subtree counts answers.
      *
      *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
      *      @c noexcept.
@@ -2241,8 +2218,7 @@ class monotonic_store {
 #pragma region Enumeration
 
     /**
-     *  @brief Hands @p callback every element the store shows, in whatever order the core
-     *      holds them.
+     *  @brief Hands @p callback every element the store shows, in the order the core holds them.
      *
      *  The one walk an unordered core can offer, so it promises no ordering even where the core has
      *  one. Every element a @c find would answer with at the moment of the call is visited
@@ -2328,8 +2304,7 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Retires every published version ordered at or after @p lower, with no upper bound
-     *      at all.
+     *  @brief Retires every published version ordered at or after @p lower, with no upper bound.
      *
      *  @param[in] lower Lower bound of the range, inclusive - a key equal to it is erased, which is
      *      the same end @c erase_range() includes.
@@ -2367,8 +2342,7 @@ class monotonic_store {
 #pragma region Vacuuming
 
     /**
-     *  @brief Frees every entry no reader can reach - a committed tombstone with nothing staged
-     *      behind it.
+     *  @brief Frees every entry no reader can reach: a committed tombstone with nothing staged.
      *
      *  A committed erase leaves the key in the index so that a watch can still observe it, and
      *  nothing ever takes it back out. Reclaiming one changes nothing observable: @c size() already
@@ -2460,9 +2434,8 @@ class monotonic_store {
 #pragma region Order Statistics
 
     /**
-     *  @brief Finds the @p ordinal -th smallest visible (committed) element, counting from zero.
-     *      Walks every entry in order, since a subtree weight counts versions rather than
-     *      visible values.
+     *  @brief Finds the @p ordinal -th smallest visible, committed element, counting from zero.
+     *      Walks every entry in order, as a subtree weight counts versions, not visible values.
      *
      *  Instantiates only for a core carrying order statistics, which excludes the AVL aliases.
      *
@@ -2590,8 +2563,7 @@ class monotonic_store {
     status_t reserve(std::size_t size) noexcept { return storage_shape_t::prepare(entries_, size); }
 
     /**
-     *  @brief Removes all elements from the tree, refusing while any transaction has
-     *      something staged.
+     *  @brief Removes all elements from the tree, refusing while any transaction has staged work.
      *
      *  @return Success, or @c operation_not_permitted_k when a staged version would be dropped from
      *      under the transaction that is about to publish it.
@@ -2610,7 +2582,8 @@ class monotonic_store {
         return success_k;
     }
 
-    /** Debug utility to print tree contents. Templated on the sink so the header never pulls in a stream of its own. */
+    /** Debug utility to print tree contents. Templated on the sink so the header never pulls in a
+     *  stream of its own. */
     template <typename stream_type_>
     void print(stream_type_ &stream)
         requires ordered_collection<versioned_chains_t>
@@ -2682,8 +2655,8 @@ using monotonic_wb_set = monotonic_store<basic_wb_tree<value_type_, comparator_t
  *      @c select.
  *
  *  Stores key-value pairs in sorted order, with all-or-nothing commits at Monotonic Atomic View.
- *  The ordinals come from an ordered walk rather than a descent, for the reason @c
- *  monotonic_wb_set names.
+ *  The ordinals come from an ordered walk rather than a descent, for the reason given at
+ *  @c monotonic_wb_set.
  *
  *  @tparam key_type_ Type of keys stored in the map.
  *  @tparam mapped_type_ Type of the value mapped to each key.
@@ -2701,8 +2674,7 @@ using monotonic_wb_map =
  *      bounds, ranges, or order statistics, as the core supplies no ordering.
  *
  *  @tparam key_type_ Type of elements stored in the set.
- *  @tparam hasher_type_ Hasher for placing elements. Define @c is_transparent for
- *      heterogeneous lookups.
+ *  @tparam hasher_type_ Element hasher. Define @c is_transparent for heterogeneous lookups.
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.
@@ -2717,8 +2689,7 @@ using monotonic_hash_set = monotonic_store<basic_hash_table<key_type_, hasher_ty
  *
  *  @tparam key_type_ Type of keys stored in the map.
  *  @tparam mapped_type_ Type of the value mapped to each key.
- *  @tparam hasher_type_ Hasher for placing keys. Define @c is_transparent for
- *      heterogeneous lookups.
+ *  @tparam hasher_type_ Key hasher. Define @c is_transparent for heterogeneous lookups.
  *  @tparam equals_type_ Equality for resolving collisions. Define @c is_transparent for
  *      heterogeneous lookups.
  *  @tparam allocator_type_ Allocator for the table's slabs, defaults to @c std::allocator.

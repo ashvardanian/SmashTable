@@ -5,6 +5,10 @@ Baselines:
 
 Run:
     python -m pytest test/ordering.py -v
+
+File: test/ordering.py
+Author: Ash Vardanian
+Date: August 22, 2026
 """
 
 import pytest
@@ -64,10 +68,11 @@ def test_scan_returns_sorted_pairs(container, keygen):
     assert container.scan() == sorted(model.items())
 
 
-# The half-open window is one contract, exercised through the store and through a participant, so
-# the cases live in one table rather than in two that drift apart. Every bound and every expected
-# key is spelled in the `int` layout both tests pin.
 scan_window_keys = list(range(8))
+"""The half-open window is one contract, exercised through the store and through a participant, so
+the cases live in one table rather than in two that drift apart. Every bound and every expected
+key is spelled in the `int` layout both tests pin.
+"""
 scan_windows = [
     pytest.param(2, 5, [2, 3, 4], id="half-open"),
     pytest.param(0, 0, [], id="empty-window"),
@@ -110,21 +115,22 @@ def test_scan_rejects_a_foreign_bound(container):
 
 # region Range erase
 
-# The window a slice names, erased through the store and through a participant, so the cases live
-# in one table rather than in two that drift apart. Bounds are indices into the eight generated
-# keys, since what a key looks like is the layout's business.
 slice_windows = [
     pytest.param(slice(2, 5), [0, 1, 5, 6, 7], id="both-bounds"),
     pytest.param(slice(None, 3), [3, 4, 5, 6, 7], id="open-lower"),
     pytest.param(slice(5, None), [0, 1, 2, 3, 4], id="open-upper"),
     pytest.param(slice(None, None), [], id="both-open"),
 ]
+"""The window a slice names, erased through the store and through a participant, so the cases live in
+one table rather than in two that drift apart. Bounds are indices into the eight generated keys,
+since what a key looks like is the layout's business.
+"""
 
-# Both rules a slice is held to, at the store and at a participant alike.
 slice_refusals = [
     pytest.param(slice(0, 10, 2), ValueError, id="step"),
     pytest.param(slice("nope", "neither"), TypeError, id="foreign-bound"),
 ]
+"""Both rules a slice is held to, at the store and at a participant alike."""
 
 
 def key_bounds(keys, window: slice) -> slice:

@@ -10,18 +10,15 @@
  *  - Never throws exceptions - returns @c status_t or @c expected<T> for fallible operations
  *  - For both @c noexcept-constructible elements and ones with fallible @c .make() methods
  *  - Offers performance variants with @c assume_reserved tag for pre-checked hot paths
- *  - Batch operations like @c resize() are all-or-nothing on failure, leaving the elements as
- *    they were
+ *  - Batch operations like @c resize() are all-or-nothing on failure, leaving elements as they were
  *
  *  @section basic_vector_requirements Requirements
  *
  *  @section basic_vector_element_type Element Type
  *
  *  - Nothrow move-constructible (required); nothrow default-constructible for @c resize()
- *  - For @c emplace_back(): Nothrow constructible OR provides
- *      @code ::make(...) -> expected<T> @endcode
- *  - For @c copy() & @c resize(): Nothrow copy-constructible OR provides
- *      @code .copy() const -> @c expected<T> @endcode
+ *  - For @c emplace_back(): Nothrow constructible OR provides `::make(...) → expected<T>`
+ *  - For @c copy()/resize(): Nothrow copy-constructible OR provides `.copy() const → expected<T>`
  *
  *  @section basic_vector_allocator_type Allocator Type
  *
@@ -51,8 +48,8 @@ namespace ashvardanian::smashtable {
  *
  *  @section basic_vector_template_requirements Template Requirements
  *
- *  - @p value_type_ must be nothrow move-constructible, and nothrow default-constructible to
- *    be resized.
+ *  - @p value_type_ must be nothrow move-constructible, and nothrow default-constructible to be
+ *    resized.
  *  - For types with potentially throwing constructors, provide a static @c .make() method returning
  *    @c expected<value_type_> to enable exception-free construction via @c emplace_back().
  *
@@ -176,11 +173,9 @@ class basic_vector {
 
     /**
      *  @brief Reserves capacity for at least @p new_capacity elements. Grows by at least a
-     *      doubling, so a caller asking for one more slot at a time still amortizes to constant
-     *      reallocation cost.
+     *      doubling, so asking for one more slot at a time still amortizes to constant cost.
      *  @param[in] new_capacity The new capacity.
-     *  @return Success, or @c out_of_memory_heap_k if allocation fails or the request cannot
-     *      be addressed.
+     *  @return Success, or @c out_of_memory_heap_k if allocation fails or the request is invalid.
      */
     status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return success_k;
@@ -215,6 +210,7 @@ class basic_vector {
      *      pre-reserved capacity. Use for hot paths after @c reserve().
      *
      *  Tag indicating capacity was pre-reserved.
+     *
      *  @param[in] value Element to append (moved into the vector).
      *  @return Always returns success for noexcept move construction.
      */
@@ -246,7 +242,7 @@ class basic_vector {
     }
 
     /**
-     *  @brief Inserts @p value at @p position into room already reserved, shifting the tail up by one.
+     *  @brief Inserts @p value at @p position into reserved room, shifting the tail up by one.
      *  @param[in] position Index the new element takes, at most @c size().
      *  @param[in] value Element to insert (moved into the vector).
      *  @return Always success, since nothing here can refuse.
@@ -266,8 +262,8 @@ class basic_vector {
     /**
      *  @brief Inserts @p value at @p position, shifting the elements at and after it up by one.
      *
-     *  Linear in the elements after @p position, which is what a sorted run of a few hundred entries
-     *  costs and why an ordered container built on this stays small.
+     *  Linear in the elements after @p position, which is what a sorted run of a few hundred
+     *  entries costs and why an ordered container built on this stays small.
      *
      *  @param[in] position Index the new element takes, at most @c size().
      *  @param[in] value Element to insert (moved into the vector), never one of this vector's own.
@@ -281,7 +277,7 @@ class basic_vector {
     }
 
     /**
-     *  @brief Removes the element at @p position, handing it to @p callback first and shifting the rest down.
+     *  @brief Removes @p position's element, handing it to @p callback, then shifts the rest down.
      *  @param[in] position Index of the element to remove, below @c size().
      *  @param[in] callback Receives the element before it is moved away. Must be @c noexcept.
      */
@@ -292,7 +288,8 @@ class basic_vector {
     }
 
     /**
-     *  @brief Removes @p count elements from @p position, handing each to @p callback first and shifting the rest down.
+     *  @brief Removes @p count elements from @p position, handing each to @p callback first and
+     *      shifting the rest down.
      *  @param[in] position Index of the first element to remove.
      *  @param[in] count Elements to remove, which must not run past the end.
      *  @param[in] callback Receives each element before it is moved away. Must be @c noexcept.
@@ -310,7 +307,7 @@ class basic_vector {
     /**
      *  @brief Removes every element @p predicate admits in one pass, keeping the order of the rest.
      *  @param[in] predicate Decides which elements go. Must be @c noexcept.
-     *  @param[in] callback Receives each removed element before it is moved away. Must be @c noexcept.
+     *  @param[in] callback Receives each removed element before it moves away. Must be @c noexcept.
      *  @return How many elements were removed.
      */
     template <typename predicate_type_, typename callback_type_ = no_op_t>
@@ -335,7 +332,9 @@ class basic_vector {
      *      pre-reserved capacity. Use for hot paths after @c reserve().
      *
      *  @tparam args_types_ Types of arguments to forward to element constructor.
+     *
      *  Tag indicating capacity was pre-reserved.
+     *
      *  @param[in] args Arguments to forward to element constructor.
      *  @return Success, or error from @c .make() method if construction can throw.
      */
@@ -368,6 +367,7 @@ class basic_vector {
      *      using 2x strategy if needed.
      *
      *  @tparam args_types_ Types of arguments to forward to element constructor.
+     *
      *  @param[in] args Arguments to forward to element constructor.
      *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      *
@@ -388,8 +388,8 @@ class basic_vector {
 
     /**
      *  @brief Resizes the vector to contain @p new_size elements. If @p new_size < @p size(),
-     *      elements are destroyed. If @p new_size > @p size(), new elements
-     *      are default-constructed.
+     *      elements are destroyed. If @p new_size > @p size(), new elements are
+     *      default-constructed.
      *
      *  @param[in] new_size The new size.
      *  @return Success, or error code on failure. On failure the elements are unchanged, though the
@@ -465,7 +465,7 @@ class basic_vector {
 
     /**
      *  @brief Swaps contents with another vector.
-     *  @param[in,out] other The vector to swap with.
+     *  @param[inout] other The vector to swap with.
      *  @return Success, or @c invalid_argument_k if allocators are incompatible.
      *
      *  @note If @c propagate_on_container_swap is false (e.g., @c std::allocator), allocators must
@@ -594,7 +594,7 @@ class basic_vector {
      */
     std::size_t capacity() const noexcept { return capacity_; }
 
-    /** A copy of the allocator this vector holds, for building a sibling that allocates the same way. */
+    /** A copy of this vector's allocator, for building a sibling that allocates the same way. */
     [[nodiscard]] allocator_t get_allocator() const noexcept { return allocator_; }
 
 #pragma endregion Capacity

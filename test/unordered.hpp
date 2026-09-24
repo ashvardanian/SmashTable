@@ -525,9 +525,9 @@ void test_unordered_load_factor_consistency(std::size_t size = 3000) {
 
 #pragma region Heterogeneous Lookup
 
-/** Tests lookup by @c std::string_view against a container of @c std::string keys. Only meaningful where the
- *  equality predicate is transparent and the hash of a view matches the hash of the string it views, which the
- *  standard guarantees. */
+/** Tests lookup by @c std::string_view against a container of @c std::string keys. Only meaningful
+ *  where the equality predicate is transparent and the hash of a view matches the hash of the
+ *  string it views, which the standard guarantees. */
 template <typename container_type_>
 void test_unordered_heterogeneous_string_view_lookup(std::size_t size = 400) {
 
@@ -623,8 +623,8 @@ auto unordered_emplace_reporting(container_type_ &container, std::size_t identif
     else return container.template emplace<report_t::insert_result_k>(unordered_key_from<key_t>(identifier), tags...);
 }
 
-/** Tests that a reporting insertion separates a fresh key from one already taken. Two of the three outcomes; the
- *  refusal is a table that cannot grow, tested separately. */
+/** Tests that a reporting insertion separates a fresh key from one already taken. Two of the three
+ *  outcomes; the refusal is a table that cannot grow, tested separately. */
 template <typename container_type_>
 void test_unordered_insert_reports_outcome() {
 
@@ -644,8 +644,8 @@ void test_unordered_insert_reports_outcome() {
     st_verify_eq_(container.size(), 1u);
 }
 
-/** Tests that an insertion the table had no room for is distinguishable from a duplicate. Both leave the size alone,
- *  and only the reported outcome tells them apart. */
+/** Tests that an insertion the table had no room for is distinguishable from a duplicate. Both
+ *  leave the size alone, and only the reported outcome tells them apart. */
 template <typename container_type_>
 void test_unordered_insert_reports_refusal() {
 
@@ -680,9 +680,10 @@ void test_unordered_insert_reports_refusal() {
     ledger.verify_balanced();
 }
 
-/** Tests that filing a key the table already holds never reaches the allocator. A table sitting exactly on its
- *  growth threshold has no headroom left, and asking for some before the probe has established the key is new turns
- *  a plain overwrite - which needs no slot of its own - into a refusal the caller cannot do anything about. */
+/** Tests that filing a key the table already holds never reaches the allocator. A table sitting
+ *  exactly on its growth threshold has no headroom left, and asking for some before the probe has
+ *  established the key is new turns a plain overwrite - which needs no slot of its own - into a
+ *  refusal the caller cannot do anything about. */
 template <typename container_type_>
 void test_unordered_present_key_needs_no_room() {
 
@@ -741,8 +742,8 @@ void test_unordered_present_key_needs_no_room() {
     ledger.verify_balanced();
 }
 
-/** Tests that a table with every slot taken refuses further keys, terminates while doing so, and does not count a
- *  store that never happened. */
+/** Tests that a table with every slot taken refuses further keys, terminates while doing so, and
+ *  does not count a store that never happened. */
 template <typename container_type_>
 void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
 
@@ -782,8 +783,8 @@ void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
     }
 }
 
-/** Tests that a rehash asking for nothing compacts the table instead of emptying it into a layout with no slots at
- *  all. */
+/** Tests that a rehash asking for nothing compacts the table instead of emptying it into a layout
+ *  with no slots at all. */
 template <typename container_type_>
 void test_unordered_rehash_to_nothing(std::size_t size = 300) {
 
@@ -816,8 +817,8 @@ void test_unordered_rehash_to_nothing(std::size_t size = 300) {
     unordered_verify_absent(container, 0);
 }
 
-/** Tests that an element count no power of two can cover fails instead of quietly yielding the smallest possible
- *  table. */
+/** Tests that an element count no power of two can cover fails instead of quietly yielding the
+ *  smallest possible table. */
 template <typename container_type_>
 void test_unordered_unrepresentable_capacity() {
 
@@ -866,8 +867,7 @@ using unordered_pinned = typename unordered_pinned_of<container_type_>::type;
  *  @brief Tests that the pinned table answers a missing key with a status and a callback.
  *
  *  @c update and @c erase report @c key_not_found_k rather than a bare @c false, and @c find hands
- *  the miss to a second callback rather than returning one, which is the shape every store
- *  here uses.
+ *  the miss to a second callback rather than returning one, the shape every store here uses.
  */
 template <typename container_type_>
 void test_unordered_pinned_reports_status() {
@@ -962,10 +962,10 @@ void test_unordered_pinned_saturation() {
     }
 }
 
-/** Tests that a pinned table left holding nothing but tombstones names a cause a caller can act on. The probe walks
- *  past a tombstone rather than reclaiming it, so such a table refuses every new key; reporting that as an
- *  allocation failure sends the caller to free memory that was never the problem, when the remedy is a rehash into
- *  fresh storage. */
+/** Tests that a pinned table left holding nothing but tombstones names a cause a caller can act on.
+ *  The probe walks past a tombstone rather than reclaiming it, so such a table refuses every new
+ *  key; reporting that as an allocation failure sends the caller to free memory that was never the
+ *  problem, when the remedy is a rehash into fresh storage. */
 template <typename container_type_>
 void test_unordered_pinned_tombstone_saturation() {
 
@@ -1002,8 +1002,8 @@ void test_unordered_pinned_tombstone_saturation() {
     st_verify_eq_(container.size(), 0u);
 }
 
-/** Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen table, with each thread
- *  owning a disjoint range of keys. */
+/** Tests concurrent @c emplace followed by concurrent @c find and @c contains on a frozen table,
+ *  with each thread owning a disjoint range of keys. */
 template <typename container_type_>
 void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
 
@@ -1085,8 +1085,7 @@ void test_unordered_concurrent_emplace_and_find(std::size_t per_thread = 2000) {
  *      each thread again confined to its own range.
  *
  *  The table is filled while it is still growable, pinned for the concurrent phases, and handed
- *  back to a growable table to verify - the whole lifecycle @c release and @c adopt exist
- *  to express.
+ *  back to a growable table to verify - the whole lifecycle @c release and @c adopt express.
  */
 template <typename container_type_>
 void test_unordered_concurrent_update_and_erase(std::size_t per_thread = 1000) {
@@ -1216,8 +1215,8 @@ inline std::vector<std::size_t> unordered_visit_generations(versioned_set_t cons
     return generations;
 }
 
-/** Tests that @c probe_to_visit reaches every version of one key sharing a probe run, and none of the foreign keys
- *  sharing it. */
+/** Tests that @c probe_to_visit reaches every version of one key sharing a probe run, and none of
+ *  the foreign keys sharing it. */
 inline void test_unordered_visit_every_match(std::size_t versions = 5) {
 
     auto allocated = versioned_set_t::make(std::size_t {64});
@@ -1319,8 +1318,7 @@ inline void test_unordered_visit_wraparound(std::size_t versions = 5) {
 }
 
 /**
- *  @brief Tests that a table with no free slot left terminates the walk instead of
- *      circling forever.
+ *  @brief Tests that a table with no free slot left ends the walk instead of circling forever.
  *  @note The bound must hold in a build where assertions are gone, which is why the harness runs
  *      this suite under a timeout in a release configuration too.
  */

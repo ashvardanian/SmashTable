@@ -157,7 +157,8 @@ class basic_flat_set {
         return elements_.data() + offset;
     }
 
-    /** Whether an element equivalent to @p wanted is here. Always success; a sorted array cannot refuse a read. */
+    /** Whether an element equivalent to @p wanted is here. Always success; a sorted array cannot
+     *  refuse a read. */
     template <typename comparable_type_>
     expected<bool> contains(comparable_type_ const &wanted) const noexcept {
         return find(wanted) != nullptr;
@@ -250,11 +251,11 @@ class basic_flat_set {
     }
 
     /**
-     *  @brief Adds every element of [ @p first, @p last ), refusing the batch over a key already here.
+     *  @brief Adds every element of [ @p first, @p last ), refusing the batch over any taken key.
      *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
      *
-     *  All-or-nothing over this set from the first element on, a taken key included: the whole range
-     *  is staged and checked before the merge absorbing it allocates anything.
+     *  All-or-nothing over this set from the first element on, a taken key included: the whole
+     *  range is staged and checked before the merge absorbing it allocates anything.
      */
     template <typename input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -269,11 +270,11 @@ class basic_flat_set {
     }
 
     /**
-     *  @brief Writes every element of [ @p first, @p last ), replacing the equivalent ones held here.
+     *  @brief Writes every element of [ @p first, @p last ), replacing any equivalent element.
      *  @return The first refusal from the build or the merge, or @c success_k for the whole range.
      *
-     *  All-or-nothing over this set from the first element on; an element already here is overwritten
-     *  by the merge, which moves rather than copies once its buffer is secured.
+     *  All-or-nothing over this set from the first element on; an element already here is
+     *  overwritten by the merge, which moves rather than copies once its buffer is secured.
      */
     template <typename input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -294,7 +295,8 @@ class basic_flat_set {
         return success_k;
     }
 
-    /** Erases the half-open range [lower, upper), handing each removed element to @p callback first. */
+    /** Erases the half-open range [lower, upper), handing each removed element to @p callback
+     *  first. */
     template <typename lower_type_, typename upper_type_, typename callback_type_ = no_op_t>
     void erase_range(lower_type_ const &lower, upper_type_ const &upper, callback_type_ &&callback = {}) noexcept {
         std::size_t const first = rank(lower);
@@ -303,7 +305,8 @@ class basic_flat_set {
         elements_.erase(first, last - first, std::forward<callback_type_>(callback));
     }
 
-    /** Removes every element @p predicate admits, handing each to @p callback first, and answers how many went. */
+    /** Removes every element @p predicate admits, handing each to @p callback first, and answers
+     *  how many went. */
     template <typename predicate_type_, typename callback_type_ = no_op_t>
     std::size_t erase_if(predicate_type_ &&predicate, callback_type_ &&callback = {}) noexcept {
         return elements_.erase_if(std::forward<predicate_type_>(predicate), std::forward<callback_type_>(callback));
@@ -320,7 +323,7 @@ class basic_flat_set {
     }
 
     /**
-     *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element outside this set.
+     *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element not in it.
      *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
      */
     template <incumbent_policy_t policy_, typename input_iterator_type_>

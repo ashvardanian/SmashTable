@@ -1,3 +1,10 @@
+"""Build configuration for the SmashTable CPython extension and its type stubs.
+
+File: setup.py
+Author: Ash Vardanian
+Date: August 22, 2026
+"""
+
 import os
 import pathlib
 import sys

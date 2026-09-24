@@ -2,8 +2,7 @@
  *  @file include/smashtable/basic_ring.hpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
- *  @brief A fixed-capacity first-in first-out ring over one allocation, for batching and
- *      read-ahead queues.
+ *  @brief A fixed-capacity first-in first-out ring, one allocation, for batching and read-ahead.
  *
  *  Capacity is a power of two chosen at @c make, and the ring never grows. Two 32-bit counters of
  *  pushes and pops wrap together, so their difference is the size and their low bits are the slots,
@@ -30,7 +29,8 @@ enum class ring_eviction_t : bool {
     evicted_oldest_k,
 };
 
-/** A first-in first-out ring of at most @c capacity elements of @p value_type_, which a failed push reports. */
+/** A first-in first-out ring of at most @c capacity elements of @p value_type_, which a failed push
+ *  reports. */
 template <typename value_type_, typename allocator_type_ = default_allocator<value_type_>>
 class basic_ring {
   public:
@@ -96,7 +96,7 @@ class basic_ring {
     basic_ring &operator=(basic_ring const &) = delete;
 
     /**
-     *  An empty ring of @p capacity slots, where zero allocates nothing and holds nothing.
+     *  @brief An empty ring of @p capacity slots, where zero allocates nothing and holds nothing.
      *  @return The ring, @c invalid_argument_k for a capacity that is not a power of two up to
      *      @c capacity_limit_k, or @c out_of_memory_heap_k.
      */
@@ -169,7 +169,8 @@ class basic_ring {
         return push(assume_reserved, std::move(element));
     }
 
-    /** Appends @p element, first moving the oldest into @p evicted when the ring is full. Capacity must be nonzero. */
+    /** Appends @p element, first moving the oldest into @p evicted when the ring is full. Capacity
+     *  must be nonzero. */
     [[nodiscard]] ring_eviction_t push_evicting(value_t &&element, value_t &evicted) noexcept {
         assert(capacity_ != 0 && "a ring without slots cannot hold the newest element");
         ring_eviction_t eviction = ring_eviction_t::kept_every_element_k;
@@ -189,7 +190,8 @@ class basic_ring {
         ++popped_;
     }
 
-    /** Moves the oldest element into @p destination and removes it, or answers @c operation_would_block_k. */
+    /** Moves the oldest element into @p destination and removes it, or answers
+     *  @c operation_would_block_k. */
     status_t pop_into(value_t &destination) noexcept {
         if (empty()) return operation_would_block_k;
         destination = std::move(slot_(popped_));
@@ -209,7 +211,8 @@ class basic_ring {
         return accepted;
     }
 
-    /** Moves as many elements as @p destination holds out of the ring, oldest first, and returns how many. */
+    /** Moves as many elements as @p destination holds out of the ring, oldest first, and returns
+     *  how many. */
     std::size_t pop_many(std::span<value_t> destination) noexcept {
         std::size_t const delivered = smaller_of(destination.size(), size());
         for (std::size_t index = 0; index < delivered; ++index) {

@@ -5,12 +5,12 @@
  *  @brief GenMC client for @c snapshot_store::reader_t against a commit that prunes behind it,
  *      spelled over @c std::atomic with an explicit order at every site.
  *
- *  A commit draws its stamp through @c begin_commit outside the partition's mutex, joins its version
- *  to the key's run under it, lands the stamp through @c end_commit, and prunes the run under the
- *  mutex down to the mark that landing computed. Readers are counted per bucket, never listed one by
- *  one: @c take_snapshot joins the head bucket and then reads the watermark, @c share_snapshot counts
- *  a transaction in a live claim's bucket, @c retire_snapshot gives a member back, and
- *  @c republish_mark walks the watermark and the occupied floors, which is what
+ *  A commit draws its stamp through @c begin_commit outside the partition's mutex, joins its
+ *  version to the key's run under it, lands the stamp through @c end_commit, and prunes the run
+ *  under the mutex down to the mark that landing computed. Readers are counted per bucket, never
+ *  listed one by one: @c take_snapshot joins the head bucket and then reads the watermark,
+ *  @c share_snapshot counts a transaction in a live claim's bucket, @c retire_snapshot gives a
+ *  member back, and @c republish_mark walks the watermark and the occupied floors, which is what
  *  @c basic_commit_order does in @c shared.hpp. A claim is a bucket index and a stamp.
  *
  *  @c -Dscenario=adoption has a transaction adopt the reader's stamp and read after the reader has
@@ -34,7 +34,7 @@
 
 #include "genmc.hpp"
 
-// The knob's values are integers, so a typo fails the range check below.
+/** The knob's values are integers, so a typo fails the range check below. */
 #define reading 1
 #define adoption 2
 #ifndef scenario
@@ -44,7 +44,7 @@
 #error "scenario is reading or adoption"
 #endif
 
-/** A mutex as one word, taken by an acquiring exchange from zero and given back by a releasing store. */
+/** A mutex in one word: an acquiring exchange takes it from zero, a releasing store returns it. */
 struct spin_mutex_t {
     std::atomic<int> word {0};
 
@@ -56,7 +56,7 @@ struct spin_mutex_t {
     void unlock() noexcept { word.store(0, std::memory_order_release); }
 };
 
-/** A bucket's word: snapshots it holds open in the low half, the head value that opened it in the high half. */
+/** A bucket's word: open snapshots in the low half, the head that opened it in the high half. */
 using bucket_word_t = unsigned long long;
 
 /** One reader's claim on a snapshot, which is a bucket index and a stamp rather than a pointer. */
@@ -84,12 +84,12 @@ std::atomic<bucket_word_t> head {0};
 std::atomic<bucket_word_t> snapshots[buckets_k] = {0, 0};
 std::atomic<int> floors[buckets_k] = {0, 0};
 
-// The key's version run, ordered by the partition's mutex alone.
+/*  The key's version run, ordered by the partition's mutex alone. */
 int version_stamp[versions_k] = {0, none_k};
 bool version_freed[versions_k] = {false, false};
 int versions_written = 1;
 
-/** Raises @p word to @p floor and answers what it held, never lowering it, which is @c atomic_max_fetch. */
+/** Raises @p word to @p floor and answers what it held, never lowering it: @c atomic_max_fetch. */
 template <typename word_type_>
 word_type_ raise_to(std::atomic<word_type_> &word, word_type_ floor) noexcept {
     word_type_ observed = word.load(std::memory_order_acquire);
@@ -98,8 +98,8 @@ word_type_ raise_to(std::atomic<word_type_> &word, word_type_ floor) noexcept {
     return observed;
 }
 
-/** Counts one snapshot into the head bucket, refused only by a head value above the one just read, which a
- *  bucket already reopened ahead of this thread carries. Models @c basic_commit_order::record_snapshot_. */
+/** Models @c basic_commit_order::record_snapshot_: counts one snapshot into the head bucket,
+ *  refused only when a bucket reopened ahead of this thread carries a head above the one read. */
 int record_snapshot() noexcept {
     for (;;) {
         bucket_word_t const opened = head.load(std::memory_order_acquire);
@@ -114,8 +114,8 @@ int record_snapshot() noexcept {
     }
 }
 
-/** Opens the bucket after @p opened at @p watermark, shutting it to arrivals before storing its floor, so
- *  nobody is counted into it while that floor is replaced. Models @c basic_commit_order::open_next_bucket_. */
+/** Models @c basic_commit_order::open_next_bucket_: opens the bucket after @p opened, shuts it to
+ *  arrivals, then stores its floor at @p watermark, so nobody is counted in as the floor moves. */
 void open_next_bucket(bucket_word_t opened, int watermark) noexcept {
     bucket_word_t const next = opened + 1;
     int const bucket = static_cast<int>(next % buckets_k);
@@ -137,13 +137,13 @@ int folded_floor(int bucket, int least) noexcept {
     return least == no_floor_k || floor < least ? floor : least;
 }
 
-/** The least floor over the occupied buckets, or @c no_floor_k where nobody is counted anywhere. Spelled
- *      without a loop, since GenMC gives every loop only as many turns as the runner's unroll. */
+/** The least floor over the occupied buckets, or @c no_floor_k where nobody is counted anywhere.
+ *  Spelled without a loop, since GenMC bounds every loop to the runner's unroll count. */
 int scan_floors() noexcept { return folded_floor(1, folded_floor(0, no_floor_k)); }
 
 /**
- *  @brief republish_mark_: the watermark read newest first, then the buckets, so a reader joining after that read
- *      draws at or above it and one joining before it is counted by the scan.
+ *  @brief republish_mark_: the watermark read newest first, then the buckets, so a reader joining
+ *      after that read draws at or above it and one joining before it is counted by the scan.
  *  @return The least of the watermark and every occupied bucket's floor.
  */
 int republish_mark() noexcept {
@@ -164,8 +164,9 @@ int republish_mark() noexcept {
 }
 
 /**
- *  @brief take_snapshot: the head bucket joined, then the watermark read newest, and nothing re-read - a mark
- *      computed after the join counts the member, and one computed before it stands at or below the stamp returned.
+ *  @brief take_snapshot: the head bucket joined, then the watermark read newest, and nothing
+ *      re-read - a mark computed after the join counts the member, and one computed before it
+ *      stands at or below the stamp returned.
  *  @return The snapshot @p claim now reads at.
  */
 int take_snapshot(snapshot_claim_t &claim) noexcept {
@@ -180,8 +181,8 @@ int take_snapshot(snapshot_claim_t &claim) noexcept {
 }
 
 /**
- *  @brief share_snapshot: one more member of the bucket @p held is counted in, posted with release and never read
- *      back, since a live claim's bucket carries a member and so cannot have been recycled.
+ *  @brief share_snapshot: one more member of the bucket @p held is counted in, posted with release
+ *      and never read back, since a live claim's bucket carries a member and so cannot be stale.
  *  @return The snapshot @p claim now reads at.
  */
 int share_snapshot(snapshot_claim_t const &held, snapshot_claim_t &claim) noexcept {
@@ -191,8 +192,8 @@ int share_snapshot(snapshot_claim_t const &held, snapshot_claim_t &claim) noexce
     return claim.snapshot;
 }
 
-/** Takes one snapshot back out, released so that whoever sees a bucket drain sees every claim its members
- *  made first, and recomputes the mark only where it did drain. Models @c basic_commit_order::retire_snapshot_. */
+/** Models @c basic_commit_order::retire_snapshot_: takes one snapshot back out with a release, so
+ *  whoever sees a bucket drain sees its members' claims; only a drain recomputes the mark. */
 void retire_snapshot(snapshot_claim_t &claim) noexcept {
     bucket_word_t const before = snapshots[claim.bucket].fetch_sub(1, std::memory_order_release);
     if ((before & open_snapshots_mask_k) == 1) republish_mark();
@@ -203,8 +204,8 @@ void retire_snapshot(snapshot_claim_t &claim) noexcept {
 int draw_stamp() noexcept { return commits.fetch_add(1, std::memory_order_relaxed) + 1; }
 
 /**
- *  @brief end_commit: the slot waited for, the mark released into it, the watermark walked in stamp order, and
- *      the low-water mark republished where the walk moved it.
+ *  @brief end_commit: the slot waited for, the mark released into it, the watermark walked in stamp
+ *      order, and the low-water mark republished where the walk moved it.
  *  @return The mark this commit may prune at, which is zero where its walk moved nothing.
  */
 int land_stamp(int stamp) noexcept {
@@ -228,7 +229,7 @@ bool supersedes(int version, int found, int snapshot) noexcept {
            (found == none_k || version_stamp[version] > version_stamp[found]);
 }
 
-/** visible_version_, under the partition's mutex: the newest version the snapshot covers. */
+/** Models @c snapshot_store::visible_version_: the newest version the snapshot covers. */
 int resolve(int snapshot) noexcept {
     int found = none_k;
     if (supersedes(0, found, snapshot)) found = 0;
@@ -236,14 +237,14 @@ int resolve(int snapshot) noexcept {
     return found;
 }
 
-/** prune_key_of_, under the partition's mutex: every version at or below @p mark but its survivor freed. */
+/** Models @c snapshot_store::prune_key_of_: frees each version up to @p mark but its survivor. */
 void prune(int mark) noexcept {
     int const survivor = resolve(mark);
     if (version_stamp[0] != none_k && version_stamp[0] <= mark && survivor != 0) version_freed[0] = true;
     if (version_stamp[1] != none_k && version_stamp[1] <= mark && survivor != 1) version_freed[1] = true;
 }
 
-/** One commit: the stamp drawn, the version published under the mutex, the stamp landed, the run pruned. */
+/** One commit: draws a stamp, publishes the version under the mutex, lands it, prunes the run. */
 void *commit(void *) noexcept {
     int const drawn = draw_stamp();
     partition_mutex.lock(); // publish_under: the version joins the key's run
