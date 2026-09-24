@@ -704,7 +704,7 @@ static void test_erase_root_rebalances_promoted_node() {
     st_verify_eq_(tree.size(), 4);
 }
 
-/** The callback range is @c [lower, upper), matching what @c erase_range removes. */
+/** The callback range is [lower, upper), matching what @c erase_range removes. */
 template <typename tree_type_>
 static void test_range_excludes_upper_bound() {
     using member_t = typename tree_type_::value_type;

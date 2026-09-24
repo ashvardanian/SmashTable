@@ -214,8 +214,7 @@ inline constexpr unsigned int default_seed_k = 42;
  *
  *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a
  *  defect nobody can reproduce. The seed is therefore an input the runner prints, so a failing run
- *  names the sequence that produced it and a sweep is a loop in the shell rather than an edit to
- *  the source.
+ *  names the sequence that produced it, and a sweep is a shell loop rather than a source edit.
  */
 [[nodiscard]] inline unsigned int test_seed() noexcept {
 #if defined(_MSC_VER)
@@ -258,8 +257,8 @@ inline constexpr unsigned int default_seed_k = 42;
 
 #pragma region Crash Localization
 
-/** Prints a backtrace on a fatal signal, so an aborting check self-localizes rather than dying silently under CI's
- *  output redirection. */
+/** Prints a backtrace on a fatal signal, so an aborting check self-localizes rather than dying
+ *  silently under CI's output redirection. */
 inline void test_fatal_signal_handler(int signal_number) noexcept {
     std::fprintf(stderr, "\n*** Fatal signal %d - backtrace follows ***\n", signal_number);
 #if defined(__linux__) && defined(__GLIBC__)
@@ -394,8 +393,8 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
 }
 
 /**
- *  @brief Reports whether every test passed, printing the verdict. Use its result as @c
- *      main's status.
+ *  @brief Reports whether every test passed, printing the verdict; its result is the exit status
+ *      of @c main.
  *
  *  A filter that matched nothing fails here rather than passing: every test skipping leaves no
  *  failures to count, so a mistyped filter would otherwise be indistinguishable from a green suite.

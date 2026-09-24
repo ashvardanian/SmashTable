@@ -795,7 +795,7 @@ class reference_store {
          *      to be: this is the oracle the ranked engines are checked against.
          *
          *  @param[in] ordinal Zero-based position among the elements this transaction can see.
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be
          *      @c noexcept.
@@ -1245,7 +1245,7 @@ class reference_store {
      *      @c versioned_entry_t const &. Used by internal methods that need access to the
      *      generation, presence and commit stamp.
      *
-     *  Only considers VISIBLE entries (committed/staged).
+     *  Only considers visible entries (committed/staged).
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback to receive a @c versioned_entry_t const &. Must be
@@ -1881,7 +1881,7 @@ class reference_store {
      *  is augmented, and an ordinal read from a plain ordered walk cannot disagree with the walk.
      *
      *  @param[in] ordinal Zero-based position among the visible elements.
-     *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be
      *      @c noexcept.
@@ -1974,7 +1974,7 @@ class reference_store {
 
     /**
      *  @brief Iterates over all entries in the range [ @p lower, @p upper). Const version. Unlike
-     *      @c equal_range(), this takes TWO keys and returns all entries between them.
+     *      @c equal_range(), this takes two keys and returns all entries between them.
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
@@ -1998,7 +1998,7 @@ class reference_store {
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Invoked with ( @c identifier_t @c const @c &, @c mapped_t @c & ). Must
+     *  @param[in] callback Invoked with `identifier_t const &` and `mapped_t &`. Must
      *      be @c noexcept.
      *  @return Always success here; the status is reported so a mutator that can fail on a sibling
      *      engine has the same channel on all three.

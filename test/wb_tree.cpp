@@ -729,7 +729,7 @@ static void weight_balance_split_and_join_track_size() {
     }
 }
 
-/** Half-open @c [lower, @c upper) range walks, visited in sorted order. */
+/** Half-open [lower, upper) range walks, visited in sorted order. */
 static void weight_balance_range_is_half_open() {
     ordered_set_t tree;
     std::set<int> oracle;

@@ -208,7 +208,7 @@ static void expected_moves_stay_balanced() {
     st_verify_eq_(counted_t::alive(), alive_before);
 }
 
-/** The tuple protocol behind @c auto @c [value, status], on both paths. */
+/** The tuple protocol behind `auto [value, status]`, on both paths. */
 static void expected_decomposes() {
     std::size_t const alive_before = counted_t::alive();
     {
@@ -416,14 +416,9 @@ static_assert(sizeof(yielding_mutex_t) == sizeof(spin_shared_mutex_t), "a statel
 static_assert(sizeof(yielding_table_t) == sizeof(atomic_hash_set<std::uint64_t>),
               "a stateless policy costs the pinned table no storage");
 
-/**
- *  @brief A reference offering the extended shapes, counting which one the mutex reached for.
- *
- *  Every operation lands on @c std::atomic_ref underneath, so the lock still behaves; what the
- *  tallies prove is which spelling the mutex chose, not that a bounded add is faster here.
- */
-template <typename value_type_>
-struct counting_extended_ref {
+/** The tallies every @c counting_extended_ref shares, whatever word it wraps, because the pinned
+ *  table posts its population through a narrower offset type than its keys. */
+struct extended_ref_tallies {
 
     /** How many bounded adds the mutex asked for, which is once per acquire attempt. */
     static inline std::atomic<std::size_t> bounded_adds {0};
@@ -433,6 +428,16 @@ struct counting_extended_ref {
 
     /** How many xors it posted, which is once per slot the pinned table lets go. */
     static inline std::atomic<std::size_t> posted_flips {0};
+};
+
+/**
+ *  @brief A reference offering the extended shapes, counting which one the mutex reached for.
+ *
+ *  Every operation lands on @c std::atomic_ref underneath, so the lock still behaves; what the
+ *  tallies prove is which spelling the mutex chose, not that a bounded add is faster here.
+ */
+template <typename value_type_>
+struct counting_extended_ref : extended_ref_tallies {
 
     /** The word this reference owns for the span of one operation. */
     value_type_ *word;

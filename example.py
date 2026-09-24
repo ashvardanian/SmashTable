@@ -16,7 +16,7 @@ Run:
 
 File: example.py
 Author: Ash Vardanian
-Date: August 22, 2026
+Date: October 30, 2025
 """
 
 import smashtable as st

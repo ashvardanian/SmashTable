@@ -162,7 +162,7 @@ void test_no_dirty_reads_multi_key() {
     }
     st_verify_(t1->stage());
 
-    // External reader should see ORIGINAL values (staged changes invisible)
+    // External reader should see original values (staged changes invisible)
     for (std::size_t i = 1; i <= 5; ++i) {
         auto maybe_found = container.find_copy(trivial_id_to_key<member_t>(i));
         st_verify_((maybe_found) && "key must exist before the transaction stages over it");
@@ -195,7 +195,7 @@ void test_new_transaction_sees_nothing_staged() {
     st_verify_(t1->upsert(trivial_id_to_member<member_t>(2)));
     st_verify_(t1->stage()); // Staged but not committed
 
-    // T2 created AFTER T1 staged - should see nothing
+    // T2 created after T1 staged - should see nothing
     auto t2 = container.transaction();
     st_verify_(t2.has_value());
 
@@ -232,7 +232,7 @@ void test_committed_immediately_visible() {
     st_verify_(t1->stage());
     st_verify_(t1->commit()); // NOW committed
 
-    // T2 created AFTER commit - should see everything
+    // T2 created after commit - should see everything
     auto t2 = container.transaction();
     st_verify_(t2.has_value());
 
@@ -302,7 +302,7 @@ void test_multi_key_atomicity_10_keys() {
     st_verify_eq_(count_after_stage, 0);
     st_verify_(transaction->commit());
 
-    // After commit: should see ALL 10
+    // After commit: should see all 10
     std::size_t count_after_commit = 0;
     for (std::size_t i = 0; i < 10; ++i) {
         expected<std::size_t> const matched = container.count(trivial_id_to_key<member_t>(i));
@@ -401,7 +401,7 @@ void test_range_query_sees_atomic_boundaries() {
     st_verify_(transaction->stage());
     st_verify_(transaction->commit());
 
-    // After commit: range query sees ALL 10
+    // After commit: range query sees all 10
     std::size_t count_after = 0;
     st_verify_(container.range(trivial_id_to_key<member_t>(10), trivial_id_to_key<member_t>(20),
                                [&](member_t const &) noexcept { count_after++; }));
@@ -471,14 +471,14 @@ void test_fractured_read_prevention() {
     st_verify_eq_((count_t1), (3), "a range must not see another transaction staged keys");
     st_verify_(t2->commit()); // Commit T2
 
-    // Now should see ALL 6
+    // Now should see all 6
     std::size_t count_both = 0;
     for (std::size_t i = 1; i <= 6; ++i)
         st_verify_(container.find(trivial_id_to_key<member_t>(i), [&](member_t const &) noexcept { count_both++; }));
     st_verify_eq_((count_both), (6), "a range must see both committed transactions");
 }
 
-/** Monotonic View: Values never go backwards (10→20→30, never 30→20) */
+/** Monotonic View: Values never go backwards (10 → 20 → 30, never 30 → 20) */
 template <typename container_type_>
 void test_sequential_updates_never_regress() {
 
@@ -515,7 +515,7 @@ void test_sequential_updates_never_regress() {
     st_verify_eq_(observed_values[2], 30);
 }
 
-/** Monotonic View: T1 commits v1, T2 commits v2 → always see v1→v2, never v2→v1 */
+/** Monotonic View: T1 commits v1, T2 commits v2 → always see v1 → v2, never v2 → v1 */
 template <typename container_type_>
 void test_transaction_commits_maintain_order() {
 
@@ -589,7 +589,7 @@ void test_concurrent_transactions_on_same_key() {
     st_verify_(t1->stage());
     st_verify_(t1->commit());
 
-    // T2's stage should FAIL (watched value changed)
+    // T2's stage should fail (watched value changed)
     auto status = t2->stage();
     st_verify_((failed(status)) && "staging must fail once a watched key was modified");
     st_verify_eq_(status, status_t::read_conflict_k);
@@ -601,7 +601,7 @@ void test_concurrent_transactions_on_same_key() {
 }
 
 /**
- *  @brief Write Conflicts: ANY watched key conflict fails entire transaction
+ *  @brief Write Conflicts: any watched key conflict fails entire transaction
  *
  *  Timeline:
  *
@@ -613,7 +613,7 @@ void test_concurrent_transactions_on_same_key() {
  *  T1:  upsert(1,2,3)  →  stage()    ✗ CONFLICT on key 2
  *  @endverbatim
  *
- *  Expected: Transaction fails if ANY watched key changed
+ *  Expected: Transaction fails if any watched key changed
  */
 template <typename container_type_>
 void test_multi_key_conflict_any_key_fails() {
@@ -642,7 +642,7 @@ void test_multi_key_conflict_any_key_fails() {
     st_verify_(t2->watch(trivial_id_to_key<member_t>(2)));
     st_verify_(t2->watch(trivial_id_to_key<member_t>(3)));
 
-    // External update to just ONE key (key 2)
+    // External update to just one key (key 2)
     st_verify_(container.upsert(trivial_id_to_member<member_t>(2, 999)));
 
     // T1 modifies all three
@@ -650,7 +650,7 @@ void test_multi_key_conflict_any_key_fails() {
     st_verify_(t1->upsert(trivial_id_to_member<member_t>(2, 20)));
     st_verify_(t1->upsert(trivial_id_to_member<member_t>(3, 30)));
 
-    // T1's stage should FAIL (key 2 was modified externally)
+    // T1's stage should fail (key 2 was modified externally)
     auto status = t1->stage();
     st_verify_((failed(status)) && "staging must fail if any watched key changed");
     st_verify_eq_(status, status_t::read_conflict_k);
@@ -751,7 +751,7 @@ void test_disjoint_keys_both_succeed() {
 }
 
 /**
- *  @brief Allowed Anomaly: Non-repeatable reads are CORRECT for Read Committed
+ *  @brief Allowed Anomaly: Non-repeatable reads are correct for Read Committed
  *
  *  Setup: set.upsert(1,100)
  *
@@ -765,7 +765,7 @@ void test_disjoint_keys_both_succeed() {
  *  T:  find(1)  →  sees 999    ← CORRECT! (not a bug)
  *  @endverbatim
  *
- *  Expected: Within transaction, reads CAN see different values
+ *  Expected: Within transaction, reads can see different values
  */
 template <typename container_type_>
 void test_repeated_read_matches_isolation() {
@@ -789,7 +789,7 @@ void test_repeated_read_matches_isolation() {
     // External modification
     st_verify_(container.upsert(trivial_id_to_member<member_t>(1, 999)));
 
-    // Second read in SAME transaction - CAN see new value (this is correct!)
+    // Second read in same transaction - can see new value (this is correct!)
     auto second_read = transaction->find_copy(trivial_id_to_key<member_t>(1));
     st_verify_(second_read.has_value());
 
@@ -804,7 +804,7 @@ void test_repeated_read_matches_isolation() {
 }
 
 /**
- *  @brief Allowed Anomaly: Phantom reads are CORRECT for Read Committed
+ *  @brief Allowed Anomaly: Phantom reads are correct for Read Committed
  *
  *  Setup: set.upsert(0..4)
  *
@@ -863,7 +863,7 @@ void test_repeated_range_matches_isolation() {
 }
 
 /**
- *  @brief Licensed Anomaly: a lost update is CORRECT below Snapshot.
+ *  @brief Licensed Anomaly: a lost update is correct below Snapshot.
  *
  *  Two transactions open together and each writes key 1 without reading it. The first commits, then
  *  the second. Whether the second may land is the whole of what separates the two levels here.

@@ -78,7 +78,7 @@
 /**
  *  @brief Whether the target is x86-64, AArch64 or 64-bit RISC-V, one always-defined flag apiece.
  *
- *  Each is 0 or 1 rather than defined or not, so a call site tests it with @c if @c constexpr and
+ *  Each is 0 or 1 rather than defined or not, so a call site tests it with `if constexpr` and
  *  the branch it drops is still compiled for syntax.
  */
 #if defined(__x86_64__) || defined(_M_X64)
@@ -212,7 +212,8 @@ enum class [[nodiscard]] status_t : int {
     /** A failure the library cannot name more precisely, which no caller should branch on. */
     unknown_k = -1,
 
-    /** An invariant of the container itself did not hold. Not an errno; @c 1 would collide with @c EPERM . */
+    /** An invariant of the container itself did not hold. Not an errno; @c 1 would collide with
+     *  @c EPERM . */
     consistency_k = -2,
 
     /** A key this transaction wrote was published over since its snapshot. */
@@ -230,7 +231,8 @@ enum class [[nodiscard]] status_t : int {
     /** An argument was outside what the call accepts, decided before anything was written. */
     invalid_argument_k = EINVAL,
 
-    /** The object is not in a state that admits the call, such as committing what was never staged. */
+    /** The object is not in a state that admits the call, such as committing what was never
+     *  staged. */
     operation_not_permitted_k = EPERM,
 
     /** A bounded retry gave up rather than block. */
@@ -309,14 +311,15 @@ constexpr char const *name_of(status_t status) noexcept {
     return "unrecognized";
 }
 
-/** Whether @p status turned a transaction away over what another one published, which a retry can overcome. */
+/** Whether @p status turned a transaction away over what another one published, which a retry can
+ *  overcome. */
 constexpr bool conflicted(status_t status) noexcept {
     return status == status_t::write_conflict_k || status == status_t::read_conflict_k ||
            status == status_t::phantom_conflict_k;
 }
 
-/** The same question of a richer result - one that reports its own success, like the node handles the trees hand
- *  back - so generic code can ask it without knowing which it holds. */
+/** The same question of a richer result - one that reports its own success, like the node handles
+ *  the trees hand back - so generic code can ask it without knowing which it holds. */
 template <typename result_type_>
     requires requires(result_type_ const &result) { result.failed(); }
 constexpr bool succeeded(result_type_ const &result) noexcept {
@@ -386,11 +389,11 @@ concept is_mapping = requires {
 };
 
 /**
- *  @brief Conditional callback validation traits controlled by ST_STRICT_CALLBACK_CHECKS_.
+ *  @brief Conditional callback validation traits controlled by @c ST_STRICT_CALLBACK_CHECKS_.
  *
- *  When ST_STRICT_CALLBACK_CHECKS_ is defined, these traits perform full compile-time validation
- *  using std::is_nothrow_invocable_v. This catches type errors early but prevents generic lambdas
- *  like no_op_t {} from compiling.
+ *  When @c ST_STRICT_CALLBACK_CHECKS_ is defined, these traits perform full compile-time validation
+ *  using @c std::is_nothrow_invocable_v. This catches type errors early but prevents generic
+ *  lambdas like `no_op_t {}` from compiling.
  *
  *  When undefined (default), traits always return true, allowing generic lambdas while still
  *  documenting the intent that callbacks should be noexcept.
@@ -412,9 +415,9 @@ inline constexpr bool is_safe_callback = true;
 /**
  *  @brief The allocator every container defaults to, over @c ::operator @c new asked not to throw.
  *
- *  @c std::allocator would serve, and costs @c \<memory\> - some fifty thousand preprocessed lines
- *  - in headers that want nothing else from it. Exhaustion is reported by returning null, which is
- *  the shape every caller here already checks, rather than by an exception nothing would catch.
+ *  @c std::allocator would serve, and costs `<memory>`, some fifty thousand preprocessed lines, in
+ *  headers that want nothing else from it. Exhaustion is reported by returning null, which is the
+ *  shape every caller here already checks, rather than by an exception nothing would catch.
  */
 template <typename value_type_>
 struct default_allocator {
@@ -510,7 +513,8 @@ struct hash<key_type_, std::enable_if_t<std::is_pointer_v<key_type_>>> {
     }
 };
 
-/** Anything exposing contiguous bytes through @c data and @c size, which covers the string types. */
+/** Anything exposing contiguous bytes through @c data and @c size, which covers the string
+ *  types. */
 template <typename key_type_>
 struct hash<key_type_, std::void_t<decltype(std::declval<key_type_ const &>().data()),
                                    decltype(std::declval<key_type_ const &>().size())>> {
@@ -646,7 +650,8 @@ concept promises_about_the_range = std::same_as<type_, assume_sorted_t> || std::
 template <typename type_>
 concept promises_about_the_room = std::same_as<type_, assume_reserved_t>;
 
-/** Any promise this library reads, which is what an open tag pack admits - a foreign type is refused there. */
+/** Any promise this library reads, which is what an open tag pack admits - a foreign type is
+ *  refused there. */
 template <typename type_>
 concept promises_something = promises_about_the_range<type_> || promises_about_the_room<type_>;
 
@@ -662,7 +667,7 @@ concept promises_something = promises_about_the_range<type_> || promises_about_t
  *  status carried, including the move-only transaction types that have no empty state to sit in. A
  *  default-constructed @c expected reports @b failure, since there is nothing in it.
  *
- *  Decomposes as @c auto @c [value, status], for value types that can be default-constructed to
+ *  Decomposes as `auto [value, status]`, for value types that can be default-constructed to
  *  hand something back on the failure path; see @c get.
  */
 template <typename value_type_>
@@ -683,11 +688,12 @@ class [[nodiscard]] expected {
   public:
     constexpr expected() noexcept {}
 
-    /** A reason with nothing behind it; a success has no value to report, so it reads as @c unknown_k. */
+    /** A reason with nothing behind it; a success has no value to report, so it reads as
+     *  @c unknown_k. */
     constexpr expected(status_t status) noexcept : status_(status != success_k ? status : unknown_k) {}
 
-    /** A value, kept only while @p status says there is one. A failure carries its reason and nothing else, so the
-     *  argument is left to its owner. */
+    /** A value, kept only while @p status says there is one. A failure carries its reason and
+     *  nothing else, so the argument is left to its owner. */
     expected(value_t &&value, status_t status = success_k) noexcept : status_(status) {
         if (succeeded(status_)) new (&outcome_) value_t(std::move(value));
     }
@@ -732,8 +738,7 @@ class [[nodiscard]] expected {
     constexpr value_t const *operator->() const noexcept { return &outcome_; }
 
     /**
-     *  @brief The tuple protocol behind @c auto @c [value, status], returning the value @b
-     *      by value.
+     *  @brief Tuple protocol behind `auto [value, status]`, returning the value @b by value.
      *
      *  A reference would bind into storage that was never constructed when the status is a failure,
      *  which reads as garbage and trips no sanitizer, so the failure path default-constructs
@@ -756,8 +761,7 @@ class [[nodiscard]] expected {
 };
 
 /**
- *  @brief Whether @p result carries @p status - the reason it failed, or success when it holds
- *      a value.
+ *  @brief Whether @p result carries @p status: why it failed, or success when it holds a value.
  *
  *  Saves a @c .status() at the call site, and reads the way the question is asked out loud. C++20
  *  synthesizes the reversed and negated forms, so this one definition covers all four spellings.
@@ -786,15 +790,15 @@ template <typename value_type_, typename comparable_type_>
     return result.has_value() && *result == value;
 }
 
-/** Concept checking if a type has a @c .copy() method returning @c expected<T>. This allows non-nothrow-copyable
- *  types to participate in safe copy operations. */
+/** Concept checking if a type has a @c .copy() method returning @c expected<T>. This allows
+ *  non-nothrow-copyable types to participate in safe copy operations. */
 template <typename type_>
 concept has_copy_method = requires(type_ const &t) {
     { t.copy() } noexcept -> std::same_as<expected<type_>>;
 };
 
-/** Concept checking if a type has a static @c .make() method returning @c expected<T>. This allows types with
- *  potentially throwing constructors to participate in safe construction. */
+/** Concept checking if a type has a static @c .make() method returning @c expected<T>. This allows
+ *  types with potentially throwing constructors to participate in safe construction. */
 template <typename type_, typename... args_types_>
 concept has_make_method = requires(args_types_ &&...args) {
     { type_::make(std::forward<args_types_>(args)...) } noexcept -> std::same_as<expected<type_>>;
@@ -820,23 +824,24 @@ expected<object_type_> copy_safely(object_type_ const &object) noexcept {
  *  @brief Whether duplicating this type can refuse, which is the whole reason a batch stages.
  *
  *  A type that copies without throwing duplicates by copy construction and cannot report anything,
- *  so a batch over it needs no staging - securing the room is the only failure it has left. Declaring
- *  @c copy is not the question: @c mapping declares one unconditionally, and a mapping of two trivial
- *  halves still cannot refuse.
+ *  so a batch over it needs no staging - securing the room is the only failure it has left.
+ *  Declaring @c copy is not the question: @c mapping declares one unconditionally, and a mapping of
+ *  two trivial halves still cannot refuse.
  */
 template <typename type_>
 concept duplication_can_refuse = !std::is_nothrow_copy_constructible_v<type_>;
 
 /**
- *  @brief Hands @p stage_one every element of [ @p first, @p last ), duplicated outside the destination.
+ *  @brief Hands @p stage_one every element of [ @p first, @p last ), duplicated outside the target.
  *
- *  @param[in] stage_one Receives one element by rvalue and reports where it landed. Must be @c noexcept.
- *  @return The first refusal @p stage_one or a duplication reported, or @c success_k for the whole range.
+ *  @param[in] stage_one Receives one element by rvalue and reports where it landed. Must be
+ *      @c noexcept.
+ *  @return The first refusal from @p stage_one or duplication, else @c success_k for the range.
  *
- *  A range handing over lvalues duplicates through @c copy_safely, so an element refusing its own copy
- *  stops the batch with that reason rather than with the allocator's; a range handing over rvalues moves,
- *  which is what a move iterator asks for. Nothing here reaches the destination - what @p stage_one does
- *  with an element is where a batch decides whether it can still be undone.
+ *  A range handing over lvalues duplicates through @c copy_safely, so an element refusing its own
+ *  copy stops the batch with that reason rather than with the allocator's; a range handing over
+ *  rvalues moves, which is what a move iterator asks for. Nothing here reaches the destination -
+ *  what @p stage_one does with an element is where a batch decides whether it can still be undone.
  */
 template <typename value_type_, typename input_iterator_type_, typename stage_one_type_>
 status_t stage_each(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
@@ -893,8 +898,8 @@ struct mapping_key_type_or_itself<can_be_mapping_type_, true> {
     using type = typename can_be_mapping_type_::key_type;
 };
 
-/** Helper method to extract mapping key or return the object itself. Useful for generic code that works with both
- *  mappings and simple keys. */
+/** Helper method to extract mapping key or return the object itself. Useful for generic code that
+ *  works with both mappings and simple keys. */
 template <typename can_be_mapping_type_>
 typename mapping_key_type_or_itself<can_be_mapping_type_>::type const & //
 mapping_key_or_itself(can_be_mapping_type_ const &can_be_mapping) noexcept {
@@ -926,16 +931,12 @@ struct mapped_value_type_or_void<can_be_mapping_type_, true> {
  *  @section shared_correctness_of_comparisons Correctness of Comparisons
  *
  *  For @c std::set, @c std::map, or similar containers we only require the keys to provide
- *  @b strict-weak-ordering comparisons. It's enough to simply define a comparator that can
- *  returns a boolean result for two comparable objects. Since C++ 20 comparisons are better
- *  formalized:
+ *  @b strict-weak-ordering comparisons. It's enough to simply define a comparator that returns a
+ *  boolean result for two comparable objects. Since C++ 20, comparisons are better formalized:
  *
- *  - @c std::strong_ordering - equivalent values are fully interchangeable, everything
- *    is comparable!
- *  - @c std::weak_ordering - equivalent values may be non-interchangeable, but everything
- *    is comparable!
- *  - @c std::partial_ordering - equivalent values may be non-interchangeable, and may
- *    be incomparable!
+ *  - @c std::strong_ordering - equivalent values are fully interchangeable, all are comparable!
+ *  - @c std::weak_ordering - equivalent values may be non-interchangeable, but all are comparable!
+ *  - @c std::partial_ordering - equivalent values may be non-interchangeable or incomparable!
  *
  *  Assuming that @c float values can be @c NaN and thus incomparable, we shouldn't be able to
  *  construct a @c std::set<float> since the ordering is only partial, but GCC still compiles it.
@@ -1003,19 +1004,19 @@ constexpr bool visible_at(commit_stamp_t stamp, generation_t snapshot) noexcept 
     return static_cast<generation_t>(stamp) <= snapshot;
 }
 
-/** The snapshot a reader that takes none holds: every stamp a commit can ever draw is at or below it, and only
- *  @c commit_stamp_t::uncommitted_k sits above. */
+/** The snapshot a reader that takes none holds: every stamp a commit can ever draw is at or below
+ *  it, and only @c commit_stamp_t::uncommitted_k sits above. */
 inline constexpr generation_t latest_snapshot_k = std::numeric_limits<generation_t>::max() - 1;
 
 /** Whether @p stamp was drawn at all, which is what a reader taking no snapshot asks. */
 constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(stamp, latest_snapshot_k); }
 
 /**
- *  @brief Where a transaction opens: the snapshot it reads at, and the generation dating its own versions.
+ *  @brief Where a transaction opens: the snapshot it reads, and the generation dating its versions.
  *
- *  One struct rather than two parameters, because both are @c generation_t and a caller swapping them
- *  compiles today. Named members make the swap ill-formed wherever a designated initializer spells them,
- *  since the language requires those in declaration order.
+ *  One struct rather than two parameters, because both are @c generation_t and a caller swapping
+ *  them compiles today. Named members make the swap ill-formed wherever a designated initializer
+ *  spells them, since the language requires those in declaration order.
  */
 struct opened_at_t {
 
@@ -1049,9 +1050,8 @@ enum class isolation_t : std::uint8_t {
  *  @brief Whether a walk carries on after handing an element over.
  *
  *  One type for both sides. A caller's callback answers it, and so does every step inside a walk,
- *  because the boundary that once separated the two was never there: @c basic_flat_set compares
- *  against @c halt_k directly, and @c probe_to_visit documents this as the return of a callback
- *  the caller supplies.
+ *  because no boundary separates the two: @c basic_flat_set compares against @c halt_k directly,
+ *  and @c probe_to_visit documents this as the return of a callback the caller supplies.
  */
 enum class walk_control_t : bool {
 
@@ -1063,8 +1063,7 @@ enum class walk_control_t : bool {
 };
 
 /**
- *  @brief Whether @p callback_type_ can stop a walk, rather than taking every element it
- *      is offered.
+ *  @brief Whether @p callback_type_ can stop a walk, rather than taking every element offered.
  *
  *  A callback answering @c walk_control_t is asked whether to carry on; one answering @c void is
  *  asking for everything. The difference is resolved where the walk runs rather than by a flag.
@@ -1074,8 +1073,8 @@ constexpr bool halts_the_walk = requires(callback_type_ &callback, element_type_
     { callback(element) } noexcept -> std::same_as<walk_control_t>;
 };
 
-/** Hands @p element to @p callback and answers whether the walk carries on. A callback that cannot say resumes it,
- *  so a walk asks here instead of branching on the shape. */
+/** Hands @p element to @p callback and answers whether the walk carries on. A callback that cannot
+ *  say resumes it, so a walk asks here instead of branching on the shape. */
 template <typename callback_type_, typename element_type_>
 [[nodiscard]] constexpr walk_control_t hand_over(callback_type_ &&callback, element_type_ &&element) noexcept {
     if constexpr (halts_the_walk<callback_type_, element_type_>) return callback(element);
@@ -1112,12 +1111,10 @@ enum class cursor_seed_t : std::uint8_t {
 enum class cursor_limit_t : bool { the_whole_keyspace_k, up_to_the_bound_k };
 
 /**
- *  @brief Whether an ordered cursor can still hand something over, once a step has found that
- *      it cannot.
+ *  @brief Whether an ordered cursor can still hand something over, once a step found it cannot.
  *
  *  A step that runs out latches this rather than re-probing, because nothing can put a key back
- *  below where the walk stopped: the store is held for the walk, and a cursor never
- *  steps backwards.
+ *  below where the walk stopped: the store is held for the walk, and a cursor never steps back.
  */
 enum class cursor_reach_t : bool {
 
@@ -1188,14 +1185,14 @@ struct watch_t {
  *
  *  A key erased through a transaction carries a committed tombstone and dates its absence by that
  *  tombstone's generation, which is what tells an absence nothing disturbed apart from one an
- *  insert and an erase closed over again. This constant is what remains when there is no tombstone
- *  to date.
+ *  insert and an erase closed over again. This constant is what remains with no tombstone to date.
  *
- *  @warning Absence is dated only while a tombstone survives. An erase taken outside a transaction
- *      drops the entry outright, and @c vacuum, @c clear and the ranged erases reclaim one a watch
- *      may still hold - so a watch can miss drift once its tombstone is gone, and can report drift
- *      that is only the reclamation. Neither @c monotonic_store nor @c reference_store pins
- *      reclamation behind an open reader the way @c snapshot_store does.
+ *  @warning Absence is dated only while a tombstone survives, so a watch can miss drift once its
+ *      tombstone is gone, and can report drift that is only the reclamation.
+ *
+ *  An erase taken outside a transaction drops the entry outright, and @c vacuum, @c clear and the
+ *  ranged erases reclaim one a watch may still hold. Neither @c monotonic_store nor
+ *  @c reference_store pins reclamation behind an open reader the way @c snapshot_store does.
  */
 constexpr watch_t missing_watch() noexcept { return watch_t {absent_generation_k, presence_t::erased_k}; }
 
@@ -1213,8 +1210,8 @@ template <typename versioned_type_>
     return watch_t {resolved->generation, resolved->presence};
 }
 
-/** Whether a watched key moved between @p recorded and what it resolves to @p now. Not equality: an absence a vacuum
- *  stripped of its date is the absence that was already read. */
+/** Whether a watched key moved between @p recorded and what it resolves to @p now. Not equality: an
+ *  absence a vacuum stripped of its date is the absence that was already read. */
 [[nodiscard]] inline bool watch_drifted(watch_t recorded, watch_t now) noexcept {
     if (recorded == now) return false;
     bool const stood_absent = recorded.presence == presence_t::erased_k;
@@ -1224,8 +1221,8 @@ template <typename versioned_type_>
 /**
  *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
  *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
- *  @param[in] resolve_latest Invoked as @c resolve_latest(identifier,on_found,on_missing) . Must
- *      be noexcept.
+ *  @param[in] resolve_latest Invoked as `resolve_latest(identifier, on_found, on_missing)`; must be
+ *      @c noexcept.
  *  @return @c success_k, or @c read_conflict_k for the first watch that drifted.
  */
 template <typename watches_type_, typename resolver_type_>
@@ -1264,23 +1261,32 @@ struct watched_identifier {
  *  enumeration. Nothing here dates anything: a transaction's snapshot is the only date its
  *  validator needs, which is what lets a read record no sampled value at all.
  *
- *  @c read_k names exactly this key, so its whole version run is validated. @c opens_k begins a
- *  range read at this key, inclusive, and the entry recorded next to it closes that range,
- *  exclusive - the adjacency is the pairing, which is what lets one sequence hold points and
- *  windows alike.
+ *  A range is an opening entry and the entry recorded next to it, which closes it: the adjacency is
+ *  the pairing, which is what lets one sequence hold points and windows alike.
  *
  *  A window can also run off one end. An ordinal read depends on every key ordered before the one
  *  it lands on, and a bound read that finds nothing depends on everything above its bound, yet
- *  neither end has a key to name - there is no smallest @c std::string and no largest one.
- *  @c from_the_lowest_k on the opening entry and @c to_the_highest_k on the closing entry say so,
- *  and the identifier stored beside the flag is then ignored rather than meaning anything.
+ *  neither end has a key to name - there is no smallest @c std::string and no largest one. The
+ *  unbounded flags say so, and the identifier stored beside such a flag is then ignored.
  */
 enum class access_t : std::uint8_t {
+
+    /** No claim on this key. */
     none_k = 0,
+
+    /** Names exactly this key, so its whole version run is validated. */
     read_k = 1u << 0,
+
+    /** Begins a range read at this key, inclusive. */
     opens_k = 1u << 1,
+
+    /** Ends the range the previous entry opened, exclusive of this key. */
     closes_k = 1u << 2,
+
+    /** On an opening entry, the range starts below every key. */
     from_the_lowest_k = 1u << 3,
+
+    /** On a closing entry, the range runs past every key. */
     to_the_highest_k = 1u << 4,
 };
 
@@ -1320,29 +1326,29 @@ struct is_dating_identifier<watched_identifier<identifier_type_>> : public std::
 template <typename type_>
 inline constexpr bool is_dating_identifier_v = is_dating_identifier<type_>::value;
 
-/** Detects operands that carry a generation of their own, so ordering can separate versions. A @c watched_identifier
- *  keeps its generation inside @c watch, so it is ordered by key alone. */
+/** Detects operands that carry a generation of their own, so ordering can separate versions. A
+ *  @c watched_identifier keeps its generation inside @c watch, so it is ordered by key alone. */
 template <typename type_>
 concept carries_generation = requires(type_ const &value) {
     { value.generation } -> std::convertible_to<generation_t>;
 };
 
-/** Detects a version-decorated value: a generation stamp @b and the payload it decorates. Stricter than
- *  @c carries_generation on purpose - @c watch_t carries a generation and no payload, and would otherwise be peeled
- *  down a branch that does not compile. */
+/** Detects a version-decorated value: a generation stamp @b and the payload it decorates. Stricter
+ *  than @c carries_generation on purpose - @c watch_t carries a generation and no payload, and
+ *  would otherwise be peeled down a branch that does not compile. */
 template <typename type_>
 concept carries_versioned_payload = carries_generation<type_> && requires(type_ const &value) { value.payload; };
 
-/** Operands whose generation can break a tie, because a key can still be peeled out of them. A bare @c watch_t is
- *  the counter-example: it dates an entry without naming one, so it is compared against the entry it dates rather
- *  than fed to a comparator. */
+/** Operands whose generation can break a tie, because a key can still be peeled out of them. A bare
+ *  @c watch_t is the counter-example: it dates an entry without naming one, so it is compared
+ *  against the entry it dates rather than fed to a comparator. */
 template <typename type_>
 concept orderable_per_version =
     carries_versioned_payload<type_> || (carries_generation<type_> && is_dating_identifier_v<type_>);
 
-/** The identifier a version-decorated object is addressed by, with the metadata peeled off. A chain defers to the
- *  version it holds, a version to the value it wraps, and a dated identifier to the identifier inside it, so a plain
- *  key is reached from any of the shapes a store stores. */
+/** The identifier a version-decorated object is addressed by, with the metadata peeled off. A chain
+ *  defers to the version it holds, a version to the value it wraps, and a dated identifier to the
+ *  identifier inside it, so a plain key is reached from any of the shapes a store stores. */
 template <typename type_>
 decltype(auto) identifier_of(type_ const &object) noexcept {
     using dereferenced_t = std::remove_reference_t<type_>;
@@ -1486,8 +1492,9 @@ struct versioning_for {
     };
 };
 
-/** Hashes a version-decorated object by the identifier inside it, ignoring the metadata. An unordered store
- *  addresses an entry by hash rather than by order, so this is what @c versioned_comparator_t is to an ordered one. */
+/** Hashes a version-decorated object by the identifier inside it, ignoring the metadata. An
+ *  unordered store addresses an entry by hash rather than by order, so this is what
+ *  @c versioned_comparator_t is to an ordered one. */
 template <typename hasher_type_>
 struct per_key_hasher {
     using is_transparent = void;
@@ -1506,8 +1513,8 @@ struct per_key_hasher {
     }
 };
 
-/** Compares version-decorated objects by the identifier inside them, ignoring the metadata. Paired with
- *  @c per_key_hasher, since an open-addressed table needs both to place an entry. */
+/** Compares version-decorated objects by the identifier inside them, ignoring the metadata. Paired
+ *  with @c per_key_hasher, since an open-addressed table needs both to place an entry. */
 template <typename equals_type_>
 struct per_key_equals {
     using is_transparent = void;
@@ -1533,8 +1540,8 @@ struct per_key_equals {
  *
  *  Paired with @c per_key_hasher, which keeps peeling to the bare key so every version of a key
  *  shares one probe run; only equality widens. The ordered core needs no counterpart, since
- *  @c versioned_comparator_t::less already routes to @c per_version_compare when both
- *  operands date.
+ *  @c versioned_comparator_t::less already routes to @c per_version_compare when both operands
+ *  carry a date.
  */
 template <typename equals_type_>
 struct per_version_equals {
@@ -1583,8 +1590,9 @@ concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::
 #if !defined(ST_CACHE_LINE_BYTES)
 #if defined(__x86_64__) || defined(_M_X64) || (defined(__APPLE__) && defined(__aarch64__)) || \
     defined(__powerpc64__) || defined(__s390x__)
-// 128 rather than the 64 these report: adjacent-line prefetch pulls the neighbour in, so two counters
-// 64 bytes apart still invalidate each other for a writer.
+
+/** 128 rather than the 64 these report: adjacent-line prefetch pulls the neighbour in, so two
+ *  counters 64 bytes apart still invalidate each other for a writer. */
 #define ST_CACHE_LINE_BYTES 128
 #elif defined(__GCC_DESTRUCTIVE_SIZE)
 #define ST_CACHE_LINE_BYTES __GCC_DESTRUCTIVE_SIZE
@@ -1600,12 +1608,14 @@ static_assert(cache_line_bytes_k >= 32 && (cache_line_bytes_k & (cache_line_byte
 /**
  *  @brief The bit intrinsics every container here counts slots with.
  *
- *  @warning These are aliases rather than direct calls to @c std because libstdc++'s @c \<bit\> is not
- *      usable from device code. Its functions are @c constexpr, so @c --expt-relaxed-constexpr lets a
- *      kernel call them and they compile without a diagnostic, but @c nvcc folds most of them against a
- *      zeroed argument: with CUDA 12.8 and GCC 14, @c std::popcount over 64 bits, @c std::countr_zero
- *      over either width and @c std::countl_zero over 64 bits each return the answer for an input of
- *      zero. Silently wrong results, not a compile error, which is what makes the alias worth having.
+ *  @warning These are aliases rather than direct calls to @c std because libstdc++'s `<bit>` is
+ *      not usable from device code.
+ *
+ *  Its functions are @c constexpr, so `--expt-relaxed-constexpr` lets a kernel call them and they
+ *  compile without a diagnostic, but @c nvcc folds most of them against a zeroed argument: with
+ *  CUDA 12.8 and GCC 14, @c std::popcount over 64 bits, @c std::countr_zero over either width and
+ *  @c std::countl_zero over 64 bits each return the answer for an input of zero. Silently wrong
+ *  results, not a compile error, which is what makes the alias worth having.
  */
 #if defined(__CUDACC__)
 
@@ -1689,15 +1699,16 @@ constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
     return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(memory_order_relaxed_k);
 }
 
-/** Relaxed atomic write of a counter other threads may be reading. The mirror of @c atomic_load, and just as
- *  unordered: a caller needing the data a counter describes to be visible alongside it must order that itself. */
+/** Relaxed atomic write of a counter other threads may be reading. The mirror of @c atomic_load,
+ *  and just as unordered: a caller needing the data a counter describes to be visible alongside it
+ *  must order that itself. */
 template <typename integral_type_>
 constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexcept {
     atomic_ref<integral_type_>(counter).store(value, memory_order_relaxed_k);
 }
 
 /**
- *  @brief Reads @p word through a read-modify-write, returning the newest value rather than any older one.
+ *  @brief Reads @p word through a read-modify-write, getting the newest value, never an older one.
  *
  *  A plain load may read a stale write; a read-modify-write reads the newest and joins its release
  *  sequence, so a store made before this call is visible to whoever reads the word afterwards. That
@@ -1715,10 +1726,8 @@ constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type
 }
 
 /**
- *  @brief Parks until @p counter stops reading @p observed, so a waiter costs no core while
- *      it waits.
- *  @warning Wakes only where the writer calls @c atomic_notify_all; a bare @c atomic_store
- *      wakes nobody.
+ *  @brief Parks until @p counter stops reading @p observed, so a waiter costs no core as it waits.
+ *  @warning Wakes only where writers call @c atomic_notify_all; bare @c atomic_store wakes nobody.
  *  @sa The same @c const-path caveat as @c atomic_load applies to the cast.
  */
 template <typename integral_type_>
@@ -1802,7 +1811,7 @@ constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits,
 }
 
 /**
- *  @brief Raises @p word to @p floor unless it already stands higher, so a stale floor never lowers it.
+ *  @brief Raises @p word to @p floor unless it stands higher, so a stale floor never lowers it.
  *
  *  One instruction through a reference that spells @c fetch_max, and the compare-exchange loop it
  *  replaces otherwise. A word only ever raised this way is monotone whoever writes it.
@@ -1821,8 +1830,8 @@ constexpr void atomic_max_fetch(integral_type_ &word, integral_type_ floor) noex
 }
 
 /**
- *  @brief Raises @p word to @p floor unless it already stands higher, answering what it held before.
- *  @return What @p word held before, which is at or above @p floor exactly when nothing was written.
+ *  @brief Raises @p word to @p floor unless it stands higher, answering what it held before.
+ *  @return What @p word held before, at or above @p floor exactly when nothing was written.
  *
  *  One instruction through a reference that spells @c fetch_max, which @c std::atomic_ref does not
  *  before C++26, and the compare-exchange loop it replaces otherwise. A word only ever raised this
@@ -1880,7 +1889,8 @@ template <template <typename> class atomic_reference_ = atomic_ref, typename int
 }
 
 /**
- *  @brief Subtracts @p subtrahend from @p word only while the difference stays at or above @p floor.
+ *  @brief Subtracts @p subtrahend from @p word only while the difference stays at or above
+ *      @p floor.
  *  @return What @p word held before, which is below @p floor exactly when nothing was written.
  */
 template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
@@ -1920,7 +1930,7 @@ constexpr value_type_ const &smaller_of(value_type_ const &first, value_type_ co
     return second < first ? second : first;
 }
 
-/** How many bits a @c std::size_t holds here, which is not 64 everywhere. */
+/** How many bits the size type holds here, which is not 64 everywhere. */
 inline constexpr std::size_t size_bits_k = sizeof(std::size_t) * CHAR_BIT;
 
 /** The largest @c std::size_t, which also serves as the "no such index" sentinel. */
@@ -1951,7 +1961,7 @@ constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
  *  @c min and @c max must be usable in a constant expression, because @c draw_below sizes its mask
  *  from their span at compile time. A generator whose bounds are only known at run time satisfies
  *  @c std::uniform_random_bit_generator and would still fail here, so this asks for what is used
- *  rather than deferring to the standard concept and pulling @c <random> into every translation unit.
+ *  rather than deferring to the standard concept and pulling `<random>` into every unit.
  */
 template <typename generator_type_>
 concept uniform_random_bits = requires(generator_type_ &generator) {
@@ -1969,13 +1979,10 @@ concept uniform_random_bits = requires(generator_type_ &generator) {
  *  unbiased because every value under the mask is equally likely and the surplus is simply
  *  discarded. At least half of the masked range is accepted, so fewer than two draws are expected.
  *
- *  @param[in] generator Any uniform random bit generator, which is what @c std::mt19937 and
- *      friends are.
- *  @param[in] bound One past the largest value that may be returned; zero and one both
- *      draw nothing.
- *  @note A generator narrower than the bound - @c std::mt19937 yields 32 bits - is called
- *      repeatedly and the results concatenated, since masking a short draw could never reach the
- *      high bits.
+ *  @param[in] generator Any uniform random bit generator, as @c std::mt19937 and friends are.
+ *  @param[in] bound One past the largest value that may be returned; zero and one draw nothing.
+ *  @note A generator narrower than the bound, like the 32-bit @c std::mt19937, is called repeatedly
+ *      and the results concatenated, since masking a short draw could never reach the high bits.
  */
 template <typename generator_type_>
 constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound) noexcept {
@@ -2001,6 +2008,7 @@ constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound)
  *  @brief Rounds up a value to the next multiple of a compile-time constant.
  *  @tparam value_type_ Type of value to round (must be integral).
  *  @tparam multiple_ The multiple to round up to (compile-time constant).
+ *
  *  @param[in] x Value to round up.
  *  @return Smallest multiple of @p multiple_ greater than or equal to @p x.
  */
@@ -2041,8 +2049,8 @@ concept set_shaped_store = !is_mapping<typename store_type_::value_t>;
 template <typename store_type_>
 concept map_shaped_store = is_mapping<typename store_type_::value_t>;
 
-/** A container that reports whether it maps keys to values, and how reads are delivered. Every container in this
- *  library carries these, and the test suites assert on them. */
+/** A container that reports whether it maps keys to values, and how reads are delivered. Every
+ *  container in this library carries these, and the test suites assert on them. */
 template <typename collection_type_>
 concept tagged_collection = requires {
     typename collection_type_::value_type;
@@ -2108,10 +2116,11 @@ concept batches_atomically = offers_batch_upsert<collection_type_> && offers_bat
  *      membership, size, and clearing - nothing here implies an ordering over keys, so an
  *      open-addressed table can meet it as readily as a search tree.
  *
- *  @note Node transfer - @c extract and @c merge - is deliberately absent. Moving nodes between a
- *      transaction's staging store and the committed one is how the tree adapter stages today, but
- *      it is an implementation strategy rather than a requirement: a chain-based store stages by
- *      pushing a version onto a key's chain and never moves a node at all.
+ *  @note Node transfer - @c extract and @c merge - is deliberately absent.
+ *
+ *  Moving nodes between a transaction's staging store and the committed one is how the tree adapter
+ *  stages, but it is an implementation strategy rather than a requirement: a chain-based store
+ *  stages by pushing a version onto a key's chain and never moves a node at all.
  */
 template <typename collection_type_>
 concept key_addressable_collection =
@@ -2131,9 +2140,8 @@ concept key_addressable_collection =
  *  repeatedly asking for the exclusive successor of the last key it yielded.
  *
  *  @note A core's bounds are iterator-shaped, taking the sought key alone. The callback-shaped
- *      @c lower_bound(key, found, missing) belongs to the transactional adapter above it, which
- *      cannot hand out iterators because a version may be staged and invisible. Do not conflate
- *      the two.
+ *      `lower_bound(key, found, missing)` belongs to the transactional adapter above it, which
+ *      can't hand out iterators because a version may be staged and invisible; don't conflate them.
  */
 template <typename collection_type_>
 concept ordered_collection = key_addressable_collection<collection_type_> &&
@@ -2147,7 +2155,8 @@ concept ordered_collection = key_addressable_collection<collection_type_> &&
 
 #pragma region Store Surfaces
 
-/** Whether the store carries @c insert_or_assign, whose contract is to write over an occupied key. */
+/** Whether the store carries @c insert_or_assign, whose contract is to write over an occupied
+ *  key. */
 template <typename store_type_>
 concept offers_insert_or_assign = requires(store_type_ &store, typename store_type_::value_t &&element) {
     store.insert_or_assign(std::move(element));
@@ -2246,7 +2255,8 @@ template <typename store_type_>
 concept offers_insert =
     requires(store_type_ &store, typename store_type_::value_t &&element) { store.insert(std::move(element)); };
 
-/** Whether the store answers both ends of a window, which is less than the whole ordered surface. */
+/** Whether the store answers both ends of a window, which is less than the whole ordered
+ *  surface. */
 template <typename store_type_>
 concept offers_both_bounds = offers_lower_bound<store_type_> && offers_upper_bound<store_type_>;
 
@@ -2374,7 +2384,8 @@ concept transaction_offers_update_range =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.update_range(key, key, callback); };
 
-/** Whether a transaction carries @c insert_if_missing, whose contract is to leave an occupied key. */
+/** Whether a transaction carries @c insert_if_missing, whose contract is to leave an occupied
+ *  key. */
 template <typename store_type_>
 concept transaction_offers_insert_if_missing =
     requires(typename store_type_::transaction_t &transaction, typename store_type_::value_t &&element) {
@@ -2421,7 +2432,8 @@ template <typename store_type_>
 concept transaction_offers_smallest = requires(typename store_type_::transaction_t const &transaction,
                                                no_op_t callback) { transaction.smallest(callback, callback); };
 
-/** The ordered surface, spelled from its atoms so a second definition of "ordered" cannot drift from this one. */
+/** The ordered surface, spelled from its atoms so a second definition of "ordered" cannot drift
+ *  from this one. */
 template <typename store_type_>
 concept offers_ordered_surface = offers_lower_bound<store_type_> && offers_upper_bound<store_type_> &&
                                  offers_range<store_type_> && offers_erase_range<store_type_>;
@@ -2510,7 +2522,8 @@ struct order_of<store_type_, std::void_t<typename store_type_::order_t>> {
     using type = typename store_type_::order_t;
 };
 
-/** The same store built into @p order_type_ instead, or the store itself where it names no such rebind. */
+/** The same store built into @p order_type_ instead, or the store itself where it names no such
+ *  rebind. */
 template <typename store_type_, typename order_type_, typename = void>
 struct rebound_order_of {
     using type = store_type_;
@@ -2521,7 +2534,8 @@ struct rebound_order_of<store_type_, order_type_,
     using type = typename store_type_::template rebind_order<order_type_>;
 };
 
-/** Whether a store opens one part of a sharded transaction at a snapshot and a generation drawn elsewhere. */
+/** Whether a store opens one part of a sharded transaction at a snapshot and a generation drawn
+ *  elsewhere. */
 template <typename store_type_>
 concept offers_transaction_at = requires(store_type_ &store) { store.transaction_at(opened_at_t {}); };
 
@@ -2557,8 +2571,8 @@ struct versioned_storage_for {
     template <typename element_type_>
     using rebind = typename collection_type_::template rebind<element_type_, addressing_t>;
 
-    /** The same storage keyed by identifier @b and generation, holding one entry per version. Unchanged here, since
-     *  the ordered comparator already breaks a tie on the generation. */
+    /** The same storage keyed by identifier @b and generation, holding one entry per version.
+     *  Unchanged here, since the ordered comparator already breaks a tie on the generation. */
     template <typename element_type_>
     using rebind_dated = rebind<element_type_>;
 
@@ -2606,9 +2620,8 @@ struct versioned_storage_for {
      *  @brief Takes the entry filed under @p identifier out whole, handing its payload to
      *      @p destination.
      *  @return Whether an entry was there to take.
-     *  @note The entry leaves the index before anything is moved out of it, since the key the index
-     *      addresses it by lives inside the payload and a moved-from key neither compares
-     *      nor hashes.
+     *  @note The entry leaves the index before anything is moved out of it, since its key lives
+     *      inside the payload and a moved-from key neither compares nor hashes.
      */
     template <typename storage_type_, typename identifier_type_, typename payload_type_>
     static bool extract_payload(storage_type_ &storage, identifier_type_ const &identifier,
@@ -2635,8 +2648,8 @@ struct versioned_storage_for<collection_type_, value_type_, std::void_t<typename
     /** The equality that keeps one slot per version, rather than one per key. */
     using dated_equality_t = per_version_equals<typename collection_type_::key_equal>;
 
-    /** The same storage keyed by identifier @b and generation, holding one entry per version. The hasher is
-     *  untouched, so every version of a key shares one probe run. */
+    /** The same storage keyed by identifier @b and generation, holding one entry per version. The
+     *  hasher is untouched, so every version of a key shares one probe run. */
     template <typename element_type_>
     using rebind_dated = typename collection_type_::template rebind<element_type_, addressing_t, dated_equality_t>;
 
@@ -2719,9 +2732,9 @@ struct owned_value_of<collection_type_, std::void_t<typename collection_type_::o
     using type = typename collection_type_::owned_value_type;
 };
 
-/** The node type a linked storage hands out, or @c void where the storage has no nodes. An ordered surface walks
- *  nodes directly; an open-addressed table has none to walk, and naming one unconditionally would break the adapter
- *  at its own definition rather than at the call. */
+/** The node type a linked storage hands out, or @c void where the storage has no nodes. An ordered
+ *  surface walks nodes directly; an open-addressed table has none to walk, and naming one
+ *  unconditionally would break the adapter at its own definition rather than at the call. */
 template <typename collection_type_, typename = void>
 struct storage_node_of {
     using type = void;
@@ -2770,9 +2783,8 @@ concept optimistically_concurrent_store =
     };
 
 /**
- *  @brief Stages @p stage_changes into @p transaction and commits it, trying at most @p
- *      attempts times.
- *  @param[in] stage_changes Invoked as @c stage_changes(transaction) on every attempt. Must be
+ *  @brief Stages @p stage_changes into @p transaction and commits it, at most @p attempts times.
+ *  @param[in] stage_changes Invoked as `stage_changes(transaction)` on every attempt; must be
  *      @c noexcept.
  *  @return Success; the first failure that is not a conflict; or @c operation_would_block_k once
  *      every attempt met a conflict.
@@ -2850,17 +2862,20 @@ class transaction_group {
 
     using transactions_t = std::tuple<typename store_types_::transaction_t...>;
 
-    /** The order the first participant was built into, or @c no_order_t where it keeps no stamps. */
+    /** The order the first participant was built into, or @c no_order_t where it keeps no
+     *  stamps. */
     using order_t = typename order_of<std::tuple_element_t<0, std::tuple<store_types_...>>>::type;
 
-    /** Whether every participant was built into one order, so the group can stamp all of them once. */
+    /** Whether every participant was built into one order, so the group can stamp all of them
+     *  once. */
     static constexpr bool shares_one_order_k =
         participants_k > 1 && !std::is_same_v<order_t, no_order_t> &&
         (std::is_same_v<typename order_of<store_types_>::type, order_t> && ...) &&
         (draws_from_a_shared_order<store_types_> && ...) &&
         (shards_its_commit<typename store_types_::transaction_t> && ...);
 
-    /** The claim every participant reads under where they share an order, and nothing where they do not. */
+    /** The claim every participant reads under where they share an order, and nothing where they do
+     *  not. */
     using claim_t = typename order_t::snapshot_claim_t;
 
   private:
@@ -2871,7 +2886,8 @@ class transaction_group {
     /** The one claim every participant reads under, held only where they share an order. */
     ST_NO_UNIQUE_ADDRESS_ claim_t claim_ {};
 
-    /** The stamp the last one-stamp commit published under, and zero where each participant stamps its own. */
+    /** The stamp the last one-stamp commit published under, and zero where each participant stamps
+     *  its own. */
     generation_t committed_stamp_ {0};
 
     /** Positions into @c transactions_, ordered by the address of the store each belongs to. */
@@ -2901,8 +2917,8 @@ class transaction_group {
         }
     }
 
-    /** Applies @p visitor to the participant sitting at @p position of @c transactions_. A fold over the pack rather
-     *  than a jump table, since the count is known and tiny. */
+    /** Applies @p visitor to the participant sitting at @p position of @c transactions_. A fold
+     *  over the pack rather than a jump table, since the count is known and tiny. */
     template <typename visitor_type_, std::size_t... indices_>
     status_t visit_at_(std::size_t position, visitor_type_ &&visitor, std::index_sequence<indices_...>) noexcept {
         status_t result = success_k;
@@ -2922,7 +2938,8 @@ class transaction_group {
         return opened_t {stores.transaction()...};
     }
 
-    /** Opens every store at one snapshot and one generation drawn from the order they share, pinned by @p claim. */
+    /** Opens every store at one snapshot and one generation drawn from the order they share, pinned
+     *  by @p claim. */
     static opened_t open_participants_(claim_t &claim, store_types_ &...stores) noexcept
         requires shares_one_order_k
     {
@@ -2983,19 +3000,21 @@ class transaction_group {
         return std::get<store_index_>(transactions_);
     }
 
-    /** Every participant at once, in the order the caller named their stores, for @c auto @c [a, @c b] @c = to name. */
+    /** Every participant at once, in the order the caller named their stores, for binding with
+     *  `auto [a, b] =`. */
     [[nodiscard]] auto participants() noexcept {
         return std::apply([](auto &...opened) noexcept { return std::tie(opened...); }, transactions_);
     }
 
     /**
      *  @brief Runs @p body over the participants, then stages and commits the group.
-     *  @param[in] body Invoked as @c body(participants...), answering a @c status_t. Must be @c noexcept.
+     *  @param[in] body Invoked as @c body(participants...), answering a @c status_t. Must be
+     *      @c noexcept.
      *  @return Success; whatever @p body refused; or the refusal the stage or the commit answered.
      *
      *  The three calls a group always makes in the same order, so a caller cannot forget the stage
      *  or leave a refused group staged: anything short of success resets every participant before
-     *  returning. @c commit_with_retries is the sibling that takes a conflict as a reason to try again.
+     *  returning; its sibling @c commit_with_retries takes a conflict as a reason to try again.
      */
     template <typename body_type_>
     status_t commit_with(body_type_ &&body) noexcept {
@@ -3011,7 +3030,8 @@ class transaction_group {
     /** Whether the group's writes are sitting in their stores, invisible. */
     staging_t staging() const noexcept { return staging_; }
 
-    /** The stamp the last commit published every participant under, or zero where each stamped its own. */
+    /** The stamp the last commit published every participant under, or zero where each stamped its
+     *  own. */
     [[nodiscard]] generation_t commit_stamp() const noexcept { return committed_stamp_; }
 
     /**
@@ -3072,9 +3092,9 @@ class transaction_group {
      *  not whether anything was published, since a torn commit cannot be told apart from an untorn
      *  one without asking every participant what it did. Only @c reset then clears the rest.
      *
-     *  Where @c shares_one_order_k, the participants are asked first as well, and then written under
-     *  one stamp drawn from the order they share, which the watermark covers only once the last of
-     *  them has published.
+     *  Where @c shares_one_order_k, the participants are asked first as well, and then written
+     *  under one stamp drawn from the order they share, which the watermark covers only once the
+     *  last of them has published.
      */
     status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -3166,7 +3186,8 @@ class transaction_group {
         return success_k;
     }
 
-    /** Discards every participant's staged and pending changes, at one fresh snapshot where they share an order. */
+    /** Discards every participant's staged and pending changes, at one fresh snapshot where they
+     *  share an order. */
     status_t reset() noexcept {
         status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
@@ -3241,8 +3262,7 @@ concept parking_waiting_policy =
  *  Leaves a spin the bare retry loop it reads as, which is the one choice needing neither an
  *  architecture nor a runtime probe, and the only one that compiles for every target this header
  *  reaches, a device included. A deployment that knows what its cores are names a policy stalling
- *  them properly - @c PAUSE, @c YIELD, @c UMWAIT, @c WFET - and one that does not pays nothing for
- *  the question.
+ *  them properly - @c PAUSE, @c YIELD, @c UMWAIT, @c WFET - and one that does not pays nothing.
  */
 struct bare_waiting_policy_t {
 
@@ -3302,9 +3322,9 @@ using standard_waiting_policy_t = standard_waiting_policy<>;
  *
  *  Both acquires are bounded adds rather than compare-exchange loops, which is what the word's
  *  layout buys: every writer bit sits above the reader tally, so @em no @em writer @em here and
- *  @em room @em for @em one @em more @em reader is the single question does the sum stay inside
- *  the tally. A reference satisfying @c extended_atomic_ref answers it in one instruction and, when
- *  the answer is no, without taking the line at all; @c atomic_ref answers it with the loop that
+ *  @em room @em for @em one @em more @em reader is the single question does the sum stay inside the
+ *  tally. A reference satisfying @c extended_atomic_ref answers it in one instruction and, when the
+ *  answer is no, without taking the line at all; @c atomic_ref answers it with the loop that
  *  question replaces. Dropping the held bit reads nothing back, so it is posted rather than waited
  *  on. Releasing a reader is the one path that cannot be either, since the count it returns is what
  *  tells the last reader out to wake a writer.
@@ -3339,11 +3359,12 @@ class spin_shared_mutex {
     /** How long to spin before parking, which is about the cost of one uncontended handoff. */
     static constexpr std::size_t spins_before_parking_k = 64;
 
-    /** The owning bit, the waiting-writer tally and the reader tally, in one word every path drives.
-     *  Plain rather than an @c std::atomic, so the reference it is owned through is the caller's. */
+    /** The owning bit, the waiting-writer tally and the reader tally, in one word every path
+     *  drives. Plain rather than @c std::atomic, so the caller picks the reference owning it. */
     alignas(atomic_alignment<std::uint32_t>) std::uint32_t state_ {0};
 
-    /** The reference every operation below wraps around @c state_, for one operation and no longer. */
+    /** The reference every operation below wraps around @c state_, for one operation and no
+     *  longer. */
     using word_ref_t = atomic_reference_<std::uint32_t>;
 
     /** What a waiting thread does with its core, and what it parks on once its spin is spent. */
@@ -3361,7 +3382,8 @@ class spin_shared_mutex {
                                                               memory_order_acquire_k);
     }
 
-    /** Adds one reader while the sum stays inside the reader tally, which every writer bit overflows. */
+    /** Adds one reader while the sum stays inside the reader tally, which every writer bit
+     *  overflows. */
     [[nodiscard]] std::uint32_t take_as_reader_() noexcept {
         return atomic_fetch_add_if_at_most<atomic_reference_>(state_, 1u, readers_mask_k, memory_order_acquire_k);
     }
@@ -3430,8 +3452,8 @@ class spin_shared_mutex {
  *  parking on @c std::atomic::wait. */
 using spin_shared_mutex_t = spin_shared_mutex<>;
 
-/** Holds @p mutex_type_ exclusively for the enclosing scope, or for as long as whoever it is moved into keeps it; an
- *  empty one holds nothing, so a hold can outlive one call. */
+/** Holds @p mutex_type_ exclusively for the enclosing scope, or for as long as whoever it is moved
+ *  into keeps it; an empty one holds nothing, so a hold can outlive one call. */
 template <typename mutex_type_>
 class unique_lock {
     mutex_type_ *mutex_ = nullptr;
@@ -3479,7 +3501,8 @@ shared_lock(mutex_type_ &) -> shared_lock<mutex_type_>;
 
 #pragma region Commit Order
 
-/** Whether an order is reached from several threads, which decides both its atomics and its padding. */
+/** Whether an order is reached from several threads, which decides both its atomics and its
+ *  padding. */
 enum class order_sharing_t : bool {
 
     /** One thread, so every word is plain and nothing is padded apart from the object itself. */
@@ -3546,16 +3569,18 @@ enum class order_sharing_t : bool {
  *
  *  Under @c solitary_k none of that applies, because there is no second thread to order against.
  *
- *  @warning @c end_commit waits for older commits to land once @p commits_in_flight_ of them are
- *      ahead of the watermark, and @c await_published waits for another thread's publication. Both
- *      are deadlock-free only for a committer that holds every lock it publishes under before it
- *      draws and takes none after, which is how every store and group here commits.
+ *  @warning @c end_commit and @c await_published are deadlock-free only for a committer that holds
+ *      every lock it publishes under before it draws and takes none after.
+ *
+ *  @c end_commit waits for older commits to land once @p commits_in_flight_ of them are ahead of
+ *  the watermark, and @c await_published waits for another thread's publication. Every store and
+ *  group here commits under the rule above.
  *
  *  @tparam commits_in_flight_ How many commits may sit past the watermark before a landing one
  *      waits. Bounded by disjoint lock sets rather than by cores; see above.
  *  @tparam reader_buckets_ How many floors are kept. Caps nothing, and trades the precision
  *      of the low-water mark against the memory and the scan.
- *  @tparam sharing_ Whether several threads reach this order, which decides its atomics and padding.
+ *  @tparam sharing_ Whether several threads reach this order, deciding its atomics and padding.
  *  @tparam waiting_policy_type_ What a waiting committer does with its core.
  */
 template <std::size_t commits_in_flight_ = 16, std::size_t reader_buckets_ = 4,
@@ -3582,9 +3607,9 @@ class basic_commit_order {
     /**
      *  @brief How many snapshots a bucket holds open, under the head value that opened it.
      *
-     *  One word because one bounded add has to count a snapshot in or refuse it: with the head value
-     *  above the count, a bucket already reopened past the head a reader saw sorts above every
-     *  admissible word, so a single magnitude compare decides all three cases.
+     *  One word because one bounded add has to count a snapshot in or refuse it: with the head
+     *  value above the count, a bucket already reopened past the head a reader saw sorts above
+     *  every admissible word, so a single magnitude compare decides all three cases.
      */
     struct bucket_snapshots_t {
 
@@ -3607,12 +3632,14 @@ class basic_commit_order {
             return static_cast<std::uint32_t>(bits & open_snapshots_mask_k);
         }
 
-        /** The word a bucket opened at @p opened starts from, with no snapshot counted in it yet. */
+        /** The word a bucket opened at @p opened starts from, with no snapshot counted in it
+         *  yet. */
         [[nodiscard]] static constexpr bucket_snapshots_t opened_by(bucket_word_t opened) noexcept {
             return bucket_snapshots_t {(opened & open_snapshots_mask_k) << opened_at_bits_k};
         }
 
-        /** The largest word one more snapshot may be counted into while @p opened is still the head. */
+        /** The largest word one more snapshot may be counted into while @p opened is still the
+         *  head. */
         [[nodiscard]] static constexpr bucket_snapshots_t admitting(bucket_word_t opened) noexcept {
             return bucket_snapshots_t {opened_by(opened).bits | open_snapshots_mask_k};
         }
@@ -3648,7 +3675,8 @@ class basic_commit_order {
         else word = value;
     }
 
-    /** Reads the newest value of @p word, which only a read-modify-write can promise under sharing. */
+    /** Reads the newest value of @p word, which only a read-modify-write can promise under
+     *  sharing. */
     template <typename integral_type_>
     static integral_type_ read_newest_(integral_type_ &word) noexcept {
         if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load_newest(word);
@@ -3663,8 +3691,9 @@ class basic_commit_order {
     }
 
   public:
-    /** One commit that has drawn its stamp and has not finished writing it everywhere yet: the stamp alone, since
-     *  the ring slot it lands in is named by the stamp, so it may live anywhere and needs no linking. */
+    /** One commit that has drawn its stamp and has not finished writing it everywhere yet: the
+     *  stamp alone, since the ring slot it lands in is named by the stamp, so it may live anywhere
+     *  and needs no linking. */
     class commit_in_flight_t {
         friend class basic_commit_order;
 
@@ -3735,16 +3764,19 @@ class basic_commit_order {
     };
 
   private:
-    /** Dates transactions rather than their visibility, and is drawn by a shard set once for all its parts. */
+    /** Dates transactions rather than their visibility, and is drawn by a shard set once for all
+     *  its parts. */
     alignas(word_alignment_k) generation_t generation_ {0};
 
     /** The newest stamp handed to a commit, whether or not that commit has landed. */
     alignas(word_alignment_k) generation_t commits_ {0};
 
-    /** The newest stamp every commit at or below which has landed, and the only snapshot handed out. */
+    /** The newest stamp every commit at or below which has landed, and the only snapshot handed
+     *  out. */
     alignas(word_alignment_k) generation_t published_stamp_ {0};
 
-    /** The smallest snapshot a reader still names, or the watermark when nobody reads; only ever raised. */
+    /** The smallest snapshot a reader still names, or the watermark when nobody reads; only ever
+     *  raised. */
     alignas(word_alignment_k) generation_t low_water_mark_ {0};
 
     /** Which bucket arrivals join, monotone, so a bucket is recycled only after it has drained. */
@@ -3772,7 +3804,8 @@ class basic_commit_order {
         return static_cast<std::size_t>(opened % buckets_k);
     }
 
-    /** Counts one snapshot into @p bucket while @p opened is still the head value it was opened at. */
+    /** Counts one snapshot into @p bucket while @p opened is still the head value it was opened
+     *  at. */
     snapshot_recorded_t record_into_(std::size_t bucket, bucket_word_t opened) noexcept {
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
             ++snapshots_[bucket].bits;
@@ -3791,7 +3824,8 @@ class basic_commit_order {
         }
     }
 
-    /** Counts a snapshot into the head bucket, whose floor is at or below any snapshot drawn after this. */
+    /** Counts a snapshot into the head bucket, whose floor is at or below any snapshot drawn after
+     *  this. */
     std::uint32_t record_snapshot_() noexcept {
         for (;;) {
             bucket_word_t const opened = read_(head_);
@@ -3801,7 +3835,8 @@ class basic_commit_order {
         }
     }
 
-    /** Opens the bucket after @p opened at @p opened_at, when the one it would recycle has drained. */
+    /** Opens the bucket after @p opened at @p opened_at, when the one it would recycle has
+     *  drained. */
     void open_next_bucket_(bucket_word_t opened, generation_t opened_at) noexcept {
         bucket_word_t const next = opened + 1;
         std::size_t const bucket = bucket_of_(next);
@@ -3828,7 +3863,8 @@ class basic_commit_order {
         }
     }
 
-    /** Recomputes the mark from the watermark and every occupied bucket, and raises the published one to it. */
+    /** Recomputes the mark from the watermark and every occupied bucket, and raises the published
+     *  one to it. */
     void republish_mark_() noexcept {
         // The watermark first, then the buckets: a reader joining after this read draws at or above it.
         generation_t const published_now = read_newest_(published_stamp_);
@@ -3863,8 +3899,8 @@ class basic_commit_order {
     basic_commit_order(basic_commit_order const &) = delete;
     basic_commit_order &operator=(basic_commit_order const &) = delete;
 
-    /** Hands out the next generation, which dates a transaction rather than its visibility, and which a shard set
-     *  draws once so every one of its parts keys its private versions alike. */
+    /** Hands out the next generation, which dates a transaction rather than its visibility, and
+     *  which a shard set draws once so every one of its parts keys its private versions alike. */
     generation_t next_generation() noexcept {
         if constexpr (sharing_ == order_sharing_t::solitary_k) return ++generation_;
         else return atomic_add_fetch<generation_t>(generation_, 1);
@@ -3899,11 +3935,11 @@ class basic_commit_order {
     }
 
     /**
-     *  @brief Points @p claim at the snapshot @p held reads, giving back whatever @p claim held first.
+     *  @brief Points @p claim at the snapshot @p held reads, giving back what @p claim held first.
      *  @return The snapshot the claim now reads at.
      *
-     *  @p held is live, so its bucket carries at least one member and cannot have been recycled, and
-     *  its floor is already at or below the snapshot being shared. One more member of that same
+     *  @p held is live, so its bucket carries at least one member and cannot have been recycled,
+     *  and its floor is already at or below the snapshot being shared. One more member of that same
      *  bucket therefore needs no re-read: either claim retiring leaves the other pinning retention.
      */
     generation_t share_snapshot(snapshot_claim_t &held, snapshot_claim_t &claim) noexcept {
@@ -3925,8 +3961,9 @@ class basic_commit_order {
         else node.stamp_ = atomic_ref<generation_t>(commits_).fetch_add(1, memory_order_relaxed_k) + 1;
     }
 
-    /** Records that every version of @p node is written, and walks the watermark through every landed stamp
-     *  above it: one below the oldest commit still in flight, or all the way to the newest drawn when none is. */
+    /** Records that every version of @p node is written, and walks the watermark through every
+     *  landed stamp above it: one below the oldest commit still in flight, or all the way to the
+     *  newest drawn when none is. */
     void end_commit(commit_in_flight_t &node) noexcept {
         generation_t const stamp = node.stamp_;
         if constexpr (sharing_ == order_sharing_t::solitary_k) {
@@ -3969,7 +4006,7 @@ class basic_commit_order {
     }
 
     /**
-     *  @brief Waits until the watermark covers @p stamp, so the committer may read what it just wrote.
+     *  @brief Waits until the watermark covers @p stamp, so a committer may read what it wrote.
      *  @warning Blocks on another thread's publication, so no store lock may be held across it.
      */
     void await_published(commit_stamp_t stamp) noexcept {
@@ -3986,8 +4023,8 @@ class basic_commit_order {
         }
     }
 
-    /** The oldest snapshot any reader can still name, so everything older is unreachable. Raised whenever a
-     *  bucket drains or the watermark moves, and a stale read is a lower mark. */
+    /** The oldest snapshot any reader can still name, so everything older is unreachable. Raised
+     *  whenever a bucket drains or the watermark moves, and a stale read is a lower mark. */
     [[nodiscard]] generation_t low_water_mark() const noexcept { return read_(low_water_mark_); }
 
     /** How many readers currently hold a snapshot, summed over the buckets. */
@@ -3998,7 +4035,8 @@ class basic_commit_order {
         return counted;
     }
 
-    /** Takes over @p other's stamps, for a store that is being moved and has nothing open or in flight. */
+    /** Takes over @p other's stamps, for a store that is being moved and has nothing open or in
+     *  flight. */
     void adopt(basic_commit_order const &other) noexcept {
         assert(open_snapshots() == 0 && other.open_snapshots() == 0 && "a claim names the order it was drawn from");
         assert(read_(other.commits_) == read_(other.published_stamp_) &&
@@ -4013,8 +4051,9 @@ class basic_commit_order {
 /** The order several threads or several stores share, sized for sixteen commits in flight. */
 using commit_order_t = basic_commit_order<>;
 
-/** The order a store nobody shares builds for itself: one commit in flight, no atomics, no padding. Two
- *  floors rather than one, because the head rotates into the other and a single bucket has nowhere to go. */
+/** The order a store nobody shares builds for itself: one commit in flight, no atomics, no padding.
+ *  Two floors rather than one, because the head rotates into the other and a single bucket has
+ *  nowhere to go. */
 using solitary_commit_order_t = basic_commit_order<1, 2, order_sharing_t::solitary_k>;
 
 #pragma endregion Commit Order
@@ -4042,8 +4081,8 @@ template <algebra_t algebra_>
     else return membership == membership_t::on_one_side_k;
 }
 
-/** Whether @c algebra_ needs the second side walked as well as the first. Only the two that can keep a member the
- *  first side never saw. */
+/** Whether @c algebra_ needs the second side walked as well as the first. Only the two that can
+ *  keep a member the first side never saw. */
 template <algebra_t algebra_>
 [[nodiscard]] constexpr bool algebra_walks_both() noexcept {
     return algebra_ == algebra_t::union_k || algebra_ == algebra_t::symmetric_difference_k;
@@ -4059,15 +4098,14 @@ template <algebra_t algebra_>
     return membership == membership_t::on_one_side_k;
 }
 
-/** Whether a crossed walk carries on past a member, or the answer no longer needs it. */
-
-/** How many members a crossed walk carries out of one side before it puts that side down. The only memory such a
- *  walk holds, on its own stack; a larger chunk re-seeds the walk fewer times and costs that much more of it. */
+/** How many members a crossed walk carries out of one side before it puts that side down. The only
+ *  memory such a walk holds, on its own stack; a larger chunk re-seeds the walk fewer times and
+ *  costs that much more of it. */
 inline constexpr std::size_t algebra_chunk_k = 512;
 
-/** Whether a side hands out a read transaction whose ordered walk resumes from a key it saw. A side that does need
- *  not be held while the other is taken, which is what two crossing comparisons need in order not to wedge on a
- *  writer queued between them. */
+/** Whether a side hands out a read transaction whose ordered walk resumes from a key it saw. A side
+ *  that does need not be held while the other is taken, which is what two crossing comparisons need
+ *  in order not to wedge on a writer queued between them. */
 template <typename side_type_>
 concept resumes_from_a_key = requires(side_type_ &side, typename side_type_::transaction_t const &reading,
                                       typename side_type_::identifier_t const &key, no_op_t callback) {
@@ -4160,10 +4198,11 @@ status_t compare_crossed_(walked_type_ &walked, probing_type_ &probing, visitor_
 /**
  *  @brief Hands @p callback every member of @c algebra_ over @p first and @p second.
  *
- *  @warning The two sides keep separate orders, so the pair is never one stamp however it is
- *      read. Each side is read through a read transaction opened here, which fixes what that side
- *      shows from @c snapshot_k up; pass transactions to choose the instants yourself, at the cost
- *      of the nested walk @c compare_crossed_ falls back to.
+ *  @warning The two sides keep separate orders, so the pair is never one stamp, however read.
+ *
+ *  Each side is read through a read transaction opened here, which fixes what that side shows from
+ *  @c snapshot_k up; pass transactions to choose the instants yourself, at the cost of the nested
+ *  walk @c compare_crossed_ falls back to.
  */
 template <algebra_t algebra_, typename first_type_, typename second_type_, typename callback_type_ = no_op_t>
 status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &&callback) noexcept {
@@ -4192,8 +4231,7 @@ status_t walk_algebra(first_type_ &first, second_type_ &second, callback_type_ &
  *
  *  A side with more members than the other cannot be contained in it, which is the whole answer
  *  without a walk. Both counts are read before either side is touched, so the pair is a decision
- *  about the sizes at one moment rather than a size from one moment weighed against a walk
- *  from another.
+ *  about the sizes at one moment, not a size from one moment weighed against a walk from another.
  */
 template <typename first_type_, typename second_type_>
 expected<bool> is_subset(first_type_ &first, second_type_ &second) noexcept {

@@ -762,8 +762,8 @@ object_type_ *object_as(PyObject *object) noexcept {
  *  behind the table it is a pointer, so the four classes differ only in their method tables.
  *
  *  @c ordinal is what stops two groups deadlocking on each other. A transaction stages its
- *  participants in ordinal order rather than argument order, so @c transaction(a, b) on one thread
- *  and @c transaction(b, a) on another acquire the same partition locks in the same sequence;
+ *  participants in ordinal order rather than argument order, so `transaction(a, b)` on one thread
+ *  and `transaction(b, a)` on another acquire the same partition locks in the same sequence;
  *  without it each would hold what the other waits for. Any consistent total order would do -
  *  creation order is used because it is reproducible across runs, which an address is not, and a
  *  hang is the one failure worth being able to replay.
@@ -1142,7 +1142,7 @@ bool value_from_python(PyObject *object, value_mode_t mode, releases_t *releases
 bool key_from_python(PyObject *object, key_ops_t const *ops, key_variant_t &result) noexcept;
 
 /**
- *  @brief Reads the @c (start, stop, limit) a windowed call takes, in both spellings.
+ *  @brief Reads the @b (start,stop,limit) a windowed call takes, in both spellings.
  *  @param[in] called The method's name, which every message here quotes.
  *  @param[out] start Borrowed bound object, or null; @c Py_None counts as null.
  *  @param[out] stop The same for the upper end.
@@ -1165,7 +1165,7 @@ PyObject *key_to_python(key_variant_t const &key) noexcept;
 PyObject *value_to_python(value_variant_t const &value) noexcept;
 
 /**
- *  @brief Builds a @c (key, value) tuple from a stored pair, giving both halves back either way.
+ *  @brief Builds a @b (key,value) tuple from a stored pair, giving both halves back either way.
  *  @return A new reference, or @c nullptr with an exception set.
  */
 PyObject *pair_to_python(key_variant_t const &key, value_variant_t const &value) noexcept;

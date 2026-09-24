@@ -1202,7 +1202,7 @@ class basic_hash_table {
 
     /**
      *  @brief An interface similar to @c std::unordered_map::merge, banned in favor of a manual
-     *      @c insert(begin, end).
+     *      `insert(begin, end)`.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/merge
      */
     template <typename other_type_>

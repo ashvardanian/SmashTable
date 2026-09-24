@@ -40,15 +40,13 @@
  *  - @c join(): O(log n) concatenation of ordered disjoint trees, requiring all(this) < all(other).
  *
  *  @b Adaptive Merge Algorithms:
- *  - @c merge(other): O(m log n) union with duplicate handling (deallocates duplicates)
- *  - @c merge(other, @b assume_unique_t): Optimized O(m log(n/m+1)) or O(m+n) for disjoint trees
- *  - Selects optimal algorithm based on tree characteristics:
- *  - O(log n) join for fully ordered trees
- *  - O(m log(n/m+1)) split-based merge from Blelloch's 2016 "Just Join for Parallel Ordered Sets".
- *  - O(m+n) Day-Stout-Warren spine merge for large similarly-sized trees
+ *  - `merge(other)`: O(m log n) union that deallocates duplicates.
+ *  - `merge(other, assume_unique_t)`: O(m log(n/m+1)) or O(m+n) for disjoint trees, choosing an
+ *    O(log n) join, a split-based merge from Blelloch's "Just Join for Parallel Ordered Sets", or a
+ *    Day-Stout-Warren spine merge by the trees' shapes.
  *
  *  @b Bulk Construction:
- *  - @c insert(first, last, @b assume_sorted_t): O(n) perfect balancing from sorted ranges
+ *  - `insert(first, last, assume_sorted_t)`: O(n) perfect balancing from sorted ranges.
  *
  *  @b Move-Only Type Support:
  *  - Compatible with @c std::move_iterator for bulk operations
@@ -1340,7 +1338,7 @@ class basic_avl_tree {
     ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_;
 
     /**
-     *  @brief Checks if ANY key from other tree exists in this tree. Uses simultaneous in-order
+     *  @brief Checks if any key from other tree exists in this tree. Uses simultaneous in-order
      *      traversal (merge-style algorithm).
      *
      *  @param[in] other Tree to check for intersection with.
@@ -1361,7 +1359,7 @@ class basic_avl_tree {
     }
 
     /**
-     *  @brief Checks if ALL keys from other tree exist in this tree. Uses simultaneous in-order
+     *  @brief Checks if all keys from other tree exist in this tree. Uses simultaneous in-order
      *      traversal (merge-style algorithm).
      *
      *  @param[in] other Tree whose keys to check for presence in this tree.
@@ -2333,7 +2331,7 @@ class basic_avl_tree {
      *  - Without: O(n log n) build + O(m+n) validation + O(m log n) update
      *
      *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
-     *  @note All-or-nothing on failure: if ANY key is missing, nothing is updated. Temporary tree
+     *  @note All-or-nothing on failure: if any key is missing, nothing is updated. Temporary tree
      *      is destroyed via RAII, this tree remains unchanged.
      */
     template <typename input_iterator_type_, typename... tags_types_>
@@ -2348,7 +2346,7 @@ class basic_avl_tree {
             failed(staged))
             return staged;
 
-        // Check if ALL keys exist - O(m+n)
+        // Check if all keys exist - O(m+n)
         if (!has_all_keys(temp_tree)) return status_t::key_not_found_k; // Temp tree auto-destructs, this tree unchanged
 
         // All keys exist - safe to upsert (will only update, never insert)
@@ -2594,7 +2592,7 @@ class basic_avl_tree {
      *  @note Unlike @c std::set::merge(), nodes with duplicate keys are deallocated rather than
      *      remaining in the source container. This ensures no memory leaks in a noexcept context.
      *  @note Complexity: O(m log n) where m = other.size(), n = this.size(). For disjoint trees,
-     *      use @c merge(other, assume_unique) for faster O(m log(n/m+1)) or O(m+n).
+     *      use `merge(other, assume_unique)` for faster O(m log(n/m+1)) or O(m+n).
      */
     void merge(basic_avl_tree &other) noexcept {
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
@@ -2621,9 +2619,9 @@ class basic_avl_tree {
      *  @note Complexity: O(m log(n/m + 1)) for unbalanced sizes, O(m+n) for similar sizes.
      *  @warning If precondition violated (duplicate keys exist), behavior is undefined.
      *
-     *  Automatically selects the optimal algorithm: an @c O(log n) join if all of this precedes all
-     *  of other, an @c O(m+n) Day-Stout-Warren @b (DSW) spine merge for large similar sizes, or an
-     *  @c O(m log(n/m+1)) split-based merge for unbalanced sizes, optimal according to Blelloch.
+     *  Automatically selects the optimal algorithm: an O(log n) join if all of this precedes all of
+     *  other, an O(m+n) Day-Stout-Warren @b (DSW) spine merge for large similar sizes, and for
+     *  unbalanced sizes an O(m log(n/m+1)) split-based merge, which Blelloch shows optimal.
      */
     void merge(basic_avl_tree &other, assume_unique_t) noexcept {
         if (other.empty()) return;

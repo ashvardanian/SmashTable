@@ -1,7 +1,7 @@
 /**
  *  @file include/smashtable/basic_vector.hpp
  *  @author Ash Vardanian
- *  @date October 20, 2025
+ *  @date October 19, 2025
  *  @brief Exception-free dynamic array with explicit error handling.
  *
  *  @section basic_vector_features Features

@@ -94,7 +94,8 @@ struct row_format {
     static constexpr std::size_t words_per_row_k = keys_are_split_k ? 2 * keys_per_row_ : keys_per_row_;
     static constexpr std::size_t bytes_per_row_k = words_per_row_k * sizeof(word_t);
 
-    /** The key unused slots hold, which orders at or after every key so a count below never includes it. */
+    /** The key unused slots hold, ordering at or after every key, so a count below never includes
+     *  it. */
     static constexpr key_t padding_k = [] {
         if constexpr (keys_are_split_k)
             return key_t {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};

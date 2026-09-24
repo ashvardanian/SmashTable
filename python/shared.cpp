@@ -1,7 +1,7 @@
 /**
  *  @file python/shared.cpp
  *  @author Ash Vardanian
- *  @date August 17, 2026
+ *  @date October 30, 2025
  *  @brief Machinery every container shares: key layouts, scalar conversion, errors, the cursor.
  *
  *  Mirrors @c include/smashtable/shared.hpp on the C++ side: one place for the vocabulary the

@@ -1,7 +1,7 @@
 /**
  *  @file include/smashtable/hash_layout.hpp
  *  @author Ash Vardanian
- *  @date August 17, 2026
+ *  @date October 20, 2025
  *  @brief Shared vocabulary of open-addressed hash tables: bucket metadata, slot refs, storage.
  *
  *  @section hash_layout_overview Overview
@@ -17,9 +17,9 @@
  *
  *  @code{.cpp}
  *  // Layout: [keys_region | values_region | headers_region]
- *  key_t *keys = (key_t *)memory;                          // Direct indexing: keys[slot]
- *  mapped_t *values = (mapped_t *)(memory + keys_bytes);     // Direct indexing: values[slot]
- *  hash_bucket_head_t *headers = ...;                      // Bucket indexing: headers[slot / 32]
+ *  key_t *keys = (key_t *)memory;                         // Direct indexing: keys[slot]
+ *  mapped_t *values = (mapped_t *)(memory + keys_bytes);  // Direct indexing: values[slot]
+ *  hash_bucket_head_t *headers = ...;                     // Bucket indexing: headers[slot / 32]
  *  @endcode
  *
  *  The offsets are multiples of the cache line; the base is only as aligned as the allocator makes

@@ -15,7 +15,7 @@ Run:
 
 File: test/finalizers.py
 Author: Ash Vardanian
-Date: August 22, 2026
+Date: August 18, 2026
 """
 
 import gc

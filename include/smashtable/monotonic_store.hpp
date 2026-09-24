@@ -528,7 +528,7 @@ class monotonic_store {
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive an `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
@@ -596,7 +596,7 @@ class monotonic_store {
          *  needs to open with: it asks for a first key rather than an ordinal, so a core keeping no
          *  subtree counts can answer it.
          *
-         *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive an `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when nothing is readable. Must be
          *      @c noexcept.
@@ -629,7 +629,7 @@ class monotonic_store {
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive an `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
@@ -1974,7 +1974,7 @@ class monotonic_store {
 
     /**
      *  @brief Atomically updates an existing element. Fails if key doesn't exist. Unlike
-     *      @c upsert(), this will NOT insert new keys.
+     *      @c upsert(), this will not insert new keys.
      *
      *  @param[in] value Element to update (moved into the tree).
      *  @return Success, @c key_not_found_k if key doesn't exist, or OOM error.
@@ -1987,7 +1987,7 @@ class monotonic_store {
     }
 
     /**
-     *  @brief Bulk insert from iterator range (atomic strict semantics). Fails if ANY key already
+     *  @brief Bulk insert from iterator range (atomic strict semantics). Fails if any key already
      *      exists. All elements inserted atomically - if any allocation fails or any key exists, no
      *      changes are made.
      *
@@ -2064,7 +2064,7 @@ class monotonic_store {
      *  @brief Finds a member @b equal to the given @p comparable.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive an `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
@@ -2098,7 +2098,7 @@ class monotonic_store {
      *  The unbounded case of @c lower_bound, and the one a merged walk over several stores opens
      *  with: it asks for a first key, not an ordinal, so a core keeping no subtree counts answers.
      *
-     *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive an `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be
      *      @c noexcept.
@@ -2151,7 +2151,7 @@ class monotonic_store {
      *  @brief Finds the first member @b greater or equal to the given @p comparable.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive an @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive an `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */

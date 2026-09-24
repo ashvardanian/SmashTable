@@ -13,7 +13,7 @@ Run:
 
 File: test/isolation.py
 Author: Ash Vardanian
-Date: August 22, 2026
+Date: August 18, 2026
 """
 
 import pytest

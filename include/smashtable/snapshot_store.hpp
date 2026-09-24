@@ -100,7 +100,7 @@ concept ranked_by_liveness = requires { typename collection_type_::augmentation_
  *
  *  @section snapshot_store_representation Representation
  *
- *  One entry per @c (key,generation) pair, uniformly for ordered and unordered cores. An ordered
+ *  One entry per @b (key,generation) pair, uniformly for ordered and unordered cores. An ordered
  *  core needs no new comparator - @c versioned_comparator_t already breaks a tie on the generation,
  *  so a key's versions occupy one contiguous run. An unordered core rebinds on
  *  @c per_version_equals, which widens equality to the pair while the hasher keeps peeling to the
@@ -206,7 +206,7 @@ class snapshot_store {
     /** Names one stored version without owning its key, so a probe costs no copy. */
     using dated_reference_t = dated_identifier<identifier_t const &>;
 
-    /** Every version of every key, one entry per @c (key,generation) pair. */
+    /** Every version of every key, one entry per @b (key,generation) pair. */
     using dated_entries_t = typename storage_shape_t::template rebind_dated<versioned_t>;
 
     /** One transaction's pending writes, at most one per key since all share its generation. */
@@ -317,7 +317,7 @@ class snapshot_store {
 
         /**
          *  @brief Hands @p callback_found the key the cursor stands on, or says the walk is over.
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered once nothing is left. Must be
          *      @c noexcept.
@@ -412,7 +412,7 @@ class snapshot_store {
 
         /**
          *  @brief Finds a member @b equal to @p comparable at this reader's stamp.
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
@@ -955,7 +955,7 @@ class snapshot_store {
 
             /**
              *  @brief Hands @p callback_found the cursor's member, or reports an exhausted walk.
-             *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+             *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
              *      @c noexcept.
              *  @param[in] callback_missing Callback triggered once nothing is left. Must be
              *      @c noexcept.
@@ -1084,7 +1084,7 @@ class snapshot_store {
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
@@ -1131,7 +1131,7 @@ class snapshot_store {
          *  @brief Finds the first member @b greater or equal to @p comparable at this snapshot.
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
@@ -1168,7 +1168,7 @@ class snapshot_store {
          *  needs to open with: it asks for a first key rather than an ordinal, so a core keeping no
          *  subtree counts can answer it.
          *
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when nothing is readable. Must be
          *      @c noexcept.
@@ -1296,7 +1296,7 @@ class snapshot_store {
          *  and every version its snapshot cannot read excluded. Nothing may write to the
          *  transaction or its store while the walk runs.
          *
-         *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+         *  @param[in] callback Callback to receive a `value_t const &`. Must be @c noexcept.
          */
         template <typename callback_type_ = no_op_t>
         status_t for_each(callback_type_ &&callback) const noexcept {
@@ -1344,7 +1344,7 @@ class snapshot_store {
          *      committed ones rather than counted anywhere.
          *
          *  @param[in] ordinal Zero-based position among the keys this transaction reads.
-         *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be
          *      @c noexcept.
@@ -2785,7 +2785,7 @@ class snapshot_store {
     /**
      *  @brief Finds a member @b equal to @p comparable as of the newest published commit.
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
@@ -2825,7 +2825,7 @@ class snapshot_store {
      *  with. It asks for a first key rather than an ordinal, so a core without subtree counts
      *  answers it too.
      *
-     *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be
      *      @c noexcept.
@@ -2992,7 +2992,7 @@ class snapshot_store {
      *  an older snapshot. A transaction that needs its own snapshot's ordinal walks instead.
      *
      *  @param[in] ordinal Zero-based position among the keys the store currently shows.
-     *  @param[in] callback_found Callback to receive a @c value_t @c const @c &. Must be
+     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be
      *      @c noexcept.
@@ -3253,7 +3253,7 @@ class snapshot_store {
      *  @b once - a committed tombstone and every version no commit has published yet are both left
      *  out. Nothing may write to the store while the walk runs.
      *
-     *  @param[in] callback Callback to receive a @c value_t @c const @c &. Must be @c noexcept.
+     *  @param[in] callback Callback to receive a `value_t const &`. Must be @c noexcept.
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
@@ -3733,7 +3733,7 @@ using strict_serializable_hash_map = strict_serializable_store<
 
 /*  The shard protocol is part of a stamped store's contract, not an option a wrapper discovers.
  *  @c partitioned_store reads @c draws_from_a_shared_order for its level and falls to
- *  @c read_committed_k when it is false, and every @c if @c constexpr on that concept has a clean
+ *  @c read_committed_k when it is false, and every `if constexpr` on that concept has a clean
  *  @c else. So a concept that stops binding downgrades the advertised guarantee with no diagnostic
  *  anywhere, and the surface parity fold cannot see it: @c parity_witness asserts an implication,
  *  which a false antecedent satisfies. These turn that silence into a build failure. */

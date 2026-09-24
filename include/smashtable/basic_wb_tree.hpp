@@ -10,7 +10,7 @@
  *  Weight-balanced trees maintain balance based on subtree sizes rather than heights. Rebalancing
  *  uses parameters Δ=3 and Γ=2, the only proven integer solution (Hirai & Yamamoto, 2011).
  *
- *  Balance invariant: for every node, weight(left) ≤ Δ × weight(right) AND weight(right) ≤ Δ ×
+ *  Balance invariant: for every node, weight(left) ≤ Δ × weight(right) and weight(right) ≤ Δ ×
  *  weight(left), where weight is size+1.
  *
  *  @section basic_wb_tree_order_statistics Order Statistics
@@ -79,9 +79,9 @@ struct no_augmented_count_t {};
  *
  *  @section basic_wb_tree_rebalancing_parameters Rebalancing Parameters
  *
- *  Δ=3: Rotation threshold. Rebalance if weight(left) > 3×weight(right) or vice versa, with weight
- *  = size+1. Γ=2: Rotation type selector. Single rotation if weight(heavy.inner) <
- *  2×weight(heavy.outer).
+ *  Δ = 3 is the rotation threshold: rebalance when weight(left) > 3 × weight(right) or vice versa,
+ *  with weight = size + 1. Γ = 2 selects the rotation type: a single rotation when
+ *  weight(heavy.inner) < 2 × weight(heavy.outer).
  *
  *  These are the @b only valid integer parameters, proven in Coq by Hirai and Yamamoto in 2011, and
  *  are exposed as @c delta_k and @c gamma_k.
@@ -269,19 +269,20 @@ class basic_wb_node {
 
     /**
      *  @brief Select k-th smallest element (0-indexed).
-     *  @param[in] node Root of subtree.
-     *  @param[in] k Index of element to find (0 = minimum, size-1 = maximum).
-     *  @param[in] comparator Comparator instance.
-     *  @return Pointer to k-th node, or nullptr if k >= size.
      *
-     *  @par Complexity O(log n) expected, where n = size(node).
+     *  Runs in O(log n) expected time, where n = size(node).
      *
-     *  @par Example
+     *  Finding the median and the first quartile:
      *
      *  @code{.cpp}
      *  auto median = select(root, size/2, comp);  // Find median
      *  auto q1 = select(root, size/4, comp);      // First quartile
      *  @endcode
+     *
+     *  @param[in] node Root of subtree.
+     *  @param[in] k Index of element to find (0 = minimum, size-1 = maximum).
+     *  @param[in] comparator Comparator instance.
+     *  @return Pointer to k-th node, or nullptr if k >= size.
      */
     static node_t *select(node_t *node, size_t k, comparator_t const &comparator) noexcept {
         if (!node) return nullptr;
@@ -294,20 +295,19 @@ class basic_wb_node {
 
     /**
      *  @brief Find rank (position) of element in sorted order.
-     *  @param[in] node Root of subtree.
-     *  @param[in] comparable Key to find rank of.
-     *  @param[in] comparator Comparator instance.
-     *  @return Number of elements < comparable. If element exists, this is its 0-based index.
      *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Counting the elements ordered before @c value:
      *
      *  @code{.cpp}
      *  auto position = rank(root, value, comp);
      *  // position elements are smaller than value
      *  // If value exists, it's at index position
      *  @endcode
+     *
+     *  @param[in] node Root of subtree.
+     *  @param[in] comparable Key to find rank of.
+     *  @param[in] comparator Comparator instance.
+     *  @return Number of elements < comparable. If element exists, this is its 0-based index.
      */
     template <typename comparable_type_>
     static size_t rank(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
@@ -329,11 +329,12 @@ class basic_wb_node {
 
     /**
      *  @brief Select the k-th smallest entry among those the augmentation policy counts.
+     *
+     *  Runs in O(log n) time: one root-to-node path, reading only the stored counts.
+     *
      *  @param[in] node Root of subtree.
      *  @param[in] k Index among counted entries, 0 for the smallest.
      *  @return Pointer to the k-th counted node, or nullptr when fewer than k+1 are counted.
-     *
-     *  @par Complexity O(log n): one root-to-node path, reading only the stored counts.
      */
     static node_t *select_augmented(node_t *node, size_t k) noexcept {
         while (node) {
@@ -353,11 +354,12 @@ class basic_wb_node {
 
     /**
      *  @brief Number of counted entries ordered before @p comparable.
+     *
+     *  Runs in O(log n) time.
+     *
      *  @param[in] node Root of subtree.
      *  @param[in] comparable Key to find the augmented rank of.
      *  @param[in] comparator Comparator instance.
-     *
-     *  @par Complexity O(log n).
      */
     template <typename comparable_type_>
     static size_t rank_augmented(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
@@ -375,9 +377,10 @@ class basic_wb_node {
 
     /**
      *  @brief Repairs augmented counts on the path to @p comparable after its predicate flipped.
-     *  @return True when the entry was found, which is when anything was repaired.
      *
-     *  @par Complexity O(log n), touching only the ancestors whose counts could have moved.
+     *  Runs in O(log n) time, touching only the ancestors whose counts could have moved.
+     *
+     *  @return True when the entry was found, which is when anything was repaired.
      */
     template <typename comparable_type_>
     static bool refresh_augmentation(node_t *node, comparable_type_ &&comparable,
@@ -592,7 +595,7 @@ class basic_wb_node {
 
     /**
      *  @brief Check if node satisfies weight-balance invariant.
-     *  @return True if balanced: weight(left) ≤ Δ×weight(right) AND weight(right) ≤ Δ×weight(left)
+     *  @return True when weight(left) ≤ Δ × weight(right) and weight(right) ≤ Δ × weight(left).
      */
     static bool is_balanced(node_t *node) noexcept {
         if (!node) return true;
@@ -605,11 +608,9 @@ class basic_wb_node {
      *  @brief Rebalances a node whose weight invariant is violated. Uses Δ = 3 and Γ = 2, the only
      *      valid integer solution.
      *
-     *  @par Algorithm
-     *  - If left too heavy, with weight(left) > 3×weight(right):
-     *  - Single right rotation if weight(left.right) < 2×weight(left.left)
-     *  - Double (left-right) rotation otherwise
-     *  - Mirror logic for right-heavy case
+     *  When the left side is too heavy, weight(left) > 3 × weight(right), a single right rotation
+     *  fixes it if weight(left.right) < 2 × weight(left.left), and a double left-right rotation
+     *  does otherwise. The right-heavy case mirrors this.
      *
      *  @return New root after rebalancing (may be unchanged).
      */
@@ -921,17 +922,16 @@ class basic_wb_node {
      *  @brief Joins two trees with a root node between them. Precondition: @p root is non-null and
      *      all(left) < root < all(right).
      *
+     *  The two sides may sit many weight classes apart, so hanging @p root between them and
+     *  rotating once is not enough. Walking down the heavier side's inner spine until the two
+     *  pieces are within Δ of each other, then rebalancing on the way back up, is what keeps the
+     *  invariant - this is what makes @c split and @c erase_range produce balanced trees. Runs in
+     *  O(log n) expected time, where n is the size of the larger tree.
+     *
      *  @param[in] left Left subtree (all elements < root).
      *  @param[in] root Middle node to join with.
      *  @param[in] right Right subtree (all elements > root).
      *  @return New root of joined tree.
-     *
-     *  @par Complexity O(log n) expected, where n is size of larger tree.
-     *
-     *  The two sides may sit many weight classes apart, so hanging @p root between them and
-     *  rotating once is not enough. Walking down the heavier side's inner spine until the two
-     *  pieces are within Δ of each other, then rebalancing on the way back up, is what keeps the
-     *  invariant - this is what makes @c split and @c erase_range produce balanced trees.
      */
     static node_t *join_with_root(node_t *left, node_t *root, node_t *right) noexcept {
         assert(root && "Joining without a middle node loses one of the sides");
@@ -961,12 +961,12 @@ class basic_wb_node {
      *  @brief Joins two trees where all(left) < all(right). Recursively joins trees by extracting
      *      min from right subtree.
      *
+     *  Runs in O(log n) expected time.
+     *
      *  @param[in] left Left subtree.
      *  @param[in] right Right subtree.
      *  @param[in] comparator Comparator for ordering elements.
      *  @return New root of joined tree.
-     *
-     *  @par Complexity O(log n) expected.
      */
     static node_t *join(node_t *left, node_t *right, comparator_t const &comparator) noexcept {
         if (!left) return right;
@@ -983,20 +983,18 @@ class basic_wb_node {
      *  @brief Splits tree at a given key. Returns two trees: left contains all elements <
      *      comparable, right contains all elements >= comparable.
      *
-     *  @param[in] node Root of tree to split.
-     *  @param[in] comparable Key to split at.
-     *  @param[in] comparator Comparator for element comparison.
-     *  @return Split result with left and right subtrees.
-     *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Splitting around 5:
      *
      *  @code{.cpp}
      *  auto [left, right] = split(root, 5, comp);
      *  // left: all elements < 5
      *  // right: all elements >= 5
      *  @endcode
+     *
+     *  @param[in] node Root of tree to split.
+     *  @param[in] comparable Key to split at.
+     *  @param[in] comparator Comparator for element comparison.
+     *  @return Split result with left and right subtrees.
      */
     template <typename comparable_type_>
     static split_result_t split(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
@@ -1221,19 +1219,16 @@ class basic_wb_tree {
 
     /**
      *  @brief Select k-th smallest element (0-indexed).
-     *  @param[in] k Index of element to find (0 = minimum, size-1 = maximum).
-     *  @return Pointer to k-th node, or nullptr if k >= size.
      *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Printing the median:
      *
      *  @code{.cpp}
      *  auto median_node = tree.select(tree.size() / 2);
-     *  if (median_node) {
-     *      std::cout << "Median: " << median_node->payload << std::endl;
-     *  }
+     *  if (median_node) fmt::println("Median: {}", median_node->payload);
      *  @endcode
+     *
+     *  @param[in] k Index of element to find (0 = minimum, size-1 = maximum).
+     *  @return Pointer to k-th node, or nullptr if k >= size.
      */
     node_t *select(size_t k) noexcept { return node_t::select(root_, k, comparator_); }
 
@@ -1242,18 +1237,17 @@ class basic_wb_tree {
 
     /**
      *  @brief Find rank (position) of element in sorted order.
-     *  @param[in] payload Entry to find rank of.
-     *  @return Number of elements < @p payload. If element exists, this is its 0-based index.
-     *      Returns size() if element is greater than all elements in tree.
      *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Counting the elements ordered before 42:
      *
      *  @code{.cpp}
      *  auto position = tree.rank(42);
      *  // position elements are smaller than 42
      *  @endcode
+     *
+     *  @param[in] payload Entry to find rank of.
+     *  @return Number of elements < @p payload. If element exists, this is its 0-based index.
+     *      Returns size() if element is greater than all elements in tree.
      */
     size_t rank(value_t const &payload) const noexcept { return node_t::rank(root_, payload, comparator_); }
 
@@ -1392,12 +1386,7 @@ class basic_wb_tree {
      *  @brief Extracts a node from the tree. The extracted node is removed from the tree and
      *      returned in an RAII wrapper.
      *
-     *  @param[in] comparable Key to extract.
-     *  @return RAII wrapper containing extracted node (empty if not found).
-     *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Moving the node for 42 into another tree:
      *
      *  @code{.cpp}
      *  auto extracted = tree.extract(42);
@@ -1405,6 +1394,9 @@ class basic_wb_tree {
      *      other_tree.merge(std::move(extracted));
      *  }
      *  @endcode
+     *
+     *  @param[in] comparable Key to extract.
+     *  @return RAII wrapper containing extracted node (empty if not found).
      */
     template <typename comparable_type_>
     extract_result_t extract(comparable_type_ &&comparable) noexcept {
@@ -1533,9 +1525,7 @@ class basic_wb_tree {
      *      regular merge when caller guarantees no duplicate keys.
      *
      *  @param[in] other Tree to merge from. Will be empty after merge.
-     *
-     *  @par Precondition All keys in @c other must be different from keys in this tree.
-     *
+     *  @pre All keys in @p other must be different from keys in this tree.
      *  @warning If precondition violated (duplicate keys exist), behavior is undefined.
      */
     void merge(wb_tree_t &other, assume_unique_t) noexcept {
@@ -2041,18 +2031,16 @@ class basic_wb_tree {
      *  @brief Splits this tree at a given key. Returns both left (< key) and right (>= key) parts.
      *      This tree is left empty.
      *
-     *  @param[in] comparable Key to split at.
-     *  @return Split result containing left and right trees.
-     *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Splitting around 5:
      *
      *  @code{.cpp}
      *  auto split = tree.split(5);
      *  // split.left has elements < 5
      *  // split.right has elements >= 5
      *  @endcode
+     *
+     *  @param[in] comparable Key to split at.
+     *  @return Split result containing left and right trees.
      */
     template <typename comparable_type_>
     split_result_t split(comparable_type_ &&comparable) noexcept {
@@ -2078,19 +2066,16 @@ class basic_wb_tree {
      *  @brief Joins another tree into this one. Precondition: all elements in this tree < all
      *      elements in other tree.
      *
-     *  @param[in] other Tree to join (will be empty after join).
-     *
-     *  @par Complexity O(log n) expected.
-     *
-     *  @warning This is a low-level operation. The caller must ensure all(this) < all(other). For
-     *      general merging with duplicate handling, use merge() instead.
-     *
-     *  @par Example
+     *  Runs in O(log n) expected time. Splitting around 5 and joining back:
      *
      *  @code{.cpp}
      *  auto right = tree.split(5);  // tree: [0,5), right: [5,∞)
      *  tree.join(right);            // tree: [0,∞)
      *  @endcode
+     *
+     *  @param[in] other Tree to join (will be empty after join).
+     *  @warning This is a low-level operation. The caller must ensure all(this) < all(other). For
+     *      general merging with duplicate handling, use merge() instead.
      */
     void join(wb_tree_t &other) noexcept {
         if (!other.root_) return;

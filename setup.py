@@ -2,7 +2,7 @@
 
 File: setup.py
 Author: Ash Vardanian
-Date: August 22, 2026
+Date: October 30, 2025
 """
 
 import os
