@@ -921,6 +921,28 @@ struct refusing_allocator {
 
 #pragma endregion Stateful Allocator
 
+#pragma region Solitary Mutex
+
+/**
+ *  @brief A shared mutex for a store one thread drives, failing the test where that thread would
+ *      wait on itself.
+ *
+ *  With no other thread about, a mutex that cannot be taken at once is a hold its own thread never
+ *  gave back, and waiting for it would hang the suite rather than fail it. The check runs inside
+ *  the store's @c noexcept calls, so a failure terminates, and the harness backtraces it.
+ */
+class solitary_mutex_t {
+    spin_shared_mutex_t held_;
+
+  public:
+    void lock() noexcept { st_verify_((held_.try_lock()) && "a lock its own thread still holds"); }
+    void unlock() noexcept { held_.unlock(); }
+    void lock_shared() noexcept { st_verify_((held_.try_lock_shared()) && "a read blocked by its own thread's hold"); }
+    void unlock_shared() noexcept { held_.unlock_shared(); }
+};
+
+#pragma endregion Solitary Mutex
+
 #pragma region Basic Operation Test Templates
 
 /** Erases a range whether or not the container reports a status for it. */

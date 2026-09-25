@@ -1291,6 +1291,9 @@ class monotonic_store {
             return validate_watches_();
         }
 
+        /** Nothing to give back, since a validation here keeps no lock. */
+        void release_validation() const noexcept {}
+
         /**
          *  @brief Makes every staged version visible, which cannot fail and cannot refuse.
          *

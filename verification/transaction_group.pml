@@ -14,9 +14,10 @@
  *  one key per store; the writer commits over the watched key of the second store, under that
  *  store's unique lock, at any point. A group's stage may be refused at the second store, as an
  *  inner store may refuse it, and then unwinds the first. Its commit validates every watch, holding
- *  each store's lock as it goes, and publishes under those holds; a refusal is followed by the
- *  rollback that releases them. Under `-Dscenario=in_turn` each participant validates and publishes
- *  on its own, one store at a time. Under `-Dscenario=one_stamp` the stores share a
+ *  each store's lock as it goes, and publishes under those holds; a refusal gives every hold back
+ *  at once, then the first group reads the store it validated first and drops the group, and the
+ *  second rolls back under fresh locks. Under `-Dscenario=in_turn` each participant validates and
+ *  publishes on its own, one store at a time. Under `-Dscenario=one_stamp` the stores share a
  *  @c basic_commit_order: the group draws one stamp under the order's mutex once every store
  *  validated, stamps each store as it publishes, and moves the watermark once, after the last; a
  *  reader draws its snapshot under the order's mutex and reads each store under its shared lock.
@@ -26,6 +27,12 @@
  *  publication, the header before the fix, and the writer slips in between. It weakens the
  *  one-stamp branch only; the in-turn branch validates and publishes under a lock it never drops,
  *  so there is no window there to assert against.
+ *
+ *  No hold outlives a refusal: a caller reading a store after a refused commit never waits on its
+ *  own lock. `-Dwithout_refusal_release` keeps every hold through the refusal, as the header once
+ *  did, and the read blocks on the group's own lock, which Spin finds as an invalid end state.
+ *  The two groups split the read and the rollback between them, since a weak-memory history holds
+ *  sixteen writes per word, and both on one group would overflow it under the one-stamp reader.
  *
  *  Address order: two groups holding across their phases never deadlock, since both take the stores
  *  ascending. `-Dwithout_address_order` reverses one group's order and Spin finds the wait cycle as
@@ -96,7 +103,7 @@ int stamp_of[2];               // the newest stamp each group drew, zero before 
 
 /** A group: stages every participant in order, then commits or rolls back. */
 active [2] proctype group() {
-    byte me, position, reached, staged_count, validated_through;
+    byte me, position, reached, staged_count, held_through;
     int seen, version, drawn;
     bool refused;
     atomic { me = groups_started; groups_started++ };
@@ -134,10 +141,9 @@ active [2] proctype group() {
     :: else -> staging[me] = staged
     fi;
 #if scenario != in_turn
-    // Commit, asking every participant before any writes: `transaction_group::commit` in
-    // `shared.hpp`, its `asks_before_writing_k` branch.
-    // `validate_for_commit` holds the store's lock until the publication or the rollback:
-    // `locked_store::transaction_t::validate_for_commit` in `locked_store.hpp`.
+    // Commit, asking every participant before any writes, where a validation answering success
+    // holds its store's lock until the publication: `transaction_group::validate_participants_` in
+    // `shared.hpp` over `locked_store::transaction_t::validate_for_commit` in `locked_store.hpp`.
     for (position : 0 .. stores - 1) {
         reached = visited(me, position);
 #ifdef without_held_validation
@@ -146,26 +152,44 @@ active [2] proctype group() {
         unlock_shared(me, mutex(reached));
 #else
         lock(me, mutex(reached));
-        validated_through = position;
         load(me, watched(reached), order_relaxed, version);
 #endif
         if :: version != watch_seen[at(me, reached)] -> refused = true; break :: else fi
     };
     if
     :: refused ->
-        // Rollback, ascending: a participant holding its validation releases it, the rest take
-        // their lock: `transaction_group::rollback` in `shared.hpp`.
-        for (position : 0 .. stores - 1) {
-            reached = visited(me, position);
-#ifdef without_held_validation
-            lock(me, mutex(reached));
-#else
-            if :: position > validated_through -> lock(me, mutex(reached)) :: else fi;
+#ifdef without_refusal_release
+        held_through = position;
+#elif !defined(without_held_validation)
+        // The refusing store gives its own hold straight back, and every store asked before it
+        // follows, descending: `transaction_group::validate_participants_` over
+        // `locked_store::transaction_t::release_validation`.
+        do
+        :: unlock(me, mutex(visited(me, position)));
+           if :: position == 0 -> break :: else -> position-- fi
+        od;
 #endif
-            staged_at[at(me, reached)] = false;
-            unlock(me, mutex(reached))
-        };
-        staging[me] = pending;
+        if
+        :: me == 0 ->
+            // The caller reads the store it validated first, which a hold left behind blocks for
+            // good, and then drops the group
+            lock_shared(me, mutex(visited(me, 0)));
+            unlock_shared(me, mutex(visited(me, 0)))
+        :: else ->
+            // Rollback, ascending, each participant under a lock of its own, or reusing the holds
+            // where a refusal kept them: `transaction_group::rollback` in `shared.hpp`.
+            for (position : 0 .. stores - 1) {
+                reached = visited(me, position);
+#ifdef without_refusal_release
+                if :: position > held_through -> lock(me, mutex(reached)) :: else fi;
+#else
+                lock(me, mutex(reached));
+#endif
+                staged_at[at(me, reached)] = false;
+                unlock(me, mutex(reached))
+            };
+            staging[me] = pending
+        fi;
         goto done
     :: else
     fi;

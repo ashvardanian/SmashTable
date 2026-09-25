@@ -724,9 +724,13 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
                                 std::all_of(group->parts.begin(), group->parts.end(),
                                             [](participant_t const &part) noexcept { return part.splits_commit(); });
         if (asks_first) {
-            for (auto &participant : group->parts) {
-                status = participant.validate_for_commit();
-                if (failed(status)) return;
+            std::size_t validated = 0;
+            for (; validated != group->parts.size(); ++validated)
+                if (status = group->parts[validated].validate_for_commit(); failed(status)) break;
+            if (failed(status)) {
+                // No publication follows a refusal, so the earlier validations' holds go back now.
+                while (validated != 0) group->parts[--validated].release_validation();
+                return;
             }
             for (auto &participant : group->parts) participant.publish_under();
         }

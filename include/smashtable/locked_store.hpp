@@ -88,8 +88,9 @@ class locked_store {
         /** The inner store's own transaction, which stages entirely outside the mutex. */
         inner_transaction_t inner_transaction_;
 
-        /** The hold @c validate_for_commit leaves on the mutex for the publication, rollback or
-         *  reset that answers it; empty between such pairs, and released with the transaction. */
+        /** The hold a successful @c validate_for_commit leaves on the mutex for the publication,
+         *  rollback, reset or @c release_validation that answers it; empty between such pairs, and
+         *  released with the transaction. */
         unique_lock<mutex_t> validation_;
         static_assert(std::is_nothrow_move_constructible<inner_transaction_t>());
 
@@ -507,18 +508,30 @@ class locked_store {
          *
          *  A caller spanning several stores asks every part whether it may proceed, publishes all
          *  of them, then reclaims - so the phases are separate calls rather than one @c commit. The
-         *  validation takes this store's mutex exclusively and keeps it until the publication, the
-         *  rollback or the reset that follows: a writer slipping in between would move a watched
-         *  key after the answer, which is the lost update the watch was taken against. Callers take
-         *  the stores in ascending address, so two of them holding across the phases cannot
-         *  deadlock; a shard set holds its partition locks around all of this, and the two orders
-         *  never cross, since a partition lock is always taken first.
+         *  validation takes this store's mutex exclusively and, where it answers success, keeps it
+         *  until the publication, the rollback, the reset or the @c release_validation that
+         *  follows: a writer slipping in between would move a watched key after the answer, which
+         *  is the lost update the watch was taken against. A refusal gives the mutex straight back,
+         *  since no publication will answer it. Callers take the stores in ascending address, so
+         *  two of them holding across the phases cannot deadlock; a shard set holds its partition
+         *  locks around all of this, and the two orders never cross, since a partition lock is
+         *  always taken first.
          */
         status_t validate_for_commit() noexcept
             requires(inner_transaction_shards_k || inner_transaction_splits_commit_k)
         {
             validation_ = held_();
-            return inner_transaction_.validate_for_commit();
+            status_t const permitted = inner_transaction_.validate_for_commit();
+            if (failed(permitted)) validation_.release();
+            return permitted;
+        }
+
+        /** Gives back the mutex a successful validation kept, where another part refused and
+         *  nothing will publish. */
+        void release_validation() noexcept
+            requires(inner_transaction_shards_k || inner_transaction_splits_commit_k)
+        {
+            validation_.release();
         }
 
         /** Publishes everything staged under @p stamp, which the shard set drew for the whole

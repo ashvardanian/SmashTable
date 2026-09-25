@@ -1753,6 +1753,9 @@ class snapshot_store {
             return validate_accesses_();
         }
 
+        /** Nothing to give back, since a validation here keeps no lock. */
+        void release_validation() const noexcept {}
+
         /**
          *  @brief Publishes every staged version under @p stamp; it can neither fail nor refuse.
          *

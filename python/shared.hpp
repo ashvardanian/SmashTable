@@ -661,6 +661,10 @@ struct store_ops_t {
      *  refuse. */
     void (*transaction_publish)(releases_t &releases, void *transaction) noexcept;
 
+    /** Gives back what a validation answering success kept, where another participant refused and
+     *  nothing will publish. Null exactly where the pair above is. */
+    void (*transaction_release_validation)(releases_t &releases, void *transaction) noexcept;
+
     /** Pulls staged changes back into the transaction, keeping them for a retry rather than
      *  dropping them. */
     status_t (*transaction_rollback)(releases_t &releases, void *transaction) noexcept;
@@ -1000,6 +1004,7 @@ struct participant_t {
         return table->transaction_validate(*releases, transaction);
     }
     void publish_under() noexcept { table->transaction_publish(*releases, transaction); }
+    void release_validation() noexcept { table->transaction_release_validation(*releases, transaction); }
 
     /** Whether this participant can be asked whether it may commit before any of them writes. A
      *  store deciding and writing in one call leaves the pair null, and a group holding one falls

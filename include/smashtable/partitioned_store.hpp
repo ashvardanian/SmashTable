@@ -1203,6 +1203,25 @@ class partitioned_store {
         }
 
         /**
+         *  @brief Asks every reached partition whether it may commit, before any of them writes.
+         *
+         *  A part that answered success may keep its own lock for the publication, so where a later
+         *  one refuses, every part asked before it gives its hold back, and the refusal leaves no
+         *  lock behind but the partition locks the caller drops on return.
+         */
+        status_t validate_reached_parts_() noexcept {
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                if (status_t const refused = partitions_[reached.index].validate_for_commit(); failed(refused)) {
+                    for (marked_partition_t validated = touched_.first_marked(); validated.index != reached.index;
+                         validated = touched_.next_marked(validated.index))
+                        partitions_[validated.index].release_validation();
+                    return refused;
+                }
+            return success_k;
+        }
+
+        /**
          *  @brief Publishes every reached partition, having first learned that all of them may.
          *
          *  The engines behind this path stamp their own versions, so there is no shared order and
@@ -1214,10 +1233,7 @@ class partitioned_store {
             requires(!draws_from_a_shared_order<inner_store_t> && inner_transaction_splits_commit_k)
         {
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
-                if (status_t const refused = partitions_[reached.index].validate_for_commit(); failed(refused))
-                    return refused;
+            if (status_t const refused = validate_reached_parts_(); failed(refused)) return refused;
 
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
@@ -1250,10 +1266,7 @@ class partitioned_store {
         {
             order_t &order = store_->order_;
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
-                if (status_t const refused = partitions_[reached.index].validate_for_commit(); failed(refused))
-                    return refused;
+            if (status_t const refused = validate_reached_parts_(); failed(refused)) return refused;
 
             typename order_t::commit_in_flight_t in_flight;
             order.begin_commit(in_flight);

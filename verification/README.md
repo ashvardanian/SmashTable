@@ -9,7 +9,7 @@ Model checking for the protocols the stores promise: the two-phase group commit,
 - `spin_shared_mutex.pml` — `spin_shared_mutex_t` as one word, the lock an acquire exchange and the unlock a release, shared by every model here.
   `-Dwaiting=` for the policy its two retry loops plug in.
 - `locked_store.pml` — `locked_store`: one shared mutex per call, exclusion, and a reader inside the lock seeing a commit whole.
-- `transaction_group.pml` — `transaction_group`: staging in address order and the unwind of a refused prefix, the two-pass commit that asks every participant before any writes, the in-turn commit's tear, and a participant holding its lock across the phases.
+- `transaction_group.pml` — `transaction_group`: staging in address order and the unwind of a refused prefix, the two-pass commit that asks every participant before any writes, the in-turn commit's tear, and a participant holding its lock across the phases and giving it back at a refusal.
   `-Dscenario=one_stamp` for stores on one clock: the group's stamp drawn before any store is written and the watermark moved after the last, against a reader that must see the group whole.
 - `partitioned_store.pml` — `partitioned_store`: the reached partitions held ascending, the stamp drawn before any write and the watermark moved after the last, and the cursor's epoch.
   `-Dscenario=cursor` for the epoch.
@@ -29,8 +29,13 @@ Model checking for the protocols the stores promise: the two-phase group commit,
 A `locked_store` dropped its mutex between the two phases of a split commit.
 `validate_for_commit` took the shared lock and released it, `publish_under` took the unique lock after, and the inner publication is documented "only ever called after `validate_for_commit` answered success, with nothing since": a writer committing over a watched key in the gap was the lost update the watch was taken against.
 The partition locks of a `partitioned_store` cover the gap, but a group built straight from locked stores, the README's own example, had nothing over it.
-`transaction_group.pml` found it with one writer against two groups; the validation now takes the mutex exclusively and keeps it until the publication, the rollback or the reset that follows, and `-Dwithout_held_validation` keeps the counterexample.
+`transaction_group.pml` found it with one writer against two groups; the validation now takes the mutex exclusively and, when it answers success, keeps it until the publication, the rollback or the reset that follows, and `-Dwithout_held_validation` keeps the counterexample.
 Two groups holding across their phases cannot deadlock because both take the stores ascending, which the group already argued and `-Dwithout_address_order` now shows by reversing one of them.
+
+That hold then outlived a refusal: a refused validation kept its store's mutex, and so did every store asked before it, so the caller's next read of any of them waited on its own thread.
+The fuzzer found it rather than a model, since the model rolled back straight after the refusal and the rollback reused the holds.
+A refused validation now gives its hold straight back, a caller that asked several stores gives back the holds of those asked before the refusal, and the rollback takes its locks anew.
+In `transaction_group.pml` one refused group now reads a store it validated and the other rolls back under fresh locks, and `-Dwithout_refusal_release` keeps the holds and deadlocks at that read.
 
 The atomic hash table counted a slot populated after it had unlocked it.
 `emplace` released the slot and then added to `populated_count`, while `erase` subtracted under the lock, so an eraser slipping in between took the unsigned count through zero.

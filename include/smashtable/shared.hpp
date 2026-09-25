@@ -2828,11 +2828,16 @@ status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempt
  *
  *  @c publish_under is the no-stamp spelling: an engine keeping an order draws its own stamp inside
  *  it, and one keeping none orders its own versions. Neither can refuse.
+ *
+ *  A validation that answers success may keep a lock for the publication that follows, and
+ *  @c release_validation gives it back where no publication will, because another participant
+ *  refused. A validation that refuses keeps nothing.
  */
 template <typename transaction_type_>
 concept splits_its_commit = requires(transaction_type_ &transaction) {
     { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
     transaction.publish_under();
+    transaction.release_validation();
 };
 
 /**
@@ -2846,6 +2851,7 @@ template <typename transaction_type_>
 concept shards_its_commit = requires(transaction_type_ &transaction, generation_t stamp) {
     { transaction.validate_for_commit() } noexcept -> std::same_as<status_t>;
     transaction.publish_under(static_cast<commit_stamp_t>(stamp));
+    transaction.release_validation();
     transaction.adopt_snapshot(stamp);
     transaction.prune_committed();
     transaction.reset_at(stamp);
@@ -2935,6 +2941,30 @@ class transaction_group {
     template <typename visitor_type_>
     status_t visit_at_(std::size_t position, visitor_type_ &&visitor) noexcept {
         return visit_at_(position, std::forward<visitor_type_>(visitor), std::make_index_sequence<participants_k> {});
+    }
+
+    /**
+     *  @brief Asks every participant whether it may publish, before any of them writes.
+     *
+     *  A wrapper that answered success keeps its lock for the publication, so where a later
+     *  participant refuses, every one asked before it gives its hold back, descending, and the
+     *  refusal leaves no lock behind. The group stays staged, and @c rollback takes its locks anew.
+     */
+    status_t validate_participants_() noexcept {
+        for (std::size_t position = 0; position != participants_k; ++position)
+            if (status_t const refused = visit_at_(
+                    order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+                failed(refused)) {
+                while (position != 0) {
+                    [[maybe_unused]] status_t const released =
+                        visit_at_(order_[--position], [](auto &transaction) noexcept {
+                            transaction.release_validation();
+                            return success_k;
+                        });
+                }
+                return refused;
+            }
+        return success_k;
     }
 
     /** Opens one transaction per store, each drawing its own snapshot where it keeps one. */
@@ -3106,13 +3136,7 @@ class transaction_group {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         if constexpr (shares_one_order_k) {
             order_t &order = claim_.order();
-            // A wrapper keeps its lock from here to its `publish_under`, so a refusal leaves the
-            // locks held for the `rollback` or `reset` that follows.
-            for (std::size_t position = 0; position != participants_k; ++position)
-                if (status_t const refused = visit_at_(
-                        order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
-                    failed(refused))
-                    return refused;
+            if (status_t const refused = validate_participants_(); failed(refused)) return refused;
 
             typename order_t::commit_in_flight_t in_flight;
             order.begin_commit(in_flight);
@@ -3141,11 +3165,7 @@ class transaction_group {
             committed_stamp_ = static_cast<generation_t>(in_flight.stamp());
         }
         else if constexpr (asks_before_writing_k) {
-            for (std::size_t position = 0; position != participants_k; ++position)
-                if (status_t const refused = visit_at_(
-                        order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
-                    failed(refused))
-                    return refused;
+            if (status_t const refused = validate_participants_(); failed(refused)) return refused;
 
             for (std::size_t position = 0; position != participants_k; ++position) {
                 [[maybe_unused]] status_t const published = visit_at_(order_[position], [](auto &transaction) noexcept {

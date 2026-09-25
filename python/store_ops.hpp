@@ -635,6 +635,7 @@ struct store_bridge {
             // Spelled out because the stamped overload shares the name, and only this one is wanted.
             built.transaction_publish =
                 &transaction_lifecycle<static_cast<void (transaction_t::*)() noexcept>(&transaction_t::publish_under)>;
+            built.transaction_release_validation = &transaction_lifecycle<&transaction_t::release_validation>;
         }
         built.transaction_rollback = &transaction_lifecycle<&transaction_t::rollback>;
         built.transaction_reset = &transaction_lifecycle<&transaction_t::reset>;

@@ -204,6 +204,10 @@ using partitioned_enumerable_set_t = partitioned_store<enumerable_set_t>;
 using transactional_tracking_set_t = locked_set<tree_trivial_set_t>;
 using transactional_tracking_map_t = locked_map<tree_trivial_map_t>;
 
+/** Sharded over parts that each lock on their own, behind a mutex that fails the suite rather than
+ *  wait on its own thread, so a refused commit that left a part locked cannot hang it. */
+using solitary_locked_sharded_map_t = partitioned_map<locked_map<tree_trivial_map_t, solitary_mutex_t>>;
+
 /** The shape-naming aliases wrap one class each, so what distinguishes them is which stores they
  *  accept: an alias taking every store would name its sibling's type and catch nothing. */
 template <typename store_type_>
@@ -1563,24 +1567,27 @@ static void sharded_ops_move_only_key_reaches_a_partition() {
  *  transaction may have published over a watched key while this one sat staged. Asking one
  *  partition at a time meant a later refusal arrived over writes an earlier partition had already
  *  made visible - a reader could name values from a transaction that told its caller it had not
- *  committed, which is weaker than the level this configuration reports.
+ *  committed, which is weaker than the level this configuration reports. Over parts that lock on
+ *  their own, the refusal also gives every part's lock back, or the read after it waits on itself.
  */
-static void sharded_ops_commit_publishes_all_or_nothing() {
-    using store_t = transactional_trivial_map_t;
+template <typename store_type_>
+static void test_commit_publishes_all_or_nothing() {
+    using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
     store_t store;
 
-    // Two keys the hash sends to different partitions, so one can refuse after the other would publish.
+    // Two keys the hash sends to different partitions, the watched one's higher, so it refuses
+    // after the written one has validated and would publish.
     trivial_id_t written = 0, watched = 0;
     hash<trivial_key_t> const hasher;
     std::size_t const parts = partitions_of_v<store_t>;
     for (trivial_id_t candidate = 1; candidate != 512 && !watched; ++candidate) {
         std::size_t const part = hasher(trivial_id_to_key<member_t>(candidate)) % parts;
         if (!written) written = candidate;
-        else if (part != hasher(trivial_id_to_key<member_t>(written)) % parts) watched = candidate;
+        else if (part > hasher(trivial_id_to_key<member_t>(written)) % parts) watched = candidate;
     }
-    st_verify_((written && watched) && "the fixture needs two keys in different partitions");
+    st_verify_((written && watched) && "the fixture needs two keys in ascending partitions");
 
     st_verify_(store.upsert(trivial_id_to_member<member_t>(watched, 1)));
 
@@ -1599,6 +1606,12 @@ static void sharded_ops_commit_publishes_all_or_nothing() {
     expected<bool> const landed = store.contains(trivial_id_to_key<member_t>(written));
     st_verify_(landed);
     st_verify_eq_(*landed, false, "a refused commit must leave none of its writes readable");
+    st_verify_(writer->rollback());
+}
+
+static void sharded_ops_commit_publishes_all_or_nothing() {
+    test_commit_publishes_all_or_nothing<transactional_trivial_map_t>();
+    test_commit_publishes_all_or_nothing<solitary_locked_sharded_map_t>();
 }
 
 /**

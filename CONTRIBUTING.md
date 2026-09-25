@@ -139,6 +139,8 @@ A method that cannot honour this says so in its own docblock, the way a bounded 
 Never duplicate a batch element with `value_t(*first)`: that expression cannot report a refusal and will not compile over a move-only element, so route it through `stage_each`, which copies through `copy_safely` and moves an rvalue.
 The `batches_atomically` concept checks the shape; the rollback itself is pinned by `test_batch_atomicity.hpp`, which refuses the allocator at every point a batch asks for memory.
 
+A call that returns an error releases every lock it took, in every store and in every split protocol to come, and only a success may hand a lock on to the next step, as `validate_for_commit` hands its store's mutex to `publish_under`.
+
 Internal `private` data and functions should be suffixed with an underscore (`_`).
 
 Every all-caps name starts with the full project name, `SMASHTABLE_`.

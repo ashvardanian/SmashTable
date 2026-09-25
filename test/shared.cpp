@@ -653,6 +653,7 @@ enum class phase_t : std::uint8_t {
     stage_k,
     validate_k,
     publish_k,
+    release_k,
     commit_k,
     rollback_k,
     reset_k,
@@ -722,6 +723,12 @@ struct recording_store {
             requires(shape_ == commit_shape_t::split_k)
         {
             [[maybe_unused]] status_t const published = record(phase_t::publish_k, success_k);
+        }
+
+        void release_validation() noexcept
+            requires(shape_ == commit_shape_t::split_k)
+        {
+            [[maybe_unused]] status_t const released = record(phase_t::release_k, success_k);
         }
 
       private:
@@ -891,7 +898,8 @@ static void transaction_group_torn_commit_stops_claiming_staged() {
     st_verify_(stores_visited(log, phase_t::reset_k) == every);
 }
 
-/** Where every participant splits its commit, a refusal publishes nothing at all. */
+/** Where every participant splits its commit, a refusal publishes nothing and leaves no hold
+ *  behind. */
 static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     using store_t = recording_store<commit_shape_t::split_k>;
     static_assert(transaction_group<store_t, store_t>::asks_before_writing_k,
@@ -909,6 +917,10 @@ static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     log.clear();
     st_verify_eq_(group.commit(), write_conflict_k);
     st_verify_(stores_visited(log, phase_t::publish_k).empty());
+
+    // Only the store asked before the refusal has a validation to give back.
+    std::vector<std::size_t> const released {0};
+    st_verify_(stores_visited(log, phase_t::release_k) == released);
 
     // Nothing was written, so the group is staged and the caller may still unwind or retry it.
     st_verify_eq_(group.staging(), staging_t::staged_k);

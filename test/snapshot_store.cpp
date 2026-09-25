@@ -113,9 +113,12 @@ using sharded_snapshot_map_t = partitioned_store<snapshot_avl_map_t>;
 /** The same map behind one mutex, which is what a group of stores on one order is made of. */
 using locked_snapshot_map_t = locked_store<snapshot_avl_map_t>;
 
+/** The same again behind a mutex that fails the suite rather than wait on its own thread, so a
+ *  refused group that left a lock behind cannot hang it. */
+using solitary_locked_snapshot_map_t = locked_store<snapshot_avl_map_t, solitary_mutex_t>;
+
 /** The same two cores built into a shared order rather than each making its own, which is what a
- *  group of stores is. No mutex around them: a group fuzzer writes to a store while a group over it
- *  sits staged, and a wrapper's lock is not recursive. */
+ *  group of stores is. */
 using grouped_snapshot_map_t = typename snapshot_avl_map_t::template rebind_order<commit_order_t>;
 using grouped_serializable_map_t = typename serializable_avl_map_t::template rebind_order<commit_order_t>;
 
@@ -3394,6 +3397,7 @@ int main(int, char **arguments) {
     });
     tally += run_test(environment, "fuzz.refused_group_publishes_nothing", [](test_context_t const &context) {
         test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>(context);
+        test_a_refused_group_publishes_nothing<solitary_locked_snapshot_map_t, solitary_locked_snapshot_map_t>(context);
     });
     tally += run_test(environment, "fuzz.accepted_group_publishes_everything", [](test_context_t const &context) {
         test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>(context);

@@ -19,7 +19,7 @@ verify locked_store.pml pass -Dwaiting=pausing
 verify locked_store.pml pass -Dwaiting=on_the_address
 verify locked_store.pml pass -Dwaiting=parking
 
-section "transaction_group.pml: staging in address order, the two-pass commit, the in-turn tear, and the held validation"
+section "transaction_group.pml: staging in address order, the two-pass commit, the in-turn tear, the held validation, and its release at a refusal"
 verify transaction_group.pml pass -Dmemory=sequential
 verify transaction_group.pml pass
 verify transaction_group.pml pass -Dmemory=sequential -Dscenario=in_turn
@@ -27,6 +27,7 @@ verify transaction_group.pml fail -Dmemory=sequential -Dscenario=in_turn -Dwhole
 verify transaction_group.pml fail -Dmemory=sequential -Dwithout_address_order
 verify transaction_group.pml fail -Dmemory=sequential -Dwithout_prefix_rollback
 verify transaction_group.pml fail -Dmemory=sequential -Dwithout_held_validation
+verify transaction_group.pml fail -Dmemory=sequential -Dwithout_refusal_release
 verify transaction_group.pml pass -Dmemory=sequential -Dscenario=one_stamp
 verify transaction_group.pml pass -Dscenario=one_stamp
 verify transaction_group.pml fail -Dmemory=sequential -Dscenario=one_stamp -Dwithout_one_stamp
