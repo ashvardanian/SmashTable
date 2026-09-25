@@ -31,7 +31,7 @@
 #include "harness.hpp"
 
 using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
+using namespace ashvardanian::smashtable::bench;
 
 namespace {
 

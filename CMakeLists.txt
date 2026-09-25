@@ -174,12 +174,11 @@ if (SMASHTABLE_BUILD_TEST)
         add_test(NAME test_${subject} COMMAND smashtable_test_${subject})
     endforeach ()
 
-    # Benchmarks reach the test fixtures for their keys and their allocation ledger, so `test/` is on
-    # their include path too. None is registered with CTest, so no suite pays for one.
+    # No benchmark is registered with CTest, so no suite pays for one.
     if (SMASHTABLE_BUILD_BENCH)
         foreach (subject IN ITEMS row_search)
             add_executable(smashtable_bench_${subject} bench/${subject}.cpp)
-            target_include_directories(smashtable_bench_${subject} PRIVATE bench/ test/)
+            target_include_directories(smashtable_bench_${subject} PRIVATE bench/)
             target_link_libraries(smashtable_bench_${subject} PRIVATE smashtable::header smashtable_warnings)
         endforeach ()
     endif ()
