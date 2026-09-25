@@ -1,46 +1,53 @@
 /**
- *  `transaction_group` from `include/smashtable/shared.hpp` over two `locked_store`s: every
- *  participant staged in ascending store address and the staged prefix unwound on a refusal;
- *  a commit that asks every participant before any of them writes, where the stores split
- *  their commit, and one that commits in turn where they do not; and a participant that holds
- *  its store's mutex from its validation to its publication, so nothing moves in between.
+ *  @file verification/transaction_group.pml
+ *  @author Ash Vardanian
+ *  @date September 11, 2026
+ *  @brief @c transaction_group from `include/smashtable/shared.hpp` over two
+ *      @c locked_store instances.
  *
- *  Two groups and one writer. Each group watches one key per store while it stages, and
- *  publishes one key per store; the writer commits over the watched key of the second store,
- *  under that store's unique lock, at any point. A group's stage may be refused at the second
- *  store, as an inner store may refuse it, and then unwinds the first. Its commit validates
- *  every watch, holding each store's lock as it goes, and publishes under those holds; a
- *  refusal is followed by the rollback that releases them. Under `-Dscenario=in_turn` each
- *  participant validates and publishes on its own, one store at a time. Under
- *  `-Dscenario=one_stamp` the stores share a `basic_commit_order`: the group draws one stamp
- *  under the order's mutex once every store validated, stamps each store as it publishes, and moves
- *  the watermark once, after the last; a reader draws its snapshot under the order's mutex and reads
- *  each store under its shared lock.
+ *  Every participant staged in ascending store address and the staged prefix unwound on a refusal;
+ *  a commit that asks every participant before any of them writes, where the stores split their
+ *  commit, and one that commits in turn where they do not; and a participant that holds its store's
+ *  mutex from its validation to its publication, so nothing moves in between.
  *
- *  Invariants:
- *  - no lost update: at every publication the watched key still holds what the group watched.
- *    `-Dwithout_held_validation` validates under a shared lock it drops before the unique lock
- *    of the publication, the header before the fix, and the writer slips in between. It weakens
- *    the one-stamp branch only; the in-turn branch validates and publishes under a lock it never
- *    drops, so there is no window there to assert against;
- *  - address order: two groups holding across their phases never deadlock, since both take
- *    the stores ascending. `-Dwithout_address_order` reverses one group's order and Spin finds
- *    the wait cycle as an invalid end state;
- *  - all or none: a group that returned success published every participant, and one that was
- *    refused published none, where the stores split their commit. Under `in_turn` the docs
- *    promise less: `-Dwhole_across_stores` asserts all or none there too and fails, the tear
- *    the docs admit, while the scenario itself asserts what they do promise, that a group whose
- *    commit tore ends pending, so a second commit is refused as not permitted;
- *  - the unwind: after a refused stage no store holds the group's staged mark.
- *    `-Dwithout_prefix_rollback` leaves the first store staged;
- *  - one stamp: a reader whose snapshot covers a group's stamp finds that stamp, or a newer one, in
- *    every store. `-Dwithout_one_stamp` draws and publishes a stamp per store, as each store's own
- *    commit would, and the reader catches the group half published.
+ *  Two groups and one writer. Each group watches one key per store while it stages, and publishes
+ *  one key per store; the writer commits over the watched key of the second store, under that
+ *  store's unique lock, at any point. A group's stage may be refused at the second store, as an
+ *  inner store may refuse it, and then unwinds the first. Its commit validates every watch, holding
+ *  each store's lock as it goes, and publishes under those holds; a refusal is followed by the
+ *  rollback that releases them. Under `-Dscenario=in_turn` each participant validates and publishes
+ *  on its own, one store at a time. Under `-Dscenario=one_stamp` the stores share a
+ *  @c basic_commit_order: the group draws one stamp under the order's mutex once every store
+ *  validated, stamps each store as it publishes, and moves the watermark once, after the last; a
+ *  reader draws its snapshot under the order's mutex and reads each store under its shared lock.
+ *
+ *  No lost update: at every publication the watched key still holds what the group watched.
+ *  `-Dwithout_held_validation` validates under a shared lock it drops before the unique lock of the
+ *  publication, the header before the fix, and the writer slips in between. It weakens the
+ *  one-stamp branch only; the in-turn branch validates and publishes under a lock it never drops,
+ *  so there is no window there to assert against.
+ *
+ *  Address order: two groups holding across their phases never deadlock, since both take the stores
+ *  ascending. `-Dwithout_address_order` reverses one group's order and Spin finds the wait cycle as
+ *  an invalid end state.
+ *
+ *  All or none: a group that returned success published every participant, and one that was refused
+ *  published none, where the stores split their commit. Under @c in_turn the docs promise less:
+ *  `-Dwhole_across_stores` asserts all or none there too and fails, the tear the docs admit, while
+ *  the scenario itself asserts what they do promise, that a group whose commit tore ends pending,
+ *  so a second commit is refused as not permitted.
+ *
+ *  The unwind: after a refused stage no store holds the group's staged mark.
+ *  `-Dwithout_prefix_rollback` leaves the first store staged.
+ *
+ *  One stamp: a reader whose snapshot covers a group's stamp finds that stamp, or a newer one, in
+ *  every store. `-Dwithout_one_stamp` draws and publishes a stamp per store, as each store's own
+ *  commit would, and the reader catches the group half published.
  */
 #include "weak_memory.pml"
 #include "spin_shared_mutex.pml"
 
-// The knob's values are integers, so a typo fails the range check below.
+/** The knob's values are integers, so a typo fails the range check below. */
 #define two_pass 1
 #define in_turn 2
 #define one_stamp 3
@@ -51,13 +58,14 @@
 #error "scenario is two_pass, in_turn or one_stamp"
 #endif
 
-// The threads, by role, apart from the processes that play them; the groups name themselves.
+/** The threads, by role, apart from the processes that play them; the groups name themselves. */
 #define writer_thread 2
 #define reader_thread 3
 #define stores 2
 
-// The words: each store's mutex and the version of the key each group watches there; then the
-// order's mutex, its stamp counter and its watermark, and the newest stamp each store was written under.
+/** The words: each store's mutex and the version of the key each group watches there; then
+ *  the order's mutex, its stamp counter and its watermark, and the newest stamp each store
+ *  was written under. */
 #define mutex(reached) (reached)
 #define watched(reached) (2 + (reached))
 #define order_mutex 4
@@ -65,14 +73,14 @@
 #define published_stamp 6
 #define stamp_at(reached) (7 + (reached))
 
-// The order a group visits the stores in: ascending, unless one group is told otherwise.
+/** The order a group visits the stores in: ascending, unless one group is told otherwise. */
 #ifdef without_address_order
 #define visited(group, position) ((group) == 1 -> 1 - (position) : (position))
 #else
 #define visited(group, position) (position)
 #endif
 
-// What the group's ghost state spells, as `staging_t` does.
+/** What the group's ghost state spells, as @c staging_t does. */
 #define pending 0
 #define staged 1
 
@@ -86,12 +94,14 @@ int watch_seen[2 * stores];    // the version each group watched at its stage
 int stamp_of[2];               // the newest stamp each group drew, zero before it drew one
 #define at(group, store) ((group) * stores + (store))
 
+/** A group: stages every participant in order, then commits or rolls back. */
 active [2] proctype group() {
     byte me, position, reached, staged_count, validated_through;
     int seen, version, drawn;
     bool refused;
     atomic { me = groups_started; groups_started++ };
-    // stage: each participant under its store's unique lock, in order, the prefix unwound on a refusal: transaction_group::stage
+    // Stage: each participant under its store's unique lock, in order, the prefix unwound on a
+    // refusal: `transaction_group::stage` in `shared.hpp`.
     for (position : 0 .. stores - 1) {
         reached = visited(me, position);
         lock(me, mutex(reached));
@@ -124,8 +134,10 @@ active [2] proctype group() {
     :: else -> staging[me] = staged
     fi;
 #if scenario != in_turn
-    // commit, asking every participant before any writes: transaction_group::commit, its asks_before_writing_k branch
-    // validate_for_commit holds the store's lock until the publication or the rollback: locked_store::transaction_t::validate_for_commit
+    // Commit, asking every participant before any writes: `transaction_group::commit` in
+    // `shared.hpp`, its `asks_before_writing_k` branch.
+    // `validate_for_commit` holds the store's lock until the publication or the rollback:
+    // `locked_store::transaction_t::validate_for_commit` in `locked_store.hpp`.
     for (position : 0 .. stores - 1) {
         reached = visited(me, position);
 #ifdef without_held_validation
@@ -141,7 +153,8 @@ active [2] proctype group() {
     };
     if
     :: refused ->
-        // rollback, ascending: a participant holding its validation releases it, the rest take their lock: transaction_group::rollback
+        // Rollback, ascending: a participant holding its validation releases it, the rest take
+        // their lock: `transaction_group::rollback` in `shared.hpp`.
         for (position : 0 .. stores - 1) {
             reached = visited(me, position);
 #ifdef without_held_validation
@@ -157,7 +170,8 @@ active [2] proctype group() {
     :: else
     fi;
 #if scenario == one_stamp && !defined(without_one_stamp)
-    // begin_commit: one stamp for the whole group, drawn under the order's mutex before any store is written
+    // `begin_commit`: one stamp for the whole group, drawn under the order's mutex before any
+    // store is written
     lock(me, order_mutex);
     read_modify_write(me, commits, order_relaxed, seen, seen + 1);
     drawn = seen + 1;
@@ -169,13 +183,14 @@ active [2] proctype group() {
 #ifdef without_held_validation
         lock(me, mutex(reached));
 #endif
-        // publish_under: nothing moved since the validation, or the update is lost: locked_store::transaction_t::publish_under
+        // `publish_under`: nothing moved since the validation, or the update is lost:
+        // `locked_store::transaction_t::publish_under` in `locked_store.hpp`.
         assert(newest_value(watched(reached)) == watch_seen[at(me, reached)]);
         published_at[at(me, reached)] = true;
         staged_at[at(me, reached)] = false;
 #if scenario == one_stamp
 #ifdef without_one_stamp
-        // a stamp per store, drawn and published as that store's own commit would
+        // A stamp per store, drawn and published as that store's own commit would
         lock(me, order_mutex);
         read_modify_write(me, commits, order_relaxed, seen, seen + 1);
         drawn = seen + 1;
@@ -195,14 +210,16 @@ active [2] proctype group() {
 #endif
     };
 #if scenario == one_stamp && !defined(without_one_stamp)
-    // end_commit: the watermark moves once, after the last store, under the order's mutex
+    // `end_commit`: the watermark moves once, after the last store, under the order's mutex
     lock(me, order_mutex);
     store(me, published_stamp, order_relaxed, drawn);
     unlock(me, order_mutex);
 #endif
     staging[me] = pending;
 #else
-    // commit in turn: each participant validates and publishes on its own, and a refusal past the first leaves the group pending: transaction_group::commit, its one-at-a-time branch
+    // Commit in turn: each participant validates and publishes on its own, and a refusal past the
+    // first leaves the group pending: `transaction_group::commit` in `shared.hpp`, its
+    // one-at-a-time branch.
     for (position : 0 .. stores - 1) {
         reached = visited(me, position);
         lock(me, mutex(reached));
@@ -219,7 +236,7 @@ active [2] proctype group() {
             unlock(me, mutex(reached))
         fi
     };
-    // the loop left a refusal past the first pending, and one at the first staged for `rollback`
+    // The loop left a refusal past the first pending, and one at the first staged for `rollback`
     if
     :: refused -> skip
     :: else -> staging[me] = pending
@@ -229,7 +246,7 @@ done:
     finished++
 }
 
-// a commit over the second store's watched key, under its unique lock, at any time
+/** A commit over the second store's watched key, under its unique lock, at any time. */
 active proctype writer() {
     int seen;
     lock(writer_thread, mutex(1));
@@ -239,8 +256,10 @@ active proctype writer() {
 }
 
 #if scenario == one_stamp
-// a reader: its snapshot drawn under the order's mutex, then each store under its shared lock; a group whose stamp
-// the snapshot covers has written every store, so each store holds that stamp or a newer one
+
+/** A reader: its snapshot drawn under the order's mutex, then each store under its shared lock; a
+ *  group whose stamp the snapshot covers has written every store, so each store holds that stamp or
+ *  a newer one. */
 active proctype reader() {
     byte reached, each;
     int seen, snapshot, seen_stamp;
@@ -261,7 +280,8 @@ active proctype reader() {
 }
 #endif
 
-// once everyone returned: the unwind left nothing staged, a group published all or none, and a torn commit ended pending
+/** Once everyone returned: the unwind left nothing staged, a group published all or none, and a
+ *  torn commit ended pending. */
 active proctype auditor() {
     byte each;
     (finished == 3);
@@ -274,7 +294,8 @@ active proctype auditor() {
         assert(published_at[at(each, 0)] == published_at[at(each, 1)]);
 #endif
 #if scenario == in_turn
-        // a commit that tore stopped calling itself staged, so a second one answers `operation_not_permitted_k`
+        // A commit that tore stopped calling itself staged, so a second one answers
+        // `operation_not_permitted_k`
         if
         :: published_at[at(each, 0)] != published_at[at(each, 1)] -> assert(staging[each] == pending)
         :: else

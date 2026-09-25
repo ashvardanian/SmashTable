@@ -3450,6 +3450,7 @@ class spin_shared_mutex {
         // The count is read back, so this one cannot be posted: the last reader out is the only one
         // a waiting writer is still blocked on.
         std::uint32_t const previous = word_ref_t(state_).fetch_sub(1, memory_order_release_k);
+        assert((previous & readers_mask_k) != 0 && "an extra unlock would borrow from the waiting-writer tally");
         if ((previous & readers_mask_k) == 1) waiting_.notify_waiters(state_);
     }
 };
@@ -3890,6 +3891,7 @@ class basic_commit_order {
 
     /** Gives one reader's membership back, which only @c snapshot_claim_t is allowed to do. */
     void retire_snapshot_(snapshot_claim_t &claim) noexcept {
+        assert(claim.order_ == this && "a claim retires into the order that recorded it, or its bucket never drains");
         bucket_word_t before {};
         if constexpr (sharing_ == order_sharing_t::solitary_k) before = snapshots_[claim.bucket_].bits--;
         else
@@ -3965,6 +3967,8 @@ class basic_commit_order {
         // Relaxed: `commits_` is a dense counter compared by value, and it publishes nothing that a
         // `drawn_stamp` reader could depend on beyond the acquire that reader does for itself.
         else node.stamp_ = atomic_ref<generation_t>(commits_).fetch_add(1, memory_order_relaxed_k) + 1;
+        assert(node.stamp_ != static_cast<generation_t>(commit_stamp_t::uncommitted_k) &&
+               "the drawn stamp would mark every version it commits as never committed");
     }
 
     /** Records that every version of @p node is written, and walks the watermark through every

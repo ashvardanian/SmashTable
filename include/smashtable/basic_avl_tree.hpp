@@ -135,6 +135,12 @@ class basic_avl_node {
         return node ? get_height(node->left) - get_height(node->right) : 0;
     }
 
+    /** Whether @p node's children differ in height by one at most, and link back to it. */
+    static bool is_balanced(node_t *node) noexcept {
+        return !node || (get_balance(node) >= -1 && get_balance(node) <= 1 &&
+                         (!node->left || node->left->parent == node) && (!node->right || node->right->parent == node));
+    }
+
 #pragma region Traversal and Search
 
     template <typename callback_type_>
@@ -517,26 +523,28 @@ class basic_avl_node {
 
         // Left Left Case
         if (balance > 1 && comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->left->payload)))
-            return rotate_right(node);
+            node = rotate_right(node);
 
         // Right Right Case
         else if (balance < -1 &&
                  comparator(mapping_key_or_itself(node->right->payload), mapping_key_or_itself(comparable)))
-            return rotate_left(node);
+            node = rotate_left(node);
 
         // Left Right Case
         else if (balance > 1 &&
                  comparator(mapping_key_or_itself(node->left->payload), mapping_key_or_itself(comparable))) {
             node->left = rotate_left(node->left);
-            return rotate_right(node);
+            node = rotate_right(node);
         }
         // Right Left Case
         else if (balance < -1 &&
                  comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->right->payload))) {
             node->right = rotate_right(node->right);
-            return rotate_left(node);
+            node = rotate_left(node);
         }
-        else return node;
+        assert(is_balanced(node) && is_balanced(node->left) && is_balanced(node->right) &&
+               "an insertion's rotation left the subtree unbalanced or mislinked");
+        return node;
     }
 
     template <typename comparable_type_, typename callback_found_type_>
@@ -666,25 +674,27 @@ class basic_avl_node {
         auto balance = get_balance(node);
 
         // Left Left Case
-        if (balance > 1 && get_balance(node->left) >= 0) return rotate_right(node);
+        if (balance > 1 && get_balance(node->left) >= 0) node = rotate_right(node);
 
         // Left Right Case
         else if (balance > 1 && get_balance(node->left) < 0) {
             node->left = rotate_left(node->left);
             if (node->left) node->left->parent = node;
-            return rotate_right(node);
+            node = rotate_right(node);
         }
 
         // Right Right Case
-        else if (balance < -1 && get_balance(node->right) <= 0) return rotate_left(node);
+        else if (balance < -1 && get_balance(node->right) <= 0) node = rotate_left(node);
 
         // Right Left Case
         else if (balance < -1 && get_balance(node->right) > 0) {
             node->right = rotate_right(node->right);
             if (node->right) node->right->parent = node;
-            return rotate_left(node);
+            node = rotate_left(node);
         }
-        else return node;
+        assert(is_balanced(node) && is_balanced(node->left) && is_balanced(node->right) &&
+               "a removal's rotation left the subtree unbalanced or mislinked");
+        return node;
     }
 
     /**

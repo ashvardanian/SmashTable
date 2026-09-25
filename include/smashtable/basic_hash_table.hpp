@@ -501,6 +501,7 @@ class basic_hash_table {
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
                 return;
+        assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t const initial_offset = hasher_(wanted) & offset_mask;
@@ -552,6 +553,7 @@ class basic_hash_table {
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
                 return;
+        assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t const initial_offset = hasher_(wanted) & offset_mask;
@@ -601,6 +603,7 @@ class basic_hash_table {
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
                 return;
+        assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t const initial_offset = hasher_(wanted) & offset_mask;

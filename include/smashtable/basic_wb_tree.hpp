@@ -625,22 +625,22 @@ class basic_wb_node {
             node_t *left = node->left;
             size_t inner_weight = get_weight(left->right);
             size_t outer_weight = get_weight(left->left);
-            if (inner_weight < gamma_k * outer_weight) return rotate_right(node);
-            node->left = rotate_left(left);
-            return rotate_right(node);
+            if (inner_weight >= gamma_k * outer_weight) node->left = rotate_left(left);
+            node = rotate_right(node);
         }
 
         // Right too heavy, mirrored.
-        if (right_weight > delta_k * left_weight) {
+        else if (right_weight > delta_k * left_weight) {
             node_t *right = node->right;
             size_t inner_weight = get_weight(right->left);
             size_t outer_weight = get_weight(right->right);
-            if (inner_weight < gamma_k * outer_weight) return rotate_left(node);
-            node->right = rotate_right(right);
-            return rotate_left(node);
+            if (inner_weight >= gamma_k * outer_weight) node->right = rotate_right(right);
+            node = rotate_left(node);
         }
 
-        return node; // Already balanced
+        assert(is_balanced(node) && is_balanced(node->left) && is_balanced(node->right) &&
+               "a rotation left the subtree outside the weight bound");
+        return node;
     }
 
 #pragma endregion Rotations and Rebalancing

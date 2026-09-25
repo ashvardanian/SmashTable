@@ -1,23 +1,27 @@
 /**
- *  The staged batch of `basic_avl_tree`, `basic_flat_set` and `basic_hash_table`: every range
- *  modifier builds a container of its own kind beside the destination, meets both of the causes
- *  that can refuse in it, and only then absorbs it. These cores are single-writer, so there is
- *  one process here and no memory model; what the model explores is where a refusal lands.
+ *  @file verification/staged_batch.pml
+ *  @author Ash Vardanian
+ *  @date September 18, 2026
+ *  @brief The staged batch of @c basic_avl_tree, @c basic_flat_set and @c basic_hash_table.
  *
- *  The destination starts holding two keys of a three-key universe. The range is three elements
- *  of any keys of it, so a key already here, a key that is free and a key the range repeats all
- *  appear, and the verb is drawn the same way from the four the containers spell: `upsert` takes
- *  the newcomer, `insert_if_missing` keeps the incumbent, `insert` refuses the newcomer over a
- *  key already here and `update` refuses over a key that is not. Every request to the allocator
+ *  Every range modifier builds a container of its own kind beside the destination, meets both of
+ *  the causes that can refuse in it, and only then absorbs it. These cores are single-writer, so
+ *  there is one process here and no memory model; what the model explores is where a refusal lands.
+ *
+ *  The destination starts holding two keys of a three-key universe. The range is three elements of
+ *  any keys of it, so a key already here, a key that is free and a key the range repeats all
+ *  appear, and the verb is drawn the same way from the four the containers spell: @c upsert takes
+ *  the newcomer, @c insert_if_missing keeps the incumbent, @c insert refuses the newcomer over a
+ *  key already here and @c update refuses over a key that is not. Every request to the allocator
  *  may be refused and every duplication may refuse itself, which are the two causes.
  *
  *  `-Dscenario=` picks whose absorb step runs, since that is the step that differs:
- *  - `tree`, the default: the staging tree asks for a node per key it takes, and the merge that
+ *  - @c tree, the default: the staging tree asks for a node per key it takes, and the merge that
  *    absorbs it relinks those nodes and asks for nothing at all;
- *  - `flat`: the staging array is reserved for the whole range at once, and the absorb asks once
+ *  - @c flat: the staging array is reserved for the whole range at once, and the absorb asks once
  *    more for the merged array both runs are moved into;
- *  - `table`: the staging vector is reserved for the whole range at once, and the absorb asks
- *    once more through `reserve_more` for the room the writes then need.
+ *  - @c table: the staging vector is reserved for the whole range at once, and the absorb asks once
+ *    more through @c reserve_more for the room the writes then need.
  *
  *  Invariants:
  *  - a refusal leaves the destination exactly as it was, whichever cause refused and wherever it
@@ -29,11 +33,11 @@
  *    `-Dwithout_secured_room` asks once per element instead, the shape a merge that copied rather
  *    than relinked would have, and a refusal part-way leaves some of the range moved;
  *  - the key check the two refusing verbs run happens before the absorb. `-Dwithout_prior_check`
- *    moves it after, where a refusal lands on a destination already merged, and where `update`'s
- *    check no longer sees the missing key at all, because the absorb has just written it in.
+ *    moves it after, where a refusal lands on a destination already merged, and where the check of
+ *    @c update cannot see the missing key at all, because the absorb has just written it in.
  */
 
-// The knob's values are integers, so a typo fails the range check below.
+/** The knob's values are integers, so a typo fails the range check below. */
 #define tree 1
 #define flat 2
 #define table 3
@@ -44,14 +48,14 @@
 #error "scenario is tree, flat or table"
 #endif
 
-// The verbs, named for the side a key held by both the range and the destination keeps.
+/** The verbs, named for the side a key held by both the range and the destination keeps. */
 #define takes_the_newcomer 1
 #define keeps_the_incumbent 2
 #define refuses_the_newcomer 3
 #define updates_the_incumbent 4
 
-// The statuses, as `success_k`, `out_of_memory_heap_k`, whatever a refused copy reported,
-// `key_already_exists_k` and `key_not_found_k`.
+/** The statuses, as @c success_k, @c out_of_memory_heap_k, whatever a refused copy reported,
+ *  @c key_already_exists_k and @c key_not_found_k. */
 #define success 0
 #define out_of_memory 1
 #define copy_refused 2
@@ -75,7 +79,7 @@ byte owed_status;
 byte touched;             // writes of this batch that reached the destination
 byte absorb_requests;     // what the absorb asked the allocator for
 
-// The allocator, free to refuse any request: the first of the two causes.
+/** The allocator, free to refuse any request: the first of the two causes. */
 inline ask_allocator(granted) {
     if
     :: granted = true
@@ -83,7 +87,8 @@ inline ask_allocator(granted) {
     fi
 }
 
-// `copy_safely` on an element whose duplication can refuse: the second cause: stage_each
+/** @c copy_safely on an element whose duplication can refuse, the second cause:
+ *  @c stage_each in `shared.hpp`. */
 inline duplicate_element(granted) {
     if
     :: granted = true
@@ -92,36 +97,48 @@ inline duplicate_element(granted) {
 }
 
 #if scenario == tree
-// The staging tree asks for one node per key it takes: basic_avl_tree::stage_range_
+
+/** The staging tree asks for one node per key it takes: @c basic_avl_tree::stage_range_ in
+ *  `basic_avl_tree.hpp`. */
 inline stage_room(granted) { ask_allocator(granted) }
 #else
-// The staging array and the staging vector fill room reserved for the whole range up front,
-// so a key landing in one asks for nothing: basic_flat_set::stage_range_, basic_hash_table::absorb_range_
+
+/** The staging array and the staging vector fill room reserved for the whole range up front, so a
+ *  key landing in one asks for nothing: @c basic_flat_set::stage_range_ in `basic_flat_set.hpp` and
+ *  @c basic_hash_table::absorb_range_ in `basic_hash_table.hpp`. */
 inline stage_room(granted) { granted = true }
 #endif
 
 #if scenario == tree
-// The merge relinks the nodes the staging tree holds, so the absorb asks for nothing and cannot
-// refuse part-way: basic_avl_tree::merge, basic_avl_tree::merge_with_upsert
+
+/** The merge relinks the nodes the staging tree holds, so the absorb asks for nothing and cannot
+ *  refuse part-way: @c basic_avl_tree::merge and @c basic_avl_tree::merge_with_upsert in
+ *  `basic_avl_tree.hpp`. */
 inline absorb_room(granted) { granted = true }
 #else
-// The flat set's merged array and the table's `reserve_more`: one request for the whole absorb,
-// made before a single element moves: basic_flat_set::absorb, basic_hash_table::reserve_more
+
+/** The flat set's merged array and the table's @c reserve_more: one request for the whole absorb,
+ *  made before a single element moves: @c basic_flat_set::absorb in `basic_flat_set.hpp` and
+ *  @c basic_hash_table::reserve_more in `basic_hash_table.hpp`. */
 inline absorb_room(granted) { absorb_requests++; ask_allocator(granted) }
 #endif
 
 #ifdef without_staging
-// Without the staging every element goes straight where it will live, which is the shape a batch
-// had before it staged; `touched` counts what a refusal then has nowhere to undo.
+
+/** Without the staging every element goes straight where it will live, which is the shape a batch
+ *  had before it staged; @c touched counts what a refusal then has nowhere to undo. */
 inline stage_one(where, value) { here[where] = value; touched++ }
 #define built(key) here[key]
 #else
+
+/** Every element goes into the container built beside the destination. */
 inline stage_one(where, value) { staged[where] = value }
 #define built(key) staged[key]
 #endif
 
-// The range checked against the destination before a single element moves, which is the only
-// thing the two refusing verbs do that the other two do not: basic_avl_tree::has_any_key, basic_avl_tree::has_all_keys
+/** The range checked against the destination before a single element moves, which is the only thing
+ *  the two refusing verbs do that the other two do not: @c basic_avl_tree::has_any_key and
+ *  @c basic_avl_tree::has_all_keys in `basic_avl_tree.hpp`. */
 inline check_destination(key) {
     for (key : 1 .. keys) {
         if
@@ -134,8 +151,9 @@ inline check_destination(key) {
     }
 }
 
-// One element of the staging container landing in the destination, the side a key held on both
-// sides keeps: basic_avl_tree::merge_with_upsert, basic_flat_set::absorb
+/** One element of the staging container landing in the destination, the side a key held on both
+ *  sides keeps: @c basic_avl_tree::merge_with_upsert in `basic_avl_tree.hpp` and
+ *  @c basic_flat_set::absorb in `basic_flat_set.hpp`. */
 inline place(where) {
     if
     :: verb == keeps_the_incumbent && here[where] != absent -> skip
@@ -143,6 +161,7 @@ inline place(where) {
     fi
 }
 
+/** One range modifier: the range staged, checked and absorbed, then what it left behind audited. */
 active proctype batch() {
     byte index, key;
     bool granted;
@@ -202,7 +221,8 @@ active proctype batch() {
 #endif
 
     // The staging: every element duplicated outside the destination and placed in a container of
-    // the destination's own kind: basic_avl_tree::stage_range_, basic_flat_set::stage_range_
+    // the destination's own kind: `basic_avl_tree::stage_range_` in `basic_avl_tree.hpp` and
+    // `basic_flat_set::stage_range_` in `basic_flat_set.hpp`
     for (index : 0 .. range_length - 1) {
         duplicate_element(granted);
         if
@@ -228,7 +248,8 @@ active proctype batch() {
         fi
     };
 
-    // Nothing of the range has reached the destination yet: basic_avl_tree::insert_if_missing, before its merge
+    // Nothing of the range has reached the destination yet: `basic_avl_tree::insert_if_missing` in
+    // `basic_avl_tree.hpp`, before its merge
     assert(touched == 0);
 
 #ifndef without_prior_check
