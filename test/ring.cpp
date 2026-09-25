@@ -6,7 +6,7 @@
  *      eviction and lifetimes.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define ST_STRICT_CALLBACK_CHECKS_ 1
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
@@ -53,8 +53,8 @@ void ring_capacity_rules() {
 }
 
 /** Random pushes and pops across many wraparounds match an unbounded queue in a plain array. */
-void ring_order_across_wraparound() {
-    std::mt19937_64 generator(test_seed_for(__func__));
+void ring_order_across_wraparound(test_context_t const &context) {
+    std::mt19937_64 generator(mix_seed(context.seed, __func__));
     auto ring = basic_ring<std::uint64_t>::make(16);
     st_verify_(ring);
     std::uint64_t oracle[1 << 16];
@@ -171,17 +171,18 @@ void ring_sequence_suite() {
 
 } // namespace
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "ring.capacity_rules", ring_capacity_rules);
-    failures += run_test(filter, "ring.order_across_wraparound", ring_order_across_wraparound);
-    failures += run_test(filter, "ring.push_evicting", ring_push_evicting);
-    failures += run_test(filter, "ring.bulk_push_and_pop", ring_bulk_push_and_pop);
-    failures += run_test(filter, "ring.element_lifetimes", ring_element_lifetimes);
-    failures += run_test(filter, "ring.sequence_suite", ring_sequence_suite);
+    tally += run_test(environment, "ring.capacity_rules", ring_capacity_rules);
+    tally += run_test(environment, "ring.order_across_wraparound", ring_order_across_wraparound);
+    tally += run_test(environment, "ring.push_evicting", ring_push_evicting);
+    tally += run_test(environment, "ring.bulk_push_and_pop", ring_bulk_push_and_pop);
+    tally += run_test(environment, "ring.element_lifetimes", ring_element_lifetimes);
+    tally += run_test(environment, "ring.sequence_suite", ring_sequence_suite);
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

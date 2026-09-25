@@ -153,7 +153,7 @@ class monotonic_store {
         version_node_t *others {nullptr};
 
         /** Where @c others came from, so the chain can hand them back when it dies. */
-        ST_NO_UNIQUE_ADDRESS_ version_allocator_t allocator {};
+        SMASHTABLE_NO_UNIQUE_ADDRESS_ version_allocator_t allocator {};
 
         versioned_chain_t() = default;
         explicit versioned_chain_t(versioned_t &&only) noexcept : head(std::move(only)) {}

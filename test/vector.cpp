@@ -5,7 +5,7 @@
  *  @brief Tests for @c basic_vector - the fallible-construction path, growth arithmetic, rollback.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define ST_STRICT_CALLBACK_CHECKS_ 1
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `SIZE_MAX`
@@ -448,24 +448,26 @@ void vector_sequence_suite() {
 
 } // namespace
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "vector.emplace_back_through_make", vector_emplace_back_through_make);
-    failures += run_test(filter, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
-    failures += run_test(filter, "vector.growth_is_amortized", vector_growth_is_amortized);
-    failures += run_test(filter, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
-    failures += run_test(filter, "vector.copy_and_swap", vector_copy_and_swap);
-    failures += run_test(filter, "vector.move_semantics", vector_move_semantics);
-    failures += run_test(filter, "vector.inserts_at_a_position", vector_inserts_at_a_position);
-    failures += run_test(filter, "vector.erases_at_a_position", vector_erases_at_a_position);
-    failures += run_test(filter, "vector.shifts_every_element_once", vector_shifts_every_element_once);
-    failures += run_test(filter, "vector.inserts_into_reserved_room", vector_inserts_into_reserved_room);
-    failures += run_test(filter, "vector.erases_hand_each_element_out", vector_erases_hand_each_element_out);
-    failures += run_test(filter, "vector.erase_if_compacts_in_one_pass", vector_erase_if_compacts_in_one_pass);
-    failures += run_test(filter, "vector.sequence_suite", vector_sequence_suite);
+    tally += run_test(environment, "vector.emplace_back_through_make", vector_emplace_back_through_make);
+    tally +=
+        run_test(environment, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
+    tally += run_test(environment, "vector.growth_is_amortized", vector_growth_is_amortized);
+    tally += run_test(environment, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
+    tally += run_test(environment, "vector.copy_and_swap", vector_copy_and_swap);
+    tally += run_test(environment, "vector.move_semantics", vector_move_semantics);
+    tally += run_test(environment, "vector.inserts_at_a_position", vector_inserts_at_a_position);
+    tally += run_test(environment, "vector.erases_at_a_position", vector_erases_at_a_position);
+    tally += run_test(environment, "vector.shifts_every_element_once", vector_shifts_every_element_once);
+    tally += run_test(environment, "vector.inserts_into_reserved_room", vector_inserts_into_reserved_room);
+    tally += run_test(environment, "vector.erases_hand_each_element_out", vector_erases_hand_each_element_out);
+    tally += run_test(environment, "vector.erase_if_compacts_in_one_pass", vector_erase_if_compacts_in_one_pass);
+    tally += run_test(environment, "vector.sequence_suite", vector_sequence_suite);
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

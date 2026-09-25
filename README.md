@@ -718,7 +718,7 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-`SMASHTABLE_FILTER` selects a subset by substring, matched against `suite.name`, and fails the binary when it matches nothing:
+`SMASHTABLE_FILTER` selects a subset by a regex searched for in `suite.name`, and fails the binary when it matches nothing:
 
 ```bash
 SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree

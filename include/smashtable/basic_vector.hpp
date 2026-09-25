@@ -76,7 +76,7 @@ class basic_vector {
     value_t *data_ {nullptr};
     std::size_t size_ {0};
     std::size_t capacity_ {0};
-    ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
 
   public:
     /** Default constructor creates an empty vector. */

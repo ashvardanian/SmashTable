@@ -53,7 +53,7 @@ class basic_ring {
     std::uint32_t capacity_ {0};
     std::uint32_t pushed_ {0};
     std::uint32_t popped_ {0};
-    ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ allocator_t allocator_ {};
 
     [[nodiscard]] value_t &slot_(std::uint32_t counter) noexcept { return slots_[counter & (capacity_ - 1)]; }
     [[nodiscard]] value_t const &slot_(std::uint32_t counter) const noexcept {

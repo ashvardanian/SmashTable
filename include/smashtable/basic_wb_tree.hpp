@@ -125,7 +125,7 @@ class basic_wb_node {
 
     size_t size = 1;
 
-    ST_NO_UNIQUE_ADDRESS_ augmented_count_t augmented_size {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ augmented_count_t augmented_size {};
 
     static constexpr size_t delta_k = 3;
     static constexpr size_t gamma_k = 2;
@@ -1074,8 +1074,8 @@ class basic_wb_tree {
   private:
     node_t *root_ = nullptr;
     size_t size_ = 0;
-    ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_;
-    ST_NO_UNIQUE_ADDRESS_ node_allocator_t allocator_;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ comparator_t comparator_;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ node_allocator_t allocator_;
 
   public:
     /** Default constructor. Creates empty tree. */

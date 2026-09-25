@@ -1635,8 +1635,10 @@ check_abbreviations_spelled_out() {
 # restitches unpinned fragments into a staircase.
 check_split_string_literal_pinned() {
     local unpinned
-    unpinned=$(printf '%s\n' "$staged_added_text" | awk '
-        previous ~ /"[[:space:]]*$/ && previous !~ /\/\/[[:space:]]*$/ && $0 ~ /^\+[[:space:]]*"/ { print NR ": " previous }
+    unpinned=$(printf '%s\n' "$staged_file_text" | added_list="$staged_added_line_numbers_list" awk '
+        BEGIN { count = split(ENVIRON["added_list"], numbers, "\n"); for (index_ = 1; index_ <= count; ++index_) added[numbers[index_] + 0] = 1 }
+        (FNR in added) && ((FNR - 1) in added) && previous ~ /"[[:space:]]*$/ && previous !~ /\/\/[[:space:]]*$/ &&
+            $0 ~ /^[[:space:]]*"/ { print FNR - 1 ": " previous }
         { previous = $0 }' || true)
     [ -z "$unpinned" ] || reject_with_reason "$unpinned" \
         "$staged_path splits a string literal without a trailing \`//\` pin;" \
@@ -1727,11 +1729,17 @@ check_deprecations() {
         "$staged_path adds a deprecation - remove the symbol instead, and say so in the commit:"
 }
 
-# Rejects list mutation and self-referencing `set`, because a variable is written once.
+# Rejects list mutation and self-referencing `set`, because a variable is written once. A `foreach` may
+# still append to the list it builds, since CMake has no way to map a list in one `set`.
 check_cmake_variable_written_once() {
     local mutated
-    mutated=$(printf '%s\n' "$staged_added_text" | sed -E 's,#.*$,,' |
-        grep -nE '^\+[[:space:]]*(list[[:space:]]*\([[:space:]]*(APPEND|PREPEND|INSERT|REMOVE_ITEM|REMOVE_AT|REMOVE_DUPLICATES|TRANSFORM|FILTER)[[:space:]]|set[[:space:]]*\([[:space:]]*([A-Za-z0-9_]+)[[:space:]].*\$\{\3\})' || true)
+    mutated=$(printf '%s\n' "$staged_file_text" | sed -E 's,#.*$,,' |
+        added_list="$staged_added_line_numbers_list" awk '
+        BEGIN { count = split(ENVIRON["added_list"], numbers, "\n"); for (index_ = 1; index_ <= count; ++index_) added[numbers[index_] + 0] = 1 }
+        /^[[:space:]]*foreach[[:space:]]*\(/ { ++loops }
+        /^[[:space:]]*endforeach[[:space:]]*\(/ { --loops }
+        (FNR in added) && !(loops > 0 && /^[[:space:]]*list[[:space:]]*\([[:space:]]*APPEND[[:space:]]/) { print FNR ":" $0 }' |
+        grep -E '^[0-9]+:[[:space:]]*(list[[:space:]]*\([[:space:]]*(APPEND|PREPEND|INSERT|REMOVE_ITEM|REMOVE_AT|REMOVE_DUPLICATES|TRANSFORM|FILTER)[[:space:]]|set[[:space:]]*\([[:space:]]*([A-Za-z0-9_]+)[[:space:]].*\$\{\3\})' || true)
     [ -z "$mutated" ] || reject_with_reason "$mutated" \
         "$staged_path mutates a variable after defining it;" \
         "            define it once, and select per-configuration items with generator expressions:"
@@ -2195,6 +2203,50 @@ check_closed_sets_use_variants() {
         "std::variant and dispatch with std::visit, which costs a switch rather than a vtable:"
 }
 
+# Rejects a print to stdout in a test body: the harness owns stdout, and a test only reports failures to
+# stderr, so a passing run reads the same in every sibling.
+check_test_bodies_quiet() {
+    local prints
+    prints=$(printf '%s\n' "$staged_added_text" | blank_c_comments_preserving_columns |
+        grep -nE '\b(print_line|fmt::println|fmt::print|printf|puts)[[:space:]]*\(|\bstd::cout\b|\bfprintf[[:space:]]*\([[:space:]]*stdout\b' |
+        grep -vE '\([[:space:]]*stderr\b' || true)
+    [ -z "$prints" ] || reject_with_reason "$prints" \
+        "$staged_path prints to stdout from a test body; report failures to stderr and leave progress" \
+        "            to the harness:"
+}
+
+# Judges the quiet rule outside `main`: every SmashTable test file carries its own, and that is the harness's
+# entry, so it may print.
+check_test_bodies_quiet_outside_main() {
+    local staged_added_text
+    staged_added_text=$(awk '
+        NR == FNR { added[$1 + 0]; next }
+        /^(int|auto)[[:space:]]+main[[:space:]]*\(/ { inside_main = 1 }
+        inside_main { if ($0 ~ /^\}/) inside_main = 0; next }
+        FNR in added { print "+" $0 }' <(printf '%s\n' "$staged_added_line_numbers_list") \
+        <(printf '%s\n' "$staged_file_text"))
+    check_test_bodies_quiet
+}
+
+# Rejects the retired `ST_` prefix, because every all-caps name spells `SMASHTABLE_` in full; the POSIX
+# `statvfs` flags such as `ST_RDONLY` pass. Also rejects a positive `defined(...)` or `#ifdef` of an
+# architecture, OS or toolchain fact, which is always defined as 0 or 1 and so tests true everywhere.
+check_macro_spellings_current() {
+    local retired positive
+    retired=$(printf '%s\n' "$staged_added_text" | awk '
+        { probe = $0 " "; gsub(/ST_(RDONLY|NOSUID|NODEV|NOEXEC|SYNCHRONOUS|MANDLOCK|WRITE|APPEND|IMMUTABLE|NOATIME|NODIRATIME|RELATIME|NOSYMFOLLOW)[^A-Za-z0-9_]/, "", probe) }
+        probe ~ /(^|[^A-Za-z0-9_])ST_[A-Z0-9]/' || true)
+    [ -z "$retired" ] || reject_with_reason "$retired" \
+        "$staged_path spells a macro with the retired ST_ prefix; write SMASHTABLE_ in full:"
+    positive=$(printf '%s\n' "$staged_added_text" | awk '
+        { probe = $0; gsub(/![[:space:]]*defined[[:space:]]*[(]?[[:space:]]*SMASHTABLE_(ARCH|OS|HAS)_/, "", probe) }
+        probe ~ /(^|[^A-Za-z0-9_])defined[[:space:]]*[(]?[[:space:]]*SMASHTABLE_(ARCH|OS|HAS)_/ ||
+            probe ~ /#[[:space:]]*ifdef[[:space:]]+SMASHTABLE_(ARCH|OS|HAS)_/' || true)
+    [ -z "$positive" ] || reject_with_reason "$positive" \
+        "$staged_path tests an always-defined SMASHTABLE_ARCH_, _OS_ or _HAS_ fact with defined(...) or" \
+        "            #ifdef, which is true on every target; test its value with #if:"
+}
+
 # Routes one staged file through the checks only SmashTable has.
 run_project_checks() {
     case "$staged_path" in
@@ -2205,7 +2257,12 @@ run_project_checks() {
         check_lambda_not_invoked_where_it_closes
         check_allocation_through_allocator
         check_closed_sets_use_variants
+        check_macro_spellings_current
         ;;
+    esac
+    case "$staged_path" in
+    test/harness.hpp) ;;
+    test/*.cpp | test/*.cu | test/*.hpp) check_test_bodies_quiet_outside_main ;;
     esac
 }
 

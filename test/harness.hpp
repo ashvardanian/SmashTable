@@ -6,43 +6,58 @@
  *
  *  @section test_environment_variables Environment Variables
  *
- *  @c SMASHTABLE_FILTER is a substring matched against a test's "suite.name" label; only matching
- *  tests run. Unset or empty runs everything. Honored by @c run_test, which announces what it
- *  skipped, and a filter that matched nothing fails the binary rather than passing an empty suite.
+ *  @c SMASHTABLE_FILTER is an ECMAScript regex searched for in a test's "suite.name" label; only
+ *  matching tests run, and a pattern that does not compile matches as a plain substring instead.
+ *  Unset or empty runs everything. Honored by @c run_test, which announces what it skipped, and a
+ *  filter that matched nothing fails the binary rather than passing an empty suite.
  *
  *  @c SMASHTABLE_SEED is the seed every randomized suite draws from, so a failure names the run
- *  that produced it. Unset means @c default_seed_k, which keeps an unattended build deterministic,
- *  while a value that is not a whole number aborts rather than quietly reproducing the default run.
+ *  that produced it. Unset means @c default_seed_k, 42, which keeps an unattended build
+ *  deterministic, and @c random draws a fresh one; @c log_environment prints either. Any other
+ *  value that is not a whole number aborts rather than quietly reproducing the default run.
+ *
+ *  Both are read once, by @c read_test_environment at the top of @c main, into the constant every
+ *  @c run_test call is handed.
  *
  *  @section test_failure_model Failure Model
  *
- *  Assertions abort rather than accumulate. Many of them guard the dereference or the index on the
- *  very next line, so a check that recorded a failure and carried on would hand the following
- *  statement a disengaged optional or an out-of-range subscript. The process dies at the defect,
- *  and the installed signal handler turns that into a backtrace.
+ *  A failed check reports and continues: it prints its diagnostic and throws @c test_failure_t, and
+ *  @c run_test catches that, prints a rerun line naming the seed and a filter that selects only the
+ *  failing test, and moves on to the next one; @c main exits with 1 at the end. Leaving the test
+ *  rather than the statement matters, since many checks guard the dereference or the index on the
+ *  very next line. A check inside a @c noexcept visitor or a spawned thread cannot unwind that far
+ *  and terminates instead, as a @c <cassert> assert and a crash do; the signal handler then prints
+ *  a backtrace, and the last test started on stdout names the one that died.
  */
 #pragma once
-#include <csignal> // `std::signal`, `SIGSEGV`, `SIGABRT`
+#include <csignal> // `std::signal`, `std::raise`, `SIGSEGV`, `SIGABRT`
+#include <cstdint> // `std::uint32_t`
 #include <cstdio>  // `std::fprintf`, `std::setvbuf`
 #include <cstdlib> // `std::abort`, `std::getenv`
-#include <cstring> // `std::strstr`
 
-#include <atomic>      // `std::atomic`
 #include <chrono>      // `std::chrono::steady_clock`
 #include <exception>   // `std::exception`
 #include <format>      // `std::format_to`, `std::format_string`
 #include <iterator>    // `std::output_iterator`
 #include <limits>      // `std::numeric_limits`
+#include <optional>    // `std::optional`
+#include <random>      // `std::random_device`
+#include <regex>       // `std::regex`, `std::regex_search`
 #include <string_view> // `std::string_view`
 #include <type_traits> // `std::is_void_v`
-#include <utility>     // `std::cmp_equal`, `std::cmp_less`
+#include <utility>     // `std::cmp_equal`, `std::cmp_less`, `std::exchange`
 
+#if defined(_WIN32)
+#include <io.h> // `_write`
+#else
+#include <unistd.h> // `write`, `STDERR_FILENO`
+#endif
 #if defined(__linux__) && defined(__GLIBC__)
 #include <execinfo.h> // `backtrace`, `backtrace_symbols_fd`
-#include <unistd.h>   // `STDERR_FILENO`
 #endif
 
-#include <smashtable/shared.hpp> // `status_t`, `succeeded`, `name_of`, `hash`
+#include <smashtable/row_search.hpp> // `every_row_kit_k`, `row_kit_compiled`, `row_kit_supported`
+#include <smashtable/shared.hpp>     // `status_t`, `succeeded`, `name_of`
 
 #pragma region Assertions
 
@@ -150,7 +165,7 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
             std::fprintf(stderr, "Verification failed: %s", #condition); \
             st_explain_(st_answered_);                                   \
             std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);       \
-            std::abort();                                                \
+            ::ashvardanian::smashtable::test::fail_test();               \
         }                                                                \
     } while (0)
 
@@ -172,7 +187,7 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
             st_print_operand_("right", st_right_);                                          \
             __VA_OPT__(std::fprintf(stderr, ", %s", __VA_ARGS__);)                          \
             std::fprintf(stderr, ", %s:%d\n", __FILE__, __LINE__);                          \
-            std::abort();                                                                   \
+            ::ashvardanian::smashtable::test::fail_test();                                  \
         }                                                                                   \
     } while (0)
 
@@ -202,30 +217,20 @@ inline void st_print_operand_(char const *label, type_ const &value) noexcept {
 
 namespace ashvardanian::smashtable::test {
 
-#pragma region Randomization
+#pragma region Environment
 
 /** The seed a randomized suite draws from when @c SMASHTABLE_SEED is unset. */
 inline constexpr unsigned int default_seed_k = 42;
 
 /**
- *  @brief Reads @c SMASHTABLE_SEED, or @c default_seed_k when it is unset.
- *  @warning Aborts on anything but a run of decimal digits below 2^32, so a sign or a stray space
- *      names no run rather than wrapping into one.
- *
- *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a
- *  defect nobody can reproduce. The seed is therefore an input the runner prints, so a failing run
- *  names the sequence that produced it, and a sweep is a shell loop rather than a source edit.
+ *  @brief Parses @p requested, the text of @c SMASHTABLE_SEED: @c default_seed_k when unset or
+ *      empty, a fresh draw for @c random.
+ *  @warning Aborts on any other text than a run of decimal digits below 2^32, so a sign or a stray
+ *      space names no run rather than wrapping into one.
  */
-[[nodiscard]] inline unsigned int test_seed() noexcept {
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-    char const *const requested = std::getenv("SMASHTABLE_SEED");
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
+[[nodiscard]] inline unsigned int parse_test_seed(char const *requested) noexcept {
     if (!requested || requested[0] == '\0') return default_seed_k;
+    if (std::string_view(requested) == "random") return std::random_device {}();
     // Digit by digit rather than through `strtoul`, which skips leading spaces, negates a minus, and
     // wraps an overflow - three ways for a typo to come back as a seed nobody chose.
     unsigned long long parsed = 0;
@@ -236,31 +241,112 @@ inline constexpr unsigned int default_seed_k = 42;
         whole = whole && parsed <= std::numeric_limits<unsigned int>::max();
     }
     if (whole) return static_cast<unsigned int>(parsed);
-    std::fprintf(stderr, "SMASHTABLE_SEED=\"%s\" is not a whole number below 2^32, so it names no run.\n", requested);
+    std::fprintf(stderr, "SMASHTABLE_SEED=\"%s\" does not parse\n", requested);
     std::abort();
 }
 
 /**
- *  @brief The seed one suite draws from, mixed from @c test_seed() and the suite's own name.
+ *  @brief What @c main reads from the environment, once, and hands to every @c run_test call.
+ *
+ *  A fuzzer pinned to one literal finds one defect once, and one drawing from the clock finds a
+ *  defect nobody can reproduce. The seed is therefore an input the runner prints, so a failing run
+ *  names the sequence that produced it, and a sweep is a shell loop rather than a source edit.
+ */
+struct test_environment_t {
+    unsigned int seed {default_seed_k};
+
+    /** @c SMASHTABLE_FILTER, or @c nullptr when it is unset or empty and every test runs. */
+    char const *filter {};
+
+    /** The filter compiled as an ECMAScript regex, or nothing when the pattern does not compile. */
+    std::optional<std::regex> pattern {};
+
+    /** The binary's @c argv[0], which turns a rerun line into a command. */
+    std::string_view program {};
+
+    /** Whether the test labelled @p name runs: the filter searched as a regex, or found as a plain
+     *  substring when it does not compile. */
+    [[nodiscard]] bool selects(std::string_view name) const noexcept {
+        if (!filter) return true;
+        if (pattern) return std::regex_search(name.begin(), name.end(), *pattern);
+        return name.find(filter) != std::string_view::npos;
+    }
+};
+
+/**
+ *  @brief Reads @c SMASHTABLE_SEED and @c SMASHTABLE_FILTER. Call once, first thing in @c main.
+ *  @param[in] program The binary's @c argv[0], which every rerun line ends with.
+ *
+ *  MSVC deprecates @c std::getenv in favor of the allocating @c _dupenv_s, which buys a suite
+ *  nothing: both values are read here, before any thread exists, and the environment block
+ *  outlives the run.
+ */
+[[nodiscard]] inline test_environment_t read_test_environment(char const *program) noexcept {
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996)
+#endif
+    char const *const seed = std::getenv("SMASHTABLE_SEED");
+    char const *const filter = std::getenv("SMASHTABLE_FILTER");
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+    test_environment_t environment;
+    environment.seed = parse_test_seed(seed);
+    environment.program = program ? program : "";
+    if (!filter || filter[0] == '\0') return environment;
+    environment.filter = filter;
+    try {
+        environment.pattern.emplace(filter);
+    }
+    catch (std::regex_error const &) {
+        // Left empty, so `selects` finds the filter as a plain substring instead.
+    }
+    return environment;
+}
+
+#pragma endregion Environment
+
+#pragma region Randomization
+
+/** What a randomized test receives from @c run_test: the run's seed, to mix with its own name. */
+struct test_context_t {
+    unsigned int seed;
+};
+
+/**
+ *  @brief The seed one suite draws from: FNV-1a over @p name, from a basis perturbed by @p seed.
  *
  *  Two suites seeded alike walk one sequence between them and cover half of what their count
  *  suggests. Passing @c __func__ keeps the name that separates them the same name the compiler
  *  already knows, so a suite cannot be added, renamed, or moved into another binary and collide
- *  with one already there.
+ *  with one already there. Mixed here rather than through @c smashtable::hash, so a change to the
+ *  code under test never reshuffles the sequences that test it.
  */
-[[nodiscard]] inline unsigned int test_seed_for(std::string_view suite) noexcept {
-    std::size_t const named = hash<std::string_view> {}(suite);
-    return static_cast<unsigned int>(hash<std::size_t> {}(named ^ test_seed()));
+[[nodiscard]] constexpr unsigned int mix_seed(unsigned int seed, std::string_view name) noexcept {
+    std::uint32_t mixed = 2166136261u ^ seed;
+    for (char const character : name) mixed = (mixed ^ static_cast<unsigned char>(character)) * 16777619u;
+    return mixed;
 }
 
 #pragma endregion Randomization
 
 #pragma region Crash Localization
 
-/** Prints a backtrace on a fatal signal, so an aborting check self-localizes rather than dying
- *  silently under CI's output redirection. */
+/**
+ *  @brief Prints a notice and a backtrace on a fatal signal, then re-raises it, so a crash
+ *      self-localizes rather than dying silently under CI's output redirection.
+ *
+ *  Writes through a raw @c write, since the crashing thread may already hold the stdio lock that
+ *  @c std::fprintf takes. It names no test: the last one started on stdout is the one that died.
+ */
 inline void test_fatal_signal_handler(int signal_number) noexcept {
-    std::fprintf(stderr, "\n*** Fatal signal %d - backtrace follows ***\n", signal_number);
+    constexpr std::string_view message = "\n*** Fatal signal - backtrace follows ***\n";
+#if defined(_WIN32)
+    [[maybe_unused]] auto const written = _write(2, message.data(), static_cast<unsigned>(message.size()));
+#else
+    [[maybe_unused]] auto const written = ::write(STDERR_FILENO, message.data(), message.size());
+#endif
 #if defined(__linux__) && defined(__GLIBC__)
     void *frames[64];
     int const frames_count = backtrace(frames, sizeof(frames) / sizeof(frames[0]));
@@ -279,8 +365,11 @@ inline void install_test_signal_handlers() noexcept {
     std::setvbuf(stdout, nullptr, _IOLBF, BUFSIZ);
     std::signal(SIGSEGV, test_fatal_signal_handler);
     std::signal(SIGABRT, test_fatal_signal_handler);
-    // Validated here so a typo stops every binary at the start, seeded suites or not.
-    [[maybe_unused]] unsigned int const seed = test_seed();
+    std::signal(SIGILL, test_fatal_signal_handler);
+    std::signal(SIGFPE, test_fatal_signal_handler);
+#if defined(SIGBUS) // Windows has no bus error to catch
+    std::signal(SIGBUS, test_fatal_signal_handler);
+#endif
 }
 
 #pragma endregion Crash Localization
@@ -316,80 +405,108 @@ inline void print_line(std::FILE *stream, std::format_string<args_types_...> pat
     std::fputc('\n', stream);
 }
 
+/** Prints one capability line, naming each kit @p holds accepts. */
+inline void print_row_kits(char const *label, bool (*holds)(row_kit_t) noexcept) noexcept {
+    file_output_iterator_t output = std::format_to(file_output_iterator_t {stdout}, "- {}:", label);
+    char const *separator = " ";
+    for (row_kit_t const kit : every_row_kit_k)
+        if (holds(kit)) output = std::format_to(output, "{}{}", std::exchange(separator, ","), name_of(kit));
+    std::fputc('\n', stdout);
+}
+
+/** Prints the library version, the kits this build carries, the ones this processor runs, the run's
+ *  seed, and how to rerun one test under it. Call once, from a test's @c main. */
+inline void log_environment(test_environment_t const &environment) noexcept {
+    print_line(stdout, "SmashTable {}.{}.{}", SMASHTABLE_VERSION_MAJOR, SMASHTABLE_VERSION_MINOR,
+               SMASHTABLE_VERSION_PATCH);
+    print_row_kits("Compiled for", row_kit_compiled);
+    print_row_kits("This machine", row_kit_supported);
+    print_line(stdout, "- Seed: {}", environment.seed);
+    print_line(stdout, "- Rerun one test: SMASHTABLE_SEED={} SMASHTABLE_FILTER='^<name>$' {}", environment.seed,
+               environment.program);
+}
+
 #pragma endregion Formatted Output
 
 #pragma region Test Runner
 
+/** Thrown by a failed check once it has printed why, for @c run_test to catch and report. */
+struct test_failure_t {};
+
 /**
- *  @brief Reads @c SMASHTABLE_FILTER, or @c nullptr when it is unset.
+ *  @brief Leaves the running test after a failed check has printed its diagnostic.
  *
- *  MSVC deprecates @c std::getenv in favor of the allocating @c _dupenv_s, which buys a suite
- *  nothing: the value is read once from @c main, before any thread exists, and the environment
- *  block outlives the run. One place to say so beats the same suppression in every suite.
+ *  A call rather than a @c throw inside the check's own macro, so a check in a @c noexcept visitor
+ *  compiles without @c -Wterminate; failing there still terminates, and the handler backtraces it.
  */
-[[nodiscard]] inline char const *test_filter() noexcept {
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4996)
-#endif
-    return std::getenv("SMASHTABLE_FILTER");
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
+[[noreturn]] inline void fail_test() { throw test_failure_t {}; }
+
+/** How many tests ran and how many of those failed, summed over a binary's @c run_test calls. */
+struct test_tally_t {
+    std::size_t executed {0};
+    std::size_t failed {0};
+
+    test_tally_t &operator+=(test_tally_t const &other) noexcept {
+        executed += other.executed;
+        failed += other.failed;
+        return *this;
+    }
+};
+
+/** The body both @c run_test overloads share, around @p call, which runs the test itself. */
+template <typename call_type_>
+test_tally_t run_test_(test_environment_t const &environment, std::string_view name, call_type_ const &call) noexcept {
+    if (!environment.selects(name)) {
+        print_line(stdout, "- {} ... skipped (SMASHTABLE_FILTER)", name);
+        std::fflush(stdout);
+        return {};
+    }
+
+    print_line(stdout, "- {} ...", name);
+    std::fflush(stdout);
+    auto const started = std::chrono::steady_clock::now();
+    try {
+        call();
+        double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+        print_line(stdout, "- {} ... ok ({:.2f} s)", name, seconds);
+        std::fflush(stdout);
+        return {.executed = 1, .failed = 0};
+    }
+    catch (test_failure_t const &) {
+        print_line(stderr, "- {} ... FAILED: see the check above", name);
+    }
+    catch (std::exception const &error) {
+        print_line(stderr, "- {} ... FAILED: {}", name, error.what());
+    }
+    print_line(stderr, "  rerun: SMASHTABLE_SEED={} SMASHTABLE_FILTER='^{}$' {}", environment.seed, name,
+               environment.program);
+    return {.executed = 1, .failed = 1};
 }
 
 /**
- *  @brief Process-wide count of the tests that actually ran, which is what a filter can zero out.
- *
- *  Kept here rather than threaded through @c run_test's signature because that signature is called
- *  several hundred times across nine suites, while @c report_test_failures - the one function that
- *  decides the exit code - is called nine times.
- */
-struct test_tally_t {
-    static inline std::atomic<std::size_t> executed {0};
-
-    static void note_execution() noexcept { executed.fetch_add(1, std::memory_order_relaxed); }
-    static std::size_t executed_count() noexcept { return executed.load(std::memory_order_relaxed); }
-};
-
-/**
- *  @brief Runs one named test, honoring @p filter, timing it, and reporting the outcome.
- *  @param[in] filter Substring matched against @p name, or @c nullptr to run everything.
+ *  @brief Runs one named test when @p environment selects it, timing it and reporting the outcome.
+ *  @param[in] environment What @c main read: the filter that selects tests and the seed they draw.
  *  @param[in] name The test's "suite.name" label, which is also its filter key.
  *  @param[in] test_function A function taking no arguments.
- *  @return The number of failures - 0 on success or when skipped, 1 when the test threw.
+ *  @return One execution when the test ran, and one failure too when a check failed or it threw.
  *
- *  A failed assertion aborts before this returns, so the count covers only thrown exceptions;
- *  naming them here beats a bare @c what() at the top of @c main. The started line prints before
- *  the call, so a hard crash leaves the running test as the last thing on stdout.
+ *  A failure prints a rerun line beneath it and returns, so the binary goes on to the next test.
+ *  The started line prints before the call, so a hard crash leaves the running test as the last
+ *  thing on stdout.
  *
  *  Takes a function pointer rather than any callable on purpose: a suite that grows a defaulted
  *  parameter stops being a @c void() and would otherwise hide behind a lambda at every call site
  *  instead of failing here.
  */
-inline std::size_t run_test(char const *filter, char const *name, void (*test_function)()) noexcept {
-    if (filter && filter[0] != '\0' && !std::strstr(name, filter)) {
-        print_line(stdout, "- {} ... skipped (SMASHTABLE_FILTER)", name);
-        std::fflush(stdout);
-        return 0;
-    }
+inline test_tally_t run_test(test_environment_t const &environment, std::string_view name,
+                             void (*test_function)()) noexcept {
+    return run_test_(environment, name, test_function);
+}
 
-    test_tally_t::note_execution();
-    print_line(stdout, "- {} ...", name);
-    std::fflush(stdout);
-    auto const started = std::chrono::steady_clock::now();
-    try {
-        test_function();
-    }
-    catch (std::exception const &error) {
-        print_line(stderr, "- {} ... FAILED: {}", name, error.what());
-        std::fflush(stderr);
-        return 1;
-    }
-    double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
-    print_line(stdout, "- {} ... ok ({:.2f} s)", name, seconds);
-    std::fflush(stdout);
-    return 0;
+/** Runs one named randomized test, handing it the run's seed; otherwise as the overload above. */
+inline test_tally_t run_test(test_environment_t const &environment, std::string_view name,
+                             void (*test_function)(test_context_t const &)) noexcept {
+    return run_test_(environment, name, [&] { test_function(test_context_t {environment.seed}); });
 }
 
 /**
@@ -399,13 +516,13 @@ inline std::size_t run_test(char const *filter, char const *name, void (*test_fu
  *  A filter that matched nothing fails here rather than passing: every test skipping leaves no
  *  failures to count, so a mistyped filter would otherwise be indistinguishable from a green suite.
  */
-inline int report_test_failures(std::size_t failures) noexcept {
-    if (failures != 0) {
-        print_line(stderr, "\n{} test(s) failed under SMASHTABLE_SEED={}.", failures, test_seed());
+inline int report_test_failures(test_environment_t const &environment, test_tally_t const &tally) noexcept {
+    if (tally.failed != 0) {
+        print_line(stderr, "\n{} test(s) failed under SMASHTABLE_SEED={}.", tally.failed, environment.seed);
         return 1;
     }
-    if (char const *const filter = test_filter(); filter && filter[0] != '\0' && test_tally_t::executed_count() == 0) {
-        print_line(stderr, "\nSMASHTABLE_FILTER=\"{}\" matched no test, so nothing ran.", filter);
+    if (environment.filter && tally.executed == 0) {
+        print_line(stderr, "\nSMASHTABLE_FILTER=\"{}\" matched no test, so nothing ran.", environment.filter);
         return 1;
     }
     print_line(stdout, "\nAll tests passed!");

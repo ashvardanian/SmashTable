@@ -424,7 +424,7 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
     hash_bucket_head_t mutable future_header_ {};
 
     /** What a prober that lost the slot does with its core before trying again. */
-    ST_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
 
     /** Both lanes of this slot's bit, the exact footprint the lock owns. */
     constexpr hash_bucket_head_t header_mask_() const noexcept {
@@ -616,7 +616,7 @@ struct hash_storage {
     alignas(atomic_alignment<offset_t>) offset_t deleted_count {};
 
     /** Supplies and reclaims the single byte buffer behind the three regions. */
-    ST_NO_UNIQUE_ADDRESS_ allocator_t allocator {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ allocator_t allocator {};
 
     hash_storage() noexcept = default;
     explicit hash_storage(allocator_t allocator_state) noexcept : allocator(std::move(allocator_state)) {}

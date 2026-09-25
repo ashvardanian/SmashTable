@@ -314,10 +314,10 @@ class basic_hash_table {
     storage_t storage_;
 
     /** Hashes a key down to its initial probe offset. */
-    ST_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
 
     /** Decides whether a probed key matches the wanted one. */
-    ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
     /** Allocates and zeroes a table of the requested slot count. On allocation failure the table is
      *  left empty, which the factories report as an error. */

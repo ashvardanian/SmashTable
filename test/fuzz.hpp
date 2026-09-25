@@ -17,9 +17,9 @@
  *
  *  @section fuzz_seed Reproducing a Failure
  *
- *  Every sequence is drawn from @c test_seed(), which reads @c SMASHTABLE_SEED and otherwise
- *  answers @c default_seed_k. A failing run is reproduced by exporting the seed it printed, and a
- *  sweep is a loop over the variable rather than an edit to the source.
+ *  Every sequence is drawn from the seed in the @c test_context_t that @c run_test hands a suite,
+ *  which is @c SMASHTABLE_SEED or otherwise @c default_seed_k. A failing run is reproduced by
+ *  exporting the seed it printed, and a sweep loops over the variable instead of editing source.
  */
 #pragma once
 #include <compare> // `std::compare_three_way`
@@ -79,7 +79,7 @@ fuzz_snapshot_t fuzz_snapshot_of(store_type_ &store) noexcept {
  *  leaves the state agreeing for the wrong reason.
  */
 template <typename store_type_>
-void test_random_writes_match_the_oracle(std::size_t rounds = 400) {
+void test_random_writes_match_the_oracle(test_context_t const &context, std::size_t rounds = 400) {
 
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
@@ -87,7 +87,7 @@ void test_random_writes_match_the_oracle(std::size_t rounds = 400) {
     static_assert(store_t::is_associative::value, "Container must be key-value");
     static_assert(store_t::is_transactional::value, "Container must be transactional");
 
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     store_t engine;
     fuzz_oracle_t oracle;
 
@@ -155,12 +155,12 @@ void test_random_writes_match_the_oracle(std::size_t rounds = 400) {
  *  walks past. The oracle has no partitions and so cannot lose them.
  */
 template <typename store_type_>
-void test_random_windows_match_the_oracle(std::size_t rounds = 120) {
+void test_random_windows_match_the_oracle(test_context_t const &context, std::size_t rounds = 120) {
 
     using store_t = store_type_;
     using member_t = typename store_t::value_type;
 
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     store_t engine;
     fuzz_oracle_t oracle;
 
@@ -212,14 +212,14 @@ void test_random_windows_match_the_oracle(std::size_t rounds = 120) {
  *  both participants are compared against the snapshot taken before the commit was attempted.
  */
 template <typename first_store_type_, typename second_store_type_>
-void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
+void test_a_refused_group_publishes_nothing(test_context_t const &context, std::size_t rounds = 60) {
 
     using first_t = first_store_type_;
     using second_t = second_store_type_;
     using first_member_t = typename first_t::value_type;
     using second_member_t = typename second_t::value_type;
 
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     // One commit across two stores means one order both were built into; two stores that each made
     // their own are two visibility domains, and `make_transaction_group` refuses them by design.
     using order_t = typename first_t::order_t;
@@ -285,7 +285,7 @@ void test_a_refused_group_publishes_nothing(std::size_t rounds = 60) {
  *  is compared against a model advanced only when the commit answered success.
  */
 template <typename first_store_type_, typename second_store_type_>
-void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
+void test_an_accepted_group_publishes_everything(test_context_t const &context, std::size_t rounds = 120) {
 
     using first_t = first_store_type_;
     using second_t = second_store_type_;
@@ -293,7 +293,7 @@ void test_an_accepted_group_publishes_everything(std::size_t rounds = 120) {
     using second_member_t = typename second_t::value_type;
     using model_member_t = typename fuzz_oracle_t::value_type;
 
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     // One commit across two stores means one order both were built into; two stores that each made
     // their own are two visibility domains, and `make_transaction_group` refuses them by design.
     using order_t = typename first_t::order_t;

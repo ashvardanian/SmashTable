@@ -569,7 +569,7 @@ class locked_store {
 
     /** The order this store makes for itself when nobody hands it one, declared before the store it
      *  seats. */
-    ST_NO_UNIQUE_ADDRESS_ mutable order_t own_order_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ mutable order_t own_order_ {};
 
     /** The order the wrapped store is a member of, which is the one above unless a caller named
      *  another. */

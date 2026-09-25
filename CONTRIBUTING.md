@@ -35,18 +35,27 @@ SMASHTABLE_FILTER=basic_ops.insertion build_debug/smashtable_test_wb_tree
 SMASHTABLE_SEED=1234 build_debug/smashtable_test_wb_tree
 ```
 
-`SMASHTABLE_FILTER` keeps the tests whose `suite.name` contains the substring and announces every one it skips.
+`SMASHTABLE_FILTER` is an ECMAScript regex searched for in each test's `suite.name`, so only the matching tests run, and the binary announces every one it skips.
+A pattern that does not compile matches as a plain substring instead.
 A filter matching nothing fails the binary rather than reporting an empty run as green, so a typo is loud instead of reassuring.
 
 `SMASHTABLE_SEED` is the seed every randomized suite draws from, so a failing run names the sequence that produced it.
-Unset means a fixed default, which keeps CI and an unattended build deterministic.
+It defaults to 42, which keeps CI and an unattended build deterministic, and `random` draws a fresh one; either way the binary prints it on its `- Seed:` line.
 Hunting for a rare defect is therefore a loop in the shell rather than an edit to the source:
 
 ```bash
 for seed in $(seq 1 64); do SMASHTABLE_SEED=$seed build_debug/smashtable_test_avl_tree || break; done
 ```
 
-Assertions abort on the first failure and print the expression, file and line, so a run reports one defect rather than a list.
+A failed check prints the expression, file and line, then reports its test as failed and continues with the next one, so a run lists every defect it reaches and exits with 1 at the end.
+Beneath each failure the binary prints a `rerun:` line with the seed and a filter that selects only the failing test:
+
+```text
+  rerun: SMASHTABLE_SEED=42 SMASHTABLE_FILTER='^basic_ops.insertion_patterns$' build_debug/smashtable_test_wb_tree
+```
+
+A check inside a `noexcept` callback or a spawned thread cannot leave its test, so it terminates the binary instead, as a crash does.
+The backtrace follows, and the last test started on stdout is the one that died.
 
 ### Before Opening a Pull Request
 
@@ -92,11 +101,12 @@ pytest test/ --parallel-threads=4 --iterations=2
 python -c "import sys, smashtable; assert not sys._is_gil_enabled()"
 ```
 
-`SMASHTABLE_TESTS_SEED` pins the seed the Python suite draws from, which is otherwise taken at random per run.
+`SMASHTABLE_SEED` pins the Python suite's seed too, with the same default of 42, and `random` again draws a fresh one per run.
 Either way pytest prints it in its own header, so a failing run is reproducible by copying the number back:
 
 ```bash
-SMASHTABLE_TESTS_SEED=42 pytest test/
+SMASHTABLE_SEED=random pytest test/
+SMASHTABLE_SEED=1234 pytest test/
 ```
 
 ### Model Checking
@@ -129,6 +139,19 @@ Never duplicate a batch element with `value_t(*first)`: that expression cannot r
 The `batches_atomically` concept checks the shape; the rollback itself is pinned by `test_batch_atomicity.hpp`, which refuses the allocator at every point a batch asks for memory.
 
 Internal `private` data and functions should be suffixed with an underscore (`_`).
+
+Every all-caps name starts with the full project name, `SMASHTABLE_`.
+A trailing `_` marks a name as internal: it may change in any release, and nothing outside this repository may define or test it.
+A name without it is a public contract, either a switch you may set or a value you may read.
+
+| Family                       | Form                       | Example                     |
+| ---------------------------- | -------------------------- | --------------------------- |
+| ISA tier, backend, GPU layer | `SMASHTABLE_TARGET_<TIER>` | `SMASHTABLE_TARGET_HASWELL` |
+| Architecture fact            | `SMASHTABLE_ARCH_<ARCH>_`  | `SMASHTABLE_ARCH_X86_64_`   |
+
+Architectures are spelled `X86_64`, `X86_32`, `ARM64`, `RISCV64`, `PPC64`, `LOONGARCH64`, `S390X` and `WASM`.
+Every name in these families is always defined, as 0 or 1, and tested with `#if`, never with `defined(...)`.
+
 Avoid obvious inline comments.
 Prefer full words over abbreviations (e.g., `iterator` instead of `iter`, `element` instead of `elem`, `transaction` instead of `tx`, etc.).
 Code is formatted automatically using `clang-format` with the configuration specified in `.clang-format`.

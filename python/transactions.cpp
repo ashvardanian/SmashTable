@@ -498,7 +498,7 @@ static PyMethodDef View_methods[] = {
     {"discard", View_discard, METH_O, doc_View_discard},
     {"watch", View_watch, METH_O, doc_View_watch},
     {"update", View_update, METH_O, doc_View_update},
-    {"scan", as_pycfunction(View_scan), ST_METHOD_FLAGS_, doc_View_scan},
+    {"scan", as_pycfunction(View_scan), SMASHTABLE_METHOD_FLAGS_, doc_View_scan},
     {nullptr, nullptr, 0, nullptr},
 };
 

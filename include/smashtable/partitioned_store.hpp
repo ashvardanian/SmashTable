@@ -1035,7 +1035,7 @@ class partitioned_store {
         /** The one claim on the snapshot every partition of this transaction reads at. A part
          *  registers nothing of its own, so the order counts this transaction once rather than once
          *  per partition, and the low-water mark answers for all of them together. */
-        ST_NO_UNIQUE_ADDRESS_ mutable typename order_t::snapshot_claim_t claim_ {};
+        SMASHTABLE_NO_UNIQUE_ADDRESS_ mutable typename order_t::snapshot_claim_t claim_ {};
 
         /** The stamp this transaction's own commit published, which it may not read below. Zero
          *  whenever this transaction is already reading at or above whatever it committed. */
@@ -2076,15 +2076,15 @@ class partitioned_store {
     /** The one order every partition is a member of, so a stamp means the same thing in each.
      *  Empty, and free, for a part that keeps no stamps. Mutable because a reader of a const store
      *  still counts a snapshot, which is bookkeeping rather than the store's contents. */
-    ST_NO_UNIQUE_ADDRESS_ mutable order_t order_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ mutable order_t order_ {};
 
     /** Held rather than default-constructed per call: a hasher carrying state answers differently
      *  from a fresh one, so rebuilding it would discard what the store was given. */
-    ST_NO_UNIQUE_ADDRESS_ hash_t hasher_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ hash_t hasher_ {};
 
     /** Held rather than default-constructed per call, for the same reason @c hasher_ is: a stateful
      *  comparator loses what the store was given if it is rebuilt fresh. */
-    ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
 
     friend class transaction_t;
 

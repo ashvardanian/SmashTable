@@ -964,7 +964,7 @@ void test_single_element_operations() {
 
 /** Tests insertion in ascending, descending, and random order */
 template <typename container_type_>
-void test_basic_insertion_patterns(std::size_t size = 100) {
+void test_basic_insertion_patterns(test_context_t const &context, std::size_t size = 100) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -994,7 +994,7 @@ void test_basic_insertion_patterns(std::size_t size = 100) {
 
     // Test 3: Random insertion (tests worst-case AVL patterns)
     // Local, so one suite's draws never depend on what another drew from a shared generator.
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     for (std::size_t index = 0; index < size; ++index) {
         trivial_id_t const random_id = static_cast<trivial_id_t>(generator());
         auto new_member = trivial_id_to_member<member_t>(random_id);

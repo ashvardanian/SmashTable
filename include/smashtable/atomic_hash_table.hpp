@@ -148,10 +148,10 @@ class atomic_hash_table {
     storage_t storage_;
 
     /** Hashes a key down to its initial probe offset. */
-    ST_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ hasher_t hasher_ {};
 
     /** Decides whether a probed key matches the wanted one. */
-    ST_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ equals_t equals_ {};
 
   public:
     atomic_hash_table(hasher_t hasher = {}, equals_t equals = {}) noexcept

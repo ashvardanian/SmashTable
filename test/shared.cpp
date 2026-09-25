@@ -1259,48 +1259,49 @@ static void status_vocabulary_names_conflicts_and_input_output() {
 
 } // namespace
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "expected.construction_matrix", expected_construction_matrix);
-    failures += run_test(filter, "expected.moves_stay_balanced", expected_moves_stay_balanced);
-    failures += run_test(filter, "expected.decomposes", expected_decomposes);
-    failures += run_test(filter, "expected.carries_move_only", expected_carries_move_only);
+    tally += run_test(environment, "expected.construction_matrix", expected_construction_matrix);
+    tally += run_test(environment, "expected.moves_stay_balanced", expected_moves_stay_balanced);
+    tally += run_test(environment, "expected.decomposes", expected_decomposes);
+    tally += run_test(environment, "expected.carries_move_only", expected_carries_move_only);
 
-    failures += run_test(filter, "allocator.refuses_overflowing_counts", allocator_refuses_overflowing_counts);
+    tally += run_test(environment, "allocator.refuses_overflowing_counts", allocator_refuses_overflowing_counts);
 
-    failures += run_test(filter, "shared_mutex.excludes", shared_mutex_excludes);
-    failures += run_test(filter, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
+    tally += run_test(environment, "shared_mutex.excludes", shared_mutex_excludes);
+    tally += run_test(environment, "shared_mutex.admits_every_writer", shared_mutex_admits_every_writer);
 
-    failures += run_test(filter, "extended_atomics.take_the_bounded_path", extended_atomics_take_the_bounded_path);
-    failures += run_test(filter, "extended_atomics.reach_the_pinned_table", extended_atomics_reach_the_pinned_table);
-    failures += run_test(filter, "waiting_policy.substitutes_in_the_mutex", waiting_policy_substitutes_in_the_mutex);
-    failures +=
-        run_test(filter, "waiting_policy.substitutes_in_the_slot_lock", waiting_policy_substitutes_in_the_slot_lock);
+    tally += run_test(environment, "extended_atomics.take_the_bounded_path", extended_atomics_take_the_bounded_path);
+    tally += run_test(environment, "extended_atomics.reach_the_pinned_table", extended_atomics_reach_the_pinned_table);
+    tally += run_test(environment, "waiting_policy.substitutes_in_the_mutex", waiting_policy_substitutes_in_the_mutex);
+    tally += run_test(environment, "waiting_policy.substitutes_in_the_slot_lock",
+                      waiting_policy_substitutes_in_the_slot_lock);
 
-    failures += run_test(filter, "transaction_group.walks_one_order", transaction_group_walks_one_order);
-    failures +=
-        run_test(filter, "transaction_group.rollback_stops_at_refusal", transaction_group_rollback_stops_at_refusal);
-    failures +=
-        run_test(filter, "transaction_group.refuses_a_duplicate_store", transaction_group_refuses_a_duplicate_store);
-    failures += run_test(filter, "transaction_group.reports_what_refused_to_open",
-                         transaction_group_reports_what_refused_to_open);
-    failures += run_test(filter, "transaction_group.torn_commit_stops_claiming_staged",
-                         transaction_group_torn_commit_stops_claiming_staged);
-    failures += run_test(filter, "transaction_group.split_commit_publishes_nothing",
-                         transaction_group_split_commit_publishes_nothing_on_refusal);
+    tally += run_test(environment, "transaction_group.walks_one_order", transaction_group_walks_one_order);
+    tally += run_test(environment, "transaction_group.rollback_stops_at_refusal",
+                      transaction_group_rollback_stops_at_refusal);
+    tally += run_test(environment, "transaction_group.refuses_a_duplicate_store",
+                      transaction_group_refuses_a_duplicate_store);
+    tally += run_test(environment, "transaction_group.reports_what_refused_to_open",
+                      transaction_group_reports_what_refused_to_open);
+    tally += run_test(environment, "transaction_group.torn_commit_stops_claiming_staged",
+                      transaction_group_torn_commit_stops_claiming_staged);
+    tally += run_test(environment, "transaction_group.split_commit_publishes_nothing",
+                      transaction_group_split_commit_publishes_nothing_on_refusal);
 
-    failures += run_test(filter, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
+    tally += run_test(environment, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
 
-    failures += run_test(filter, "occ.commit_stamp_visibility", commit_stamp_visibility_matrix);
-    failures += run_test(filter, "occ.isolation_strength", isolation_levels_compare_by_strength);
-    failures += run_test(filter, "occ.validate_watches", validate_watches_catches_drift);
-    failures += run_test(filter, "occ.per_version_equals", per_version_equals_separates_versions);
-    failures += run_test(filter, "occ.commit_with_retries_is_bounded", commit_with_retries_is_bounded);
-    failures +=
-        run_test(filter, "status.names_conflicts_and_input_output", status_vocabulary_names_conflicts_and_input_output);
+    tally += run_test(environment, "occ.commit_stamp_visibility", commit_stamp_visibility_matrix);
+    tally += run_test(environment, "occ.isolation_strength", isolation_levels_compare_by_strength);
+    tally += run_test(environment, "occ.validate_watches", validate_watches_catches_drift);
+    tally += run_test(environment, "occ.per_version_equals", per_version_equals_separates_versions);
+    tally += run_test(environment, "occ.commit_with_retries_is_bounded", commit_with_retries_is_bounded);
+    tally += run_test(environment, "status.names_conflicts_and_input_output",
+                      status_vocabulary_names_conflicts_and_input_output);
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

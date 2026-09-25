@@ -1334,8 +1334,8 @@ class basic_avl_tree {
   private:
     node_t *root_ = nullptr;
     std::size_t size_ = 0;
-    ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_;
-    ST_NO_UNIQUE_ADDRESS_ allocator_t allocator_;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ comparator_t comparator_;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ allocator_t allocator_;
 
     /**
      *  @brief Checks if any key from other tree exists in this tree. Uses simultaneous in-order

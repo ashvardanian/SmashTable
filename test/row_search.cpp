@@ -6,7 +6,7 @@
  *      serial kit, and both layouts against a sorted array.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define ST_STRICT_CALLBACK_CHECKS_ 1
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
@@ -194,8 +194,8 @@ void verify_rows_of(std::mt19937_64 &generator) {
 }
 
 template <typename kit_type_>
-void verify_kit_rows(kit_type_) {
-    std::mt19937_64 generator(test_seed_for(name_of(kit_type_::kit_k)));
+void verify_kit_rows(test_context_t const &context, kit_type_) {
+    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
     verify_rows_of<kit_type_, std::uint32_t>(generator);
     verify_rows_of<kit_type_, std::int32_t>(generator);
     verify_rows_of<kit_type_, std::uint64_t>(generator);
@@ -255,8 +255,8 @@ void verify_layouts_of(std::mt19937_64 &generator) {
 }
 
 template <typename kit_type_>
-void verify_kit_layouts(kit_type_) {
-    std::mt19937_64 generator(test_seed_for(name_of(kit_type_::kit_k)));
+void verify_kit_layouts(test_context_t const &context, kit_type_) {
+    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
     // Widths from each medium - a cache line, a 512-byte and a 4096-byte block - and a few odd ones for the arithmetic.
     verify_layouts_of<kit_type_, key128_t, 2>(generator);
     verify_layouts_of<kit_type_, key128_t, 3>(generator);
@@ -276,31 +276,19 @@ void verify_kit_layouts(kit_type_) {
 
 #pragma region Tests
 
-/** Whether @p kit runs here, printing what happened either way so a log lists the kits that ran. */
-[[nodiscard]] bool kit_runs_here(row_kit_t kit) {
-    if (!row_kit_compiled(kit)) print_line(stdout, "  {} kit: not compiled into this build", name_of(kit));
-    else if (!row_kit_supported(kit))
-        print_line(stdout, "  {} kit: compiled, but this processor cannot run it", name_of(kit));
-    else {
-        print_line(stdout, "  {} kit: running", name_of(kit));
-        return true;
-    }
-    return false;
+void verify_rows_through(test_context_t const &context, row_kit_t kit) {
+    if (row_kit_supported(kit))
+        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit_rows(context, kit_instance); });
 }
 
-void verify_rows_through(row_kit_t kit) {
-    if (kit_runs_here(kit))
-        visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit_rows(kit_instance); });
-}
-
-void verify_layouts_through(row_kit_t kit) {
-    if (kit_runs_here(kit))
-        visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit_layouts(kit_instance); });
+void verify_layouts_through(test_context_t const &context, row_kit_t kit) {
+    if (row_kit_supported(kit))
+        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit_layouts(context, kit_instance); });
 }
 
 /** The serial kit is the reference, answering the definitions: byte order, bounds and widths. */
-void row_search_serial_matches_definitions() {
-    std::mt19937_64 generator(test_seed_for(__func__));
+void row_search_serial_matches_definitions(test_context_t const &context) {
+    std::mt19937_64 generator(mix_seed(context.seed, __func__));
     for (std::size_t draw = 0; draw < 4096; ++draw) {
         std::byte first_bytes[16];
         std::byte second_bytes[16];
@@ -343,22 +331,21 @@ void row_search_serial_matches_definitions() {
     row_kit_t const detected = detect_row_kit();
     st_verify_(row_kit_compiled(detected));
     st_verify_(row_kit_supported(detected));
-    print_line(stdout, "  detected kit: {}", name_of(detected));
 }
 
-void row_search_serial_kit() { verify_rows_through(row_kit_t::serial_k); }
-void row_search_haswell_kit() { verify_rows_through(row_kit_t::haswell_k); }
-void row_search_skylake_kit() { verify_rows_through(row_kit_t::skylake_k); }
-void row_search_neon_kit() { verify_rows_through(row_kit_t::neon_k); }
-void row_search_sve_kit() { verify_rows_through(row_kit_t::sve_k); }
-void row_search_rvv_kit() { verify_rows_through(row_kit_t::rvv_k); }
+void row_search_serial_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::serial_k); }
+void row_search_haswell_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::haswell_k); }
+void row_search_skylake_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::skylake_k); }
+void row_search_neon_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::neon_k); }
+void row_search_sve_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::sve_k); }
+void row_search_rvv_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::rvv_k); }
 
-void layouts_serial_kit() { verify_layouts_through(row_kit_t::serial_k); }
-void layouts_haswell_kit() { verify_layouts_through(row_kit_t::haswell_k); }
-void layouts_skylake_kit() { verify_layouts_through(row_kit_t::skylake_k); }
-void layouts_neon_kit() { verify_layouts_through(row_kit_t::neon_k); }
-void layouts_sve_kit() { verify_layouts_through(row_kit_t::sve_k); }
-void layouts_rvv_kit() { verify_layouts_through(row_kit_t::rvv_k); }
+void layouts_serial_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::serial_k); }
+void layouts_haswell_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::haswell_k); }
+void layouts_skylake_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::skylake_k); }
+void layouts_neon_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::neon_k); }
+void layouts_sve_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::sve_k); }
+void layouts_rvv_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::rvv_k); }
 
 /** A map form answers its set twin's keys and returns the value each key arrived with. */
 void layouts_mapped_values() {
@@ -374,25 +361,26 @@ void layouts_mapped_values() {
 
 } // namespace
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "row_search.serial_matches_definitions", row_search_serial_matches_definitions);
-    failures += run_test(filter, "row_search.serial_kit", row_search_serial_kit);
-    failures += run_test(filter, "row_search.haswell_kit", row_search_haswell_kit);
-    failures += run_test(filter, "row_search.skylake_kit", row_search_skylake_kit);
-    failures += run_test(filter, "row_search.neon_kit", row_search_neon_kit);
-    failures += run_test(filter, "row_search.sve_kit", row_search_sve_kit);
-    failures += run_test(filter, "row_search.rvv_kit", row_search_rvv_kit);
-    failures += run_test(filter, "layouts.serial_kit", layouts_serial_kit);
-    failures += run_test(filter, "layouts.haswell_kit", layouts_haswell_kit);
-    failures += run_test(filter, "layouts.skylake_kit", layouts_skylake_kit);
-    failures += run_test(filter, "layouts.neon_kit", layouts_neon_kit);
-    failures += run_test(filter, "layouts.sve_kit", layouts_sve_kit);
-    failures += run_test(filter, "layouts.rvv_kit", layouts_rvv_kit);
-    failures += run_test(filter, "layouts.mapped_values", layouts_mapped_values);
+    tally += run_test(environment, "row_search.serial_matches_definitions", row_search_serial_matches_definitions);
+    tally += run_test(environment, "row_search.serial_kit", row_search_serial_kit);
+    tally += run_test(environment, "row_search.haswell_kit", row_search_haswell_kit);
+    tally += run_test(environment, "row_search.skylake_kit", row_search_skylake_kit);
+    tally += run_test(environment, "row_search.neon_kit", row_search_neon_kit);
+    tally += run_test(environment, "row_search.sve_kit", row_search_sve_kit);
+    tally += run_test(environment, "row_search.rvv_kit", row_search_rvv_kit);
+    tally += run_test(environment, "layouts.serial_kit", layouts_serial_kit);
+    tally += run_test(environment, "layouts.haswell_kit", layouts_haswell_kit);
+    tally += run_test(environment, "layouts.skylake_kit", layouts_skylake_kit);
+    tally += run_test(environment, "layouts.neon_kit", layouts_neon_kit);
+    tally += run_test(environment, "layouts.sve_kit", layouts_sve_kit);
+    tally += run_test(environment, "layouts.rvv_kit", layouts_rvv_kit);
+    tally += run_test(environment, "layouts.mapped_values", layouts_mapped_values);
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

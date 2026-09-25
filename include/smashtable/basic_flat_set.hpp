@@ -67,7 +67,7 @@ class basic_flat_set {
     using elements_t = basic_vector<value_t, elements_allocator_t>;
 
     elements_t elements_;
-    ST_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ comparator_t comparator_ {};
 
     basic_flat_set(elements_t &&elements, comparator_t comparator) noexcept
         : elements_(std::move(elements)), comparator_(std::move(comparator)) {}

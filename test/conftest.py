@@ -17,7 +17,11 @@ import smashtable as st
 
 from .base import exported_container_names, free_threaded, make, make_keys, make_values, populate
 
-_RUN_SEED = int(os.environ.get("SMASHTABLE_TESTS_SEED", int.from_bytes(os.urandom(4), "little")))
+_requested_seed = os.environ.get("SMASHTABLE_SEED", "42")
+try:
+    _RUN_SEED = int.from_bytes(os.urandom(4), "little") if _requested_seed == "random" else int(_requested_seed)
+except ValueError:
+    raise SystemExit(f'SMASHTABLE_SEED="{_requested_seed}" does not parse') from None
 
 
 def pytest_report_header() -> list[str]:
@@ -26,7 +30,7 @@ def pytest_report_header() -> list[str]:
         f"python: {platform.python_version()} (free-threaded: {free_threaded()})",
         f"smashtable: {st.__version__} from {st.__file__}",
         f"containers: {', '.join(exported_container_names())}",
-        f"seed: {_RUN_SEED}, pin with SMASHTABLE_TESTS_SEED",
+        f"seed: {_RUN_SEED}, pin with SMASHTABLE_SEED",
     ]
 
 

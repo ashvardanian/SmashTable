@@ -1419,7 +1419,7 @@ static PyMethodDef SortedMap_methods[] = {
     {"update", Map_update, METH_O, doc_map_update},
     {"keys", Map_keys, METH_NOARGS, "A lazy view over the keys, in order."},
     {"values", Map_values, METH_NOARGS, "A lazy view over the values, in key order."},
-    {"scan", as_pycfunction(Map_scan), ST_METHOD_FLAGS_, doc_scan},
+    {"scan", as_pycfunction(Map_scan), SMASHTABLE_METHOD_FLAGS_, doc_scan},
     {"items", Map_items, METH_NOARGS, "A lazy view over the (key, value) pairs, in key order."},
     {nullptr, nullptr, 0, nullptr},
 };
@@ -1435,7 +1435,7 @@ static PyMethodDef SortedSet_methods[] = {
     {"intersection", Set_intersection, METH_O, "Members of both sides."},
     {"difference", Set_difference, METH_O, "Members of this side only."},
     {"symmetric_difference", Set_symmetric_difference, METH_O, "Members of exactly one side."},
-    {"scan", as_pycfunction(Set_scan), ST_METHOD_FLAGS_, doc_set_scan},
+    {"scan", as_pycfunction(Set_scan), SMASHTABLE_METHOD_FLAGS_, doc_set_scan},
     {"isdisjoint", Set_isdisjoint, METH_O, "Whether the two sides share no member."},
     {nullptr, nullptr, 0, nullptr},
 };

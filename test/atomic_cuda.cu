@@ -39,14 +39,14 @@ using namespace ashvardanian::smashtable::test;
 
 #pragma region Device Helpers
 
-/** Aborts the process when a CUDA call reports a failure, naming the call site. */
+/** Fails the running test when a CUDA call reports a failure, naming the call site. */
 #define st_verify_cuda_(call)                                                                                 \
     do {                                                                                                      \
         cudaError_t const error = (call);                                                                     \
         if (error != cudaSuccess) {                                                                           \
             std::fprintf(stderr, "CUDA failure: %s, %s, %s:%d\n", #call, cudaGetErrorString(error), __FILE__, \
                          __LINE__);                                                                           \
-            std::abort();                                                                                     \
+            fail_test();                                                                                      \
         }                                                                                                     \
     } while (0)
 
@@ -277,13 +277,6 @@ static void cuda_device_insert_find_erase_cycle() {
  */
 static void cuda_host_and_device_insert_together() {
     std::size_t const count = keys_count_k;
-    int concurrent_managed_access = 0;
-    st_verify_cuda_(cudaDeviceGetAttribute(&concurrent_managed_access, cudaDevAttrConcurrentManagedAccess, 0));
-    if (!concurrent_managed_access) {
-        print_line(stdout, "  (skipped: device lacks concurrent managed access)");
-        return;
-    }
-
     managed<table_t> table = make_table(count * 4);
     managed<user_id_t> device_users(count);
     managed<user_id_t> host_users(count);
@@ -315,33 +308,37 @@ static void cuda_host_and_device_insert_together() {
 
 #pragma endregion Suites
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
+    log_environment(environment);
 
     // A build machine with `nvcc` need not have a device, and neither need a CI runner, so an absent
     // or too-old device is a skip rather than a failure.
     int devices_count = 0;
     if (cudaGetDeviceCount(&devices_count) != cudaSuccess || devices_count == 0) {
-        print_line(stdout, "No CUDA device visible - skipping.");
+        print_line(stdout, "- CUDA: no device");
         return 0;
     }
 
     cudaDeviceProp properties {};
     st_verify_cuda_(cudaGetDeviceProperties(&properties, 0));
+    print_line(stdout, "- CUDA: {} sm_{}{}", properties.name, properties.major, properties.minor);
     if (properties.major < 7) {
-        print_line(stdout, "Device {} is sm_{}{}; the slot spin needs sm_70 or newer - skipping.", properties.name,
-                   properties.major, properties.minor);
+        print_line(stdout, "The slot spin needs sm_70 or newer - skipping.");
         return 0;
     }
-    print_line(stdout, "Running on {} (sm_{}{})", properties.name, properties.major, properties.minor);
+    int concurrent_managed_access = 0;
+    st_verify_cuda_(cudaDeviceGetAttribute(&concurrent_managed_access, cudaDevAttrConcurrentManagedAccess, 0));
 
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    test_tally_t tally;
 
-    failures += run_test(filter, "cuda.device_inserts_host_reads", cuda_device_inserts_host_reads);
-    failures += run_test(filter, "cuda.host_inserts_device_reads", cuda_host_inserts_device_reads);
-    failures += run_test(filter, "cuda.device_insert_find_erase_cycle", cuda_device_insert_find_erase_cycle);
-    failures += run_test(filter, "cuda.host_and_device_insert_together", cuda_host_and_device_insert_together);
+    tally += run_test(environment, "cuda.device_inserts_host_reads", cuda_device_inserts_host_reads);
+    tally += run_test(environment, "cuda.host_inserts_device_reads", cuda_host_inserts_device_reads);
+    tally += run_test(environment, "cuda.device_insert_find_erase_cycle", cuda_device_insert_find_erase_cycle);
+    if (concurrent_managed_access)
+        tally += run_test(environment, "cuda.host_and_device_insert_together", cuda_host_and_device_insert_together);
+    else print_line(stdout, "- cuda.host_and_device_insert_together ... skipped (no concurrent managed access)");
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

@@ -159,7 +159,7 @@ void test_committed_erase_hidden_from_point_reads() {
 
 /** A committed erase is invisible to every ordered read, not only to @c find. */
 template <typename container_type_>
-void test_committed_erase_hidden_from_ordered_reads() {
+void test_committed_erase_hidden_from_ordered_reads(test_context_t const &context) {
 
     using container_t = container_type_;
     using member_t = typename container_t::value_type;
@@ -200,7 +200,7 @@ void test_committed_erase_hidden_from_ordered_reads() {
         []() noexcept { st_verify_(false && "A live key sits above the tombstone"); }));
 
     // Sampling shares the range surface, so it must not draw the tombstone either.
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     for (std::size_t attempt = 0; attempt != 64; ++attempt)
         st_verify_(container.sample_one(trivial_id_to_key<member_t>(0), trivial_id_to_key<member_t>(4), generator,
                                         [&](member_t const &member) noexcept {

@@ -63,6 +63,10 @@
 #include <cuda/std/bit> // `cuda::std::popcount`, `cuda::std::countr_zero`
 #endif
 
+#define SMASHTABLE_VERSION_MAJOR 0
+#define SMASHTABLE_VERSION_MINOR 3
+#define SMASHTABLE_VERSION_PATCH 1
+
 /**
  *  @brief Lets an empty member occupy no space, in the spelling the compiler at hand honours.
  *
@@ -70,9 +74,9 @@
  *  unknown scoped attribute under @c -Werror - so neither spelling can simply be written twice.
  */
 #if defined(_MSC_VER)
-#define ST_NO_UNIQUE_ADDRESS_ [[msvc::no_unique_address]]
+#define SMASHTABLE_NO_UNIQUE_ADDRESS_ [[msvc::no_unique_address]]
 #else
-#define ST_NO_UNIQUE_ADDRESS_ [[no_unique_address]]
+#define SMASHTABLE_NO_UNIQUE_ADDRESS_ [[no_unique_address]]
 #endif
 
 /**
@@ -82,21 +86,21 @@
  *  the branch it drops is still compiled for syntax.
  */
 #if defined(__x86_64__) || defined(_M_X64)
-#define ST_TARGET_X8664_ 1
+#define SMASHTABLE_ARCH_X86_64_ 1
 #else
-#define ST_TARGET_X8664_ 0
+#define SMASHTABLE_ARCH_X86_64_ 0
 #endif
 
 #if defined(__aarch64__) || defined(_M_ARM64)
-#define ST_TARGET_ARM64_ 1
+#define SMASHTABLE_ARCH_ARM64_ 1
 #else
-#define ST_TARGET_ARM64_ 0
+#define SMASHTABLE_ARCH_ARM64_ 0
 #endif
 
 #if defined(__riscv) && defined(__riscv_xlen) && __riscv_xlen == 64
-#define ST_TARGET_RISCV64_ 1
+#define SMASHTABLE_ARCH_RISCV64_ 1
 #else
-#define ST_TARGET_RISCV64_ 0
+#define SMASHTABLE_ARCH_RISCV64_ 0
 #endif
 
 /**
@@ -106,87 +110,87 @@
  *  These say what compiles, never what the processor running it can execute - @c row_search.hpp
  *  probes that separately, because a binary built for one machine is routinely run on another.
  */
-#if !defined(ST_TARGET_HASWELL)
-#if ST_TARGET_X8664_ && !defined(__CUDACC__) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
-#define ST_TARGET_HASWELL 1
+#if !defined(SMASHTABLE_TARGET_HASWELL)
+#if SMASHTABLE_ARCH_X86_64_ && !defined(__CUDACC__) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+#define SMASHTABLE_TARGET_HASWELL 1
 #else
-#define ST_TARGET_HASWELL 0
+#define SMASHTABLE_TARGET_HASWELL 0
 #endif
-#elif ST_TARGET_HASWELL && !ST_TARGET_X8664_
-#undef ST_TARGET_HASWELL
-#define ST_TARGET_HASWELL 0
+#elif SMASHTABLE_TARGET_HASWELL && !SMASHTABLE_ARCH_X86_64_
+#undef SMASHTABLE_TARGET_HASWELL
+#define SMASHTABLE_TARGET_HASWELL 0
 #endif
 
-#if !defined(ST_TARGET_SKYLAKE)
-#if ST_TARGET_X8664_ && !defined(__CUDACC__) && \
+#if !defined(SMASHTABLE_TARGET_SKYLAKE)
+#if SMASHTABLE_ARCH_X86_64_ && !defined(__CUDACC__) && \
     (defined(__GNUC__) || defined(__clang__) || (defined(_MSC_VER) && _MSC_VER >= 1920))
-#define ST_TARGET_SKYLAKE 1
+#define SMASHTABLE_TARGET_SKYLAKE 1
 #else
-#define ST_TARGET_SKYLAKE 0
+#define SMASHTABLE_TARGET_SKYLAKE 0
 #endif
-#elif ST_TARGET_SKYLAKE && !ST_TARGET_X8664_
-#undef ST_TARGET_SKYLAKE
-#define ST_TARGET_SKYLAKE 0
+#elif SMASHTABLE_TARGET_SKYLAKE && !SMASHTABLE_ARCH_X86_64_
+#undef SMASHTABLE_TARGET_SKYLAKE
+#define SMASHTABLE_TARGET_SKYLAKE 0
 #endif
 
-#if !defined(ST_TARGET_NEON)
-#if ST_TARGET_ARM64_ && !defined(__CUDACC__)
-#define ST_TARGET_NEON 1
+#if !defined(SMASHTABLE_TARGET_NEON)
+#if SMASHTABLE_ARCH_ARM64_ && !defined(__CUDACC__)
+#define SMASHTABLE_TARGET_NEON 1
 #else
-#define ST_TARGET_NEON 0
+#define SMASHTABLE_TARGET_NEON 0
 #endif
-#elif ST_TARGET_NEON && !ST_TARGET_ARM64_
-#undef ST_TARGET_NEON
-#define ST_TARGET_NEON 0
+#elif SMASHTABLE_TARGET_NEON && !SMASHTABLE_ARCH_ARM64_
+#undef SMASHTABLE_TARGET_NEON
+#define SMASHTABLE_TARGET_NEON 0
 #endif
 
-#if !defined(ST_TARGET_SVE)
-#if ST_TARGET_ARM64_ && !defined(__CUDACC__) && !defined(_MSC_VER) && \
+#if !defined(SMASHTABLE_TARGET_SVE)
+#if SMASHTABLE_ARCH_ARM64_ && !defined(__CUDACC__) && !defined(_MSC_VER) && \
     ((defined(__clang__) && __clang_major__ >= 12) || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 11))
-#define ST_TARGET_SVE 1
+#define SMASHTABLE_TARGET_SVE 1
 #else
-#define ST_TARGET_SVE 0
+#define SMASHTABLE_TARGET_SVE 0
 #endif
-#elif ST_TARGET_SVE && !ST_TARGET_ARM64_
-#undef ST_TARGET_SVE
-#define ST_TARGET_SVE 0
+#elif SMASHTABLE_TARGET_SVE && !SMASHTABLE_ARCH_ARM64_
+#undef SMASHTABLE_TARGET_SVE
+#define SMASHTABLE_TARGET_SVE 0
 #endif
 
-#if !defined(ST_TARGET_RVV)
-#if ST_TARGET_RISCV64_ && !defined(__CUDACC__) && \
+#if !defined(SMASHTABLE_TARGET_RVV)
+#if SMASHTABLE_ARCH_RISCV64_ && !defined(__CUDACC__) && \
     ((defined(__clang__) && __clang_major__ >= 17) || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 14))
-#define ST_TARGET_RVV 1
+#define SMASHTABLE_TARGET_RVV 1
 #else
-#define ST_TARGET_RVV 0
+#define SMASHTABLE_TARGET_RVV 0
 #endif
-#elif ST_TARGET_RVV && !ST_TARGET_RISCV64_
-#undef ST_TARGET_RVV
-#define ST_TARGET_RVV 0
+#elif SMASHTABLE_TARGET_RVV && !SMASHTABLE_ARCH_RISCV64_
+#undef SMASHTABLE_TARGET_RVV
+#define SMASHTABLE_TARGET_RVV 0
 #endif
 
 /** GCC on RISC-V rejects `#pragma GCC target`, so RVV functions carry the attribute one by one. */
-#if ST_TARGET_RVV && !defined(__clang__) && defined(__GNUC__)
-#define ST_TARGET_RVV_ATTRIBUTE_ __attribute__((target("arch=+v")))
+#if SMASHTABLE_TARGET_RVV && !defined(__clang__) && defined(__GNUC__)
+#define SMASHTABLE_RVV_ATTRIBUTE_ __attribute__((target("arch=+v")))
 #else
-#define ST_TARGET_RVV_ATTRIBUTE_
+#define SMASHTABLE_RVV_ATTRIBUTE_
 #endif
 
-#if ST_TARGET_HASWELL || ST_TARGET_SKYLAKE
+#if SMASHTABLE_TARGET_HASWELL || SMASHTABLE_TARGET_SKYLAKE
 #include <immintrin.h>
 #endif
-#if ST_TARGET_X8664_ && defined(_MSC_VER)
+#if SMASHTABLE_ARCH_X86_64_ && defined(_MSC_VER)
 #include <intrin.h> // `__cpuidex`, `_xgetbv`
 #endif
-#if ST_TARGET_NEON
+#if SMASHTABLE_TARGET_NEON
 #include <arm_neon.h>
 #endif
-#if ST_TARGET_SVE
+#if SMASHTABLE_TARGET_SVE
 #include <arm_sve.h>
 #endif
-#if ST_TARGET_RVV
+#if SMASHTABLE_TARGET_RVV
 #include <riscv_vector.h>
 #endif
-#if (ST_TARGET_ARM64_ || ST_TARGET_RISCV64_) && defined(__linux__)
+#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && defined(__linux__)
 #include <sys/auxv.h> // `getauxval`, `AT_HWCAP`
 #endif
 
@@ -389,16 +393,21 @@ concept is_mapping = requires {
 };
 
 /**
- *  @brief Conditional callback validation traits controlled by @c ST_STRICT_CALLBACK_CHECKS_.
+ *  @brief Conditional callback validation traits controlled by
+ *      @c SMASHTABLE_STRICT_CALLBACK_CHECKS.
  *
- *  When @c ST_STRICT_CALLBACK_CHECKS_ is defined, these traits perform full compile-time validation
- *  using @c std::is_nothrow_invocable_v. This catches type errors early but prevents generic
- *  lambdas like `no_op_t {}` from compiling.
+ *  When @c SMASHTABLE_STRICT_CALLBACK_CHECKS is 1, these traits perform full compile-time
+ *  validation using @c std::is_nothrow_invocable_v. This catches type errors early but prevents
+ *  generic lambdas like `no_op_t {}` from compiling.
  *
- *  When undefined (default), traits always return true, allowing generic lambdas while still
+ *  When it is 0, the default, traits always return true, allowing generic lambdas while still
  *  documenting the intent that callbacks should be noexcept.
  */
-#ifdef ST_STRICT_CALLBACK_CHECKS_
+#if !defined(SMASHTABLE_STRICT_CALLBACK_CHECKS)
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 0
+#endif
+
+#if SMASHTABLE_STRICT_CALLBACK_CHECKS
 template <typename callback_type_, typename... args_types_>
 inline constexpr bool is_safe_callback_for = std::is_nothrow_invocable_v<callback_type_ &, args_types_...>;
 
@@ -1440,7 +1449,7 @@ struct versioning_for {
          *  default-constructed one, so building a fresh instance per comparison silently discards
          *  whatever the container was given.
          */
-        ST_NO_UNIQUE_ADDRESS_ comparator_t comparator;
+        SMASHTABLE_NO_UNIQUE_ADDRESS_ comparator_t comparator;
 
         versioned_comparator_t() noexcept
             requires std::is_default_constructible_v<comparator_t>
@@ -1500,7 +1509,7 @@ struct per_key_hasher {
     using is_transparent = void;
 
     /** The hasher this wrapper was built with, consulted for every element. */
-    ST_NO_UNIQUE_ADDRESS_ hasher_type_ hasher;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ hasher_type_ hasher;
 
     per_key_hasher() noexcept
         requires std::is_default_constructible_v<hasher_type_>
@@ -1520,7 +1529,7 @@ struct per_key_equals {
     using is_transparent = void;
 
     /** The equality this wrapper was built with, consulted for every comparison. */
-    ST_NO_UNIQUE_ADDRESS_ equals_type_ equals;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ equals_type_ equals;
 
     per_key_equals() noexcept
         requires std::is_default_constructible_v<equals_type_>
@@ -1548,7 +1557,7 @@ struct per_version_equals {
     using is_transparent = void;
 
     /** The equality this wrapper was built with, consulted for every comparison. */
-    ST_NO_UNIQUE_ADDRESS_ equals_type_ equals;
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ equals_type_ equals;
 
     per_version_equals() noexcept
         requires std::is_default_constructible_v<equals_type_>
@@ -1583,25 +1592,22 @@ concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::
  *  @brief The span two counters must not share if neither is to invalidate the other's line.
  *
  *  Over-padding costs a computable number of bytes; under-padding is a throughput cliff that grows
- *  with the core count, so the wider value is the default wherever the target is not known to be
- *  narrower. 128 covers Apple silicon, POWER and s390x, and x86-64, whose adjacent-line prefetch
- *  makes a 64-byte line behave as a 128-byte one for a writer.
+ *  with the core count, so 128 is the default. It covers Apple silicon and POWER, and x86-64,
+ *  whose adjacent-line prefetch makes a 64-byte line behave as a 128-byte one for a writer;
+ *  AArch64 Linux takes it too, since a build for Neoverse cannot be told from one for Asahi on
+ *  Apple silicon. s390x lines are 256 bytes, and wasm, with no coherence to protect, takes 64.
  */
-#if !defined(ST_CACHE_LINE_BYTES)
-#if defined(__x86_64__) || defined(_M_X64) || (defined(__APPLE__) && defined(__aarch64__)) || \
-    defined(__powerpc64__) || defined(__s390x__)
-
-/** 128 rather than the 64 these report: adjacent-line prefetch pulls the neighbour in, so two
- *  counters 64 bytes apart still invalidate each other for a writer. */
-#define ST_CACHE_LINE_BYTES 128
-#elif defined(__GCC_DESTRUCTIVE_SIZE)
-#define ST_CACHE_LINE_BYTES __GCC_DESTRUCTIVE_SIZE
+#if !defined(SMASHTABLE_DEFAULT_ALIGNMENT)
+#if defined(__s390x__)
+#define SMASHTABLE_DEFAULT_ALIGNMENT 256
+#elif defined(__wasm__) || defined(__EMSCRIPTEN__)
+#define SMASHTABLE_DEFAULT_ALIGNMENT 64
 #else
-#define ST_CACHE_LINE_BYTES 64
+#define SMASHTABLE_DEFAULT_ALIGNMENT 128
 #endif
 #endif
 
-inline constexpr std::size_t cache_line_bytes_k = ST_CACHE_LINE_BYTES;
+inline constexpr std::size_t cache_line_bytes_k = SMASHTABLE_DEFAULT_ALIGNMENT;
 static_assert(cache_line_bytes_k >= 32 && (cache_line_bytes_k & (cache_line_bytes_k - 1)) == 0,
               "a cache line is a power of two, and no target here has one below 32 bytes");
 
@@ -2884,7 +2890,7 @@ class transaction_group {
     transactions_t transactions_;
 
     /** The one claim every participant reads under, held only where they share an order. */
-    ST_NO_UNIQUE_ADDRESS_ claim_t claim_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ claim_t claim_ {};
 
     /** The stamp the last one-stamp commit published under, and zero where each participant stamps
      *  its own. */
@@ -3285,7 +3291,7 @@ template <typename pausing_policy_type_ = bare_waiting_policy_t>
 struct standard_waiting_policy {
 
     /** What a core does between attempts, asked once per attempt the spin spends. */
-    ST_NO_UNIQUE_ADDRESS_ pausing_policy_type_ pausing {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ pausing_policy_type_ pausing {};
 
     /** Hands one spent attempt to the pausing policy, which is the whole of the spin here. */
     template <typename watched_type_, typename value_type_, typename attempts_type_>
@@ -3368,7 +3374,7 @@ class spin_shared_mutex {
     using word_ref_t = atomic_reference_<std::uint32_t>;
 
     /** What a waiting thread does with its core, and what it parks on once its spin is spent. */
-    ST_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
 
   public:
     constexpr spin_shared_mutex() noexcept = default;
@@ -3792,7 +3798,7 @@ class basic_commit_order {
     alignas(word_alignment_k) generation_t floors_[buckets_k] {};
 
     /** What a committer waiting for ring room does with its core. */
-    ST_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ waiting_policy_type_ waiting_ {};
 
     /** Which ring slot @p stamp lands in. */
     static constexpr std::size_t ring_slot_(generation_t stamp) noexcept {

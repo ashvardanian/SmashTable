@@ -5,9 +5,9 @@
  *  @brief Benchmark of the row kits per medium width, and of the static B-tree against the S+ tree
  *      and a binary search.
  *
- *  Prints a machine block, then one block per phase: the kits over single rows of each medium
- *  width, and both layouts over the same sorted keys. The `--rows`, `--keys` and `--queries` flags
- *  all take counts.
+ *  Prints the kits compiled and runnable, a machine block, then one block per phase: the kits over
+ *  single rows of each medium width, and both layouts over the same sorted keys. The `--rows`,
+ *  `--keys` and `--queries` flags all take counts.
  */
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
@@ -84,14 +84,11 @@ void read_cpu_model(std::span<char> model) {
     std::fclose(cpuinfo);
 }
 
-constexpr row_kit_t every_kit_k[] = {row_kit_t::serial_k, row_kit_t::haswell_k, row_kit_t::skylake_k,
-                                     row_kit_t::neon_k,   row_kit_t::sve_k,     row_kit_t::rvv_k};
-
 void print_machine(options_t const &options) {
     char model[256];
     read_cpu_model(model);
     print_line(stdout, "Machine");
-    print_line(stdout, "  cpu:            {}", model);
+    print_line(stdout, "  cpu:            {}", static_cast<char const *>(model)); // ? The array would print whole
 #if defined(__clang__)
     print_line(stdout, "  compiler:       Clang {}", __clang_version__);
 #elif defined(__GNUC__)
@@ -99,13 +96,6 @@ void print_machine(options_t const &options) {
 #else
     print_line(stdout, "  compiler:       unrecognized");
 #endif
-    std::printf("  kits compiled: ");
-    for (row_kit_t const kit : every_kit_k)
-        if (row_kit_compiled(kit)) std::printf(" %s", name_of(kit));
-    std::printf("\n  kits runnable: ");
-    for (row_kit_t const kit : every_kit_k)
-        if (row_kit_supported(kit)) std::printf(" %s", name_of(kit));
-    std::printf("\n");
     print_line(stdout, "  kit detected:   {}", name_of(detect_row_kit()));
     print_line(stdout, "  rows:           {}", options.rows);
     print_line(stdout, "  keys:           {}", options.keys);
@@ -199,7 +189,7 @@ void bench_rows_of(char const *label, key_draw_t draw, char const *row_layout, o
     });
     double serial = 0;
     std::printf("  %-22s %-12s %5zu  %-10s %8.2f\n", label, row_layout, keys_per_row_, "binary", binary);
-    for (row_kit_t const kit : every_kit_k) {
+    for (row_kit_t const kit : every_row_kit_k) {
         if (!row_kit_supported(kit)) continue;
         double const elapsed = visit_row_kit(kit, [&]<typename kit_type_>(kit_type_) noexcept {
             return time_rows<kit_type_, key_type_, keys_per_row_>(row_span, high_span, low_span, query_span);
@@ -296,7 +286,7 @@ void bench_layouts_of(char const *label, key_draw_t draw, options_t const &optio
         return static_cast<std::size_t>(std::lower_bound(sorted.begin(), sorted.end(), queries[call]) - sorted.begin());
     });
     std::printf("  %-18s %5s  %-11s %-8s %8.1f\n", label, "-", "binary", "-", binary);
-    for (row_kit_t const kit : every_kit_k) {
+    for (row_kit_t const kit : every_row_kit_k) {
         if (!row_kit_supported(kit)) continue;
         visit_row_kit(kit, [&]<typename kit_type_>(kit_type_) noexcept {
             if constexpr (std::same_as<key_type_, key128_t>) {
@@ -339,6 +329,8 @@ int main(int arguments_count, char **arguments) {
         std::fprintf(stderr, "Usage: %s [--rows <count>] [--keys <count>] [--queries <count>]\n", arguments[0]);
         return 1;
     }
+    print_row_kits("Compiled for", row_kit_compiled);
+    print_row_kits("This machine", row_kit_supported);
     print_machine(options);
     bench_row_kits(options);
     bench_layouts(options);

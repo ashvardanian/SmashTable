@@ -9,7 +9,7 @@
  *  composite-key representation is uniform.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define ST_STRICT_CALLBACK_CHECKS_ 1
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint8_t`
@@ -1308,7 +1308,7 @@ static void test_bounded_vacuum_sweeps_whole_runs() {
 
 /** Tests that reservoir sampling draws only readable keys, once each per pass */
 template <typename store_type_>
-static void test_sample_reservoir_draws_visible_keys() {
+static void test_sample_reservoir_draws_visible_keys(test_context_t const &context) {
     using member_t = typename store_type_::value_type;
     constexpr trivial_id_t keys_k = 20;
     constexpr trivial_id_t erased_stride_k = 2;
@@ -1319,7 +1319,7 @@ static void test_sample_reservoir_draws_visible_keys() {
     for (trivial_id_t identifier = 0; identifier != keys_k; identifier += erased_stride_k)
         commit_erase(store, identifier);
 
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     std::vector<member_t> reservoir(4);
     std::size_t seen = 0;
     st_verify_(store.sample_reservoir(trivial_key_t {0}, trivial_key_t {keys_k}, generator, seen, reservoir.size(),
@@ -1905,14 +1905,14 @@ static void test_oracle_transaction_ordinals_include_staged_writes() {
 
 /** A single draw lands inside its window and never names a key the newest commit hides. */
 template <typename store_type_>
-static void test_sample_one_draws_from_the_visible_window() {
+static void test_sample_one_draws_from_the_visible_window(test_context_t const &context) {
     constexpr trivial_id_t keys_k = 16;
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier)
         commit_write(store, identifier, int(identifier));
     for (trivial_id_t identifier = 0; identifier < keys_k; identifier += 2) commit_erase(store, identifier);
 
-    std::mt19937 generator(test_seed_for(__func__));
+    std::mt19937 generator(mix_seed(context.seed, __func__));
     std::size_t drawn = 0;
     bool saw_lowest = false;
     bool saw_highest = false;
@@ -3069,392 +3069,402 @@ static void test_staged_transaction_unwinds_under_partition_locks(std::size_t ro
 
 } // namespace
 
-int main(int, char **) {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "enumeration.visits_every_element_once", enumeration_visits_every_element_once);
-    failures += run_test(filter, "enumeration.merges_staged_writes", enumeration_merges_staged_writes);
-    failures += run_test(filter, "enumeration.follows_the_snapshot", enumeration_follows_the_snapshot);
-    failures +=
-        run_test(filter, "order_statistics.select_answers_exactly_once", order_statistics_select_answers_exactly_once);
+    tally += run_test(environment, "enumeration.visits_every_element_once", enumeration_visits_every_element_once);
+    tally += run_test(environment, "enumeration.merges_staged_writes", enumeration_merges_staged_writes);
+    tally += run_test(environment, "enumeration.follows_the_snapshot", enumeration_follows_the_snapshot);
+    tally += run_test(environment, "order_statistics.select_answers_exactly_once",
+                      order_statistics_select_answers_exactly_once);
 
-    failures += run_test(filter, "traits.avl", test_isolation_traits<snapshot_avl_map_t>);
-    failures += run_test(filter, "traits.wb", test_isolation_traits<snapshot_wb_map_t>);
-    failures += run_test(filter, "traits.hash", test_isolation_traits<snapshot_hash_map_t>);
+    tally += run_test(environment, "traits.avl", test_isolation_traits<snapshot_avl_map_t>);
+    tally += run_test(environment, "traits.wb", test_isolation_traits<snapshot_wb_map_t>);
+    tally += run_test(environment, "traits.hash", test_isolation_traits<snapshot_hash_map_t>);
 
-    failures +=
-        run_test(filter, "isolation.repeated_read_is_stable.avl", test_repeated_read_is_stable<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "isolation.repeated_read_is_stable.wb", test_repeated_read_is_stable<snapshot_wb_map_t>);
-    failures +=
-        run_test(filter, "isolation.repeated_read_is_stable.hash", test_repeated_read_is_stable<snapshot_hash_map_t>);
+    tally += run_test(environment, "isolation.repeated_read_is_stable.avl",
+                      test_repeated_read_is_stable<snapshot_avl_map_t>);
+    tally +=
+        run_test(environment, "isolation.repeated_read_is_stable.wb", test_repeated_read_is_stable<snapshot_wb_map_t>);
+    tally += run_test(environment, "isolation.repeated_read_is_stable.hash",
+                      test_repeated_read_is_stable<snapshot_hash_map_t>);
 
-    failures += run_test(filter, "isolation.reads_own_writes.avl", test_reads_own_writes<snapshot_avl_map_t>);
-    failures += run_test(filter, "isolation.reads_own_writes.hash", test_reads_own_writes<snapshot_hash_map_t>);
+    tally += run_test(environment, "isolation.reads_own_writes.avl", test_reads_own_writes<snapshot_avl_map_t>);
+    tally += run_test(environment, "isolation.reads_own_writes.hash", test_reads_own_writes<snapshot_hash_map_t>);
 
-    failures +=
-        run_test(filter, "isolation.range_admits_no_phantoms.avl", test_range_admits_no_phantoms<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "isolation.range_admits_no_phantoms.wb", test_range_admits_no_phantoms<snapshot_wb_map_t>);
-    failures += run_test(filter, "isolation.bounds_follow_the_snapshot.avl",
-                         test_bounds_follow_the_snapshot<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "isolation.bounds_follow_the_snapshot.wb", test_bounds_follow_the_snapshot<snapshot_wb_map_t>);
-    failures += run_test(filter, "transaction_surface.sees_its_own_writes.snapshot",
-                         []() { transaction_range_surface_sees_its_own_writes<snapshot_avl_map_t>(); });
-    failures += run_test(filter, "transaction_surface.sees_its_own_writes.serializable",
-                         []() { transaction_range_surface_sees_its_own_writes<serializable_avl_map_t>(); });
-    failures += run_test(filter, "serializable.reset_clears_a_whole_keyspace_read",
-                         serializable_reset_clears_a_whole_keyspace_read);
+    tally += run_test(environment, "isolation.range_admits_no_phantoms.avl",
+                      test_range_admits_no_phantoms<snapshot_avl_map_t>);
+    tally += run_test(environment, "isolation.range_admits_no_phantoms.wb",
+                      test_range_admits_no_phantoms<snapshot_wb_map_t>);
+    tally += run_test(environment, "isolation.bounds_follow_the_snapshot.avl",
+                      test_bounds_follow_the_snapshot<snapshot_avl_map_t>);
+    tally += run_test(environment, "isolation.bounds_follow_the_snapshot.wb",
+                      test_bounds_follow_the_snapshot<snapshot_wb_map_t>);
+    tally += run_test(environment, "transaction_surface.sees_its_own_writes.snapshot",
+                      []() { transaction_range_surface_sees_its_own_writes<snapshot_avl_map_t>(); });
+    tally += run_test(environment, "transaction_surface.sees_its_own_writes.serializable",
+                      []() { transaction_range_surface_sees_its_own_writes<serializable_avl_map_t>(); });
+    tally += run_test(environment, "serializable.reset_clears_a_whole_keyspace_read",
+                      serializable_reset_clears_a_whole_keyspace_read);
 
-    failures += run_test(filter, "write_skew.separates_the_levels", test_write_skew_separates_the_levels);
-    failures += run_test(filter, "phantom.insert_refuses_the_walker", test_phantom_insert_refuses_the_walker);
-    failures += run_test(filter, "phantom.erase_refuses_the_walker", test_phantom_erase_refuses_the_walker);
-    failures += run_test(filter, "phantom.unbounded_read_refuses_any_commit", test_unbounded_read_refuses_any_commit);
-    failures += run_test(filter, "phantom.refuses_a_bounded_scan", test_phantom_refuses_a_bounded_scan);
-    failures += run_test(filter, "phantom.ordinal_window_ignores_a_commit_above_it",
-                         test_ordinal_window_ignores_a_commit_above_it);
-    failures += run_test(filter, "conflict.each_refusal_names_its_cause", test_each_refusal_names_its_cause);
-    failures += run_test(filter, "conflict.first_committer_wins.avl", test_first_committer_wins<snapshot_avl_map_t>);
-    failures += run_test(filter, "conflict.first_committer_wins.wb", test_first_committer_wins<snapshot_wb_map_t>);
-    failures += run_test(filter, "conflict.first_committer_wins.hash", test_first_committer_wins<snapshot_hash_map_t>);
-    failures +=
-        run_test(filter, "conflict.caught_after_staging.avl", test_conflict_caught_after_staging<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "conflict.caught_after_staging.hash", test_conflict_caught_after_staging<snapshot_hash_map_t>);
-    failures +=
-        run_test(filter, "conflict.watch_refuses_lost_update.avl", test_watch_refuses_lost_update<snapshot_avl_map_t>);
-    failures += run_test(filter, "conflict.watch_refuses_lost_update.hash",
-                         test_watch_refuses_lost_update<snapshot_hash_map_t>);
-    failures += run_test(filter, "conflict.watch_records_absence.avl", test_watch_records_absence<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "conflict.watch_records_absence.hash", test_watch_records_absence<snapshot_hash_map_t>);
-    failures += run_test(filter, "conflict.watch_spans_insert_then_erase.avl",
-                         test_watch_spans_insert_then_erase<snapshot_avl_map_t>);
-    failures += run_test(filter, "conflict.watch_spans_insert_then_erase.hash",
-                         test_watch_spans_insert_then_erase<snapshot_hash_map_t>);
-    failures +=
-        run_test(filter, "conflict.rollback_returns_writes.avl", test_rollback_returns_writes<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "conflict.rollback_returns_writes.hash", test_rollback_returns_writes<snapshot_hash_map_t>);
-    failures += run_test(filter, "conflict.abandoned_transaction_leaves_nothing.avl",
-                         test_abandoned_transaction_leaves_nothing<snapshot_avl_map_t>);
-    failures += run_test(filter, "conflict.abandoned_transaction_leaves_nothing.hash",
-                         test_abandoned_transaction_leaves_nothing<snapshot_hash_map_t>);
+    tally += run_test(environment, "write_skew.separates_the_levels", test_write_skew_separates_the_levels);
+    tally += run_test(environment, "phantom.insert_refuses_the_walker", test_phantom_insert_refuses_the_walker);
+    tally += run_test(environment, "phantom.erase_refuses_the_walker", test_phantom_erase_refuses_the_walker);
+    tally += run_test(environment, "phantom.unbounded_read_refuses_any_commit", test_unbounded_read_refuses_any_commit);
+    tally += run_test(environment, "phantom.refuses_a_bounded_scan", test_phantom_refuses_a_bounded_scan);
+    tally += run_test(environment, "phantom.ordinal_window_ignores_a_commit_above_it",
+                      test_ordinal_window_ignores_a_commit_above_it);
+    tally += run_test(environment, "conflict.each_refusal_names_its_cause", test_each_refusal_names_its_cause);
+    tally += run_test(environment, "conflict.first_committer_wins.avl", test_first_committer_wins<snapshot_avl_map_t>);
+    tally += run_test(environment, "conflict.first_committer_wins.wb", test_first_committer_wins<snapshot_wb_map_t>);
+    tally +=
+        run_test(environment, "conflict.first_committer_wins.hash", test_first_committer_wins<snapshot_hash_map_t>);
+    tally += run_test(environment, "conflict.caught_after_staging.avl",
+                      test_conflict_caught_after_staging<snapshot_avl_map_t>);
+    tally += run_test(environment, "conflict.caught_after_staging.hash",
+                      test_conflict_caught_after_staging<snapshot_hash_map_t>);
+    tally += run_test(environment, "conflict.watch_refuses_lost_update.avl",
+                      test_watch_refuses_lost_update<snapshot_avl_map_t>);
+    tally += run_test(environment, "conflict.watch_refuses_lost_update.hash",
+                      test_watch_refuses_lost_update<snapshot_hash_map_t>);
+    tally +=
+        run_test(environment, "conflict.watch_records_absence.avl", test_watch_records_absence<snapshot_avl_map_t>);
+    tally +=
+        run_test(environment, "conflict.watch_records_absence.hash", test_watch_records_absence<snapshot_hash_map_t>);
+    tally += run_test(environment, "conflict.watch_spans_insert_then_erase.avl",
+                      test_watch_spans_insert_then_erase<snapshot_avl_map_t>);
+    tally += run_test(environment, "conflict.watch_spans_insert_then_erase.hash",
+                      test_watch_spans_insert_then_erase<snapshot_hash_map_t>);
+    tally +=
+        run_test(environment, "conflict.rollback_returns_writes.avl", test_rollback_returns_writes<snapshot_avl_map_t>);
+    tally += run_test(environment, "conflict.rollback_returns_writes.hash",
+                      test_rollback_returns_writes<snapshot_hash_map_t>);
+    tally += run_test(environment, "conflict.abandoned_transaction_leaves_nothing.avl",
+                      test_abandoned_transaction_leaves_nothing<snapshot_avl_map_t>);
+    tally += run_test(environment, "conflict.abandoned_transaction_leaves_nothing.hash",
+                      test_abandoned_transaction_leaves_nothing<snapshot_hash_map_t>);
 
-    failures +=
-        run_test(filter, "reclamation.version_tail_collapses.avl", test_version_tail_collapses<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "reclamation.version_tail_collapses.wb", test_version_tail_collapses<snapshot_wb_map_t>);
-    failures +=
-        run_test(filter, "reclamation.version_tail_collapses.hash", test_version_tail_collapses<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.open_transaction_pins_versions.avl",
-                         test_open_transaction_pins_versions<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.open_transaction_pins_versions.wb",
-                         test_open_transaction_pins_versions<snapshot_wb_map_t>);
-    failures += run_test(filter, "reclamation.open_transaction_pins_versions.hash",
-                         test_open_transaction_pins_versions<snapshot_hash_map_t>);
-    failures +=
-        run_test(filter, "reclamation.tombstones_are_reclaimed.avl", test_tombstones_are_reclaimed<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.tombstones_are_reclaimed.hash",
-                         test_tombstones_are_reclaimed<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.erase_with_nothing_open_costs_nothing.avl",
-                         test_erase_with_nothing_open_costs_nothing<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.erase_with_nothing_open_costs_nothing.hash",
-                         test_erase_with_nothing_open_costs_nothing<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.direct_writes_prune_themselves.avl",
-                         test_direct_writes_prune_themselves<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.direct_writes_prune_themselves.hash",
-                         test_direct_writes_prune_themselves<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.pruning_spares_staged_versions.avl",
-                         test_pruning_spares_staged_versions<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.pruning_spares_staged_versions.hash",
-                         test_pruning_spares_staged_versions<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.bulk_sweep_keeps_every_reader_whole.avl",
-                         test_bulk_sweep_keeps_every_reader_whole<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.bulk_sweep_keeps_every_reader_whole.wb",
-                         test_bulk_sweep_keeps_every_reader_whole<snapshot_wb_map_t>);
-    failures += run_test(filter, "reclamation.bulk_sweep_keeps_every_reader_whole.hash",
-                         test_bulk_sweep_keeps_every_reader_whole<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.version_tail_collapses.avl",
+                      test_version_tail_collapses<snapshot_avl_map_t>);
+    tally +=
+        run_test(environment, "reclamation.version_tail_collapses.wb", test_version_tail_collapses<snapshot_wb_map_t>);
+    tally += run_test(environment, "reclamation.version_tail_collapses.hash",
+                      test_version_tail_collapses<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.open_transaction_pins_versions.avl",
+                      test_open_transaction_pins_versions<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.open_transaction_pins_versions.wb",
+                      test_open_transaction_pins_versions<snapshot_wb_map_t>);
+    tally += run_test(environment, "reclamation.open_transaction_pins_versions.hash",
+                      test_open_transaction_pins_versions<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.tombstones_are_reclaimed.avl",
+                      test_tombstones_are_reclaimed<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.tombstones_are_reclaimed.hash",
+                      test_tombstones_are_reclaimed<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.erase_with_nothing_open_costs_nothing.avl",
+                      test_erase_with_nothing_open_costs_nothing<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.erase_with_nothing_open_costs_nothing.hash",
+                      test_erase_with_nothing_open_costs_nothing<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.direct_writes_prune_themselves.avl",
+                      test_direct_writes_prune_themselves<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.direct_writes_prune_themselves.hash",
+                      test_direct_writes_prune_themselves<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.pruning_spares_staged_versions.avl",
+                      test_pruning_spares_staged_versions<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.pruning_spares_staged_versions.hash",
+                      test_pruning_spares_staged_versions<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.bulk_sweep_keeps_every_reader_whole.avl",
+                      test_bulk_sweep_keeps_every_reader_whole<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.bulk_sweep_keeps_every_reader_whole.wb",
+                      test_bulk_sweep_keeps_every_reader_whole<snapshot_wb_map_t>);
+    tally += run_test(environment, "reclamation.bulk_sweep_keeps_every_reader_whole.hash",
+                      test_bulk_sweep_keeps_every_reader_whole<snapshot_hash_map_t>);
 
-    failures += run_test(filter, "reclamation.low_water_mark_tracks_the_oldest_reader.avl",
-                         test_low_water_mark_tracks_the_oldest_reader<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.low_water_mark_tracks_the_oldest_reader.hash",
-                         test_low_water_mark_tracks_the_oldest_reader<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.rolling_readers_keep_reclamation_moving.avl",
-                         test_rolling_readers_keep_reclamation_moving<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.rolling_readers_keep_reclamation_moving.hash",
-                         test_rolling_readers_keep_reclamation_moving<snapshot_hash_map_t>);
-    failures += run_test(filter, "reclamation.long_lived_reader_holds_its_own_snapshot.avl",
-                         test_long_lived_reader_holds_its_own_snapshot<snapshot_avl_map_t>);
-    failures += run_test(filter, "reclamation.long_lived_reader_holds_its_own_snapshot.hash",
-                         test_long_lived_reader_holds_its_own_snapshot<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.low_water_mark_tracks_the_oldest_reader.avl",
+                      test_low_water_mark_tracks_the_oldest_reader<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.low_water_mark_tracks_the_oldest_reader.hash",
+                      test_low_water_mark_tracks_the_oldest_reader<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.rolling_readers_keep_reclamation_moving.avl",
+                      test_rolling_readers_keep_reclamation_moving<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.rolling_readers_keep_reclamation_moving.hash",
+                      test_rolling_readers_keep_reclamation_moving<snapshot_hash_map_t>);
+    tally += run_test(environment, "reclamation.long_lived_reader_holds_its_own_snapshot.avl",
+                      test_long_lived_reader_holds_its_own_snapshot<snapshot_avl_map_t>);
+    tally += run_test(environment, "reclamation.long_lived_reader_holds_its_own_snapshot.hash",
+                      test_long_lived_reader_holds_its_own_snapshot<snapshot_hash_map_t>);
 
-    failures += run_test(filter, "point.insert_strategies.avl", test_point_insert_strategies<snapshot_avl_map_t>);
-    failures += run_test(filter, "point.insert_strategies.hash", test_point_insert_strategies<snapshot_hash_map_t>);
-    failures +=
-        run_test(filter, "cursor.yields_each_key_once.avl", test_cursor_yields_each_key_once<snapshot_avl_map_t>);
-    failures += run_test(filter, "cursor.yields_each_key_once.wb", test_cursor_yields_each_key_once<snapshot_wb_map_t>);
-    failures += run_test(filter, "cursor.transaction_range_is_sorted.avl",
-                         test_transaction_range_is_sorted<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "cursor.transaction_range_is_sorted.wb", test_transaction_range_is_sorted<snapshot_wb_map_t>);
+    tally += run_test(environment, "point.insert_strategies.avl", test_point_insert_strategies<snapshot_avl_map_t>);
+    tally += run_test(environment, "point.insert_strategies.hash", test_point_insert_strategies<snapshot_hash_map_t>);
+    tally +=
+        run_test(environment, "cursor.yields_each_key_once.avl", test_cursor_yields_each_key_once<snapshot_avl_map_t>);
+    tally +=
+        run_test(environment, "cursor.yields_each_key_once.wb", test_cursor_yields_each_key_once<snapshot_wb_map_t>);
+    tally += run_test(environment, "cursor.transaction_range_is_sorted.avl",
+                      test_transaction_range_is_sorted<snapshot_avl_map_t>);
+    tally += run_test(environment, "cursor.transaction_range_is_sorted.wb",
+                      test_transaction_range_is_sorted<snapshot_wb_map_t>);
 
-    failures +=
-        run_test(filter, "publication.all_or_nothing.avl", test_publication_is_all_or_nothing<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "publication.all_or_nothing.hash", test_publication_is_all_or_nothing<snapshot_hash_map_t>);
-    failures += run_test(filter, "publication.erases_and_discards.avl",
-                         test_publication_erases_and_discards<snapshot_avl_map_t>);
-    failures += run_test(filter, "publication.erases_and_discards.hash",
-                         test_publication_erases_and_discards<snapshot_hash_map_t>);
-    failures += run_test(filter, "publication.clear_refuses_open_readers.avl",
-                         test_clear_refuses_open_readers<snapshot_avl_map_t>);
-    failures += run_test(filter, "publication.clear_refuses_open_readers.hash",
-                         test_clear_refuses_open_readers<snapshot_hash_map_t>);
+    tally +=
+        run_test(environment, "publication.all_or_nothing.avl", test_publication_is_all_or_nothing<snapshot_avl_map_t>);
+    tally += run_test(environment, "publication.all_or_nothing.hash",
+                      test_publication_is_all_or_nothing<snapshot_hash_map_t>);
+    tally += run_test(environment, "publication.erases_and_discards.avl",
+                      test_publication_erases_and_discards<snapshot_avl_map_t>);
+    tally += run_test(environment, "publication.erases_and_discards.hash",
+                      test_publication_erases_and_discards<snapshot_hash_map_t>);
+    tally += run_test(environment, "publication.clear_refuses_open_readers.avl",
+                      test_clear_refuses_open_readers<snapshot_avl_map_t>);
+    tally += run_test(environment, "publication.clear_refuses_open_readers.hash",
+                      test_clear_refuses_open_readers<snapshot_hash_map_t>);
 
-    failures += run_test(filter, "range.equal_range_collapses_to_find.avl",
-                         test_equal_range_collapses_to_find<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.equal_range_collapses_to_find.hash",
-                         test_equal_range_collapses_to_find<snapshot_hash_map_t>);
-    failures += run_test(filter, "range.erase_range_is_all_or_nothing.avl",
-                         test_erase_range_is_all_or_nothing<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.erase_range_is_all_or_nothing.wb",
-                         test_erase_range_is_all_or_nothing<snapshot_wb_map_t>);
-    failures += run_test(filter, "range.erase_from_includes_its_bound.avl",
-                         test_erase_from_includes_its_bound<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.erase_from_includes_its_bound.wb",
-                         test_erase_from_includes_its_bound<snapshot_wb_map_t>);
-    failures += run_test(filter, "range.erase_from_includes_its_bound.monotonic",
-                         test_erase_from_includes_its_bound<monotonic_avl_map_t>);
-    failures += run_test(filter, "range.erase_from_includes_its_bound.reference",
-                         test_erase_from_includes_its_bound<reference_avl_map_t>);
-    failures += run_test(filter, "range.erase_up_to_excludes_its_bound.avl",
-                         test_erase_up_to_excludes_its_bound<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.erase_up_to_excludes_its_bound.wb",
-                         test_erase_up_to_excludes_its_bound<snapshot_wb_map_t>);
-    failures += run_test(filter, "range.erase_up_to_excludes_its_bound.monotonic",
-                         test_erase_up_to_excludes_its_bound<monotonic_avl_map_t>);
-    failures += run_test(filter, "range.erase_up_to_excludes_its_bound.reference",
-                         test_erase_up_to_excludes_its_bound<reference_avl_map_t>);
-    failures += run_test(filter, "modifiers.insert_if_missing_reports_outcome.avl",
-                         test_insert_if_missing_reports_outcome<snapshot_avl_map_t>);
-    failures += run_test(filter, "modifiers.insert_if_missing_reports_outcome.hash",
-                         test_insert_if_missing_reports_outcome<snapshot_hash_map_t>);
-    failures += run_test(filter, "modifiers.insert_if_missing_reports_outcome.monotonic",
-                         test_insert_if_missing_reports_outcome<monotonic_avl_map_t>);
-    failures += run_test(filter, "modifiers.insert_if_missing_reports_outcome.reference",
-                         test_insert_if_missing_reports_outcome<reference_avl_map_t>);
-    failures += run_test(filter, "range.update_range_leaves_readers_alone.avl",
-                         test_update_range_leaves_readers_alone<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.update_range_leaves_readers_alone.wb",
-                         test_update_range_leaves_readers_alone<snapshot_wb_map_t>);
-    failures += run_test(filter, "range.bounded_vacuum_sweeps_whole_runs.avl",
-                         test_bounded_vacuum_sweeps_whole_runs<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.bounded_vacuum_sweeps_whole_runs.wb",
-                         test_bounded_vacuum_sweeps_whole_runs<snapshot_wb_map_t>);
-    failures += run_test(filter, "range.sample_reservoir_draws_visible_keys.avl",
-                         test_sample_reservoir_draws_visible_keys<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.sample_reservoir_draws_visible_keys.wb",
-                         test_sample_reservoir_draws_visible_keys<snapshot_wb_map_t>);
-    failures += run_test(filter, "range.bulk_modifiers_commit_together.avl",
-                         test_bulk_modifiers_commit_together<snapshot_avl_map_t>);
-    failures += run_test(filter, "range.bulk_modifiers_commit_together.hash",
-                         test_bulk_modifiers_commit_together<snapshot_hash_map_t>);
+    tally += run_test(environment, "range.equal_range_collapses_to_find.avl",
+                      test_equal_range_collapses_to_find<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.equal_range_collapses_to_find.hash",
+                      test_equal_range_collapses_to_find<snapshot_hash_map_t>);
+    tally += run_test(environment, "range.erase_range_is_all_or_nothing.avl",
+                      test_erase_range_is_all_or_nothing<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.erase_range_is_all_or_nothing.wb",
+                      test_erase_range_is_all_or_nothing<snapshot_wb_map_t>);
+    tally += run_test(environment, "range.erase_from_includes_its_bound.avl",
+                      test_erase_from_includes_its_bound<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.erase_from_includes_its_bound.wb",
+                      test_erase_from_includes_its_bound<snapshot_wb_map_t>);
+    tally += run_test(environment, "range.erase_from_includes_its_bound.monotonic",
+                      test_erase_from_includes_its_bound<monotonic_avl_map_t>);
+    tally += run_test(environment, "range.erase_from_includes_its_bound.reference",
+                      test_erase_from_includes_its_bound<reference_avl_map_t>);
+    tally += run_test(environment, "range.erase_up_to_excludes_its_bound.avl",
+                      test_erase_up_to_excludes_its_bound<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.erase_up_to_excludes_its_bound.wb",
+                      test_erase_up_to_excludes_its_bound<snapshot_wb_map_t>);
+    tally += run_test(environment, "range.erase_up_to_excludes_its_bound.monotonic",
+                      test_erase_up_to_excludes_its_bound<monotonic_avl_map_t>);
+    tally += run_test(environment, "range.erase_up_to_excludes_its_bound.reference",
+                      test_erase_up_to_excludes_its_bound<reference_avl_map_t>);
+    tally += run_test(environment, "modifiers.insert_if_missing_reports_outcome.avl",
+                      test_insert_if_missing_reports_outcome<snapshot_avl_map_t>);
+    tally += run_test(environment, "modifiers.insert_if_missing_reports_outcome.hash",
+                      test_insert_if_missing_reports_outcome<snapshot_hash_map_t>);
+    tally += run_test(environment, "modifiers.insert_if_missing_reports_outcome.monotonic",
+                      test_insert_if_missing_reports_outcome<monotonic_avl_map_t>);
+    tally += run_test(environment, "modifiers.insert_if_missing_reports_outcome.reference",
+                      test_insert_if_missing_reports_outcome<reference_avl_map_t>);
+    tally += run_test(environment, "range.update_range_leaves_readers_alone.avl",
+                      test_update_range_leaves_readers_alone<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.update_range_leaves_readers_alone.wb",
+                      test_update_range_leaves_readers_alone<snapshot_wb_map_t>);
+    tally += run_test(environment, "range.bounded_vacuum_sweeps_whole_runs.avl",
+                      test_bounded_vacuum_sweeps_whole_runs<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.bounded_vacuum_sweeps_whole_runs.wb",
+                      test_bounded_vacuum_sweeps_whole_runs<snapshot_wb_map_t>);
+    tally += run_test(environment, "range.sample_reservoir_draws_visible_keys.avl",
+                      test_sample_reservoir_draws_visible_keys<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.sample_reservoir_draws_visible_keys.wb",
+                      test_sample_reservoir_draws_visible_keys<snapshot_wb_map_t>);
+    tally += run_test(environment, "range.bulk_modifiers_commit_together.avl",
+                      test_bulk_modifiers_commit_together<snapshot_avl_map_t>);
+    tally += run_test(environment, "range.bulk_modifiers_commit_together.hash",
+                      test_bulk_modifiers_commit_together<snapshot_hash_map_t>);
 
-    failures +=
-        run_test(filter, "order.statistics_match_the_walk.wb", test_order_statistics_match_the_walk<snapshot_wb_map_t>);
-    failures += run_test(filter, "order.statistics_cost_a_logarithm", test_order_statistics_cost_a_logarithm);
-    failures += run_test(filter, "order.transaction_statistics_merge.avl",
-                         test_transaction_order_statistics_merge<snapshot_avl_map_t>);
-    failures += run_test(filter, "order.transaction_statistics_merge.wb",
-                         test_transaction_order_statistics_merge<snapshot_wb_map_t>);
-    failures += run_test(filter, "order.ranked_size_tracks_every_write", test_ranked_size_tracks_every_write);
+    tally += run_test(environment, "order.statistics_match_the_walk.wb",
+                      test_order_statistics_match_the_walk<snapshot_wb_map_t>);
+    tally += run_test(environment, "order.statistics_cost_a_logarithm", test_order_statistics_cost_a_logarithm);
+    tally += run_test(environment, "order.transaction_statistics_merge.avl",
+                      test_transaction_order_statistics_merge<snapshot_avl_map_t>);
+    tally += run_test(environment, "order.transaction_statistics_merge.wb",
+                      test_transaction_order_statistics_merge<snapshot_wb_map_t>);
+    tally += run_test(environment, "order.ranked_size_tracks_every_write", test_ranked_size_tracks_every_write);
 
-    failures += run_test(filter, "point.heavy_keys_round_trip", test_heavy_keys_round_trip);
-    failures += run_test(filter, "point.group_spans_both_stores", test_group_spans_both_stores);
+    tally += run_test(environment, "point.heavy_keys_round_trip", test_heavy_keys_round_trip);
+    tally += run_test(environment, "point.group_spans_both_stores", test_group_spans_both_stores);
 
     // The shared suite decides what to assert from `isolation_k`. Running it here is what compiles and
     // exercises its snapshot arms - every other container in the tree takes the weaker one.
-    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation.snapshot",
-                         test_lost_update_matches_isolation<snapshot_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.lost_update_matches_isolation.serializable",
-                         test_lost_update_matches_isolation<serializable_avl_map_t>);
-    failures += run_test(filter, "serializable.a_read_reports_what_it_could_not_record",
-                         test_a_read_reports_what_it_could_not_record);
-    failures += run_test(filter, "snapshot.an_unvalidated_read_records_nothing_to_lose",
-                         test_an_unvalidated_read_records_nothing_to_lose);
-    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.snapshot",
-                         test_write_skew_matches_isolation<snapshot_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.serializable",
-                         test_write_skew_matches_isolation<serializable_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation.snapshot",
-                         test_read_conflict_matches_isolation<snapshot_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation.serializable",
-                         test_read_conflict_matches_isolation<serializable_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.write_skew_matches_isolation.strict",
-                         test_write_skew_matches_isolation<strict_serializable_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.read_conflict_matches_isolation.strict",
-                         test_read_conflict_matches_isolation<strict_serializable_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.avl",
-                         test_repeated_read_matches_isolation<snapshot_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.wb",
-                         test_repeated_read_matches_isolation<snapshot_wb_map_t>);
-    failures += run_test(filter, "transactional_consistency.repeated_read_matches_isolation.hash",
-                         test_repeated_read_matches_isolation<snapshot_hash_map_t>);
-    failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation.avl",
-                         test_repeated_range_matches_isolation<snapshot_avl_map_t>);
-    failures += run_test(filter, "transactional_consistency.repeated_range_matches_isolation.wb",
-                         test_repeated_range_matches_isolation<snapshot_wb_map_t>);
+    tally += run_test(environment, "transactional_consistency.lost_update_matches_isolation.snapshot",
+                      test_lost_update_matches_isolation<snapshot_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.lost_update_matches_isolation.serializable",
+                      test_lost_update_matches_isolation<serializable_avl_map_t>);
+    tally += run_test(environment, "serializable.a_read_reports_what_it_could_not_record",
+                      test_a_read_reports_what_it_could_not_record);
+    tally += run_test(environment, "snapshot.an_unvalidated_read_records_nothing_to_lose",
+                      test_an_unvalidated_read_records_nothing_to_lose);
+    tally += run_test(environment, "transactional_consistency.write_skew_matches_isolation.snapshot",
+                      test_write_skew_matches_isolation<snapshot_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.write_skew_matches_isolation.serializable",
+                      test_write_skew_matches_isolation<serializable_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.read_conflict_matches_isolation.snapshot",
+                      test_read_conflict_matches_isolation<snapshot_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.read_conflict_matches_isolation.serializable",
+                      test_read_conflict_matches_isolation<serializable_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.write_skew_matches_isolation.strict",
+                      test_write_skew_matches_isolation<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.read_conflict_matches_isolation.strict",
+                      test_read_conflict_matches_isolation<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.repeated_read_matches_isolation.avl",
+                      test_repeated_read_matches_isolation<snapshot_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.repeated_read_matches_isolation.wb",
+                      test_repeated_read_matches_isolation<snapshot_wb_map_t>);
+    tally += run_test(environment, "transactional_consistency.repeated_read_matches_isolation.hash",
+                      test_repeated_read_matches_isolation<snapshot_hash_map_t>);
+    tally += run_test(environment, "transactional_consistency.repeated_range_matches_isolation.avl",
+                      test_repeated_range_matches_isolation<snapshot_avl_map_t>);
+    tally += run_test(environment, "transactional_consistency.repeated_range_matches_isolation.wb",
+                      test_repeated_range_matches_isolation<snapshot_wb_map_t>);
 
     // Sixteen partitions, one order. The suites above pin what a single store promises; these pin
     // that sharding it does not quietly take that promise back.
-    failures += run_test(filter, "convergence.insert_if_missing_reports_the_fresh_insert.snapshot",
-                         test_insert_if_missing_reports_the_fresh_insert<snapshot_avl_map_t>);
-    failures += run_test(filter, "convergence.insert_if_missing_reports_the_fresh_insert.monotonic",
-                         test_insert_if_missing_reports_the_fresh_insert<monotonic_avl_map_t>);
-    failures += run_test(filter, "convergence.insert_if_missing_reports_the_fresh_insert.reference",
-                         test_insert_if_missing_reports_the_fresh_insert<reference_avl_map_t>);
-    failures += run_test(filter, "convergence.update_refuses_an_absent_key.snapshot",
-                         test_update_refuses_an_absent_key<snapshot_avl_map_t>);
-    failures += run_test(filter, "convergence.update_refuses_an_absent_key.monotonic",
-                         test_update_refuses_an_absent_key<monotonic_avl_map_t>);
-    failures += run_test(filter, "convergence.update_refuses_an_absent_key.reference",
-                         test_update_refuses_an_absent_key<reference_avl_map_t>);
-    failures += run_test(filter, "convergence.smallest_opens_the_walk.snapshot",
-                         test_smallest_opens_the_walk<snapshot_avl_map_t>);
-    failures += run_test(filter, "convergence.smallest_opens_the_walk.snapshot_wb",
-                         test_smallest_opens_the_walk<snapshot_wb_map_t>);
-    failures += run_test(filter, "convergence.smallest_opens_the_walk.monotonic",
-                         test_smallest_opens_the_walk<monotonic_avl_map_t>);
-    failures += run_test(filter, "convergence.smallest_answers_at_the_readers_snapshot.snapshot",
-                         test_smallest_answers_at_the_readers_snapshot<snapshot_avl_map_t>);
-    failures += run_test(filter, "convergence.smallest_answers_at_the_readers_snapshot.monotonic",
-                         test_smallest_answers_at_the_readers_snapshot<monotonic_avl_map_t>);
-    failures += run_test(filter, "convergence.ordinals_agree_with_the_oracle.snapshot",
-                         test_ordinals_agree_with_the_oracle<snapshot_wb_map_t>);
-    failures += run_test(filter, "convergence.ordinals_agree_with_the_oracle.monotonic",
-                         test_ordinals_agree_with_the_oracle<monotonic_wb_map_t>);
-    failures += run_test(filter, "convergence.oracle_transaction_ordinals_include_staged_writes",
-                         test_oracle_transaction_ordinals_include_staged_writes);
-    failures += run_test(filter, "convergence.sample_one_draws_from_the_visible_window.snapshot",
-                         test_sample_one_draws_from_the_visible_window<snapshot_avl_map_t>);
-    failures += run_test(filter, "convergence.sample_one_draws_from_the_visible_window.wb",
-                         test_sample_one_draws_from_the_visible_window<snapshot_wb_map_t>);
-    failures += run_test(filter, "convergence.sample_one_draws_from_the_visible_window.monotonic",
-                         test_sample_one_draws_from_the_visible_window<monotonic_avl_map_t>);
-    failures += run_test(filter, "convergence.sample_one_draws_from_the_visible_window.reference",
-                         test_sample_one_draws_from_the_visible_window<reference_avl_map_t>);
+    tally += run_test(environment, "convergence.insert_if_missing_reports_the_fresh_insert.snapshot",
+                      test_insert_if_missing_reports_the_fresh_insert<snapshot_avl_map_t>);
+    tally += run_test(environment, "convergence.insert_if_missing_reports_the_fresh_insert.monotonic",
+                      test_insert_if_missing_reports_the_fresh_insert<monotonic_avl_map_t>);
+    tally += run_test(environment, "convergence.insert_if_missing_reports_the_fresh_insert.reference",
+                      test_insert_if_missing_reports_the_fresh_insert<reference_avl_map_t>);
+    tally += run_test(environment, "convergence.update_refuses_an_absent_key.snapshot",
+                      test_update_refuses_an_absent_key<snapshot_avl_map_t>);
+    tally += run_test(environment, "convergence.update_refuses_an_absent_key.monotonic",
+                      test_update_refuses_an_absent_key<monotonic_avl_map_t>);
+    tally += run_test(environment, "convergence.update_refuses_an_absent_key.reference",
+                      test_update_refuses_an_absent_key<reference_avl_map_t>);
+    tally += run_test(environment, "convergence.smallest_opens_the_walk.snapshot",
+                      test_smallest_opens_the_walk<snapshot_avl_map_t>);
+    tally += run_test(environment, "convergence.smallest_opens_the_walk.snapshot_wb",
+                      test_smallest_opens_the_walk<snapshot_wb_map_t>);
+    tally += run_test(environment, "convergence.smallest_opens_the_walk.monotonic",
+                      test_smallest_opens_the_walk<monotonic_avl_map_t>);
+    tally += run_test(environment, "convergence.smallest_answers_at_the_readers_snapshot.snapshot",
+                      test_smallest_answers_at_the_readers_snapshot<snapshot_avl_map_t>);
+    tally += run_test(environment, "convergence.smallest_answers_at_the_readers_snapshot.monotonic",
+                      test_smallest_answers_at_the_readers_snapshot<monotonic_avl_map_t>);
+    tally += run_test(environment, "convergence.ordinals_agree_with_the_oracle.snapshot",
+                      test_ordinals_agree_with_the_oracle<snapshot_wb_map_t>);
+    tally += run_test(environment, "convergence.ordinals_agree_with_the_oracle.monotonic",
+                      test_ordinals_agree_with_the_oracle<monotonic_wb_map_t>);
+    tally += run_test(environment, "convergence.oracle_transaction_ordinals_include_staged_writes",
+                      test_oracle_transaction_ordinals_include_staged_writes);
+    tally += run_test(environment, "convergence.sample_one_draws_from_the_visible_window.snapshot",
+                      test_sample_one_draws_from_the_visible_window<snapshot_avl_map_t>);
+    tally += run_test(environment, "convergence.sample_one_draws_from_the_visible_window.wb",
+                      test_sample_one_draws_from_the_visible_window<snapshot_wb_map_t>);
+    tally += run_test(environment, "convergence.sample_one_draws_from_the_visible_window.monotonic",
+                      test_sample_one_draws_from_the_visible_window<monotonic_avl_map_t>);
+    tally += run_test(environment, "convergence.sample_one_draws_from_the_visible_window.reference",
+                      test_sample_one_draws_from_the_visible_window<reference_avl_map_t>);
 
-    failures += run_test(filter, "sharded.reader_holds_one_snapshot",
-                         test_sharded_reader_holds_one_snapshot<sharded_snapshot_map_t>);
-    failures += run_test(filter, "sharded.transaction_reads_its_own_commit",
-                         test_sharded_transaction_reads_its_own_commit<sharded_snapshot_map_t>);
-    failures += run_test(filter, "sharded.range_admits_no_phantoms",
-                         test_sharded_range_admits_no_phantoms<sharded_snapshot_map_t>);
-    failures += run_test(filter, "sharded.mark_pins_every_partition",
-                         test_sharded_mark_pins_every_partition<sharded_snapshot_map_t>);
-    failures += run_test(filter, "sharded.transactional_consistency.repeated_read",
-                         test_repeated_read_matches_isolation<sharded_snapshot_map_t>);
-    failures += run_test(filter, "sharded.transactional_consistency.repeated_range",
-                         test_repeated_range_matches_isolation<sharded_snapshot_map_t>);
-    failures += run_test(filter, "sharded.refused_commit_publishes_nothing",
-                         []() { test_refused_commit_publishes_nothing<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "sharded.commit_spans_partitions.snapshot",
-                         []() { test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "sharded.commit_spans_partitions.monotonic",
-                         []() { test_commit_spans_partitions_matches_isolation<sharded_monotonic_map_t>(); });
-    failures += run_test(filter, "group.publishes_under_one_stamp",
-                         test_group_publishes_under_one_stamp<locked_snapshot_map_t>);
-    failures += run_test(filter, "group.commit_with_runs_the_body",
-                         test_group_commit_with_runs_the_body<locked_snapshot_map_t>);
-    failures += run_test(filter, "group.commit_is_read_whole_across_stores",
-                         []() { test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>(); });
+    tally += run_test(environment, "sharded.reader_holds_one_snapshot",
+                      test_sharded_reader_holds_one_snapshot<sharded_snapshot_map_t>);
+    tally += run_test(environment, "sharded.transaction_reads_its_own_commit",
+                      test_sharded_transaction_reads_its_own_commit<sharded_snapshot_map_t>);
+    tally += run_test(environment, "sharded.range_admits_no_phantoms",
+                      test_sharded_range_admits_no_phantoms<sharded_snapshot_map_t>);
+    tally += run_test(environment, "sharded.mark_pins_every_partition",
+                      test_sharded_mark_pins_every_partition<sharded_snapshot_map_t>);
+    tally += run_test(environment, "sharded.transactional_consistency.repeated_read",
+                      test_repeated_read_matches_isolation<sharded_snapshot_map_t>);
+    tally += run_test(environment, "sharded.transactional_consistency.repeated_range",
+                      test_repeated_range_matches_isolation<sharded_snapshot_map_t>);
+    tally += run_test(environment, "sharded.refused_commit_publishes_nothing",
+                      []() { test_refused_commit_publishes_nothing<sharded_snapshot_map_t>(); });
+    tally += run_test(environment, "sharded.commit_spans_partitions.snapshot",
+                      []() { test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>(); });
+    tally += run_test(environment, "sharded.commit_spans_partitions.monotonic",
+                      []() { test_commit_spans_partitions_matches_isolation<sharded_monotonic_map_t>(); });
+    tally += run_test(environment, "group.publishes_under_one_stamp",
+                      test_group_publishes_under_one_stamp<locked_snapshot_map_t>);
+    tally += run_test(environment, "group.commit_with_runs_the_body",
+                      test_group_commit_with_runs_the_body<locked_snapshot_map_t>);
+    tally += run_test(environment, "group.commit_is_read_whole_across_stores",
+                      []() { test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>(); });
 
-    failures += run_test(filter, "fuzz.writes_match_the_oracle.snapshot",
-                         []() { test_random_writes_match_the_oracle<snapshot_avl_map_t>(); });
-    failures += run_test(filter, "fuzz.writes_match_the_oracle.monotonic",
-                         []() { test_random_writes_match_the_oracle<monotonic_avl_map_t>(); });
-    failures += run_test(filter, "fuzz.writes_match_the_oracle.serializable",
-                         []() { test_random_writes_match_the_oracle<serializable_avl_map_t>(); });
-    failures += run_test(filter, "fuzz.windows_match_the_oracle.snapshot",
-                         []() { test_random_windows_match_the_oracle<snapshot_avl_map_t>(); });
-    failures += run_test(filter, "fuzz.windows_match_the_oracle.sharded_snapshot",
-                         []() { test_random_windows_match_the_oracle<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "fuzz.refused_group_publishes_nothing", []() {
-        test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>();
+    tally += run_test(environment, "fuzz.writes_match_the_oracle.snapshot", [](test_context_t const &context) {
+        test_random_writes_match_the_oracle<snapshot_avl_map_t>(context);
     });
-    failures += run_test(filter, "fuzz.accepted_group_publishes_everything", []() {
-        test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>();
+    tally += run_test(environment, "fuzz.writes_match_the_oracle.monotonic", [](test_context_t const &context) {
+        test_random_writes_match_the_oracle<monotonic_avl_map_t>(context);
+    });
+    tally += run_test(environment, "fuzz.writes_match_the_oracle.serializable", [](test_context_t const &context) {
+        test_random_writes_match_the_oracle<serializable_avl_map_t>(context);
+    });
+    tally += run_test(environment, "fuzz.windows_match_the_oracle.snapshot", [](test_context_t const &context) {
+        test_random_windows_match_the_oracle<snapshot_avl_map_t>(context);
+    });
+    tally += run_test(environment, "fuzz.windows_match_the_oracle.sharded_snapshot", [](test_context_t const &context) {
+        test_random_windows_match_the_oracle<sharded_snapshot_map_t>(context);
+    });
+    tally += run_test(environment, "fuzz.refused_group_publishes_nothing", [](test_context_t const &context) {
+        test_a_refused_group_publishes_nothing<grouped_snapshot_map_t, grouped_snapshot_map_t>(context);
+    });
+    tally += run_test(environment, "fuzz.accepted_group_publishes_everything", [](test_context_t const &context) {
+        test_an_accepted_group_publishes_everything<grouped_snapshot_map_t, grouped_serializable_map_t>(context);
     });
 
-    failures += run_test(filter, "commit_stamp.follows_commit_order.snapshot",
-                         test_commit_stamp_follows_commit_order<snapshot_avl_map_t>);
-    failures += run_test(filter, "commit_stamp.follows_commit_order.strict",
-                         test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>);
-    failures += run_test(filter, "commit_stamp.follows_commit_order.sharded_snapshot",
-                         test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>);
-    failures += run_test(filter, "commit_stamp.follows_commit_order.sharded_strict",
-                         test_commit_stamp_follows_commit_order<sharded_strict_map_t>);
+    tally += run_test(environment, "commit_stamp.follows_commit_order.snapshot",
+                      test_commit_stamp_follows_commit_order<snapshot_avl_map_t>);
+    tally += run_test(environment, "commit_stamp.follows_commit_order.strict",
+                      test_commit_stamp_follows_commit_order<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "commit_stamp.follows_commit_order.sharded_snapshot",
+                      test_commit_stamp_follows_commit_order<sharded_snapshot_map_t>);
+    tally += run_test(environment, "commit_stamp.follows_commit_order.sharded_strict",
+                      test_commit_stamp_follows_commit_order<sharded_strict_map_t>);
 
-    failures += run_test(filter, "reader.holds_its_stamp.snapshot", test_reader_holds_its_stamp<snapshot_avl_map_t>);
-    failures += run_test(filter, "reader.holds_its_stamp.sharded_snapshot",
-                         test_reader_holds_its_stamp<sharded_snapshot_map_t>);
-    failures +=
-        run_test(filter, "reader.holds_its_stamp.strict", test_reader_holds_its_stamp<strict_serializable_avl_map_t>);
-    failures +=
-        run_test(filter, "reader.holds_its_stamp.sharded_strict", test_reader_holds_its_stamp<sharded_strict_map_t>);
-    failures += run_test(filter, "reader.serves_threads_without_a_lock.sharded_snapshot",
-                         []() { test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "reader.serves_threads_without_a_lock.sharded_strict",
-                         []() { test_reader_serves_threads_without_a_lock<sharded_strict_map_t>(); });
+    tally += run_test(environment, "reader.holds_its_stamp.snapshot", test_reader_holds_its_stamp<snapshot_avl_map_t>);
+    tally += run_test(environment, "reader.holds_its_stamp.sharded_snapshot",
+                      test_reader_holds_its_stamp<sharded_snapshot_map_t>);
+    tally += run_test(environment, "reader.holds_its_stamp.strict",
+                      test_reader_holds_its_stamp<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "reader.holds_its_stamp.sharded_strict",
+                      test_reader_holds_its_stamp<sharded_strict_map_t>);
+    tally += run_test(environment, "reader.serves_threads_without_a_lock.sharded_snapshot",
+                      []() { test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>(); });
+    tally += run_test(environment, "reader.serves_threads_without_a_lock.sharded_strict",
+                      []() { test_reader_serves_threads_without_a_lock<sharded_strict_map_t>(); });
 
-    failures += run_test(filter, "adoption.is_validated.snapshot", test_adopted_stamp_is_validated<snapshot_avl_map_t>);
-    failures +=
-        run_test(filter, "adoption.is_validated.serializable", test_adopted_stamp_is_validated<serializable_avl_map_t>);
-    failures += run_test(filter, "adoption.is_validated.strict",
-                         test_adopted_stamp_is_validated<strict_serializable_avl_map_t>);
-    failures += run_test(filter, "adoption.is_validated.sharded_snapshot",
-                         test_adopted_stamp_is_validated<sharded_snapshot_map_t>);
-    failures +=
-        run_test(filter, "adoption.is_validated.sharded_strict", test_adopted_stamp_is_validated<sharded_strict_map_t>);
-    failures += run_test(filter, "adoption.outlives_the_reader.snapshot",
-                         test_adoption_outlives_the_reader<snapshot_avl_map_t>);
-    failures += run_test(filter, "adoption.outlives_the_reader.serializable",
-                         test_adoption_outlives_the_reader<serializable_avl_map_t>);
-    failures += run_test(filter, "adoption.outlives_the_reader.strict",
-                         test_adoption_outlives_the_reader<strict_serializable_avl_map_t>);
-    failures += run_test(filter, "adoption.outlives_the_reader.sharded_snapshot",
-                         test_adoption_outlives_the_reader<sharded_snapshot_map_t>);
-    failures += run_test(filter, "adoption.outlives_the_reader.sharded_strict",
-                         test_adoption_outlives_the_reader<sharded_strict_map_t>);
+    tally +=
+        run_test(environment, "adoption.is_validated.snapshot", test_adopted_stamp_is_validated<snapshot_avl_map_t>);
+    tally += run_test(environment, "adoption.is_validated.serializable",
+                      test_adopted_stamp_is_validated<serializable_avl_map_t>);
+    tally += run_test(environment, "adoption.is_validated.strict",
+                      test_adopted_stamp_is_validated<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "adoption.is_validated.sharded_snapshot",
+                      test_adopted_stamp_is_validated<sharded_snapshot_map_t>);
+    tally += run_test(environment, "adoption.is_validated.sharded_strict",
+                      test_adopted_stamp_is_validated<sharded_strict_map_t>);
+    tally += run_test(environment, "adoption.outlives_the_reader.snapshot",
+                      test_adoption_outlives_the_reader<snapshot_avl_map_t>);
+    tally += run_test(environment, "adoption.outlives_the_reader.serializable",
+                      test_adoption_outlives_the_reader<serializable_avl_map_t>);
+    tally += run_test(environment, "adoption.outlives_the_reader.strict",
+                      test_adoption_outlives_the_reader<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "adoption.outlives_the_reader.sharded_snapshot",
+                      test_adoption_outlives_the_reader<sharded_snapshot_map_t>);
+    tally += run_test(environment, "adoption.outlives_the_reader.sharded_strict",
+                      test_adoption_outlives_the_reader<sharded_strict_map_t>);
 
-    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.snapshot",
-                         test_page_ignores_commits_past_its_last_key<snapshot_avl_map_t>);
-    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.serializable",
-                         test_page_ignores_commits_past_its_last_key<serializable_avl_map_t>);
-    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.strict",
-                         test_page_ignores_commits_past_its_last_key<strict_serializable_avl_map_t>);
-    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.sharded_snapshot",
-                         test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>);
-    failures += run_test(filter, "pagination.ignores_commits_past_its_last_key.sharded_strict",
-                         test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>);
+    tally += run_test(environment, "pagination.ignores_commits_past_its_last_key.snapshot",
+                      test_page_ignores_commits_past_its_last_key<snapshot_avl_map_t>);
+    tally += run_test(environment, "pagination.ignores_commits_past_its_last_key.serializable",
+                      test_page_ignores_commits_past_its_last_key<serializable_avl_map_t>);
+    tally += run_test(environment, "pagination.ignores_commits_past_its_last_key.strict",
+                      test_page_ignores_commits_past_its_last_key<strict_serializable_avl_map_t>);
+    tally += run_test(environment, "pagination.ignores_commits_past_its_last_key.sharded_snapshot",
+                      test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>);
+    tally += run_test(environment, "pagination.ignores_commits_past_its_last_key.sharded_strict",
+                      test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>);
 
-    failures += run_test(filter, "window_writes.publish_under_one_stamp.sharded_snapshot",
-                         test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>);
-    failures += run_test(filter, "window_writes.publish_under_one_stamp.sharded_strict",
-                         test_window_writes_publish_under_one_stamp<sharded_strict_map_t>);
-    failures += run_test(filter, "window_writes.never_seen_half_applied.sharded_snapshot",
-                         []() { test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "window_writes.never_seen_half_applied.sharded_strict",
-                         []() { test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>(); });
+    tally += run_test(environment, "window_writes.publish_under_one_stamp.sharded_snapshot",
+                      test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>);
+    tally += run_test(environment, "window_writes.publish_under_one_stamp.sharded_strict",
+                      test_window_writes_publish_under_one_stamp<sharded_strict_map_t>);
+    tally += run_test(environment, "window_writes.never_seen_half_applied.sharded_snapshot",
+                      []() { test_window_writes_are_never_seen_half_applied<sharded_snapshot_map_t>(); });
+    tally += run_test(environment, "window_writes.never_seen_half_applied.sharded_strict",
+                      []() { test_window_writes_are_never_seen_half_applied<sharded_strict_map_t>(); });
 
-    failures += run_test(filter, "unwind.staged_transaction_under_partition_locks.sharded_snapshot",
-                         []() { test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>(); });
-    failures += run_test(filter, "unwind.staged_transaction_under_partition_locks.sharded_strict",
-                         []() { test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>(); });
+    tally += run_test(environment, "unwind.staged_transaction_under_partition_locks.sharded_snapshot",
+                      []() { test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>(); });
+    tally += run_test(environment, "unwind.staged_transaction_under_partition_locks.sharded_strict",
+                      []() { test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>(); });
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

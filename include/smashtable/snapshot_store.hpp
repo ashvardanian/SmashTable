@@ -2110,7 +2110,7 @@ class snapshot_store {
 
     /** The order this store is a member of, held by value when it is its own and by pointer when it
      *  is not. */
-    ST_NO_UNIQUE_ADDRESS_ mutable order_slot_t order_slot_ {};
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ mutable order_slot_t order_slot_ {};
 
     /** The order every stamp and every snapshot comes from, however it is held. */
     [[nodiscard]] order_type_ &order_() const noexcept {

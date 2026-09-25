@@ -325,48 +325,50 @@ static void fixture_coverage_hash_lookup_cost_is_bounded() { test_hash_lookup_co
 
 } // namespace
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "unordered_ops.empty_container_operations", unordered_ops_empty_container_operations);
-    failures += run_test(filter, "unordered_ops.single_element_operations", unordered_ops_single_element_operations);
-    failures += run_test(filter, "unordered_ops.growth_through_rehashes", unordered_ops_growth_through_rehashes);
-    failures += run_test(filter, "unordered_ops.tombstone_reuse", unordered_ops_tombstone_reuse);
-    failures += run_test(filter, "unordered_ops.full_iteration", unordered_ops_full_iteration);
-    failures += run_test(filter, "unordered_ops.moves_and_swaps", unordered_ops_moves_and_swaps);
-    failures += run_test(filter, "unordered_ops.capacity_management", unordered_ops_capacity_management);
-    failures += run_test(filter, "unordered_ops.load_factor_consistency", unordered_ops_load_factor_consistency);
-    failures += run_test(filter, "unordered_ops.heterogeneous_lookups", unordered_ops_heterogeneous_lookups);
+    tally +=
+        run_test(environment, "unordered_ops.empty_container_operations", unordered_ops_empty_container_operations);
+    tally += run_test(environment, "unordered_ops.single_element_operations", unordered_ops_single_element_operations);
+    tally += run_test(environment, "unordered_ops.growth_through_rehashes", unordered_ops_growth_through_rehashes);
+    tally += run_test(environment, "unordered_ops.tombstone_reuse", unordered_ops_tombstone_reuse);
+    tally += run_test(environment, "unordered_ops.full_iteration", unordered_ops_full_iteration);
+    tally += run_test(environment, "unordered_ops.moves_and_swaps", unordered_ops_moves_and_swaps);
+    tally += run_test(environment, "unordered_ops.capacity_management", unordered_ops_capacity_management);
+    tally += run_test(environment, "unordered_ops.load_factor_consistency", unordered_ops_load_factor_consistency);
+    tally += run_test(environment, "unordered_ops.heterogeneous_lookups", unordered_ops_heterogeneous_lookups);
 
-    failures +=
-        run_test(filter, "unordered_ops.exhausted_allocator_insertions", unordered_ops_exhausted_allocator_insertions);
-    failures += run_test(filter, "unordered_ops.insert_reports_outcome", unordered_ops_insert_reports_outcome);
-    failures += run_test(filter, "unordered_ops.insert_reports_refusal", unordered_ops_insert_reports_refusal);
-    failures += run_test(filter, "unordered_ops.full_table_refusals", unordered_ops_full_table_refusals);
-    failures += run_test(filter, "unordered_ops.present_key_needs_no_room", unordered_ops_present_key_needs_no_room);
-    failures += run_test(filter, "unordered_ops.pinned_saturation", unordered_ops_pinned_saturation);
-    failures +=
-        run_test(filter, "unordered_ops.pinned_tombstone_saturation", unordered_ops_pinned_tombstone_saturation);
-    failures += run_test(filter, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
-    failures += run_test(filter, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
-    failures += run_test(filter, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
+    tally += run_test(environment, "unordered_ops.exhausted_allocator_insertions",
+                      unordered_ops_exhausted_allocator_insertions);
+    tally += run_test(environment, "unordered_ops.insert_reports_outcome", unordered_ops_insert_reports_outcome);
+    tally += run_test(environment, "unordered_ops.insert_reports_refusal", unordered_ops_insert_reports_refusal);
+    tally += run_test(environment, "unordered_ops.full_table_refusals", unordered_ops_full_table_refusals);
+    tally += run_test(environment, "unordered_ops.present_key_needs_no_room", unordered_ops_present_key_needs_no_room);
+    tally += run_test(environment, "unordered_ops.pinned_saturation", unordered_ops_pinned_saturation);
+    tally +=
+        run_test(environment, "unordered_ops.pinned_tombstone_saturation", unordered_ops_pinned_tombstone_saturation);
+    tally += run_test(environment, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
+    tally += run_test(environment, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
+    tally += run_test(environment, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
 
-    failures += run_test(filter, "unordered_visit.every_match", unordered_visit_every_match);
-    failures += run_test(filter, "unordered_visit.early_exit", unordered_visit_early_exit);
-    failures += run_test(filter, "unordered_visit.across_tombstones", unordered_visit_across_tombstones);
-    failures += run_test(filter, "unordered_visit.empty_table", unordered_visit_empty_table);
-    failures += run_test(filter, "unordered_visit.wraparound", unordered_visit_wraparound);
-    failures += run_test(filter, "unordered_visit.full_table", unordered_visit_full_table);
+    tally += run_test(environment, "unordered_visit.every_match", unordered_visit_every_match);
+    tally += run_test(environment, "unordered_visit.early_exit", unordered_visit_early_exit);
+    tally += run_test(environment, "unordered_visit.across_tombstones", unordered_visit_across_tombstones);
+    tally += run_test(environment, "unordered_visit.empty_table", unordered_visit_empty_table);
+    tally += run_test(environment, "unordered_visit.wraparound", unordered_visit_wraparound);
+    tally += run_test(environment, "unordered_visit.full_table", unordered_visit_full_table);
 
-    failures += run_test(filter, "unordered_concurrency.emplace_and_find", unordered_concurrency_emplace_and_find);
-    failures += run_test(filter, "unordered_concurrency.update_and_erase", unordered_concurrency_update_and_erase);
+    tally += run_test(environment, "unordered_concurrency.emplace_and_find", unordered_concurrency_emplace_and_find);
+    tally += run_test(environment, "unordered_concurrency.update_and_erase", unordered_concurrency_update_and_erase);
 
-    failures +=
-        run_test(filter, "fixture_coverage.hash_lookup_cost_is_bounded", fixture_coverage_hash_lookup_cost_is_bounded);
+    tally += run_test(environment, "fixture_coverage.hash_lookup_cost_is_bounded",
+                      fixture_coverage_hash_lookup_cost_is_bounded);
 
-    failures += run_test(filter, "hash_table.batch_is_all_or_nothing", hash_table_batch_is_all_or_nothing);
+    tally += run_test(environment, "hash_table.batch_is_all_or_nothing", hash_table_batch_is_all_or_nothing);
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

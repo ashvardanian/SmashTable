@@ -52,6 +52,10 @@ enum class row_kit_t : std::uint8_t {
     rvv_k,
 };
 
+/** Every kit in enumerator order, for a benchmark or a log that walks them all. */
+inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::haswell_k, row_kit_t::skylake_k,
+                                                row_kit_t::neon_k,   row_kit_t::sve_k,     row_kit_t::rvv_k};
+
 /** The enumerator's own name without its suffix, for a benchmark or a log. */
 [[nodiscard]] constexpr char const *name_of(row_kit_t kit) noexcept {
     switch (kit) {
@@ -69,18 +73,18 @@ enum class row_kit_t : std::uint8_t {
 [[nodiscard]] constexpr bool row_kit_compiled(row_kit_t kit) noexcept {
     switch (kit) {
     case row_kit_t::serial_k: return true;
-    case row_kit_t::haswell_k: return ST_TARGET_HASWELL;
-    case row_kit_t::skylake_k: return ST_TARGET_SKYLAKE;
-    case row_kit_t::neon_k: return ST_TARGET_NEON;
-    case row_kit_t::sve_k: return ST_TARGET_SVE;
-    case row_kit_t::rvv_k: return ST_TARGET_RVV;
+    case row_kit_t::haswell_k: return SMASHTABLE_TARGET_HASWELL;
+    case row_kit_t::skylake_k: return SMASHTABLE_TARGET_SKYLAKE;
+    case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON;
+    case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE;
+    case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV;
     }
     return false;
 }
 
 /** Whether this build carries @p kit and the running processor and operating system can execute it.
  *  Probes the processor on every call, so ask once at open or construction and keep the answer. */
-#if ST_TARGET_X8664_ && (defined(__GNUC__) || defined(__clang__))
+#if SMASHTABLE_ARCH_X86_64_ && (defined(__GNUC__) || defined(__clang__))
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     __builtin_cpu_init();
     bool const runs_haswell = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("bmi") &&
@@ -89,12 +93,12 @@ enum class row_kit_t : std::uint8_t {
                               __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq");
     switch (kit) {
     case row_kit_t::serial_k: return true;
-    case row_kit_t::haswell_k: return ST_TARGET_HASWELL && runs_haswell;
-    case row_kit_t::skylake_k: return ST_TARGET_SKYLAKE && runs_skylake;
+    case row_kit_t::haswell_k: return SMASHTABLE_TARGET_HASWELL && runs_haswell;
+    case row_kit_t::skylake_k: return SMASHTABLE_TARGET_SKYLAKE && runs_skylake;
     default: return false;
     }
 }
-#elif ST_TARGET_X8664_ && defined(_MSC_VER)
+#elif SMASHTABLE_ARCH_X86_64_ && defined(_MSC_VER)
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     int registers[4] = {0, 0, 0, 0};
     __cpuid(registers, 1);
@@ -108,32 +112,32 @@ enum class row_kit_t : std::uint8_t {
                               has_leaf7(30) && has_leaf7(31);
     switch (kit) {
     case row_kit_t::serial_k: return true;
-    case row_kit_t::haswell_k: return ST_TARGET_HASWELL && runs_haswell;
-    case row_kit_t::skylake_k: return ST_TARGET_SKYLAKE && runs_skylake;
+    case row_kit_t::haswell_k: return SMASHTABLE_TARGET_HASWELL && runs_haswell;
+    case row_kit_t::skylake_k: return SMASHTABLE_TARGET_SKYLAKE && runs_skylake;
     default: return false;
     }
 }
-#elif ST_TARGET_ARM64_ && defined(__linux__)
+#elif SMASHTABLE_ARCH_ARM64_ && defined(__linux__)
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     unsigned long const capabilities = getauxval(AT_HWCAP);
     switch (kit) {
     case row_kit_t::serial_k: return true;
-    case row_kit_t::neon_k: return ST_TARGET_NEON && (capabilities & (1ul << 1)) != 0; // `HWCAP_ASIMD`
-    case row_kit_t::sve_k: return ST_TARGET_SVE && (capabilities & (1ul << 22)) != 0;  // `HWCAP_SVE`
+    case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON && (capabilities & (1ul << 1)) != 0; // `HWCAP_ASIMD`
+    case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE && (capabilities & (1ul << 22)) != 0;  // `HWCAP_SVE`
     default: return false;
     }
 }
-#elif ST_TARGET_ARM64_
+#elif SMASHTABLE_ARCH_ARM64_
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     // Advanced SIMD is the AArch64 baseline; SVE is only probed where the kernel reports it.
-    return kit == row_kit_t::serial_k || (kit == row_kit_t::neon_k && ST_TARGET_NEON);
+    return kit == row_kit_t::serial_k || (kit == row_kit_t::neon_k && SMASHTABLE_TARGET_NEON);
 }
-#elif ST_TARGET_RISCV64_ && defined(__linux__)
+#elif SMASHTABLE_ARCH_RISCV64_ && defined(__linux__)
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     unsigned long const capabilities = getauxval(AT_HWCAP);
     switch (kit) {
     case row_kit_t::serial_k: return true;
-    case row_kit_t::rvv_k: return ST_TARGET_RVV && (capabilities & (1ul << ('V' - 'A'))) != 0;
+    case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV && (capabilities & (1ul << ('V' - 'A'))) != 0;
     default: return false;
     }
 }
@@ -187,7 +191,7 @@ struct serial_row_kit_t {
 
 #pragma region Haswell Kit
 
-#if ST_TARGET_HASWELL
+#if SMASHTABLE_TARGET_HASWELL
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("avx2,bmi,bmi2,popcnt"))), apply_to = function)
 #elif defined(__GNUC__)
@@ -350,7 +354,7 @@ struct haswell_row_kit_t {
 
 #pragma region Skylake Kit
 
-#if ST_TARGET_SKYLAKE
+#if SMASHTABLE_TARGET_SKYLAKE
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("avx2,avx512f,avx512vl,avx512bw,avx512dq,bmi,bmi2,popcnt"))), \
                              apply_to = function)
@@ -494,7 +498,7 @@ struct skylake_row_kit_t {
 
 #pragma region NEON Kit
 
-#if ST_TARGET_NEON
+#if SMASHTABLE_TARGET_NEON
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("arch=armv8-a+simd"))), apply_to = function)
 #elif defined(__GNUC__)
@@ -617,7 +621,7 @@ struct neon_row_kit_t {
 
 #pragma region SVE Kit
 
-#if ST_TARGET_SVE
+#if SMASHTABLE_TARGET_SVE
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("arch=armv8.2-a+sve"))), apply_to = function)
 #elif defined(__GNUC__)
@@ -738,7 +742,7 @@ struct sve_row_kit_t {
 
 #pragma region RVV Kit
 
-#if ST_TARGET_RVV
+#if SMASHTABLE_TARGET_RVV
 #if defined(__clang__)
 #pragma clang attribute push(__attribute__((target("arch=+v"))), apply_to = function)
 #endif
@@ -749,8 +753,8 @@ struct rvv_row_kit_t {
     static constexpr bool compiled_k = true;
 
     template <std::size_t extent_>
-    [[nodiscard]] ST_TARGET_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
-                                                                          std::uint32_t wanted) noexcept {
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
+                                                                           std::uint32_t wanted) noexcept {
         std::size_t below = 0;
         for (std::size_t offset = 0, length = 0; offset < keys.size(); offset += length) {
             length = __riscv_vsetvl_e32m1(keys.size() - offset);
@@ -761,8 +765,8 @@ struct rvv_row_kit_t {
     }
 
     template <std::size_t extent_>
-    [[nodiscard]] ST_TARGET_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::int32_t const, extent_> keys,
-                                                                          std::int32_t wanted) noexcept {
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::int32_t const, extent_> keys,
+                                                                           std::int32_t wanted) noexcept {
         std::size_t below = 0;
         for (std::size_t offset = 0, length = 0; offset < keys.size(); offset += length) {
             length = __riscv_vsetvl_e32m1(keys.size() - offset);
@@ -773,8 +777,8 @@ struct rvv_row_kit_t {
     }
 
     template <std::size_t extent_>
-    [[nodiscard]] ST_TARGET_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::uint64_t const, extent_> keys,
-                                                                          std::uint64_t wanted) noexcept {
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::uint64_t const, extent_> keys,
+                                                                           std::uint64_t wanted) noexcept {
         std::size_t below = 0;
         for (std::size_t offset = 0, length = 0; offset < keys.size(); offset += length) {
             length = __riscv_vsetvl_e64m1(keys.size() - offset);
@@ -785,8 +789,8 @@ struct rvv_row_kit_t {
     }
 
     template <std::size_t extent_>
-    [[nodiscard]] ST_TARGET_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::int64_t const, extent_> keys,
-                                                                          std::int64_t wanted) noexcept {
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::int64_t const, extent_> keys,
+                                                                           std::int64_t wanted) noexcept {
         std::size_t below = 0;
         for (std::size_t offset = 0, length = 0; offset < keys.size(); offset += length) {
             length = __riscv_vsetvl_e64m1(keys.size() - offset);
@@ -797,8 +801,8 @@ struct rvv_row_kit_t {
     }
 
     template <std::size_t extent_>
-    [[nodiscard]] ST_TARGET_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<key128_t const, extent_> keys,
-                                                                          key128_t wanted) noexcept {
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<key128_t const, extent_> keys,
+                                                                           key128_t wanted) noexcept {
         std::size_t below = 0;
         for (std::size_t offset = 0, length = 0; offset < keys.size(); offset += length) {
             length = __riscv_vsetvl_e64m1(keys.size() - offset);
@@ -816,7 +820,7 @@ struct rvv_row_kit_t {
     }
 
     template <std::size_t extent_>
-    [[nodiscard]] ST_TARGET_RVV_ATTRIBUTE_ static std::size_t count_below(
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(
         std::span<std::uint64_t const, extent_> high_words, std::span<std::uint64_t const, extent_> low_words,
         key128_t wanted) noexcept {
         assert(high_words.size() == low_words.size() && "a split row has one low word per high word");
@@ -874,15 +878,16 @@ concept row_kit = kit_type_::compiled_k &&
                   };
 
 /** The newest kit the compiler's flags promise, for code selecting at compile time, not at open. */
-#if ST_TARGET_SKYLAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && defined(__AVX512DQ__)
+#if SMASHTABLE_TARGET_SKYLAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && \
+    defined(__AVX512DQ__)
 using native_row_kit_t = skylake_row_kit_t;
-#elif ST_TARGET_HASWELL && defined(__AVX2__) && defined(__BMI2__)
+#elif SMASHTABLE_TARGET_HASWELL && defined(__AVX2__) && defined(__BMI2__)
 using native_row_kit_t = haswell_row_kit_t;
-#elif ST_TARGET_SVE && defined(__ARM_FEATURE_SVE)
+#elif SMASHTABLE_TARGET_SVE && defined(__ARM_FEATURE_SVE)
 using native_row_kit_t = sve_row_kit_t;
-#elif ST_TARGET_NEON
+#elif SMASHTABLE_TARGET_NEON
 using native_row_kit_t = neon_row_kit_t;
-#elif ST_TARGET_RVV && defined(__riscv_v)
+#elif SMASHTABLE_TARGET_RVV && defined(__riscv_v)
 using native_row_kit_t = rvv_row_kit_t;
 #else
 using native_row_kit_t = serial_row_kit_t;

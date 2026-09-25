@@ -6,7 +6,7 @@
  *      kit that runs here.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define ST_STRICT_CALLBACK_CHECKS_ 1
+#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
@@ -133,8 +133,8 @@ void verify_random_operations(std::mt19937_64 &generator) {
 }
 
 template <typename kit_type_>
-void verify_kit(kit_type_) {
-    std::mt19937_64 generator(test_seed_for(name_of(kit_type_::kit_k)));
+void verify_kit(test_context_t const &context, kit_type_) {
+    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
     verify_random_operations<kit_type_, std::uint32_t, less_t>(generator);
     verify_random_operations<kit_type_, std::uint64_t, less_t>(generator);
     verify_random_operations<kit_type_, std::int64_t, less_t>(generator);
@@ -142,26 +142,21 @@ void verify_kit(kit_type_) {
     verify_random_operations<kit_type_, request_t, request_order_t>(generator);
 }
 
-void verify_through(row_kit_t kit) {
-    if (!row_kit_supported(kit)) {
-        print_line(stdout, "  {} kit: {}", name_of(kit),
-                   row_kit_compiled(kit) ? "compiled, but not runnable here" : "not compiled");
-        return;
-    }
-    print_line(stdout, "  {} kit: running", name_of(kit));
-    visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit(kit_instance); });
+void verify_through(test_context_t const &context, row_kit_t kit) {
+    if (row_kit_supported(kit))
+        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit(context, kit_instance); });
 }
 
 #pragma endregion Suites
 
 #pragma region Tests
 
-void flat_set_serial_kit() { verify_through(row_kit_t::serial_k); }
-void flat_set_haswell_kit() { verify_through(row_kit_t::haswell_k); }
-void flat_set_skylake_kit() { verify_through(row_kit_t::skylake_k); }
-void flat_set_neon_kit() { verify_through(row_kit_t::neon_k); }
-void flat_set_sve_kit() { verify_through(row_kit_t::sve_k); }
-void flat_set_rvv_kit() { verify_through(row_kit_t::rvv_k); }
+void flat_set_serial_kit(test_context_t const &context) { verify_through(context, row_kit_t::serial_k); }
+void flat_set_haswell_kit(test_context_t const &context) { verify_through(context, row_kit_t::haswell_k); }
+void flat_set_skylake_kit(test_context_t const &context) { verify_through(context, row_kit_t::skylake_k); }
+void flat_set_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
+void flat_set_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
+void flat_set_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
 
 /** A refused allocation reports itself and leaves the set as it was. */
 void flat_set_refused_allocation() {
@@ -185,7 +180,7 @@ void flat_set_refused_allocation() {
 }
 
 /** The suites every associative container answers, over the element shapes a flat set can hold. */
-void flat_set_shared_suites() {
+void flat_set_shared_suites(test_context_t const &context) {
     using trivial_set_t =
         basic_flat_set<trivial_key_t, std::less<trivial_key_t>, serial_row_kit_t, std::allocator<trivial_key_t>>;
     using tracking_set_t = basic_flat_set<trivial_key_t, stateful_comparator_t, serial_row_kit_t, stateful_allocator_t>;
@@ -199,8 +194,8 @@ void flat_set_shared_suites() {
     test_empty_container_operations<native_set_t>();
     test_single_element_operations<trivial_set_t>();
     test_single_element_operations<heavy_set_t>();
-    test_basic_insertion_patterns<trivial_set_t>();
-    test_basic_insertion_patterns<native_set_t>();
+    test_basic_insertion_patterns<trivial_set_t>(context);
+    test_basic_insertion_patterns<native_set_t>(context);
     test_bulk_insertion_from_iterators<trivial_set_t>();
     test_bulk_insertion_from_iterators<heavy_set_t>();
     test_range_query_head_state<trivial_set_t>();
@@ -243,22 +238,23 @@ void flat_set_erase_if_keeps_order() {
 
 } // namespace
 
-int main() {
+int main(int, char **arguments) {
+    test_environment_t const environment = read_test_environment(arguments[0]);
     install_test_signal_handlers();
-    char const *const filter = test_filter();
-    std::size_t failures = 0;
+    log_environment(environment);
+    test_tally_t tally;
 
-    failures += run_test(filter, "flat_set.serial_kit", flat_set_serial_kit);
-    failures += run_test(filter, "flat_set.haswell_kit", flat_set_haswell_kit);
-    failures += run_test(filter, "flat_set.skylake_kit", flat_set_skylake_kit);
-    failures += run_test(filter, "flat_set.neon_kit", flat_set_neon_kit);
-    failures += run_test(filter, "flat_set.sve_kit", flat_set_sve_kit);
-    failures += run_test(filter, "flat_set.rvv_kit", flat_set_rvv_kit);
-    failures += run_test(filter, "flat_set.refused_allocation", flat_set_refused_allocation);
-    failures += run_test(filter, "flat_set.shared_suites", flat_set_shared_suites);
+    tally += run_test(environment, "flat_set.serial_kit", flat_set_serial_kit);
+    tally += run_test(environment, "flat_set.haswell_kit", flat_set_haswell_kit);
+    tally += run_test(environment, "flat_set.skylake_kit", flat_set_skylake_kit);
+    tally += run_test(environment, "flat_set.neon_kit", flat_set_neon_kit);
+    tally += run_test(environment, "flat_set.sve_kit", flat_set_sve_kit);
+    tally += run_test(environment, "flat_set.rvv_kit", flat_set_rvv_kit);
+    tally += run_test(environment, "flat_set.refused_allocation", flat_set_refused_allocation);
+    tally += run_test(environment, "flat_set.shared_suites", flat_set_shared_suites);
 
-    failures += run_test(filter, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
-    failures += run_test(filter, "flat_set.erase_if_keeps_order", flat_set_erase_if_keeps_order);
+    tally += run_test(environment, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
+    tally += run_test(environment, "flat_set.erase_if_keeps_order", flat_set_erase_if_keeps_order);
 
-    return report_test_failures(failures);
+    return report_test_failures(environment, tally);
 }

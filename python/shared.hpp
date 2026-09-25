@@ -42,7 +42,7 @@
 #include <smashtable/shared.hpp>
 
 /** Every method taking arguments uses the fast convention; keywords are walked by hand. */
-#define ST_METHOD_FLAGS_ METH_FASTCALL | METH_KEYWORDS
+#define SMASHTABLE_METHOD_FLAGS_ METH_FASTCALL | METH_KEYWORDS
 
 namespace ashvardanian::smashtable::py {
 
