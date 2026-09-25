@@ -25,7 +25,7 @@ concurrency:
 jobs:
   versioning:
     name: Update Version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Checkout
@@ -56,8 +56,8 @@ jobs:
   # happens to order its includes differently. Two standard libraries, since libstdc++ and libc++
   # disagree about what each header transitively pulls in.
   test_headers:
-    name: Headers Compile Standalone (${{ matrix.compiler }})
-    runs-on: ubuntu-24.04
+    name: Compile Headers Standalone with ${{ matrix.compiler }}
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -90,7 +90,7 @@ jobs:
 
   verify_models:
     name: Check Promela models
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -111,40 +111,23 @@ jobs:
   test_ubuntu:
     name: ${{ matrix.name }}
     needs: test_headers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { name: "Ubuntu (GCC 14)", cc: gcc-14, cxx: g++-14, package: g++-14, type: Release, flags: "" }
-          - { name: "Ubuntu (Clang 18)", cc: clang-18, cxx: clang++-18, package: clang-18, type: Release, flags: "" }
-          - {
-              name: "Ubuntu (Sanitizers)",
-              cc: gcc-14,
-              cxx: g++-14,
-              package: g++-14,
-              type: Debug,
-              flags: "-fsanitize=address,undefined -fno-omit-frame-pointer",
-            }
+          - { name: "Test on Ubuntu with GCC 14", cc: gcc-14, cxx: g++-14, package: g++-14, preset: release }
+          - { name: "Test on Ubuntu with Clang 18", cc: clang-18, cxx: clang++-18, package: clang-18, preset: release }
+          - { name: "Test on Ubuntu with Sanitizers", cc: gcc-14, cxx: g++-14, package: g++-14, preset: asan }
           # The hash table's lock-free slot protocol is the only concurrent code in the tree, and
           # a data race in it is invisible to the address and behaviour sanitizers.
-          - {
-              name: "Ubuntu (Thread Sanitizer)",
-              cc: gcc-14,
-              cxx: g++-14,
-              package: g++-14,
-              type: Debug,
-              flags: "-fsanitize=thread -fno-omit-frame-pointer",
-            }
-    env:
-      CC: ${{ matrix.cc }}
-      CXX: ${{ matrix.cxx }}
+          - { name: "Test on Ubuntu with Thread Sanitizer", cc: gcc-14, cxx: g++-14, package: g++-14, preset: tsan }
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y cmake ${{ matrix.package }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.package }}
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -159,54 +142,47 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=${{ matrix.type }} -DSMASHTABLE_WERROR=ON -DCMAKE_CXX_FLAGS="${{ matrix.flags }}"
+        run: cmake --preset ${{ matrix.preset }} -D CMAKE_C_COMPILER=${{ matrix.cc }} -D CMAKE_CXX_COMPILER=${{ matrix.cxx }}
       - name: Build
-        run: cmake --build build --parallel ${{ env.BUILD_JOBS }}
+        run: cmake --build --preset ${{ matrix.preset }} --parallel ${{ env.BUILD_JOBS }}
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 900
+        run: ctest --preset ${{ matrix.preset }}
       - name: Run the Example
-        run: ./build/smashtable_example
+        run: ./build_${{ matrix.preset }}/smashtable_example
 
   # A hosted runner has no GPU, so this job proves the device code compiles and that the test's own
   # skip path works - it reports no device and exits zero rather than failing. The architectures are
   # named here rather than defaulted, since detecting them needs the very device the runner lacks.
   test_cuda:
-    name: Ubuntu (CUDA)
+    name: Build CUDA Backend on Ubuntu
     needs: test_headers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
-    env:
-      CC: gcc-14
-      CXX: g++-14
+    container: nvidia/cuda:13.0.1-devel-ubuntu24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.35
-        with:
-          cuda: "12.9.1"
-          method: "network"
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y cmake g++-14
+        run: apt-get update && apt-get install -y cmake ninja-build g++
       - name: Log Toolchain
         run: |
           nvcc --version
           nvidia-smi || echo "no GPU on this runner, which is what the skip path is for"
 
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON -DCMAKE_CUDA_ARCHITECTURES="90;100"
+        run: cmake --preset cuda
       # Two jobs, not one per core: nvcc runs a host and a device pass over the same template-heavy
       # headers, and the pair is bounded by memory rather than by cores.
       - name: Build
-        run: cmake --build build --parallel 2
+        run: cmake --build --preset cuda --parallel 2
       - name: Test
-        # Only the CUDA suite: the nine CPU tests here are the same ones `Ubuntu (GCC 14)` just ran.
-        run: ctest --test-dir build -R test_atomic_cuda --output-on-failure --timeout 900
+        # Only the CUDA suite: the nine CPU tests here are the same ones the GCC 14 row just ran.
+        run: ctest --preset cuda
 
   test_32bit:
-    name: Linux 32-bit (i386)
+    name: Test on Linux 32-bit i386
     needs: test_headers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -217,39 +193,39 @@ jobs:
       - name: Install Toolchain
         run: sudo apt-get update && sudo apt-get install -y g++-multilib
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON -DSMASHTABLE_BUILD_CUDA=OFF -DCMAKE_CXX_FLAGS=-m32
+        run: cmake --preset linux_i386
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build --preset linux_i386
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 900
+        run: ctest --preset linux_i386
 
   test_macos:
-    name: macOS (AppleClang)
+    name: Test on macOS with AppleClang
     runs-on: macos-15
     timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON
+        run: cmake --preset release
       - name: Build
-        run: cmake --build build --parallel
+        run: cmake --build --preset release
       - name: Test
-        run: ctest --test-dir build --output-on-failure --timeout 900
+        run: ctest --preset release
 
   test_windows:
-    name: Windows (MSVC)
+    name: Test on Windows with MSVC
     runs-on: windows-2025
     timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Configure
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_WERROR=ON
+        run: cmake --preset msvc_x64
       - name: Build
-        run: cmake --build build --config Release --parallel
+        run: cmake --build --preset msvc_x64 --parallel
       - name: Test
-        run: ctest --test-dir build -C Release --output-on-failure --timeout 900
+        run: ctest --preset msvc_x64
 
   test_python:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
@@ -258,7 +234,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [ubuntu-26.04, macos-15, windows-2025]
         python-version: ["3.12", "3.13", "3.14", "3.14t"]
     steps:
       - name: Checkout
@@ -300,7 +276,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-26.04, macos-15]
         python-version: ["312", "314t"]
     steps:
       - name: Checkout

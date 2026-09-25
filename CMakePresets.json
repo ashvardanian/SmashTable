@@ -1,111 +1,156 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": {
-    "major": 3,
-    "minor": 25,
-    "patch": 0
-  },
+  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
   "configurePresets": [
     {
       "name": "base",
       "hidden": true,
-      "description": "Ninja, LLVM, a build tree named after the preset, and a compilation database for the language server. Clang is the default for its diagnostics on template-heavy code, not for speed - on this tree the two compilers trade wins. Point CC/CXX elsewhere for GCC.",
+      "description": "Ninja, a build tree named after the preset, and a compilation database for the language server. No compiler is pinned here: `debug` and `release` inherit `clang`, and a CI row overrides it with -D CMAKE_CXX_COMPILER.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build_${presetName}",
       "cacheVariables": {
         "CMAKE_EXPORT_COMPILE_COMMANDS": "ON",
-        "CMAKE_C_COMPILER": "clang",
-        "CMAKE_CXX_COMPILER": "clang++"
+        "SMASHTABLE_BUILD_TEST": "ON",
+        "SMASHTABLE_WERROR": "ON"
       }
     },
+    {
+      "name": "clang",
+      "hidden": true,
+      "description": "Clang is the default for its diagnostics on template-heavy code, not for speed - on this tree the two compilers trade wins.",
+      "cacheVariables": { "CMAKE_C_COMPILER": "clang", "CMAKE_CXX_COMPILER": "clang++" }
+    },
+    { "name": "gcc", "hidden": true, "cacheVariables": { "CMAKE_C_COMPILER": "gcc", "CMAKE_CXX_COMPILER": "g++" } },
+    {
+      "name": "windows",
+      "hidden": true,
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
+    },
+
     {
       "name": "debug",
-      "inherits": "base",
+      "inherits": ["base", "clang"],
       "description": "Warnings are errors here, which is the bar the pre-release workflow holds.",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "SMASHTABLE_WERROR": "ON"
-      }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
     },
-    {
-      "name": "release",
-      "inherits": "base",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Release",
-        "SMASHTABLE_WERROR": "ON"
-      }
-    },
+    { "name": "release", "inherits": ["base", "clang"], "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
     {
       "name": "asan",
-      "inherits": "base",
+      "inherits": ["base", "gcc"],
       "description": "Address and behaviour sanitizers. The flags go through CMAKE_CXX_FLAGS because there is no sanitizer option to set - a `-D SMASHTABLE_SANITIZE=ON` is silently ignored and builds an uninstrumented tree that reports green. Built with GCC, which is what the pre-release workflow runs both sanitizer legs under.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
-        "CMAKE_C_COMPILER": "gcc",
-        "CMAKE_CXX_COMPILER": "g++"
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer"
       }
     },
     {
       "name": "tsan",
-      "inherits": "base",
+      "inherits": ["base", "gcc"],
       "description": "The hash table's lock-free slot protocol is the only concurrent code here, and a race in it is invisible to the address sanitizer. Built with GCC, which is what the pre-release workflow runs both sanitizer legs under.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Debug",
         "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
-        "CMAKE_C_COMPILER": "gcc",
-        "CMAKE_CXX_COMPILER": "g++"
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer"
       }
+    },
+    {
+      "name": "linux_i386",
+      "inherits": ["base", "gcc"],
+      "description": "32-bit x86 through -m32, run on the 64-bit host; the CUDA test has no 32-bit toolkit.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_C_FLAGS": "-m32",
+        "CMAKE_CXX_FLAGS": "-m32",
+        "SMASHTABLE_BUILD_CUDA": "OFF"
+      }
+    },
+    {
+      "name": "cuda",
+      "inherits": ["base", "gcc"],
+      "description": "Compiles the scoped-atomics test for Hopper and Blackwell; it skips at run time without a device.",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "SMASHTABLE_BUILD_CUDA": "ON",
+        "CMAKE_CUDA_ARCHITECTURES": "90;100"
+      }
+    },
+    {
+      "name": "msvc_x64",
+      "inherits": ["base", "windows"],
+      "generator": "Visual Studio 18 2026",
+      "architecture": "x64"
     }
   ],
   "buildPresets": [
-    {
-      "name": "debug",
-      "configurePreset": "debug"
-    },
-    {
-      "name": "release",
-      "configurePreset": "release"
-    },
-    {
-      "name": "asan",
-      "configurePreset": "asan"
-    },
-    {
-      "name": "tsan",
-      "configurePreset": "tsan"
-    }
+    { "name": "debug", "configurePreset": "debug" },
+    { "name": "release", "configurePreset": "release" },
+    { "name": "asan", "configurePreset": "asan" },
+    { "name": "tsan", "configurePreset": "tsan" },
+    { "name": "linux_i386", "configurePreset": "linux_i386" },
+    { "name": "cuda", "configurePreset": "cuda" },
+    { "name": "msvc_x64", "configurePreset": "msvc_x64", "configuration": "Release" }
   ],
   "testPresets": [
     {
+      "name": "base",
+      "hidden": true,
+      "output": { "outputOnFailure": true },
+      "execution": { "timeout": 900, "noTestsAction": "error" }
+    },
+    { "name": "debug", "inherits": "base", "configurePreset": "debug" },
+    { "name": "release", "inherits": "base", "configurePreset": "release" },
+    { "name": "asan", "inherits": "base", "configurePreset": "asan" },
+    { "name": "tsan", "inherits": "base", "configurePreset": "tsan" },
+    { "name": "linux_i386", "inherits": "base", "configurePreset": "linux_i386" },
+    {
+      "name": "cuda",
+      "inherits": "base",
+      "configurePreset": "cuda",
+      "filter": { "include": { "name": "test_atomic_cuda" } }
+    },
+    { "name": "msvc_x64", "inherits": "base", "configurePreset": "msvc_x64", "configuration": "Release" }
+  ],
+  "workflowPresets": [
+    {
       "name": "debug",
-      "configurePreset": "debug",
-      "output": {
-        "outputOnFailure": true
-      }
+      "steps": [
+        { "type": "configure", "name": "debug" },
+        { "type": "build", "name": "debug" },
+        { "type": "test", "name": "debug" }
+      ]
     },
     {
       "name": "release",
-      "configurePreset": "release",
-      "output": {
-        "outputOnFailure": true
-      }
+      "steps": [
+        { "type": "configure", "name": "release" },
+        { "type": "build", "name": "release" },
+        { "type": "test", "name": "release" }
+      ]
     },
     {
       "name": "asan",
-      "configurePreset": "asan",
-      "output": {
-        "outputOnFailure": true
-      }
+      "steps": [
+        { "type": "configure", "name": "asan" },
+        { "type": "build", "name": "asan" },
+        { "type": "test", "name": "asan" }
+      ]
     },
     {
       "name": "tsan",
-      "configurePreset": "tsan",
-      "output": {
-        "outputOnFailure": true
-      }
+      "steps": [
+        { "type": "configure", "name": "tsan" },
+        { "type": "build", "name": "tsan" },
+        { "type": "test", "name": "tsan" }
+      ]
+    },
+    {
+      "name": "cuda",
+      "steps": [
+        { "type": "configure", "name": "cuda" },
+        { "type": "build", "name": "cuda" },
+        { "type": "test", "name": "cuda" }
+      ]
     }
   ]
 }

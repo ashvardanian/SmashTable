@@ -11,6 +11,9 @@ _deps
 /lib/
 /bin/
 
+# Per-developer preset overrides: toolchain paths that are true of one machine, not of the project
+CMakeUserPresets.json
+
 # Python build and distribution artifacts. `pip install -e .` drops the compiled extension in the repository
 # root, named after the interpreter that built it, so the extension suffixes are matched anywhere rather than
 # only under a build directory.

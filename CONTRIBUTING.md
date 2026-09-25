@@ -2,19 +2,22 @@
 
 ## Compiling C++ Code
 
+The presets in `CMakePresets.json` are the configurations CI builds, and `cmake --list-presets` shows the ones this machine can run.
+Machine-specific settings, like a compiler path, belong in an untracked `CMakeUserPresets.json`.
+
 Release build:
 
 ```bash
-cmake -D CMAKE_BUILD_TYPE=Release -B build_release
-cmake --build build_release --config Release --parallel
+cmake --preset release
+cmake --build --preset release
 build_release/smashtable_test_avl_tree
 ```
 
 Debug build for the test suite:
 
 ```bash
-cmake -D CMAKE_BUILD_TYPE=Debug -B build_debug
-cmake --build build_debug --config Debug --target smashtable_test_avl_tree
+cmake --preset debug
+cmake --build --preset debug --target smashtable_test_avl_tree
 build_debug/smashtable_test_avl_tree
 ```
 
@@ -23,7 +26,7 @@ build_debug/smashtable_test_avl_tree
 Every container family runs the same suites, so one `ctest` run covers every binary at once:
 
 ```bash
-ctest --test-dir build_debug --output-on-failure
+ctest --preset debug
 ```
 
 Run one binary directly, or steer it with the two environment variables the harness reads:
@@ -59,12 +62,11 @@ The backtrace follows, and the last test started on stdout is the one that died.
 
 ### Before Opening a Pull Request
 
-CI builds with warnings as errors on both compilers, and checks that every header compiles as the
-first thing a translation unit sees. Both are worth reproducing locally:
+CI builds with warnings as errors on both compilers, and checks that every header compiles as the first thing a translation unit sees.
+Both are worth reproducing locally, and every preset already sets `SMASHTABLE_WERROR`:
 
 ```bash
-cmake -B build_strict -DCMAKE_BUILD_TYPE=Debug -DSMASHTABLE_WERROR=ON
-cmake --build build_strict && ctest --test-dir build_strict --output-on-failure
+cmake --workflow --preset debug
 
 for header in include/smashtable/*.hpp; do
     printf '#include <%s>\nint main() { return 0; }\n' "${header#include/}" \
@@ -75,8 +77,7 @@ done
 The lock-free paths carry a third check, since a data race in them is invisible to the address and behaviour sanitizers:
 
 ```bash
-cmake -B build_tsan -DCMAKE_BUILD_TYPE=Debug -DCMAKE_CXX_FLAGS="-fsanitize=thread"
-cmake --build build_tsan && ctest --test-dir build_tsan --output-on-failure
+cmake --workflow --preset tsan
 ```
 
 ## Compiling Python Bindings

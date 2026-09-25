@@ -15,7 +15,7 @@ permissions:
 jobs:
   versioning:
     name: Update Version
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -46,7 +46,7 @@ jobs:
   rebase:
     name: Rebase Dev Branch
     needs: versioning
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - name: Checkout the latest code
         uses: actions/checkout@v7
@@ -81,8 +81,8 @@ jobs:
         python-version: ["312", "313", "314", "314t"]
         os:
           [
-            ubuntu-24.04,
-            ubuntu-24.04-arm,
+            ubuntu-26.04,
+            ubuntu-26.04-arm,
             macos-15,
             windows-2025,
             windows-11-arm,
@@ -122,7 +122,7 @@ jobs:
   build_sdist:
     name: Source Distribution
     needs: versioning
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     steps:
       - name: Checkout
@@ -156,7 +156,7 @@ jobs:
   publish_python:
     name: Publish Python
     needs: [build_wheels, build_sdist]
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     environment:
       name: pypi
       url: https://pypi.org/p/smashtable

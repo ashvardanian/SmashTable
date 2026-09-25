@@ -8,7 +8,7 @@
 # CMake options:
 #
 #   -D CMAKE_BUILD_TYPE=<Release|Debug|RelWithDebInfo>  (default: Release, as the main project)
-#   -D SMASHTABLE_BUILD_TESTS=<ON|OFF>                  (default: ON as the main project, else OFF)
+#   -D SMASHTABLE_BUILD_TEST=<ON|OFF>                   (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_INSTALL=<ON|OFF>                      (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_WERROR=<ON|OFF>                       (default: OFF)
 #   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: ON as the main project, else OFF)
@@ -142,11 +142,11 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif ()
 
 # Tests and examples
-option(SMASHTABLE_BUILD_TESTS "Build tests and examples" ${SMASHTABLE_IS_MAIN_PROJECT})
+option(SMASHTABLE_BUILD_TEST "Build tests and examples" ${SMASHTABLE_IS_MAIN_PROJECT})
 option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" ${SMASHTABLE_IS_MAIN_PROJECT})
 option(SMASHTABLE_BUILD_BENCH "Compile the native benchmarks, which CTest never runs" OFF)
 
-if (SMASHTABLE_BUILD_TESTS)
+if (SMASHTABLE_BUILD_TEST)
     add_executable(smashtable_example example.cpp)
     target_link_libraries(smashtable_example PRIVATE smashtable::header smashtable_warnings)
 
