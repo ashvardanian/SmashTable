@@ -5,11 +5,11 @@
  *  @brief Spin model of @c spin_shared_mutex_t from `include/smashtable/shared.hpp`, as one word:
  *      readers counted in the low bits, a writer's hold as one high bit.
  *
- *  The tally of waiting writers is fairness and changes nothing a model asserts, so it is left
- *  out. A lock is a compare-exchange with acquire that writes nothing when it loses, then a wait
- *  on the word; an unlock is a read-modify-write with release. `-Dwithout_lock_acquire` and
- *  `-Dwithout_unlock_release` weaken the two orders, for the model that includes this to show
- *  what each carries.
+ *  The tally of waiting writers is fairness and changes nothing a model asserts, so it is left out.
+ *  A lock is a bounded add with acquire, @c atomic_fetch_add_if_at_most, that writes nothing when
+ *  it loses, then a wait on the word; an unlock is a posted clear with release. The two variants
+ *  `-Dwithout_lock_acquire` and `-Dwithout_unlock_release` weaken the two orders, for the model
+ *  that includes this to show what each carries.
  *
  *  What a loser does between two attempts is `waiting_policy.pml`'s, chosen by `-Dwaiting=`: the
  *  word alone decides who holds the mutex, so every property a model over this asserts has to hold

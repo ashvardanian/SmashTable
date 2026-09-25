@@ -1,12 +1,12 @@
 # Verification
 
-Model checking for the protocols the stores promise: the two-phase group commit, the partitioned commit under one stamp, the snapshot clock, the slot lock of the atomic hash table, the shared mutex every locked store takes, and the staged batch every range modifier runs.
+Model checking for the protocols the stores promise: the two-phase group commit, the partitioned commit under one stamp, the commit order's ring and reader census, the slot lock of the atomic hash table, the shared mutex every locked store takes, and the staged batch every range modifier runs.
 [Spin](https://spinroot.com) checks each as a Promela model under the memory models of [ForkUnion's `verification/`](https://github.com/ashvardanian/ForkUnion), which sits beside this repository in whichever superproject vendors both, and is checked out beside it in CI; `./check.sh` runs everything here and compares each verdict with the expected one.
 
 - `weak_memory.pml` — the forwarder to ForkUnion's memory module.
 - `waiting_policy.pml` — what a loser of either lock does between two attempts, shared by the two models that spell a lock.
   `-Dwaiting=spinning`, the default, re-reads the word until it admits the attempt; `-Dwaiting=pausing` adds a step that touches no location; `-Dwaiting=on_the_address` wakes on any move of the word; `-Dwaiting=parking` blocks on nothing and retries whenever it is scheduled.
-- `spin_shared_mutex.pml` — `spin_shared_mutex_t` as one word, the lock an acquire exchange and the unlock a release, shared by every model here.
+- `spin_shared_mutex.pml` — `spin_shared_mutex_t` as one word, the lock an acquire bounded add and the unlock a release, shared by every model that spells a store lock.
   `-Dwaiting=` for the policy its two retry loops plug in.
 - `locked_store.pml` — `locked_store`: one shared mutex per call, exclusion, and a reader inside the lock seeing a commit whole.
 - `transaction_group.pml` — `transaction_group`: staging in address order and the unwind of a refused prefix, the two-pass commit that asks every participant before any writes, the in-turn commit's tear, and a participant holding its lock across the phases and giving it back at a refusal.

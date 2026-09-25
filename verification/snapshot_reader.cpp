@@ -89,12 +89,13 @@ int version_stamp[versions_k] = {0, none_k};
 bool version_freed[versions_k] = {false, false};
 int versions_written = 1;
 
-/** Raises @p word to @p floor and answers what it held, never lowering it: @c atomic_max_fetch. */
+/** Raises @p word to @p floor under @p order and answers what it held, never lowering it: the
+ *  release-only @c atomic_max_fetch on the head, the acq_rel @c atomic_fetch_max on the mark. */
 template <typename word_type_>
-word_type_ raise_to(std::atomic<word_type_> &word, word_type_ floor) noexcept {
-    word_type_ observed = word.load(std::memory_order_acquire);
+word_type_ raise_to(std::atomic<word_type_> &word, word_type_ floor, std::memory_order order) noexcept {
+    word_type_ observed = word.load(std::memory_order_relaxed);
     while (observed < floor)
-        if (word.compare_exchange_strong(observed, floor, std::memory_order_acq_rel, std::memory_order_acquire)) break;
+        if (word.compare_exchange_strong(observed, floor, order, std::memory_order_relaxed)) break;
     return observed;
 }
 
@@ -102,7 +103,7 @@ word_type_ raise_to(std::atomic<word_type_> &word, word_type_ floor) noexcept {
  *  refused only when a bucket reopened ahead of this thread carries a head above the one read. */
 int record_snapshot() noexcept {
     for (;;) {
-        bucket_word_t const opened = head.load(std::memory_order_acquire);
+        bucket_word_t const opened = head.load(std::memory_order_relaxed);
         int const bucket = static_cast<int>(opened % buckets_k);
         bucket_word_t const ceiling = ((opened & open_snapshots_mask_k) << 32) | open_snapshots_mask_k;
         bucket_word_t before = snapshots[bucket].load(std::memory_order_acquire);
@@ -127,12 +128,12 @@ void open_next_bucket(bucket_word_t opened, int watermark) noexcept {
                                                    std::memory_order_acq_rel, std::memory_order_relaxed))
         return;
     floors[bucket].store(watermark, std::memory_order_relaxed);
-    raise_to(head, next);
+    raise_to(head, next, std::memory_order_release);
 }
 
 /** @p least lowered to bucket @p bucket's floor, where that bucket carries a member. */
 int folded_floor(int bucket, int least) noexcept {
-    if ((snapshots[bucket].load(std::memory_order_acquire) & open_snapshots_mask_k) == 0) return least;
+    if ((snapshots[bucket].load(std::memory_order_relaxed) & open_snapshots_mask_k) == 0) return least;
     int const floor = floors[bucket].load(std::memory_order_relaxed);
     return least == no_floor_k || floor < least ? floor : least;
 }
@@ -149,11 +150,11 @@ int scan_floors() noexcept { return folded_floor(1, folded_floor(0, no_floor_k))
 int republish_mark() noexcept {
 #ifdef without_watermark_first
     int const least = scan_floors();
-    bucket_word_t const opened = head.load(std::memory_order_acquire);
+    bucket_word_t const opened = head.load(std::memory_order_relaxed);
     int mark = published_stamp.fetch_add(0, std::memory_order_acq_rel);
 #else
     int mark = published_stamp.fetch_add(0, std::memory_order_acq_rel);
-    bucket_word_t const opened = head.load(std::memory_order_acquire);
+    bucket_word_t const opened = head.load(std::memory_order_relaxed);
     int const least = scan_floors();
 #endif
     if (least != no_floor_k && least < mark) mark = least;
@@ -216,7 +217,7 @@ int land_stamp(int stamp) noexcept {
     int seen = published_stamp.fetch_add(0, std::memory_order_acq_rel);
     bool moved = false;
     while (landed[(seen + 1) % ring_k].load(std::memory_order_acquire) == seen + 1) {
-        int const before = raise_to(published_stamp, seen + 1);
+        int const before = raise_to(published_stamp, seen + 1, std::memory_order_acq_rel);
         moved = moved || before < seen + 1;
         seen = before < seen + 1 ? seen + 1 : before;
     }

@@ -21,12 +21,15 @@
  *  @c basic_commit_order: the group draws one stamp under the order's mutex once every store
  *  validated, stamps each store as it publishes, and moves the watermark once, after the last; a
  *  reader draws its snapshot under the order's mutex and reads each store under its shared lock.
+ *  The order's ring and census stand here as one stamp drawn and one watermark stored under a
+ *  mutex, since the words run out; what @c begin_commit, @c end_commit and @c take_snapshot do
+ *  in full is `commit_order.pml`'s to show.
  *
  *  No lost update: at every publication the watched key still holds what the group watched.
  *  `-Dwithout_held_validation` validates under a shared lock it drops before the unique lock of the
- *  publication, the header before the fix, and the writer slips in between. It weakens the
- *  one-stamp branch only; the in-turn branch validates and publishes under a lock it never drops,
- *  so there is no window there to assert against.
+ *  publication, the header before the fix, and the writer slips in between. It weakens the two
+ *  branches that split the commit, @c two_pass and @c one_stamp; the in-turn branch validates and
+ *  publishes under a lock it never drops, so there is no window there to assert against.
  *
  *  No hold outlives a refusal: a caller reading a store after a refused commit never waits on its
  *  own lock. `-Dwithout_refusal_release` keeps every hold through the refusal, as the header once

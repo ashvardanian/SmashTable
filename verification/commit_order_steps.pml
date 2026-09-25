@@ -124,9 +124,10 @@
 #define bucket_of(opened) ((opened) % buckets)
 #define no_floor (-1)
 
-/** Raises a word to a floor, never lowering it, which is @c atomic_max_fetch. */
+/** Raises a word to a floor, never lowering it, which is @c atomic_max_fetch: release only, and
+ *  read relaxed, as the header spells them, since every invariant holds at those orders. */
 inline raise_word(t, word, floor_value) {
-    read_modify_write_if(t, word, order_acq_rel, observed < floor_value, observed, floor_value)
+    read_modify_write_if(t, word, order_release, observed < floor_value, observed, floor_value)
 }
 
 /** Models @c basic_commit_order::record_snapshot_ in `shared.hpp`: one member more under a bounded
@@ -135,7 +136,7 @@ inline raise_word(t, word, floor_value) {
  *  thread shares, whose older floor still bounds it. */
 inline join_head(t, joined) {
     do
-    :: atomic { load(t, head, order_acquire, opened); joined = bucket_of(opened) };
+    :: atomic { load(t, head, order_relaxed, opened); joined = bucket_of(opened) };
        atomic {
            read_modify_write_if(t, members(joined), order_acq_rel, observed <= ceiling_of(opened), observed,
                                 observed + 1);
@@ -186,7 +187,7 @@ inline open_next_bucket(t, opened_head, watermark) {
 inline scan_floors(t, least_floor) {
     least_floor = no_floor;
     for (scanned : 0 .. buckets - 1) {
-        atomic { load(t, members(scanned), order_acquire, observed); exchanged = live_of(observed) != 0 };
+        atomic { load(t, members(scanned), order_relaxed, observed); exchanged = live_of(observed) != 0 };
         if
         :: exchanged ->
             atomic {
@@ -213,11 +214,11 @@ inline scan_floors(t, least_floor) {
 inline republish_mark(t, oldest_needed) {
 #ifdef without_watermark_first
     scan_floors(t, least);
-    load(t, head, order_acquire, opened);
+    load(t, head, order_relaxed, opened);
     read_modify_write(t, published_stamp, order_acq_rel, oldest_needed, oldest_needed);
 #else
     read_modify_write(t, published_stamp, order_acq_rel, oldest_needed, oldest_needed);
-    load(t, head, order_acquire, opened);
+    load(t, head, order_relaxed, opened);
     scan_floors(t, least);
 #endif
 #ifdef without_head_watermark

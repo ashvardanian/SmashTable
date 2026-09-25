@@ -12,8 +12,10 @@
  *  Two committers over two partitions and one reader. The first committer reaches both partitions;
  *  the second reaches the second alone or both, as it likes. A reader draws its snapshot from the
  *  watermark under the order's mutex and reads each partition under its shared lock; under
- *  `-Dscenario=cursor` it reads each partition's epoch with acquire and the partition without a
- *  lock, as a cursor deciding whether to re-read does.
+ *  `-Dscenario=cursor` it reads each partition's epoch with acquire, as @c refresh_stale_fronts_
+ *  does to decide whether to re-read, and then the partition without a lock; the header reads a
+ *  front under the partition's shared lock, so the release on the epoch orders only the steps that
+ *  @c for_all and @c publish_every_part_ post after their locks are gone.
  *
  *  A commit holds every partition it reached from its ask through its write, so no committer writes
  *  a partition another has asked about and not yet written. `-Dwithout_held_partitions` gives the
@@ -24,8 +26,10 @@
  *
  *  A reader naming a drawn sees every partition of that commit: whatever it reads under its
  *  snapshot carries a version at or past every commit whose drawn the snapshot covers.
- *  `-Dwithout_watermark_mutex` draws the snapshot relaxed outside the order's mutex and reads the
- *  partitions without their locks, and under views names a drawn whose versions it cannot see.
+ *  `-Dwithout_watermark_mutex` draws the snapshot relaxed outside the order's mutex, which stands
+ *  here for the acq_rel read-modify-writes @c end_commit and @c take_snapshot make on the
+ *  watermark, and reads the partitions without their locks; under views it names a stamp whose
+ *  versions it cannot see, the same stale read either of them would forbid.
  *
  *  Ascending locks never deadlock: `-Dwithout_ascending_order` has the second committer take the
  *  partitions descending, and Spin finds the wait cycle as an invalid end state.
@@ -98,8 +102,9 @@ active [2] proctype committer() {
 #endif
     if :: touches[at(me, first)] -> lock(me, mutex(first)) :: else fi;
     if :: touches[at(me, last)] -> lock(me, mutex(last)) :: else fi;
-    // `validate_for_commit` on every reached partition before any writes:
-    // `partitioned_store::transaction_t::commit_under_one_stamp_`
+    // `validate_for_commit` on every reached partition before any writes, which is
+    // `partitioned_store::transaction_t::validate_reached_parts_` under `commit_under_one_stamp_`;
+    // no partition refuses here, so releasing the earlier holds at a refusal is the group model's
     for (partition : 0 .. partitions - 1) { validated[at(me, partition)] = touches[at(me, partition)] };
 #ifdef without_held_partitions
     if :: touches[at(me, last)] -> unlock(me, mutex(last)) :: else fi;

@@ -7,7 +7,7 @@
  *      populated or locked.
  *
  *  A slot is locked by driving both bits up with an acquire @c fetch_or, and released by an xor
- *  with release that lands the staged state; the counters are moved relaxed beside it.
+ *  with release that lands the staged state; the counters are posted with release under it.
  *
  *  Two emplacers with distinct keys, a finder and an eraser after the first key, over two slots
  *  probed from the first. An emplacer locks each slot in turn: a populated one is compared, a
@@ -175,8 +175,8 @@ active proctype eraser() {
             load(eraser_thread, key(slot), order_relaxed, seen_key);
             if
             :: seen_key == key_of(0) ->
-                read_modify_write(eraser_thread, deleted_count, order_relaxed, seen, seen + 1);
-                read_modify_write(eraser_thread, populated_count, order_relaxed, seen, seen - 1);
+                read_modify_write(eraser_thread, deleted_count, order_release, seen, seen + 1);
+                read_modify_write(eraser_thread, populated_count, order_release, seen, seen - 1);
                 assert(newest_value(populated_count) >= 0);
                 unlock(eraser_thread, slot, deleted(slot));
                 goto done

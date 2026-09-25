@@ -11,10 +11,11 @@
  *  per bucket here, never listed one by one, and a claim is a bucket index and a stamp rather
  *  than a pointer.
  *
- *  A commit draws its stamp outside the partition's lock, joins its version to the key's run under
- *  the lock, lands the stamp and walks the watermark, then prunes the run under the lock down to
- *  the mark its own landing computed. That mark is the freshest such a read can be, which is why
- *  the cached @c low_water_mark_ word is left out; a commit whose walk moved nothing prunes at zero
+ *  A commit draws its stamp and lands it with no partition lock held, which admits every
+ *  interleaving the header's callers do, joins its version to the key's run under the lock, lands
+ *  the stamp and walks the watermark, then prunes the run under the lock down to the mark its own
+ *  landing computed. That mark is the freshest such a read can be, which is why the cached
+ *  @c low_water_mark_ word is left out; a commit whose walk moved nothing prunes at zero
  *  and frees nothing, which is what a stale read of that word would give.
  *
  *  Under `-Dscenario=reading`, the default, the reader takes a snapshot, reads the key twice at

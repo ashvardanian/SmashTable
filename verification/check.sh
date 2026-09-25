@@ -18,6 +18,8 @@ verify locked_store.pml fail -Dwithout_lock_acquire
 verify locked_store.pml pass -Dwaiting=pausing
 verify locked_store.pml pass -Dwaiting=on_the_address
 verify locked_store.pml pass -Dwaiting=parking
+verify locked_store.pml pass -Dqueued
+verify locked_store.pml fail -Dqueued -Dwithout_unlock_release
 
 section "transaction_group.pml: staging in address order, the two-pass commit, the in-turn tear, the held validation, and its release at a refusal"
 verify transaction_group.pml pass -Dmemory=sequential
@@ -72,6 +74,7 @@ verify atomic_hash_table.pml fail -Dwithout_unlock_release
 verify atomic_hash_table.pml fail -Dwithout_lock_acquire
 verify atomic_hash_table.pml fail -Dmemory=sequential -Dwithout_count_under_lock
 verify atomic_hash_table.pml pass -Dmemory=sequential -Dscenario=exhausted
+verify atomic_hash_table.pml fail -Dmemory=far -Dwithout_count_release
 verify atomic_hash_table.pml pass -Dwaiting=pausing
 verify atomic_hash_table.pml pass -Dwaiting=on_the_address
 verify atomic_hash_table.pml pass -Dwaiting=parking
