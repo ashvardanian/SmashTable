@@ -556,7 +556,7 @@ class snapshot_store {
         status_t record_read_(comparable_type_ const &comparable) const noexcept {
             if constexpr (!at_least(isolation_k, isolation_t::serializable_k)) return success_k;
             else {
-                auto owned = copy_safely<identifier_t>(identifier_t {comparable});
+                auto owned = copy_identifier<identifier_t>(comparable);
                 if (!owned) {
                     read_set_ = read_set_t::unrecorded_k;
                     return owned.status();
@@ -586,12 +586,12 @@ class snapshot_store {
         /** Records the window between @p lower and @p upper at every level, which a watch needs. */
         template <typename lower_type_, typename upper_type_>
         status_t record_window_(lower_type_ const &lower, upper_type_ const &upper, access_t ends) const noexcept {
-            auto lower_copy = copy_safely<identifier_t>(identifier_t {lower});
+            auto lower_copy = copy_identifier<identifier_t>(lower);
             if (!lower_copy) {
                 read_set_ = read_set_t::unrecorded_k;
                 return lower_copy.status();
             }
-            auto upper_copy = copy_safely<identifier_t>(identifier_t {upper});
+            auto upper_copy = copy_identifier<identifier_t>(upper);
             if (!upper_copy) {
                 read_set_ = read_set_t::unrecorded_k;
                 return upper_copy.status();
@@ -1597,7 +1597,7 @@ class snapshot_store {
             status_t collecting = success_k;
             [[maybe_unused]] status_t const walked = walk([&](value_t const &value) noexcept {
                 if (failed(collecting)) return;
-                auto owned = copy_safely<identifier_t>(identifier_t {mapping_key_or_itself<value_t>(value)});
+                auto owned = copy_identifier<identifier_t>(mapping_key_or_itself<value_t>(value));
                 if (!owned) {
                     collecting = owned.status();
                     return;

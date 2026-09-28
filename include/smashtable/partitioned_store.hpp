@@ -304,11 +304,27 @@ class partitioned_store {
      *
      *  A walk answers in one order across sixteen independently ordered partitions, which it can
      *  only do by remembering the smallest key each one is offering. That remembering is a copy, so
-     *  a key that refuses to be copied cannot be walked in merged order - it can still be written,
-     *  read by its own key, and enumerated in no particular order, none of which hold a key between
-     *  two walk steps.
+     *  a key that can be copied neither by its constructor nor by its own @c copy cannot be walked
+     *  in merged order - it can still be written, read by its own key, and enumerated in no
+     *  particular order, none of which hold a key between two walk steps.
      */
-    static constexpr bool identifier_survives_a_walk_k = std::is_copy_constructible_v<identifier_t>;
+    static constexpr bool identifier_survives_a_walk_k =
+        std::is_copy_constructible_v<identifier_t> || has_copy_method<identifier_t>;
+
+    /** Makes @p front a copy of the key of @p element, answering the refusal of a key that copies
+     *  through its own @c copy, such as one owning the bytes of a string. */
+    static status_t take_front_(identifier_t &front, value_t const &element) noexcept {
+        if constexpr (std::is_copy_constructible_v<identifier_t>) {
+            front = identifier_t(element);
+            return success_k;
+        }
+        else {
+            expected<identifier_t> copied = mapping_key_or_itself(element).copy();
+            if (!copied) return copied.status();
+            front = std::move(*copied);
+            return success_k;
+        }
+    }
 
     /**
      *  @brief Which partition owns @p comparable, hashing what it is handed rather than a copy.
@@ -602,13 +618,16 @@ class partitioned_store {
         fronts_t fronts;
         front_states_t states {};
         status_t walked = success_k;
+
+        // A partition whose front was lost would have its keys skipped, so the walk stops there
+        status_t kept = success_k;
         for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
             seed_front(partition_index, [&](value_t const &element) noexcept {
-                fronts[partition_index] = identifier_t(element);
+                kept = first_failure(kept, take_front_(fronts[partition_index], element));
                 states[partition_index] = front_state_t::holds_a_key_k;
             });
 
-        while (true) {
+        while (succeeded(kept)) {
             marked_partition_t const smallest = smallest_front_(comparator, fronts, states);
             if (smallest.presence != marked_presence_t::one_marked_k) return walked;
             if (step(smallest.index, fronts[smallest.index]) == walk_control_t::halt_k) return walked;
@@ -618,10 +637,11 @@ class partitioned_store {
             states[smallest.index] = front_state_t::exhausted_k;
             walked =
                 first_failure(walked, parts[smallest.index].upper_bound(consumed, [&](value_t const &element) noexcept {
-                    fronts[smallest.index] = identifier_t(element);
+                    kept = first_failure(kept, take_front_(fronts[smallest.index], element));
                     states[smallest.index] = front_state_t::holds_a_key_k;
                 }));
         }
+        return first_failure(walked, kept);
     }
 
     /**
@@ -688,8 +708,8 @@ class partitioned_store {
      *  is missed, which is what walking without holding the store means.
      */
     class ordered_cursor_t {
-        static_assert(identifier_survives_a_walk_k,
-                      "a cursor remembers one key per partition, so the identifier must be copyable");
+        static_assert(std::is_copy_constructible_v<identifier_t>,
+                      "a cursor remembers one key per partition and never fails, so the identifier must be copyable");
 
         friend class partitioned_store;
 

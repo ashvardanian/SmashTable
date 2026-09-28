@@ -754,7 +754,7 @@ class monotonic_store {
             status_t collecting = success_k;
             [[maybe_unused]] status_t const walked = walk([&](value_t const &value) noexcept {
                 if (failed(collecting)) return;
-                auto owned = copy_safely<identifier_t>(identifier_t {mapping_key_or_itself<value_t>(value)});
+                auto owned = copy_identifier<identifier_t>(mapping_key_or_itself<value_t>(value));
                 if (!owned) {
                     collecting = owned.status();
                     return;

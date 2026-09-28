@@ -1523,13 +1523,13 @@ static void lock_cost_cursor_beats_stepping() {
 #pragma endregion Lock Cost
 
 /**
- *  @brief A key that refuses to be copied still reaches a partition.
+ *  @brief A key that refuses to be copied still reaches a partition, and walks in merged order.
  *
  *  Choosing a partition is a hash, and a hash needs to read a key rather than own one.
  *  Materializing an identifier to feed the hasher made every point operation demand a copy, so a
  *  move-only key - which every unsharded store accepts - could not be sharded at all. The merged
- *  walks still need a copy, because they remember one key per partition between steps, and they say
- *  so in their own assertion.
+ *  walks remember one key per partition between steps, which such a key allows through its own
+ *  @c copy, and so does a serializable transaction recording what it read and walked.
  */
 static void sharded_ops_move_only_key_reaches_a_partition() {
     using heavy_set_t = monotonic_avl_set<heavy_key_t, std::less<void>, std::allocator<heavy_key_t>>;
@@ -1558,6 +1558,42 @@ static void sharded_ops_move_only_key_reaches_a_partition() {
     st_verify_(doomed);
     st_verify_(store.erase(*doomed));
     st_verify_eq_(store.size(), 63u);
+
+    // The hex spelling orders as the integers do, so a merged walk hands them over ascending
+    auto lower = heavy_key_t::make(trivial_id_t {0});
+    auto upper = heavy_key_t::make(trivial_id_t {64});
+    st_verify_(lower && upper);
+    trivial_id_t expected_next = 0;
+    std::size_t walked = 0;
+    st_verify_(store.range(*lower, *upper, [&](heavy_key_t const &key) noexcept {
+        if (expected_next == 7) ++expected_next;
+        auto wanted = heavy_key_t::make(expected_next++);
+        walked += wanted && *wanted == key;
+    }));
+    st_verify_eq_(walked, 63u, "a merged walk hands over every key once, in order");
+
+    using heavy_map_t =
+        strict_serializable_avl_map<heavy_key_t, int, std::less<void>, std::allocator<mapping<heavy_key_t, int>>>;
+    using sharded_map_t = partitioned_store<heavy_map_t, hash<heavy_key_t>>;
+    auto made_map = sharded_map_t::make(std::less<void> {}, hash<heavy_key_t> {});
+    st_verify_(made_map);
+    sharded_map_t &map = *made_map;
+    auto transaction = map.transaction();
+    st_verify_(transaction);
+    for (trivial_id_t identifier = 0; identifier != 16; ++identifier) {
+        auto key = heavy_key_t::make(identifier);
+        st_verify_(key);
+        st_verify_(transaction->upsert(mapping<heavy_key_t, int> {std::move(*key), static_cast<int>(identifier)}));
+    }
+    std::size_t recorded = 0;
+    st_verify_(transaction->range(*lower, *upper, [&](mapping<heavy_key_t, int> const &) noexcept { ++recorded; }));
+    st_verify_eq_(recorded, 16u);
+    auto probe = heavy_key_t::make(trivial_id_t {3});
+    st_verify_(probe);
+    st_verify_(transaction->find(*probe, no_op_t {}, no_op_t {}));
+    st_verify_(transaction->stage());
+    st_verify_(transaction->commit());
+    st_verify_eq_(map.size(), 16u);
 }
 
 /**

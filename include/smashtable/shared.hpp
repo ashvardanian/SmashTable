@@ -830,6 +830,19 @@ expected<object_type_> copy_safely(object_type_ const &object) noexcept {
 }
 
 /**
+ *  @brief Copies @p comparable into an owned @p identifier_type_: through @c copy_safely where it
+ *      already is one, and by conversion where it is another type the store compares against.
+ *
+ *  Converting an identifier into itself would ask for its copy constructor, which a key owning its
+ *  bytes deletes in favour of @c copy.
+ */
+template <typename identifier_type_, typename comparable_type_>
+expected<identifier_type_> copy_identifier(comparable_type_ const &comparable) noexcept {
+    if constexpr (std::is_same_v<comparable_type_, identifier_type_>) return copy_safely(comparable);
+    else return copy_safely<identifier_type_>(identifier_type_ {comparable});
+}
+
+/**
  *  @brief Whether duplicating this type can refuse, which is the whole reason a batch stages.
  *
  *  A type that copies without throwing duplicates by copy construction and cannot report anything,
