@@ -3379,6 +3379,12 @@ int main(int, char **arguments) {
                       test_group_commit_with_runs_the_body<locked_snapshot_map_t>);
     tally += run_test(environment, "group.commit_is_read_whole_across_stores",
                       []() { test_group_commit_is_read_whole_across_stores<locked_snapshot_map_t>(); });
+    tally += run_test(environment, "group.publishes_under_one_stamp.sharded",
+                      test_group_publishes_under_one_stamp<sharded_snapshot_map_t>);
+    tally += run_test(environment, "group.commit_with_runs_the_body.sharded",
+                      test_group_commit_with_runs_the_body<sharded_snapshot_map_t>);
+    tally += run_test(environment, "group.commit_is_read_whole_across_stores.sharded",
+                      []() { test_group_commit_is_read_whole_across_stores<sharded_snapshot_map_t>(); });
 
     tally += run_test(environment, "fuzz.writes_match_the_oracle.snapshot", [](test_context_t const &context) {
         test_random_writes_match_the_oracle<snapshot_avl_map_t>(context);

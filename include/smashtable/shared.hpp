@@ -3545,8 +3545,8 @@ enum class order_sharing_t : bool {
  *  Stores are constructed into one of these. A store never owns an order and never borrows one; it
  *  is a member of the order it was built with, and it says so once, at construction, which is why
  *  nothing here can be attached, replaced or set wrong afterwards. A shard set builds all of its
- *  partitions into the one order it owns, and a group over several stores is one commit exactly
- *  when they were built into the same order.
+ *  partitions into one order, its own or the one it was itself built into, and a group over several
+ *  stores is one commit exactly when they were built into the same order.
  *
  *  Nothing here is wall time. Both counters are logical in the sense a commit stamp is logical:
  *  monotone integers that order events, and nothing else.

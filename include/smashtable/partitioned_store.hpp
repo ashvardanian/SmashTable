@@ -61,9 +61,11 @@ static expected<std::array<type_, count_>> generate_array_safely(generator_type_
  *  @brief Hashes inputs to route them into separate sets, which can be concurrent, or have a
  *      separate state-full allocator attached.
  *
- *  Every partition is a member of the one order this set owns, so a stamp means the same thing in
- *  each and sixteen partitions embed one order rather than sixteen. As many commits may be in
- *  flight as there are partitions to hold disjoint lock sets, and no more, which is what sizes it.
+ *  Every partition is a member of one order, so a stamp means the same thing in each and sixteen
+ *  partitions embed one order rather than sixteen. As many commits may be in flight as there are
+ *  partitions to hold disjoint lock sets, and no more, which is what sizes it. The set owns that
+ *  order, unless it was built into one it shares with other stores, which a @c transaction_group
+ *  then commits under one stamp.
  *
  *  @tparam store_type_ Type of the wrapped store, like @c monotonic_store.
  *  @tparam hash_type_ Keys that compare equal must have the same hashes.
@@ -528,16 +530,16 @@ class partitioned_store {
             }
             if (succeeded(published) && staged != 0) {
                 typename order_t::commit_in_flight_t in_flight;
-                order_.begin_commit(in_flight);
+                order_->begin_commit(in_flight);
                 for (publication_t &part : *opened) part.publish_under(in_flight.stamp());
-                order_.end_commit(in_flight);
+                order_->end_commit(in_flight);
                 for (publication_t &part : *opened) part.prune_published();
                 stamp = in_flight.stamp();
             }
         }
         for (padded_epoch_t &epoch : epochs_) note_written_(epoch.writes);
         if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
-            if (succeeded(published) && staged != 0) order_.await_published(stamp);
+            if (succeeded(published) && staged != 0) order_->await_published(stamp);
         return published;
     }
 
@@ -932,7 +934,10 @@ class partitioned_store {
         generation_t snapshot_ {0};
 
         explicit reader_t(partitioned_store const &store) noexcept
-            : store_(&store), snapshot_(store.order_.take_snapshot(claim_)) {}
+            : store_(&store), snapshot_(store.order_->take_snapshot(claim_)) {}
+
+        /** A reader at @p stamp, registering nothing, as another claim on the order pins it. */
+        reader_t(partitioned_store const &store, generation_t stamp) noexcept : store_(&store), snapshot_(stamp) {}
 
       public:
         reader_t(reader_t &&other) noexcept
@@ -1080,7 +1085,7 @@ class partitioned_store {
         void settle_snapshot_() const noexcept {
             if constexpr (draws_from_a_shared_order<inner_store_t>) {
                 if (unsettled_stamp_ == 0) return;
-                order_t &order = store_->order_;
+                order_t &order = *store_->order_;
                 order.await_published(static_cast<commit_stamp_t>(unsettled_stamp_));
                 generation_t const moved = order.take_snapshot(claim_);
                 // Where a transaction reads is its own state, which the const read paths below own as
@@ -1221,6 +1226,23 @@ class partitioned_store {
             return success_k;
         }
 
+        /** Takes every reached partition, ascending, for a validation whose publication comes in a
+         *  later call. */
+        void hold_reached_parts_() noexcept {
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                store_->mutexes_[reached.index].lock();
+        }
+
+        /** Gives back every partition @c hold_reached_parts_ took, recording that each changed. */
+        void release_reached_parts_() noexcept {
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
+                note_written_(store_->epochs_[reached.index].writes);
+                store_->mutexes_[reached.index].unlock();
+            }
+        }
+
         /**
          *  @brief Publishes every reached partition, having first learned that all of them may.
          *
@@ -1264,7 +1286,7 @@ class partitioned_store {
         status_t commit_under_one_stamp_() noexcept
             requires draws_from_a_shared_order<inner_store_t>
         {
-            order_t &order = store_->order_;
+            order_t &order = *store_->order_;
             touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
             if (status_t const refused = validate_reached_parts_(); failed(refused)) return refused;
 
@@ -1349,13 +1371,94 @@ class partitioned_store {
             return committed_stamp_;
         }
 
+        /** The stamp every read of this transaction is answered at. */
+        [[nodiscard]] generation_t snapshot() const noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            settle_snapshot_();
+            return partitions_.front().snapshot();
+        }
+
+        /**
+         *  @brief Holds every reached partition and asks each whether it may commit, as one
+         *      participant of a group publishing several stores under one stamp.
+         *
+         *  An answer of success keeps the partitions held for @c publish_under or
+         *  @c release_validation, and a refusal gives them back, so the group's stamp is drawn only
+         *  once every participant holds everything it will publish under.
+         */
+        status_t validate_for_commit() noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            hold_reached_parts_();
+            status_t const refused = validate_reached_parts_();
+            if (failed(refused)) release_reached_parts_();
+            return refused;
+        }
+
+        /** Publishes every reached partition under @p stamp, which the group drew, and gives the
+         *  partitions back. */
+        void publish_under(commit_stamp_t stamp) noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                partitions_[reached.index].publish_under(stamp);
+            release_reached_parts_();
+            committed_stamp_ = static_cast<generation_t>(stamp);
+            staging_ = staging_t::pending_k;
+        }
+
+        /** Gives back what @c validate_for_commit kept, where another participant refused and
+         *  nothing will publish. */
+        void release_validation() noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                partitions_[reached.index].release_validation();
+            release_reached_parts_();
+        }
+
+        /** Reads every partition at @p stamp, which the group's claim pins, from here on. */
+        void adopt_snapshot(generation_t stamp) noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            for (inner_transaction_t &part : partitions_) part.adopt_snapshot(stamp);
+        }
+
+        /** Reclaims what a group commit superseded in every reached partition, then forgets which
+         *  partitions it reached. */
+        void prune_committed() noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            for (marked_partition_t reached = touched_.first_marked();
+                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
+                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
+                partitions_[reached.index].prune_committed();
+            }
+            touched_.clear();
+        }
+
+        /** Discards every staged and pending change and reads at @p stamp, which the group's claim
+         *  pins. */
+        status_t reset_at(generation_t stamp) noexcept
+            requires draws_from_a_shared_order<inner_store_t>
+        {
+            staging_ = staging_t::pending_k;
+            status_t const status =
+                for_parts_([stamp](inner_transaction_t &part) noexcept { return part.reset_at(stamp); });
+            touched_.clear();
+            return status;
+        }
+
         status_t reset() noexcept {
             settle_snapshot_();
             // A reset discards the staged writes along with everything else, so the guard on them goes too.
             staging_ = staging_t::pending_k;
             if constexpr (draws_from_a_shared_order<inner_store_t>) {
                 // One snapshot for every partition, drawn once, exactly as opening the transaction did.
-                generation_t const snapshot = store_->order_.take_snapshot(claim_);
+                generation_t const snapshot = store_->order_->take_snapshot(claim_);
                 auto status =
                     for_parts_([snapshot](inner_transaction_t &part) noexcept { return part.reset_at(snapshot); });
                 touched_.clear();
@@ -2086,10 +2189,14 @@ class partitioned_store {
     epochs_t epochs_ {};
     partitions_t partitions_;
 
-    /** The one order every partition is a member of, so a stamp means the same thing in each.
-     *  Empty, and free, for a part that keeps no stamps. Mutable because a reader of a const store
-     *  still counts a snapshot, which is bookkeeping rather than the store's contents. */
-    SMASHTABLE_NO_UNIQUE_ADDRESS_ mutable order_t order_ {};
+    /** The order this set owns, which every partition is a member of unless the set was built into
+     *  another one. Empty, and free, for a part that keeps no stamps. Mutable, since a reader of a
+     *  const store still counts a snapshot, which is bookkeeping rather than the store's data. */
+    SMASHTABLE_NO_UNIQUE_ADDRESS_ mutable order_t own_order_ {};
+
+    /** The order every partition is a member of, so a stamp means the same thing in each: this
+     *  set's own, or the one it was built into and shares with other stores. */
+    order_t *order_ {&own_order_};
 
     /** Held rather than default-constructed per call: a hasher carrying state answers differently
      *  from a fresh one, so rebuilding it would discard what the store was given. */
@@ -2120,13 +2227,17 @@ class partitioned_store {
 
     /** Seats this set's order in every partition, which is what makes them one snapshot. */
     void seat_order_in_parts_() noexcept {
-        if constexpr (requires(inner_store_t &part) { part.join_order(order_); })
-            for (inner_store_t &part : partitions_) part.join_order(order_);
+        if constexpr (requires(inner_store_t &part) { part.join_order(*order_); })
+            for (inner_store_t &part : partitions_) part.join_order(*order_);
     }
 
-    /** Takes over @p other's stamps and readers, then re-points the partitions that held them. */
+    /** Takes over @p other's place in its order, and its stamps and readers where the order was
+     *  its own, then re-points the partitions that held them. */
     void adopt_order_of_(partitioned_store &other) noexcept {
-        if constexpr (draws_from_a_shared_order<inner_store_t>) order_.adopt(other.order_);
+        bool const shared = other.order_ != &other.own_order_;
+        order_ = shared ? other.order_ : &own_order_;
+        if constexpr (draws_from_a_shared_order<inner_store_t>)
+            if (!shared) own_order_.adopt(other.own_order_);
         seat_order_in_parts_();
     }
 
@@ -2141,13 +2252,18 @@ class partitioned_store {
     expected<transaction_t> open_transaction_(typename order_t::snapshot_claim_t &&claim,
                                               [[maybe_unused]] generation_t snapshot) noexcept {
         [[maybe_unused]] generation_t generation = 0;
-        if constexpr (draws_from_a_shared_order<inner_store_t>) generation = order_.next_generation();
+        if constexpr (draws_from_a_shared_order<inner_store_t>) generation = order_->next_generation();
+        return open_transaction_(std::move(claim), opened_at_t {snapshot, generation});
+    }
 
+    /** The same, at a generation already drawn. */
+    expected<transaction_t> open_transaction_(typename order_t::snapshot_claim_t &&claim,
+                                              [[maybe_unused]] opened_at_t opened) noexcept {
         // Ascending order, one lock at a time, like every other all-partition walk here.
         auto maybe = generate_array_safely<inner_transaction_t, partitions_k>([&](std::size_t partition_index) {
             writing_part_lock_t lock {mutexes_[partition_index], epochs_[partition_index].writes};
             if constexpr (draws_from_a_shared_order<inner_store_t>)
-                return partitions_[partition_index].transaction_at(opened_at_t {snapshot, generation});
+                return partitions_[partition_index].transaction_at(opened);
             else return partitions_[partition_index].transaction();
         });
         if (!maybe) return maybe.status();
@@ -2183,6 +2299,14 @@ class partitioned_store {
 
   public:
     partitioned_store() noexcept { seat_order_in_parts_(); }
+
+    /** Builds an empty store into @p order, which it shares with every other store built into it,
+     *  so a @c transaction_group over them publishes under one stamp. */
+    explicit partitioned_store(order_t &order) noexcept
+        requires draws_from_a_shared_order<inner_store_t>
+        : order_(&order) {
+        seat_order_in_parts_();
+    }
 
     /**
      *  @warning @p other must have no open transaction and no other thread touching it.
@@ -2254,8 +2378,20 @@ class partitioned_store {
     expected<transaction_t> transaction() noexcept {
         typename order_t::snapshot_claim_t claim;
         [[maybe_unused]] generation_t snapshot = 0;
-        if constexpr (draws_from_a_shared_order<inner_store_t>) snapshot = order_.take_snapshot(claim);
+        if constexpr (draws_from_a_shared_order<inner_store_t>) snapshot = order_->take_snapshot(claim);
         return open_transaction_(std::move(claim), snapshot);
+    }
+
+    /**
+     *  @brief Opens one transaction per partition at a snapshot and a generation a group drew.
+     *
+     *  Registers nothing: the group's claim pins the snapshot for every store it spans, so the
+     *  transaction must not outlive the group.
+     */
+    expected<transaction_t> transaction_at(opened_at_t opened) noexcept
+        requires draws_from_a_shared_order<inner_store_t>
+    {
+        return open_transaction_({}, opened);
     }
 
     /**
@@ -2271,7 +2407,7 @@ class partitioned_store {
     {
         assert(reader.store_ == this && "a transaction adopts the stamp of a reader of its own store");
         typename order_t::snapshot_claim_t claim;
-        generation_t const snapshot = order_.share_snapshot(reader.claim_, claim);
+        generation_t const snapshot = order_->share_snapshot(reader.claim_, claim);
         return open_transaction_(std::move(claim), snapshot);
     }
 
@@ -2280,6 +2416,26 @@ class partitioned_store {
         requires inner_reads_at_a_stamp_k
     {
         return reader_t {*this};
+    }
+
+    /** A reader at @p stamp that registers nothing, for a store sharing its order with the reader
+     *  or transaction whose claim pins @p stamp, and which it must not outlive. */
+    [[nodiscard]] reader_t reader_at(generation_t stamp) const noexcept
+        requires inner_reads_at_a_stamp_k
+    {
+        return reader_t {*this, stamp};
+    }
+
+    /** The order this store is a member of, which it owns unless it was built into a shared one. */
+    [[nodiscard]] order_t &order() noexcept
+        requires draws_from_a_shared_order<inner_store_t>
+    {
+        return *order_;
+    }
+    [[nodiscard]] order_t const &order() const noexcept
+        requires draws_from_a_shared_order<inner_store_t>
+    {
+        return *order_;
     }
 
     status_t upsert(value_t &&element) noexcept {
