@@ -584,7 +584,7 @@ static void extended_atomics_reach_the_pinned_table() {
     st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {1},
                   "and counts the population with one posted add");
 
-    st_verify_(*pinned.contains(std::uint64_t {42}));
+    st_verify_eq_(pinned.contains(std::uint64_t {42}), true);
     st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {2},
                   "a probe that finds its key locks that slot alone");
 
@@ -642,7 +642,7 @@ static void waiting_policy_substitutes_in_the_slot_lock() {
     holder.join();
     prober.join();
 
-    st_verify_(*pinned.contains(std::uint64_t {42}));
+    st_verify_eq_(pinned.contains(std::uint64_t {42}), true);
 }
 
 #pragma endregion Waiting Policy Tests
@@ -744,6 +744,60 @@ struct recording_store {
         if (failed(refusals.opening)) return refusals.opening;
         log.push_back(recorded_call_t {phase_t::open_k, position});
         return expected<transaction_t> {transaction_t {&log, position, &refusals}, success_k};
+    }
+};
+
+/** A store in a shared commit order whose every reset lands an empty commit there, as another
+ *  thread committing between the resets of two participants would. */
+struct store_committing_on_reset_t {
+    using is_transactional = std::true_type;
+    using identifier_t = int;
+    using order_t = commit_order_t;
+    static constexpr isolation_t isolation_k = isolation_t::snapshot_k;
+
+    order_t &commit_order;
+
+    struct transaction_t {
+        // A pointer, not a reference: the transaction has to stay move-assignable.
+        order_t *commit_order;
+        generation_t read_at;
+
+        transaction_t(transaction_t &&) noexcept = default;
+        transaction_t &operator=(transaction_t &&) noexcept = default;
+        transaction_t(transaction_t const &) = delete;
+        transaction_t &operator=(transaction_t const &) = delete;
+        transaction_t(order_t *commit_order, generation_t read_at) noexcept
+            : commit_order(commit_order), read_at(read_at) {}
+
+        [[nodiscard]] status_t watch(identifier_t) noexcept { return success_k; }
+        [[nodiscard]] status_t stage() noexcept { return success_k; }
+        [[nodiscard]] status_t commit() noexcept { return success_k; }
+        [[nodiscard]] status_t rollback() noexcept { return success_k; }
+        [[nodiscard]] status_t reset() noexcept { return success_k; }
+        [[nodiscard]] status_t validate_for_commit() noexcept { return success_k; }
+        void publish_under(commit_stamp_t) noexcept {}
+        void release_validation() noexcept {}
+        void adopt_snapshot(generation_t stamp) noexcept { read_at = stamp; }
+        void prune_committed() noexcept {}
+        [[nodiscard]] generation_t snapshot() const noexcept { return read_at; }
+
+        [[nodiscard]] status_t reset_at(generation_t stamp) noexcept {
+            read_at = stamp;
+            order_t::commit_in_flight_t landing;
+            commit_order->begin_commit(landing);
+            commit_order->end_commit(landing);
+            return success_k;
+        }
+    };
+
+    [[nodiscard]] order_t &order() noexcept { return commit_order; }
+
+    [[nodiscard]] expected<transaction_t> transaction_at(opened_at_t opened) noexcept {
+        return transaction_t {&commit_order, opened.snapshot};
+    }
+
+    [[nodiscard]] expected<transaction_t> transaction() noexcept {
+        return transaction_at(opened_at_t {.snapshot = commit_order.published_stamp()});
     }
 };
 
@@ -932,6 +986,31 @@ static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     std::vector<std::size_t> const every {0, 1};
     st_verify_(stores_visited(log, phase_t::publish_k) == every);
     st_verify_eq_(group.staging(), staging_t::pending_k);
+}
+
+/** A reset reads every participant at one snapshot, however many commits land between their
+ *  resets. */
+static void transaction_group_resets_every_participant_at_one_snapshot() {
+    using values_t = partitioned_store<snapshot_avl_map<std::uint64_t, int>>;
+    static_assert(
+        transaction_group<store_committing_on_reset_t, store_committing_on_reset_t, values_t>::shares_one_order_k,
+        "stores in one order are reset at a snapshot the group draws");
+
+    commit_order_t order;
+    store_committing_on_reset_t first {order}, second {order};
+    values_t values {order};
+
+    auto group = make_transaction_group(first, second, values);
+    st_verify_(group);
+    generation_t const drawn = order.published_stamp();
+    st_verify_eq_(group->reset(), success_k);
+    st_verify_eq_(order.published_stamp(), drawn + 2, "each committing participant landed a commit mid-reset");
+
+    // Every reset but the first follows a landed commit, whatever order the group visits them in.
+    auto [first_read, second_read, values_read] = group->participants();
+    st_verify_eq_(first_read.snapshot(), drawn);
+    st_verify_eq_(second_read.snapshot(), drawn);
+    st_verify_eq_(values_read.snapshot(), drawn, "a commit landing mid-reset must not split the group");
 }
 
 /** A map and a set, two kinds of store a database keeps any number of, each sharded and stamped. */
@@ -1473,6 +1552,8 @@ int main(int, char **arguments) {
                       transaction_group_torn_commit_stops_claiming_staged);
     tally += run_test(environment, "transaction_group.split_commit_publishes_nothing",
                       transaction_group_split_commit_publishes_nothing_on_refusal);
+    tally += run_test(environment, "transaction_group.resets_every_participant_at_one_snapshot",
+                      transaction_group_resets_every_participant_at_one_snapshot);
     tally += run_test(environment, "dynamic_transaction_group.commits_kinds_under_one_stamp",
                       dynamic_transaction_group_commits_kinds_under_one_stamp);
     tally += run_test(environment, "dynamic_transaction_group.conflict_publishes_nothing",

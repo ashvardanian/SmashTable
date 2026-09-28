@@ -3228,14 +3228,15 @@ class transaction_group {
     /** Discards every participant's staged and pending changes, at one fresh snapshot where they
      *  share an order. */
     status_t reset() noexcept {
+        // Drawn once, since a commit landing between two draws would split the group.
+        [[maybe_unused]] generation_t snapshot = 0;
+        if constexpr (shares_one_order_k) snapshot = claim_.order().take_snapshot(claim_);
         status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
             status_t one = success_k;
-            if constexpr (shares_one_order_k) {
-                generation_t const snapshot = claim_.order().take_snapshot(claim_);
+            if constexpr (shares_one_order_k)
                 one = visit_at_(order_[position],
                                 [snapshot](auto &transaction) noexcept { return transaction.reset_at(snapshot); });
-            }
             else one = visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.reset(); });
             if (failed(one)) result = one;
         }
