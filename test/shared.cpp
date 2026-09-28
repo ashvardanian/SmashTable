@@ -27,6 +27,8 @@
 #include <smashtable/shared.hpp>
 #include <smashtable/hash_layout.hpp>
 #include <smashtable/monotonic_store.hpp>
+#include <smashtable/partitioned_store.hpp>
+#include <smashtable/snapshot_store.hpp>
 
 #include "harness.hpp"
 
@@ -932,6 +934,173 @@ static void transaction_group_split_commit_publishes_nothing_on_refusal() {
     st_verify_eq_(group.staging(), staging_t::pending_k);
 }
 
+/** A map and a set, two kinds of store a database keeps any number of, each sharded and stamped. */
+using grouped_map_t = partitioned_store<snapshot_avl_map<std::uint64_t, int>>;
+using grouped_set_t = partitioned_store<snapshot_avl_set<std::uint64_t>>;
+using grouped_member_t = grouped_map_t::value_t;
+using grouped_order_t = grouped_map_t::order_t;
+using dynamic_group_t = dynamic_transaction_group<grouped_map_t, grouped_set_t>;
+
+/** Whether @p store holds @p key at @p stamp, read without a claim of its own. */
+template <typename store_type_>
+static bool holds_at(store_type_ const &store, generation_t stamp, std::uint64_t key) {
+    bool found = false;
+    st_verify_eq_(store.reader_at(stamp).find(key, [&](auto const &) noexcept { found = true; }), success_k);
+    return found;
+}
+
+/** A map and a set joined at run time publish under one stamp, which a reader sees whole or not at
+ *  all. */
+static void dynamic_transaction_group_commits_kinds_under_one_stamp() {
+    grouped_order_t order;
+    grouped_map_t values {order};
+    grouped_set_t edges {order};
+
+    auto group = dynamic_group_t::make(order);
+    st_verify_(group);
+    generation_t const before = group->snapshot();
+    auto values_joined = group->join(values);
+    auto edges_joined = group->join(edges);
+    st_verify_(values_joined && edges_joined);
+    st_verify_eq_((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
+    st_verify_eq_((*edges_joined)->upsert(std::uint64_t {7}), success_k);
+    st_verify_eq_(group->stage(), success_k);
+    st_verify_eq_(group->commit(), success_k);
+
+    st_verify_eq_(order.published_stamp(), before + 1, "one stamp for every kind the group spans");
+    st_verify_eq_(group->commit_stamp(), before + 1);
+    st_verify_(!holds_at(values, before, 1) && !holds_at(edges, before, 7));
+    st_verify_(holds_at(values, group->commit_stamp(), 1) && holds_at(edges, group->commit_stamp(), 7));
+}
+
+/** A conflict in one participant refuses the commit before any participant publishes. */
+static void dynamic_transaction_group_conflict_publishes_nothing() {
+    grouped_order_t order;
+    grouped_map_t values {order};
+    grouped_set_t edges {order};
+
+    auto group = dynamic_group_t::make(order);
+    st_verify_(group);
+    grouped_map_t::transaction_t *const watching = *group->join(values);
+    grouped_set_t::transaction_t *const writing = *group->join(edges);
+    st_verify_eq_(watching->watch(5), success_k);
+    st_verify_eq_(watching->upsert(grouped_member_t {1u, 100}), success_k);
+    st_verify_eq_(writing->upsert(std::uint64_t {7}), success_k);
+    st_verify_eq_(group->stage(), success_k);
+
+    // The watched key moves between the stage and the commit, from outside the group.
+    {
+        auto interloper = values.transaction();
+        st_verify_(interloper);
+        st_verify_eq_(interloper->upsert(grouped_member_t {5u, 500}), success_k);
+        st_verify_eq_(interloper->stage(), success_k);
+        st_verify_eq_(interloper->commit(), success_k);
+    }
+
+    generation_t const published = order.published_stamp();
+    st_verify_eq_(group->commit(), read_conflict_k);
+    st_verify_eq_(order.published_stamp(), published, "a refused group draws no stamp");
+    st_verify_(!holds_at(values, published, 1) && !holds_at(edges, published, 7));
+    st_verify_eq_(group->staging(), staging_t::staged_k);
+    st_verify_eq_(group->participants_count(), std::size_t {2});
+    st_verify_eq_(group->rollback(), success_k);
+}
+
+/** More stores of one kind than a type would list join one group, and their transactions stay put
+ *  while the rest join. */
+static void dynamic_transaction_group_commits_many_stores_of_one_kind() {
+    constexpr std::size_t stores_count = 24;
+    grouped_order_t order;
+    std::vector<grouped_map_t> stores;
+    stores.reserve(stores_count);
+    for (std::size_t index = 0; index != stores_count; ++index) stores.emplace_back(order);
+
+    auto group = dynamic_group_t::make(order);
+    st_verify_(group);
+    std::vector<grouped_map_t::transaction_t *> joined;
+    for (grouped_map_t &store : stores) {
+        auto participant = group->join(store);
+        st_verify_(participant);
+        joined.push_back(*participant);
+    }
+    st_verify_eq_(group->participants_count(), stores_count);
+
+    // Written only once every store joined, through the pointers the earliest joins handed out.
+    for (std::size_t index = 0; index != stores_count; ++index) {
+        st_verify_(group->participant(stores[index]) == joined[index]);
+        st_verify_eq_(joined[index]->upsert(grouped_member_t {index, static_cast<int>(index)}), success_k);
+    }
+
+    generation_t const before = order.published_stamp();
+    st_verify_eq_(group->stage(), success_k);
+    st_verify_eq_(group->commit(), success_k);
+    st_verify_eq_(order.published_stamp(), before + 1);
+    for (std::size_t index = 0; index != stores_count; ++index)
+        st_verify_(holds_at(stores[index], group->commit_stamp(), index) && !holds_at(stores[index], before, index));
+}
+
+/** A store joins once, and a store it cannot stamp alongside the rest never joins. */
+static void dynamic_transaction_group_joins_each_store_once() {
+    grouped_order_t order;
+    grouped_map_t values {order};
+    grouped_set_t edges {order};
+    grouped_map_t apart;
+
+    auto group = dynamic_group_t::make(order);
+    st_verify_(group);
+    st_verify_(group->participant(values) == nullptr);
+    auto first = group->join(values);
+    auto again = group->join(values);
+    st_verify_(first && again && *first == *again);
+    st_verify_(group->participant(values) == *first);
+    st_verify_eq_(group->participants_count(), std::size_t {1});
+
+    st_verify_eq_(group->join(apart).status(), invalid_argument_k, "a store in its own order has another stamp");
+    st_verify_eq_(group->stage(), success_k);
+    st_verify_eq_(group->join(edges).status(), operation_not_permitted_k, "a staged group takes no one new");
+    st_verify_eq_(group->participants_count(), std::size_t {1});
+}
+
+/** A commit and a reset each leave the group empty, and the next join reads a newer snapshot. */
+static void dynamic_transaction_group_empties_on_commit_and_reset() {
+    grouped_order_t order;
+    grouped_map_t values {order};
+
+    auto group = dynamic_group_t::make(order);
+    st_verify_(group);
+    st_verify_eq_((*group->join(values))->upsert(grouped_member_t {1u, 100}), success_k);
+    st_verify_eq_(group->stage(), success_k);
+    st_verify_eq_(group->commit(), success_k);
+    st_verify_eq_(group->participants_count(), std::size_t {0});
+    st_verify_(group->participant(values) == nullptr);
+    st_verify_(group->snapshot() >= group->commit_stamp());
+
+    grouped_map_t::transaction_t *const reader = *group->join(values);
+    st_verify_eq_(reader->snapshot(), group->snapshot());
+    st_verify_(reader->find_copy(std::uint64_t {1}));
+
+    {
+        auto interloper = values.transaction();
+        st_verify_(interloper);
+        st_verify_eq_(interloper->upsert(grouped_member_t {2u, 200}), success_k);
+        st_verify_eq_(interloper->stage(), success_k);
+        st_verify_eq_(interloper->commit(), success_k);
+    }
+    st_verify_eq_(reader->find_copy(std::uint64_t {2}).status(), key_not_found_k);
+
+    st_verify_eq_(group->reset(), success_k);
+    st_verify_eq_(group->participants_count(), std::size_t {0});
+    st_verify_((*group->join(values))->find_copy(std::uint64_t {2}));
+
+    // Emptied once more, the group has nothing to publish and draws no stamp for it.
+    st_verify_eq_(group->reset(), success_k);
+    generation_t const published = order.published_stamp();
+    st_verify_eq_(group->stage(), success_k);
+    st_verify_eq_(group->commit(), success_k);
+    st_verify_eq_(order.published_stamp(), published);
+    st_verify_eq_(group->commit_stamp(), generation_t {0});
+}
+
 #pragma endregion Transaction Group Tests
 
 #pragma region Ordering Tests
@@ -1304,6 +1473,16 @@ int main(int, char **arguments) {
                       transaction_group_torn_commit_stops_claiming_staged);
     tally += run_test(environment, "transaction_group.split_commit_publishes_nothing",
                       transaction_group_split_commit_publishes_nothing_on_refusal);
+    tally += run_test(environment, "dynamic_transaction_group.commits_kinds_under_one_stamp",
+                      dynamic_transaction_group_commits_kinds_under_one_stamp);
+    tally += run_test(environment, "dynamic_transaction_group.conflict_publishes_nothing",
+                      dynamic_transaction_group_conflict_publishes_nothing);
+    tally += run_test(environment, "dynamic_transaction_group.commits_many_stores_of_one_kind",
+                      dynamic_transaction_group_commits_many_stores_of_one_kind);
+    tally += run_test(environment, "dynamic_transaction_group.joins_each_store_once",
+                      dynamic_transaction_group_joins_each_store_once);
+    tally += run_test(environment, "dynamic_transaction_group.empties_on_commit_and_reset",
+                      dynamic_transaction_group_empties_on_commit_and_reset);
 
     tally += run_test(environment, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
 

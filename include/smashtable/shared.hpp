@@ -3250,6 +3250,365 @@ expected<transaction_group<store_types_...>> make_transaction_group(store_types_
     return transaction_group<store_types_...>::make(stores...);
 }
 
+/**
+ *  @brief A two-phase commit over however many stores join at run time, published under one stamp.
+ *
+ *  Where @c transaction_group fixes its participants in its type, this one names only the kinds of
+ *  store that may take part, and opens a transaction on each store the first time it joins. Every
+ *  participant reads at the one snapshot and generation the group drew from the order they share,
+ *  so a reader at any snapshot sees the whole commit or none of it. Each transaction lives in a
+ *  node of its own, so one handed out stays put however many stores join after it.
+ *
+ *  A successful commit and a @c reset destroy every participant before the claim moves to a newer
+ *  snapshot. A store may therefore be freed once the low-water mark passes the stamp it was retired
+ *  at, because no group keeps a participant past its own claim.
+ *
+ *  @tparam store_types_ The kinds of store that may join, all built into one order type, with any
+ *      number of stores of each.
+ */
+template <optimistically_concurrent_store... store_types_>
+class dynamic_transaction_group {
+  public:
+    /** How many kinds of store may join, which bounds nothing about how many stores do. */
+    static constexpr std::size_t kinds_k = sizeof...(store_types_);
+    static_assert(kinds_k > 0, "a group needs at least one kind of store to join it");
+
+    /** The order every joining store must be built into, whose stamp the group commits under. */
+    using order_t = typename order_of<std::tuple_element_t<0, std::tuple<store_types_...>>>::type;
+
+    /** The claim every participant reads under. */
+    using claim_t = typename order_t::snapshot_claim_t;
+
+    static_assert((std::is_same_v<typename order_of<store_types_>::type, order_t> && ...),
+                  "one stamp spans the group only where every kind is built into one order type");
+    static_assert((draws_from_a_shared_order<store_types_> && ...),
+                  "a store joins at the snapshot and generation the group drew");
+    static_assert((shards_its_commit<typename store_types_::transaction_t> && ...),
+                  "a participant publishes under a stamp the group drew");
+
+  private:
+    /** The transaction each kind opens, so the visitor can name one by the kind's position. */
+    using transactions_t = std::tuple<typename store_types_::transaction_t...>;
+
+    /** One joined store, the node its transaction lives in, and which of the kinds it is. */
+    struct joined_t {
+        void const *store;
+        void *transaction;
+        std::size_t kind;
+    };
+
+    using joined_allocator_t = default_allocator<joined_t>;
+
+    /** Every participant, ascending by store address, which is the order every pass walks. */
+    joined_t *joined_ {nullptr};
+    std::size_t joined_count_ {0};
+    std::size_t joined_capacity_ {0};
+
+    /** The one claim every participant reads under, which none of them outlives. */
+    claim_t claim_ {};
+
+    /** The generation the current participants opened at, drawn afresh once they are destroyed. */
+    generation_t generation_ {0};
+
+    /** What the last successful commit published under, or zero where it had nothing to publish. */
+    generation_t committed_stamp_ {0};
+    staging_t staging_ {staging_t::pending_k};
+
+    dynamic_transaction_group() noexcept = default;
+
+    /** Where @p store_type_ sits among the kinds, or @c kinds_k where it is none of them. */
+    template <typename store_type_>
+    static constexpr std::size_t kind_of_() noexcept {
+        constexpr bool matches[] {std::is_same_v<store_type_, store_types_>...};
+        for (std::size_t kind = 0; kind != kinds_k; ++kind)
+            if (matches[kind]) return kind;
+        return kinds_k;
+    }
+
+    /** Applies @p visitor to the transaction @p joined files, as the kind it was filed under. Asks
+     *  one kind at a time rather than through a jump table, since the count is known and tiny. */
+    template <std::size_t kind_ = 0, typename visitor_type_>
+    static status_t visit_(joined_t const &joined, visitor_type_ &&visitor) noexcept {
+        if constexpr (kind_ + 1 != kinds_k)
+            if (joined.kind != kind_) return visit_<kind_ + 1>(joined, std::forward<visitor_type_>(visitor));
+        return visitor(*static_cast<std::tuple_element_t<kind_, transactions_t> *>(joined.transaction));
+    }
+
+    /** Where the participant of @p store sits in @c joined_, or where it would be filed. */
+    [[nodiscard]] std::size_t position_of_(void const *store) const noexcept {
+        std::size_t first = 0, last = joined_count_;
+        while (first != last) {
+            std::size_t const middle = first + (last - first) / 2;
+            // Builtin `<` over unrelated pointers is unspecified, so this asks for the total order.
+            if (std::compare_three_way {}(joined_[middle].store, store) < 0) first = middle + 1;
+            else last = middle;
+        }
+        return first;
+    }
+
+    /** Makes room in @c joined_ for one more participant, keeping the ones already filed. */
+    status_t reserve_one_more_() noexcept {
+        if (joined_count_ != joined_capacity_) return success_k;
+        std::size_t const grown = joined_capacity_ == 0 ? 4 : joined_capacity_ * 2;
+        joined_t *const moved = joined_allocator_t {}.allocate(grown);
+        if (!moved) return out_of_memory_heap_k;
+        for (std::size_t position = 0; position != joined_count_; ++position) moved[position] = joined_[position];
+        joined_allocator_t {}.deallocate(joined_, joined_capacity_);
+        joined_ = moved;
+        joined_capacity_ = grown;
+        return success_k;
+    }
+
+    /** Destroys every participant and frees its node, keeping @c joined_ for the next joins. A
+     *  staged participant unwinds its writes in its own destructor. */
+    void destroy_participants_() noexcept {
+        for (std::size_t position = 0; position != joined_count_; ++position) {
+            [[maybe_unused]] status_t const destroyed = visit_(joined_[position], [](auto &transaction) noexcept {
+                using transaction_t = std::remove_reference_t<decltype(transaction)>;
+                transaction.~transaction_t();
+                default_allocator<transaction_t> {}.deallocate(&transaction, 1);
+                return success_k;
+            });
+        }
+        joined_count_ = 0;
+    }
+
+    /**
+     *  @brief Asks every participant whether it may publish, before any of them writes.
+     *
+     *  A participant that answered success keeps its hold for the publication, so where a later
+     *  one refuses, every one asked before it gives its hold back, descending, and the refusal
+     *  leaves no lock behind. The group stays staged, and @c rollback takes its locks anew.
+     */
+    status_t validate_participants_() noexcept {
+        for (std::size_t position = 0; position != joined_count_; ++position)
+            if (status_t const refused = visit_(
+                    joined_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+                failed(refused)) {
+                while (position != 0) {
+                    [[maybe_unused]] status_t const released =
+                        visit_(joined_[--position], [](auto &transaction) noexcept {
+                            transaction.release_validation();
+                            return success_k;
+                        });
+                }
+                return refused;
+            }
+        return success_k;
+    }
+
+  public:
+    /** Takes over @p other's participants and claim, leaving it with neither. */
+    dynamic_transaction_group(dynamic_transaction_group &&other) noexcept
+        : joined_(std::exchange(other.joined_, nullptr)), joined_count_(std::exchange(other.joined_count_, 0)),
+          joined_capacity_(std::exchange(other.joined_capacity_, 0)), claim_(std::move(other.claim_)),
+          generation_(other.generation_), committed_stamp_(other.committed_stamp_),
+          staging_(std::exchange(other.staging_, staging_t::pending_k)) {}
+
+    /** Destroys this group's participants before its claim goes back, then takes over @p other. */
+    dynamic_transaction_group &operator=(dynamic_transaction_group &&other) noexcept {
+        if (this == &other) return *this;
+        destroy_participants_();
+        joined_allocator_t {}.deallocate(joined_, joined_capacity_);
+        joined_ = std::exchange(other.joined_, nullptr);
+        joined_count_ = std::exchange(other.joined_count_, 0);
+        joined_capacity_ = std::exchange(other.joined_capacity_, 0);
+        claim_ = std::move(other.claim_);
+        generation_ = other.generation_;
+        committed_stamp_ = other.committed_stamp_;
+        staging_ = std::exchange(other.staging_, staging_t::pending_k);
+        return *this;
+    }
+
+    /** Destroys every participant, unwinding what it staged, before the claim is given back. */
+    ~dynamic_transaction_group() noexcept {
+        destroy_participants_();
+        joined_allocator_t {}.deallocate(joined_, joined_capacity_);
+    }
+
+    dynamic_transaction_group(dynamic_transaction_group const &) = delete;
+    dynamic_transaction_group &operator=(dynamic_transaction_group const &) = delete;
+
+    /** Opens an empty group at the newest snapshot of @p order, under a generation drawn for it. */
+    static expected<dynamic_transaction_group> make(order_t &order) noexcept {
+        dynamic_transaction_group group;
+        [[maybe_unused]] generation_t const snapshot = order.take_snapshot(group.claim_);
+        group.generation_ = order.next_generation();
+        return group;
+    }
+
+    /**
+     *  @brief Opens a transaction on @p store at the group's snapshot and generation, or answers
+     *      the one opened when @p store joined before.
+     *
+     *  @return The participant, which stays where it is until a commit succeeds, a @c reset, or the
+     *      group goes away; @c invalid_argument_k for a store built into another order;
+     *      @c operation_not_permitted_k while the group is staged; or what refused to open it.
+     *
+     *  Stage, commit, roll back and reset the participant through the group alone, which is what
+     *  keeps it on the group's claim and under the group's stamp.
+     */
+    template <typename store_type_>
+    expected<typename store_type_::transaction_t *> join(store_type_ &store) noexcept {
+        constexpr std::size_t kind_k = kind_of_<store_type_>();
+        static_assert(kind_k != kinds_k, "only the kinds of store the group names may join it");
+        using transaction_t = typename store_type_::transaction_t;
+
+        if (&store.order() != &claim_.order()) return invalid_argument_k;
+        if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+
+        std::size_t const position = position_of_(&store);
+        if (position != joined_count_ && joined_[position].store == &store) {
+            assert(joined_[position].kind == kind_k && "two stores of different kinds cannot share one address");
+            return static_cast<transaction_t *>(joined_[position].transaction);
+        }
+
+        if (status_t const reserved = reserve_one_more_(); failed(reserved)) return reserved;
+        expected<transaction_t> opened =
+            store.transaction_at(opened_at_t {.snapshot = claim_.snapshot(), .generation = generation_});
+        if (!opened) return opened.status();
+        transaction_t *const node = default_allocator<transaction_t> {}.allocate(1);
+        if (!node) return out_of_memory_heap_k;
+        new (node) transaction_t(std::move(*opened));
+
+        for (std::size_t later = joined_count_; later != position; --later) joined_[later] = joined_[later - 1];
+        joined_[position] = joined_t {&store, node, kind_k};
+        ++joined_count_;
+        return node;
+    }
+
+    /** The participant @p store joined as, or null where it has not joined since the last
+     *  successful commit or reset. */
+    template <typename store_type_>
+    [[nodiscard]] typename store_type_::transaction_t *participant(store_type_ const &store) noexcept {
+        static_assert(kind_of_<store_type_>() != kinds_k, "only the kinds of store the group names may join it");
+        std::size_t const position = position_of_(&store);
+        if (position == joined_count_ || joined_[position].store != &store) return nullptr;
+        return static_cast<typename store_type_::transaction_t *>(joined_[position].transaction);
+    }
+
+    /** The stamp every participant reads at, which the group's claim pins. */
+    [[nodiscard]] generation_t snapshot() const noexcept { return claim_.snapshot(); }
+
+    /** The generation the group drew for its participants, which later joins open at too. */
+    [[nodiscard]] generation_t generation() const noexcept { return generation_; }
+
+    /** How many stores have joined since the last successful commit or reset. */
+    [[nodiscard]] std::size_t participants_count() const noexcept { return joined_count_; }
+
+    /** Whether the group's writes are sitting in their stores, invisible. */
+    staging_t staging() const noexcept { return staging_; }
+
+    /** The stamp the last successful commit published every participant under, or zero where it had
+     *  nothing to publish. */
+    [[nodiscard]] generation_t commit_stamp() const noexcept { return committed_stamp_; }
+
+    /**
+     *  @brief Validates every watch and reserves every write, undoing all of it if one refuses.
+     *
+     *  Participants are staged ascending by store address. A partial stage is never observable: the
+     *  undo rolls the staged prefix back rather than resetting it, so the caller's pending writes
+     *  survive and the group can be retried.
+     */
+    status_t stage() noexcept {
+        if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+
+        std::size_t staged_count = 0;
+        status_t result = success_k;
+        for (; staged_count != joined_count_; ++staged_count) {
+            result = visit_(joined_[staged_count], [](auto &transaction) noexcept { return transaction.stage(); });
+            if (failed(result)) break;
+        }
+
+        if (failed(result)) {
+            while (staged_count != 0) {
+                --staged_count;
+                [[maybe_unused]] status_t const unwound =
+                    visit_(joined_[staged_count], [](auto &transaction) noexcept { return transaction.rollback(); });
+            }
+            return result;
+        }
+
+        staging_ = staging_t::staged_k;
+        return success_k;
+    }
+
+    /**
+     *  @brief Publishes every participant under one stamp, then empties the group for new joins.
+     *
+     *  @return Success; whichever check turned a participant away; or @c operation_not_permitted_k
+     *      when the group is not staged.
+     *
+     *  Every participant is asked before any of them writes, so a refusal publishes nothing and
+     *  leaves the group staged, which is the one state @c rollback accepts. A success destroys
+     *  every participant, then moves the claim to a snapshot covering the stamp and draws a fresh
+     *  generation. A group nobody joined commits without drawing a stamp.
+     */
+    status_t commit() noexcept {
+        if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+        generation_t stamp = 0;
+        if (joined_count_ != 0) {
+            if (status_t const refused = validate_participants_(); failed(refused)) return refused;
+
+            order_t &order = claim_.order();
+            typename order_t::commit_in_flight_t in_flight;
+            order.begin_commit(in_flight);
+            for (std::size_t position = 0; position != joined_count_; ++position) {
+                [[maybe_unused]] status_t const published = visit_(joined_[position], [&](auto &transaction) noexcept {
+                    transaction.publish_under(in_flight.stamp());
+                    return success_k;
+                });
+            }
+            order.end_commit(in_flight);
+
+            // Parks with no store lock held, so the snapshot the next joins read covers this stamp.
+            order.await_published(in_flight.stamp());
+            // Reclaimed under the old claim, since the participants are gone before it moves.
+            for (std::size_t position = 0; position != joined_count_; ++position) {
+                [[maybe_unused]] status_t const settled = visit_(joined_[position], [](auto &transaction) noexcept {
+                    transaction.prune_committed();
+                    return success_k;
+                });
+            }
+            stamp = static_cast<generation_t>(in_flight.stamp());
+        }
+        committed_stamp_ = stamp;
+        return reset();
+    }
+
+    /**
+     *  @brief Pulls every staged write back into its transaction, leaving the group retryable.
+     *
+     *  @return Success; the refusal it stopped at; or @c operation_not_permitted_k when the group
+     *      is not staged.
+     *
+     *  Only a rollback that reached every participant clears the staged flag, so the next @c stage
+     *  never stages a second time over a participant still staged.
+     */
+    status_t rollback() noexcept {
+        if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
+        for (std::size_t position = 0; position != joined_count_; ++position)
+            if (status_t const refused =
+                    visit_(joined_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
+                failed(refused))
+                return refused;
+        staging_ = staging_t::pending_k;
+        return success_k;
+    }
+
+    /** Destroys every participant, unwinding whatever it staged, then reads at a fresh snapshot
+     *  under a fresh generation. */
+    status_t reset() noexcept {
+        // Destroyed first, so no participant outlives the claim keeping its store from being freed.
+        destroy_participants_();
+        order_t &order = claim_.order();
+        [[maybe_unused]] generation_t const moved = order.take_snapshot(claim_);
+        generation_ = order.next_generation();
+        staging_ = staging_t::pending_k;
+        return success_k;
+    }
+};
+
 #pragma region Shared Mutex
 
 #pragma region Waiting Policies
