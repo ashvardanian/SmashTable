@@ -1022,6 +1022,36 @@ class partitioned_store {
                 });
             return first_failure(reached, walked);
         }
+
+        /**
+         *  @brief Hands @p callback every member at or after @p lower at this reader's stamp,
+         *      with no upper end, in merged order.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         *  @warning Every partition is held shared for the walk, and @p callback runs under each.
+         */
+        template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
+        status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
+            requires offers_range<inner_store_t>
+        {
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            partitions_at_t const parts {store_->partitions_, snapshot_};
+            status_t reached = success_k;
+            status_t const walked = walk_merged_(
+                store_->comparator_, parts,
+                [&](std::size_t partition_index, auto &&fill) noexcept {
+                    reached = first_failure(reached, parts[partition_index].lower_bound(lower, fill, no_op_t {}));
+                },
+                [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                    walk_control_t control = walk_control_t::resume_k;
+                    reached = first_failure(
+                        reached,
+                        parts[partition_index].find(
+                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
+                            no_op_t {}));
+                    return control;
+                });
+            return first_failure(reached, walked);
+        }
     };
 
     class transaction_t {

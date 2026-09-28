@@ -2697,6 +2697,41 @@ static void test_reader_holds_its_stamp() {
     st_verify_eq_(store.versions_count(), keys_k - 1, "one version per live key, and none for the erased one");
 }
 
+/** Tests that a reader walks from a bound to the very last key at its stamp, the largest one a key
+ *  can take included, which no exclusive upper bound could reach. */
+template <typename store_type_>
+static void test_reader_walks_from_a_bound_to_the_end() {
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t keys_k = 32, lower_k = 20;
+    constexpr trivial_id_t largest_k = std::numeric_limits<trivial_id_t>::max();
+    store_type_ store;
+    for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 100);
+    commit_write(store, largest_k, 100);
+
+    auto const pinned = store.reader();
+    commit_write(store, keys_k, 100);
+    commit_write(store, lower_k + 1, 101);
+    commit_erase(store, lower_k + 2);
+
+    std::vector<trivial_id_t> seen;
+    std::size_t mismatched = 0;
+    st_verify_(pinned.range_from(trivial_key_t {lower_k}, [&](member_t const &member) noexcept {
+        seen.push_back(member.key.unique_id);
+        if (member.mapped != 100) ++mismatched;
+    }));
+    std::vector<trivial_id_t> expected;
+    for (trivial_id_t identifier = lower_k; identifier != keys_k; ++identifier) expected.push_back(identifier);
+    expected.push_back(largest_k);
+    st_verify_((seen == expected) && "every key from the bound on, in order, at the reader's stamp");
+    st_verify_eq_(mismatched, 0u, "at the values the stamp reads");
+
+    std::size_t handed = 0;
+    st_verify_(pinned.range_from(trivial_key_t {lower_k}, [&](member_t const &) noexcept {
+        return ++handed == 5 ? walk_control_t::halt_k : walk_control_t::resume_k;
+    }));
+    st_verify_eq_(handed, 5u, "a walk with no upper end still stops where its callback says");
+}
+
 /** Tests that one reader serves several threads with no lock of their own while writers commit,
  *  erase windows and reclaim. */
 template <typename store_type_>
@@ -3425,6 +3460,8 @@ int main(int, char **arguments) {
                       test_reader_holds_its_stamp<strict_serializable_avl_map_t>);
     tally += run_test(environment, "reader.holds_its_stamp.sharded_strict",
                       test_reader_holds_its_stamp<sharded_strict_map_t>);
+    tally += run_test(environment, "reader.walks_from_a_bound_to_the_end.sharded_snapshot",
+                      test_reader_walks_from_a_bound_to_the_end<sharded_snapshot_map_t>);
     tally += run_test(environment, "reader.serves_threads_without_a_lock.sharded_snapshot",
                       []() { test_reader_serves_threads_without_a_lock<sharded_snapshot_map_t>(); });
     tally += run_test(environment, "reader.serves_threads_without_a_lock.sharded_strict",
