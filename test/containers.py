@@ -1,7 +1,7 @@
 """Protocol parity between SmashTable containers and the stdlib types they mirror.
 
 Baselines:
-    dict for the map classes, set for the set classes, compared through the oracle in test.base
+    dict for the map classes, set for the set classes, compared through the oracle in base
     rather than by hand-written expectation.
 
 Run:
@@ -13,8 +13,7 @@ Date: October 30, 2025
 """
 
 import pytest
-
-from .base import (
+from base import (
     Op,
     all_class_names,
     apply_op,

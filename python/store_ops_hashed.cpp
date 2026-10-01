@@ -13,7 +13,7 @@
  */
 #include "store_ops.hpp"
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 #pragma region Instantiations
 
@@ -100,4 +100,4 @@ store_ops_t const *hashed_store_ops_for(isolation_choice_t isolation, sharing_ch
 
 #pragma endregion Resolution
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python

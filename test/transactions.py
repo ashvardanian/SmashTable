@@ -13,10 +13,9 @@ Date: October 30, 2025
 """
 
 import pytest
+from base import group_sizes, key_types, make, map_class_names, sharing_modes, transaction_styles
 
 import smashtable as st
-
-from .base import group_sizes, key_types, make, map_class_names, sharing_modes, transaction_styles
 
 
 class _Abort(Exception):

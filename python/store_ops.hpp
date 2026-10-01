@@ -28,7 +28,7 @@
 #include <smashtable/partitioned_store.hpp>
 #include <smashtable/snapshot_store.hpp>
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 /** Whether a type asks for more alignment than @c PyObject_Malloc promises, which stops at
  *  @c max_align_t. */
@@ -645,4 +645,4 @@ struct store_bridge {
 
 #pragma endregion Bridge
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python

@@ -26,10 +26,7 @@
 #include "harness.hpp"
 #include "ordered_readonly.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
-
-namespace {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Key Generation
 
@@ -359,28 +356,31 @@ void layouts_mapped_values() {
 
 #pragma endregion Tests
 
-} // namespace
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
 
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
     test_tally_t tally;
 
-    tally += run_test(environment, "row_search.serial_matches_definitions", row_search_serial_matches_definitions);
-    tally += run_test(environment, "row_search.serial_kit", row_search_serial_kit);
-    tally += run_test(environment, "row_search.haswell_kit", row_search_haswell_kit);
-    tally += run_test(environment, "row_search.skylake_kit", row_search_skylake_kit);
-    tally += run_test(environment, "row_search.neon_kit", row_search_neon_kit);
-    tally += run_test(environment, "row_search.sve_kit", row_search_sve_kit);
-    tally += run_test(environment, "row_search.rvv_kit", row_search_rvv_kit);
-    tally += run_test(environment, "layouts.serial_kit", layouts_serial_kit);
-    tally += run_test(environment, "layouts.haswell_kit", layouts_haswell_kit);
-    tally += run_test(environment, "layouts.skylake_kit", layouts_skylake_kit);
-    tally += run_test(environment, "layouts.neon_kit", layouts_neon_kit);
-    tally += run_test(environment, "layouts.sve_kit", layouts_sve_kit);
-    tally += run_test(environment, "layouts.rvv_kit", layouts_rvv_kit);
-    tally += run_test(environment, "layouts.mapped_values", layouts_mapped_values);
+    tally += run_test(settings, "row_search.serial_matches_definitions", row_search_serial_matches_definitions);
+    tally += run_test(settings, "row_search.serial_kit", row_search_serial_kit);
+    tally += run_test(settings, "row_search.haswell_kit", row_search_haswell_kit);
+    tally += run_test(settings, "row_search.skylake_kit", row_search_skylake_kit);
+    tally += run_test(settings, "row_search.neon_kit", row_search_neon_kit);
+    tally += run_test(settings, "row_search.sve_kit", row_search_sve_kit);
+    tally += run_test(settings, "row_search.rvv_kit", row_search_rvv_kit);
+    tally += run_test(settings, "layouts.serial_kit", layouts_serial_kit);
+    tally += run_test(settings, "layouts.haswell_kit", layouts_haswell_kit);
+    tally += run_test(settings, "layouts.skylake_kit", layouts_skylake_kit);
+    tally += run_test(settings, "layouts.neon_kit", layouts_neon_kit);
+    tally += run_test(settings, "layouts.sve_kit", layouts_sve_kit);
+    tally += run_test(settings, "layouts.rvv_kit", layouts_rvv_kit);
+    tally += run_test(settings, "layouts.mapped_values", layouts_mapped_values);
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

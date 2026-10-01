@@ -16,8 +16,7 @@ Date: August 17, 2026
 import gc
 
 import pytest
-
-from .base import (
+from base import (
     enumerable_class_names,
     is_map_class,
     key_types,

@@ -22,10 +22,7 @@ Date: August 17, 2026
 import enum
 
 import pytest
-
-import smashtable as st
-
-from .base import (
+from base import (
     adopt_shadows,
     assert_group_state,
     assert_same_state,
@@ -46,6 +43,8 @@ from .base import (
     value_modes,
     value_types,
 )
+
+import smashtable as st
 
 
 class _Abort(Exception):

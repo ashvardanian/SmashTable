@@ -11,7 +11,7 @@ they all run in one subprocess rather than one each.
 
 Run:
     python -m pytest test/finalizers.py -v
-    python -m test.finalizers            # the same cases, directly, for debugging a hang
+    python test/finalizers.py            # the same cases, directly, for debugging a hang
 
 File: test/finalizers.py
 Author: Ash Vardanian
@@ -20,15 +20,13 @@ Date: August 18, 2026
 
 import gc
 import itertools
-import pathlib
 import subprocess
 import sys
 
 import pytest
+from base import sharing_modes
 
 import smashtable as st
-
-from .base import sharing_modes
 
 # region The cases
 
@@ -106,14 +104,11 @@ def test_no_release_path_deadlocks():
     mutex held, so a finalizer touching that container waited on a lock its own write was holding.
     """
     try:
-        # Anchored to the directory holding the `test` package, so a wheel tested from elsewhere
-        # still finds `test.finalizers` instead of failing in a way that reads as the deadlock.
         finished = subprocess.run(
-            [sys.executable, "-m", "test.finalizers"],
+            [sys.executable, __file__],
             capture_output=True,
             text=True,
             timeout=60,
-            cwd=pathlib.Path(__file__).resolve().parent.parent,
         )
     except subprocess.TimeoutExpired:
         pytest.fail("deadlocked: a finalizer reaching into its own container hung on a store lock")

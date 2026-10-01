@@ -18,8 +18,8 @@
  *  @section fuzz_seed Reproducing a Failure
  *
  *  Every sequence is drawn from the seed in the @c test_context_t that @c run_test hands a suite,
- *  which is @c SMASHTABLE_SEED or otherwise @c default_seed_k. A failing run is reproduced by
- *  exporting the seed it printed, and a sweep loops over the variable instead of editing source.
+ *  which is @c SMASHTABLE_SEED or otherwise 42. A failing run is reproduced by exporting the seed
+ *  it printed, and a sweep loops over the variable instead of editing source.
  */
 #pragma once
 #include <compare> // `std::compare_three_way`

@@ -177,7 +177,8 @@ Even where every participant is asked first, one of them may be committed over b
 - __Commit is not a snapshot, unless the containers share a commit order.__
   It applies each container in turn, so another thread reading two containers while a commit runs may find one of them a step ahead.
   A reader that needs the pair to agree should take its own transaction or read after the writer's block returns.
-- __Scans are not snapshots either.__ `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
+- __Scans are not snapshots either.__
+  `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
   That is the container's own `scan`; the same call on a transaction participant records the window it read, so at `serializable` and above a key committed into that window refuses the commit rather than being silently missed.
 
 ### Ordered and Unordered
@@ -495,14 +496,14 @@ A core that can grow repoints the regions every live slot reference and every no
 
 |                                             | Reach for                                                | Wrap in                              |
 | :------------------------------------------ | :------------------------------------------------------- | :----------------------------------- |
-| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set`          | …                                    |
-| The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                        | …                                    |
-| The same, and keyed                         | `basic_hash_table`                                        | …                                    |
-| Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`               | …                                    |
-| Many threads, capacity fixed up front       | `atomic_hash_table`                                       | …                                    |
-| Many threads, and the container still grows | any core above                                            | `locked_store` · `partitioned_store` |
-| Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store`  | either wrapper                       |
-| One commit spanning several stores          | `transaction_group`                                       | inherits its participants'           |
+| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set`         | …                                    |
+| The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                       | …                                    |
+| The same, and keyed                         | `basic_hash_table`                                       | …                                    |
+| Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`              | …                                    |
+| Many threads, capacity fixed up front       | `atomic_hash_table`                                      | …                                    |
+| Many threads, and the container still grows | any core above                                           | `locked_store` · `partitioned_store` |
+| Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store` | either wrapper                       |
+| One commit spanning several stores          | `transaction_group`                                      | inherits its participants'           |
 
 Both wrappers take their mutex as a template parameter, and that mutex takes two of its own: the reference its word is owned through, and the policy a waiting core follows.
 The pinned table takes the same two directly, since its slot lock is the mutex it has.
@@ -718,10 +719,30 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-`SMASHTABLE_FILTER` selects a subset by a regex searched for in `suite.name`, and fails the binary when it matches nothing:
+The tests and the benchmark read their settings from the environment once, and print them before the first result:
+
+| Variable                | Default    | Meaning                                                                                |
+| :---------------------- | :--------- | :------------------------------------------------------------------------------------- |
+| `SMASHTABLE_FILTER`     | unset      | ECMAScript regex over test or benchmark names, or a substring when it does not compile |
+| `SMASHTABLE_SEED`       | `42`       | Seed for every random draw, or `random` to draw one                                    |
+| `SMASHTABLE_WARMUP`     | `1s`       | Untimed run ahead of each benchmark, `<int>ms` or `<int>s`                             |
+| `SMASHTABLE_TIME_LIMIT` | `10s`      | Timed run of each benchmark, `<int>ms` or `<int>s`                                     |
+| `SMASHTABLE_ROWS`       | `4096`     | Sorted rows per row-kit benchmark                                                      |
+| `SMASHTABLE_KEYS`       | `16777216` | Sorted keys per layout benchmark                                                       |
+| `SMASHTABLE_QUERIES`    | `1048576`  | Queries drawn per benchmark, searched in turn                                          |
+
+A test filter that matches nothing fails the binary:
 
 ```bash
 SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
+```
+
+The benchmark is built on request and never run by CTest:
+
+```bash
+cmake -B build_release -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_BUILD_BENCH=ON
+cmake --build build_release
+SMASHTABLE_FILTER=layouts/u64 SMASHTABLE_TIME_LIMIT=200ms ./build_release/smashtable_bench_row_search
 ```
 
 One binary per container family runs the same suites — the `std::set` store, both trees, both thread-safety wrappers, the bare hash table and the transactional stores over it — so a behavioural difference between them shows up as a failure rather than a surprise.

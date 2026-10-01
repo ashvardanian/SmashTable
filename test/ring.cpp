@@ -21,10 +21,7 @@
 #include "harness.hpp"
 #include "sequence.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
-
-namespace {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Tests
 
@@ -169,20 +166,23 @@ void ring_sequence_suite() {
 
 #pragma endregion Tests
 
-} // namespace
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
 
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
     test_tally_t tally;
 
-    tally += run_test(environment, "ring.capacity_rules", ring_capacity_rules);
-    tally += run_test(environment, "ring.order_across_wraparound", ring_order_across_wraparound);
-    tally += run_test(environment, "ring.push_evicting", ring_push_evicting);
-    tally += run_test(environment, "ring.bulk_push_and_pop", ring_bulk_push_and_pop);
-    tally += run_test(environment, "ring.element_lifetimes", ring_element_lifetimes);
-    tally += run_test(environment, "ring.sequence_suite", ring_sequence_suite);
+    tally += run_test(settings, "ring.capacity_rules", ring_capacity_rules);
+    tally += run_test(settings, "ring.order_across_wraparound", ring_order_across_wraparound);
+    tally += run_test(settings, "ring.push_evicting", ring_push_evicting);
+    tally += run_test(settings, "ring.bulk_push_and_pop", ring_bulk_push_and_pop);
+    tally += run_test(settings, "ring.element_lifetimes", ring_element_lifetimes);
+    tally += run_test(settings, "ring.sequence_suite", ring_sequence_suite);
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

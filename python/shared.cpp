@@ -22,7 +22,7 @@
 
 #include "shared.hpp"
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 #pragma region Key Layout Functions
 
@@ -690,4 +690,4 @@ bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t co
 
 #pragma endregion Windowed Arguments
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python

@@ -29,10 +29,7 @@
 #include "fixture_coverage.hpp"
 #include "monotonic_store_defects.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
-
-namespace {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Type Aliases
 
@@ -1125,159 +1122,162 @@ static void failure_policy_budgeted_distinct_causes() {
 
 #pragma endregion Failure Policy
 
-} // namespace
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
 
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
     test_tally_t tally;
 
-    tally += run_test(environment, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
-    tally += run_test(environment, "basic_ops.single_element_operations", basic_ops_single_element_operations);
-    tally += run_test(environment, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
-    tally += run_test(environment, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);
+    tally += run_test(settings, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
+    tally += run_test(settings, "basic_ops.single_element_operations", basic_ops_single_element_operations);
+    tally += run_test(settings, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
+    tally += run_test(settings, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);
     tally +=
-        run_test(environment, "basic_ops.bulk_upsert_with_duplicate_pairs", basic_ops_bulk_upsert_with_duplicate_pairs);
-    tally += run_test(environment, "basic_ops.range_query_head_state", basic_ops_range_query_head_state);
-    tally += run_test(environment, "basic_ops.erase_range_head_state", basic_ops_erase_range_head_state);
-    tally += run_test(environment, "basic_ops.heterogeneous_lookups", basic_ops_heterogeneous_lookups);
+        run_test(settings, "basic_ops.bulk_upsert_with_duplicate_pairs", basic_ops_bulk_upsert_with_duplicate_pairs);
+    tally += run_test(settings, "basic_ops.range_query_head_state", basic_ops_range_query_head_state);
+    tally += run_test(settings, "basic_ops.erase_range_head_state", basic_ops_erase_range_head_state);
+    tally += run_test(settings, "basic_ops.heterogeneous_lookups", basic_ops_heterogeneous_lookups);
 
-    tally += run_test(environment, "transactional_consistency.empty_transaction_commit",
+    tally += run_test(settings, "transactional_consistency.empty_transaction_commit",
                       transactional_consistency_empty_transaction_commit);
-    tally += run_test(environment, "transactional_consistency.no_dirty_reads_multi_key",
+    tally += run_test(settings, "transactional_consistency.no_dirty_reads_multi_key",
                       transactional_consistency_no_dirty_reads_multi_key);
-    tally += run_test(environment, "transactional_consistency.new_transaction_sees_nothing_staged",
+    tally += run_test(settings, "transactional_consistency.new_transaction_sees_nothing_staged",
                       transactional_consistency_new_transaction_sees_nothing_staged);
-    tally += run_test(environment, "transactional_consistency.committed_immediately_visible",
+    tally += run_test(settings, "transactional_consistency.committed_immediately_visible",
                       transactional_consistency_committed_immediately_visible);
-    tally += run_test(environment, "transactional_consistency.multi_key_atomicity_10_keys",
+    tally += run_test(settings, "transactional_consistency.multi_key_atomicity_10_keys",
                       transactional_consistency_multi_key_atomicity_10_keys);
-    tally += run_test(environment, "transactional_consistency.rollback_makes_all_invisible",
+    tally += run_test(settings, "transactional_consistency.rollback_makes_all_invisible",
                       transactional_consistency_rollback_makes_all_invisible);
-    tally += run_test(environment, "transactional_consistency.range_query_sees_atomic_boundaries",
+    tally += run_test(settings, "transactional_consistency.range_query_sees_atomic_boundaries",
                       transactional_consistency_range_query_sees_atomic_boundaries);
-    tally += run_test(environment, "transactional_consistency.fractured_read_prevention",
+    tally += run_test(settings, "transactional_consistency.fractured_read_prevention",
                       transactional_consistency_fractured_read_prevention);
-    tally += run_test(environment, "transactional_consistency.sequential_updates_never_regress",
+    tally += run_test(settings, "transactional_consistency.sequential_updates_never_regress",
                       transactional_consistency_sequential_updates_never_regress);
-    tally += run_test(environment, "transactional_consistency.transaction_commits_maintain_order",
+    tally += run_test(settings, "transactional_consistency.transaction_commits_maintain_order",
                       transactional_consistency_transaction_commits_maintain_order);
-    tally += run_test(environment, "transactional_consistency.concurrent_transactions_on_same_key",
+    tally += run_test(settings, "transactional_consistency.concurrent_transactions_on_same_key",
                       transactional_consistency_concurrent_transactions_on_same_key);
-    tally += run_test(environment, "transactional_consistency.multi_key_conflict_any_key_fails",
+    tally += run_test(settings, "transactional_consistency.multi_key_conflict_any_key_fails",
                       transactional_consistency_multi_key_conflict_any_key_fails);
-    tally += run_test(environment, "transactional_consistency.watch_detects_external_direct_modification",
+    tally += run_test(settings, "transactional_consistency.watch_detects_external_direct_modification",
                       transactional_consistency_watch_detects_external_direct_modification);
-    tally += run_test(environment, "transactional_consistency.watch_detects_staged_invisible_writes",
+    tally += run_test(settings, "transactional_consistency.watch_detects_staged_invisible_writes",
                       transactional_consistency_watch_detects_staged_invisible_writes);
-    tally += run_test(environment, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
+    tally += run_test(settings, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
                       transactional_consistency_watch_detects_staged_writes_of_older_generation);
-    tally += run_test(environment, "transactional_consistency.group_commits_participants_together",
+    tally += run_test(settings, "transactional_consistency.group_commits_participants_together",
                       transactional_consistency_group_commits_participants_together);
-    tally += run_test(environment, "transactional_consistency.group_unwinds_every_participant_on_conflict",
+    tally += run_test(settings, "transactional_consistency.group_unwinds_every_participant_on_conflict",
                       transactional_consistency_group_unwinds_every_participant_on_conflict);
-    tally += run_test(environment, "transactional_consistency.abandoned_transaction_leaves_no_trace",
+    tally += run_test(settings, "transactional_consistency.abandoned_transaction_leaves_no_trace",
                       transactional_consistency_abandoned_transaction_leaves_no_trace);
-    tally += run_test(environment, "transactional_consistency.moved_transaction_unwinds_once",
+    tally += run_test(settings, "transactional_consistency.moved_transaction_unwinds_once",
                       transactional_consistency_moved_transaction_unwinds_once);
-    tally += run_test(environment, "transactional_consistency.watch_on_erased_key_can_commit",
+    tally += run_test(settings, "transactional_consistency.watch_on_erased_key_can_commit",
                       transactional_consistency_watch_on_erased_key_can_commit);
-    tally += run_test(environment, "transactional_consistency.watch_catches_an_insert_and_erase_under_it",
+    tally += run_test(settings, "transactional_consistency.watch_catches_an_insert_and_erase_under_it",
                       transactional_consistency_watch_catches_an_insert_and_erase_under_it);
-    tally += run_test(environment, "transactional_consistency.absent_watch_survives_rollback",
+    tally += run_test(settings, "transactional_consistency.absent_watch_survives_rollback",
                       transactional_consistency_absent_watch_survives_rollback);
-    tally += run_test(environment, "transactional_consistency.disjoint_keys_both_succeed",
+    tally += run_test(settings, "transactional_consistency.disjoint_keys_both_succeed",
                       transactional_consistency_disjoint_keys_both_succeed);
-    tally += run_test(environment, "transactional_consistency.lost_update_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.lost_update_matches_isolation",
                       transactional_consistency_lost_update_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.repeated_read_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.repeated_read_matches_isolation",
                       transactional_consistency_repeated_read_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.repeated_range_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.repeated_range_matches_isolation",
                       transactional_consistency_repeated_range_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.delete_visibility",
-                      transactional_consistency_delete_visibility);
-    tally += run_test(environment, "transactional_consistency.reset_clears_transaction_state",
+    tally +=
+        run_test(settings, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
+    tally += run_test(settings, "transactional_consistency.reset_clears_transaction_state",
                       transactional_consistency_reset_clears_transaction_state);
 
-    tally += run_test(environment, "transactional_consistency.stateful_comparator_is_consulted",
+    tally += run_test(settings, "transactional_consistency.stateful_comparator_is_consulted",
                       transactional_consistency_stateful_comparator_is_consulted);
 
-    tally += run_test(environment, "structure.copy_preserves_parent_links", structure_copy_preserves_parent_links);
+    tally += run_test(settings, "structure.copy_preserves_parent_links", structure_copy_preserves_parent_links);
     tally +=
-        run_test(environment, "structure.bulk_sorted_insert_links_parents", structure_bulk_sorted_insert_links_parents);
-    tally += run_test(environment, "structure.erase_root_rebalances_promoted_node",
+        run_test(settings, "structure.bulk_sorted_insert_links_parents", structure_bulk_sorted_insert_links_parents);
+    tally += run_test(settings, "structure.erase_root_rebalances_promoted_node",
                       structure_erase_root_rebalances_promoted_node);
-    tally += run_test(environment, "structure.range_excludes_upper_bound", structure_range_excludes_upper_bound);
-    tally += run_test(environment, "structure.split_and_erase_range_stay_balanced",
+    tally += run_test(settings, "structure.range_excludes_upper_bound", structure_range_excludes_upper_bound);
+    tally += run_test(settings, "structure.split_and_erase_range_stay_balanced",
                       structure_split_and_erase_range_stay_balanced);
-    tally += run_test(environment, "structure.merge_unique_stays_balanced", structure_merge_unique_stays_balanced);
-    tally += run_test(environment, "structure.random_mutations_preserve_invariants",
+    tally += run_test(settings, "structure.merge_unique_stays_balanced", structure_merge_unique_stays_balanced);
+    tally += run_test(settings, "structure.random_mutations_preserve_invariants",
                       structure_random_mutations_preserve_invariants);
-    tally += run_test(environment, "structure.iterator_post_decrement", structure_iterator_post_decrement);
-    tally += run_test(environment, "structure.node_equal_range", structure_node_equal_range);
-    tally += run_test(environment, "structure.bulk_upsert_pays_only_while_staging",
+    tally += run_test(settings, "structure.iterator_post_decrement", structure_iterator_post_decrement);
+    tally += run_test(settings, "structure.node_equal_range", structure_node_equal_range);
+    tally += run_test(settings, "structure.bulk_upsert_pays_only_while_staging",
                       structure_bulk_upsert_pays_only_while_staging);
-    tally += run_test(environment, "structure.move_only_upsert_assignment", structure_move_only_upsert_assignment);
-    tally += run_test(environment, "structure.upsert_reports_placement", structure_upsert_reports_placement);
+    tally += run_test(settings, "structure.move_only_upsert_assignment", structure_move_only_upsert_assignment);
+    tally += run_test(settings, "structure.upsert_reports_placement", structure_upsert_reports_placement);
 
-    tally += run_test(environment, "transactional_defects.direct_write_spares_staged_version",
+    tally += run_test(settings, "transactional_defects.direct_write_spares_staged_version",
                       transactional_defects_direct_write_spares_staged_version);
-    tally += run_test(environment, "transactional_defects.direct_erase_spares_staged_version",
+    tally += run_test(settings, "transactional_defects.direct_erase_spares_staged_version",
                       transactional_defects_direct_erase_spares_staged_version);
-    tally += run_test(environment, "transactional_defects.erase_range_spares_staged_versions",
+    tally += run_test(settings, "transactional_defects.erase_range_spares_staged_versions",
                       transactional_defects_erase_range_spares_staged_versions);
-    tally += run_test(environment, "transactional_defects.clear_keeps_generations_moving",
+    tally += run_test(settings, "transactional_defects.clear_keeps_generations_moving",
                       transactional_defects_clear_keeps_generations_moving);
-    tally += run_test(environment, "transactional_defects.committed_erase_hidden_from_point_reads",
+    tally += run_test(settings, "transactional_defects.committed_erase_hidden_from_point_reads",
                       transactional_defects_committed_erase_hidden_from_point_reads);
-    tally += run_test(environment, "transactional_defects.committed_erase_hidden_from_ordered_reads",
+    tally += run_test(settings, "transactional_defects.committed_erase_hidden_from_ordered_reads",
                       transactional_defects_committed_erase_hidden_from_ordered_reads);
-    tally += run_test(environment, "transactional_defects.committed_erase_hidden_from_update_range",
+    tally += run_test(settings, "transactional_defects.committed_erase_hidden_from_update_range",
                       transactional_defects_committed_erase_hidden_from_update_range);
-    tally += run_test(environment, "transactional_defects.vacuum_reclaims_committed_tombstones",
+    tally += run_test(settings, "transactional_defects.vacuum_reclaims_committed_tombstones",
                       transactional_defects_vacuum_reclaims_committed_tombstones);
-    tally += run_test(environment, "transactional_defects.vacuum_spares_staged_versions",
+    tally += run_test(settings, "transactional_defects.vacuum_spares_staged_versions",
                       transactional_defects_vacuum_spares_staged_versions);
-    tally += run_test(environment, "transactional_defects.windowed_vacuum_reclaims_one_slice",
+    tally += run_test(settings, "transactional_defects.windowed_vacuum_reclaims_one_slice",
                       transactional_defects_windowed_vacuum_reclaims_one_slice);
 
-    tally += run_test(environment, "commit_stamp.rolled_back_stage_does_not_abort_a_peer",
+    tally += run_test(settings, "commit_stamp.rolled_back_stage_does_not_abort_a_peer",
                       commit_stamp_rolled_back_stage_does_not_abort_a_peer);
-    tally += run_test(environment, "commit_stamp.lost_update_is_refused", commit_stamp_lost_update_is_refused);
-    tally += run_test(environment, "commit_stamp.find_and_watch_records_absence",
-                      commit_stamp_find_and_watch_records_absence);
+    tally += run_test(settings, "commit_stamp.lost_update_is_refused", commit_stamp_lost_update_is_refused);
+    tally +=
+        run_test(settings, "commit_stamp.find_and_watch_records_absence", commit_stamp_find_and_watch_records_absence);
 
-    tally += run_test(environment, "transactional_consistency.find_does_not_watch",
+    tally += run_test(settings, "transactional_consistency.find_does_not_watch",
                       transactional_consistency_find_does_not_watch);
 
-    tally += run_test(environment, "transactional_defects.transaction_range_interleaves_staged_and_committed",
+    tally += run_test(settings, "transactional_defects.transaction_range_interleaves_staged_and_committed",
                       transactional_defects_transaction_range_interleaves_staged_and_committed);
-    tally += run_test(environment, "transactional_defects.transaction_equal_range_sees_staged_writes",
+    tally += run_test(settings, "transactional_defects.transaction_equal_range_sees_staged_writes",
                       transactional_defects_transaction_equal_range_sees_staged_writes);
-    tally += run_test(environment, "transactional_defects.insert_reports_key_already_exists",
+    tally += run_test(settings, "transactional_defects.insert_reports_key_already_exists",
                       transactional_defects_insert_reports_key_already_exists);
-    tally += run_test(environment, "transactional_defects.find_copy_reports_key_not_found",
+    tally += run_test(settings, "transactional_defects.find_copy_reports_key_not_found",
                       transactional_defects_find_copy_reports_key_not_found);
-    tally += run_test(environment, "transactional_defects.second_stage_is_rejected",
+    tally += run_test(settings, "transactional_defects.second_stage_is_rejected",
                       transactional_defects_second_stage_is_rejected);
 
-    tally += run_test(environment, "fixture_coverage.container_balances_counted_keys",
+    tally += run_test(settings, "fixture_coverage.container_balances_counted_keys",
                       fixture_coverage_container_balances_counted_keys);
-    tally += run_test(environment, "fixture_coverage.rollback_balances_counted_keys",
+    tally += run_test(settings, "fixture_coverage.rollback_balances_counted_keys",
                       fixture_coverage_rollback_balances_counted_keys);
 
-    tally += run_test(environment, "structure.erase_const_iterator", structure_erase_const_iterator);
-    tally += run_test(environment, "allocation_failure.insert_probes_before_allocating",
+    tally += run_test(settings, "structure.erase_const_iterator", structure_erase_const_iterator);
+    tally += run_test(settings, "allocation_failure.insert_probes_before_allocating",
                       allocation_failure_insert_probes_before_allocating);
 
-    tally += run_test(environment, "fixture_coverage.container_honours_over_alignment",
+    tally += run_test(settings, "fixture_coverage.container_honours_over_alignment",
                       fixture_coverage_container_honours_over_alignment);
 
-    tally += run_test(environment, "failure_policy.budgeted_distinct_causes", failure_policy_budgeted_distinct_causes);
+    tally += run_test(settings, "failure_policy.budgeted_distinct_causes", failure_policy_budgeted_distinct_causes);
 
     tally +=
-        run_test(environment, "allocation_failure.batch_is_all_or_nothing", allocation_failure_batch_is_all_or_nothing);
+        run_test(settings, "allocation_failure.batch_is_all_or_nothing", allocation_failure_batch_is_all_or_nothing);
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

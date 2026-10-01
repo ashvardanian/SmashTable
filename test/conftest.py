@@ -6,32 +6,34 @@ Date: August 17, 2026
 """
 
 import concurrent.futures
-import os
 import platform
 import random
 import threading
 
 import pytest
+from base import SETTINGS, exported_container_names, free_threaded, make, make_keys, make_values, populate
 
 import smashtable as st
-
-from .base import exported_container_names, free_threaded, make, make_keys, make_values, populate
-
-_requested_seed = os.environ.get("SMASHTABLE_SEED", "42")
-try:
-    _RUN_SEED = int.from_bytes(os.urandom(4), "little") if _requested_seed == "random" else int(_requested_seed)
-except ValueError:
-    raise SystemExit(f'SMASHTABLE_SEED="{_requested_seed}" does not parse') from None
 
 
 def pytest_report_header() -> list[str]:
     """What this run exercises, printed where pytest prints its own header."""
     return [
-        f"python: {platform.python_version()} (free-threaded: {free_threaded()})",
-        f"smashtable: {st.__version__} from {st.__file__}",
-        f"containers: {', '.join(exported_container_names())}",
-        f"seed: {_RUN_SEED}, pin with SMASHTABLE_SEED",
+        f"- Python: {platform.python_version()}",
+        f"- Free-threaded: {str(free_threaded()).lower()}",
+        f"- SmashTable: {st.__version__} from {st.__file__}",
+        f"- Containers: {', '.join(exported_container_names())}",
+        f"- Seed: {SETTINGS.seed}",
+        f"- Filter: {SETTINGS.filter or 'none'}",
     ]
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    """Keeps only the tests whose node id `SMASHTABLE_FILTER` selects, on top of any `-k`."""
+    deselected = [item for item in items if not SETTINGS.selects(item.nodeid)]
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+        items[:] = [item for item in items if SETTINGS.selects(item.nodeid)]
 
 
 @pytest.fixture
@@ -43,7 +45,7 @@ def seed(__pytest_repeat_step_number) -> int:
     first step's draws. `pytest-repeat` hands `None` to a test that is not repeated, which is what
     the `or 0` is for.
     """
-    return _RUN_SEED + (__pytest_repeat_step_number or 0)
+    return SETTINGS.seed + (__pytest_repeat_step_number or 0)
 
 
 @pytest.fixture

@@ -25,7 +25,7 @@
 
 #include "shared.hpp"
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 #pragma region View
 
@@ -1006,4 +1006,4 @@ PyObject *make_transaction(module_state_t *state, PyObject *containers) noexcept
 
 #pragma endregion Opening a Group
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python

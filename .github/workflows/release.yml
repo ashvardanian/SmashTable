@@ -100,8 +100,6 @@ jobs:
         env:
           CIBW_BUILD: cp${{ matrix.python-version }}-*
           CIBW_ARCHS_WINDOWS: ${{ matrix.os == 'windows-11-arm' && 'ARM64' || 'AMD64 x86' }}
-          CIBW_TEST_GROUPS: test
-          CIBW_TEST_COMMAND: pytest {project}/test/ -x -q
 
       # An empty wheelhouse must not pass for a release. The ABI tag is the discriminator:
       # matching the Python tag alone lets a free-threaded wheel masquerade as the GIL one.

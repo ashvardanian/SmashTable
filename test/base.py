@@ -11,7 +11,7 @@ Matches C++ suite:
 Run:
     python -m pytest test/ -v
     SMASHTABLE_SEED=random python -m pytest test/ -v
-    python -m pytest test/ -k "sortedmap and str"
+    SMASHTABLE_FILTER="sortedmap.*str" python -m pytest test/
 
 File: test/base.py
 Author: Ash Vardanian
@@ -21,7 +21,10 @@ Date: August 17, 2026
 import dataclasses
 import enum
 import math
+import os
 import random
+import re
+import secrets
 import sys
 import sysconfig
 from collections.abc import Iterable, Sequence
@@ -29,6 +32,50 @@ from collections.abc import Iterable, Sequence
 import pytest
 
 import smashtable as st
+
+# region Settings
+
+
+def env_text(name: str) -> str | None:
+    """Reads `name`, or `None` when it is unset or empty."""
+    return os.environ.get(name) or None
+
+
+_REQUESTED_SEED = os.environ.get("SMASHTABLE_SEED") or "42"
+if _REQUESTED_SEED == "random":
+    _RUN_SEED = secrets.randbits(32)
+elif _REQUESTED_SEED.isascii() and _REQUESTED_SEED.isdigit() and int(_REQUESTED_SEED) < 2**32:
+    _RUN_SEED = int(_REQUESTED_SEED)
+else:
+    raise SystemExit(f'SMASHTABLE_SEED="{_REQUESTED_SEED}" does not parse, expected an unsigned integer or random')
+
+
+@dataclasses.dataclass(frozen=True)
+class Settings:
+    """Every `SMASHTABLE_*` variable the Python suite reads, parsed once at import."""
+
+    seed: int
+    filter: str
+    filter_pattern: re.Pattern[str] | None
+
+    def selects(self, name: str) -> bool:
+        """Whether `SMASHTABLE_FILTER` selects the test `name`, as a regex or else as a substring."""
+        return bool(self.filter_pattern.search(name)) if self.filter_pattern else self.filter in name
+
+
+def read_settings() -> Settings:
+    """Reads every `SMASHTABLE_*` variable, exiting with status 1 on the first that does not parse."""
+    filter = env_text("SMASHTABLE_FILTER") or ""
+    try:
+        filter_pattern = re.compile(filter) if filter else None
+    except re.error:
+        filter_pattern = None
+    return Settings(seed=_RUN_SEED, filter=filter, filter_pattern=filter_pattern)
+
+
+SETTINGS = read_settings()
+
+# endregion Settings
 
 # region Matrices
 
@@ -66,7 +113,7 @@ enumerable_class_names = enumerable_map_names + enumerable_set_names
 
 key_types = [pytest.param(name, id=name) for name in ("int", "uint", "str", "bytes")]
 """Every key type the containers accept. Floats and booleans are deliberately absent and are swept as
-rejections in test/types.py instead.
+rejections in test/key_types.py instead.
 """
 
 value_types = [pytest.param(name, id="v" + name) for name in ("int", "uint", "float", "bool", "str", "bytes")]
@@ -250,7 +297,7 @@ def _category(error: BaseException) -> type:
 
     `DuplicateKeyError` is a `KeyError` and `ConflictError` is a `RuntimeError`, so the oracle
     compares the family rather than the exact class; the exact classes are pinned once, by name,
-    in test/types.py.
+    in test/key_types.py.
     """
     for base in _ERROR_CATEGORIES:
         if isinstance(error, base):

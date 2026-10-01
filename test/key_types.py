@@ -5,9 +5,9 @@ Baselines:
     tests here pin exactly where and why.
 
 Run:
-    python -m pytest test/types.py -v
+    python -m pytest test/key_types.py -v
 
-File: test/types.py
+File: test/key_types.py
 Author: Ash Vardanian
 Date: October 30, 2025
 """
@@ -17,10 +17,7 @@ import sys
 import weakref
 
 import pytest
-
-import smashtable as st
-
-from .base import (
+from base import (
     all_class_names,
     enumerable_map_names,
     key_types,
@@ -31,6 +28,8 @@ from .base import (
     value_types,
     wrong_type_key,
 )
+
+import smashtable as st
 
 # region Key typing
 

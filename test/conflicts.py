@@ -15,10 +15,9 @@ Date: October 30, 2025
 import threading
 
 import pytest
+from base import key_types, make, map_class_names, sharing_modes
 
 import smashtable as st
-
-from .base import key_types, make, map_class_names, sharing_modes
 
 
 @pytest.mark.parametrize("class_name", map_class_names)

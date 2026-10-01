@@ -13,10 +13,9 @@ import ast
 import pathlib
 
 import pytest
+from base import container_class_names
 
 import smashtable as st
-
-from .base import container_class_names
 
 # region Reading the stub
 

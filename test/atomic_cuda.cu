@@ -34,8 +34,7 @@
 
 #include "harness.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
+namespace ashvardanian::smashtable::test {
 
 #pragma region Device Helpers
 
@@ -308,10 +307,15 @@ static void cuda_host_and_device_insert_together() {
 
 #pragma endregion Suites
 
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
+
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
 
     // A build machine with `nvcc` need not have a device, and neither need a CI runner, so an absent
     // or too-old device is a skip rather than a failure.
@@ -333,12 +337,12 @@ int main(int, char **arguments) {
 
     test_tally_t tally;
 
-    tally += run_test(environment, "cuda.device_inserts_host_reads", cuda_device_inserts_host_reads);
-    tally += run_test(environment, "cuda.host_inserts_device_reads", cuda_host_inserts_device_reads);
-    tally += run_test(environment, "cuda.device_insert_find_erase_cycle", cuda_device_insert_find_erase_cycle);
+    tally += run_test(settings, "cuda.device_inserts_host_reads", cuda_device_inserts_host_reads);
+    tally += run_test(settings, "cuda.host_inserts_device_reads", cuda_host_inserts_device_reads);
+    tally += run_test(settings, "cuda.device_insert_find_erase_cycle", cuda_device_insert_find_erase_cycle);
     if (concurrent_managed_access)
-        tally += run_test(environment, "cuda.host_and_device_insert_together", cuda_host_and_device_insert_together);
+        tally += run_test(settings, "cuda.host_and_device_insert_together", cuda_host_and_device_insert_together);
     else print_line(stdout, "- cuda.host_and_device_insert_together ... skipped (no concurrent managed access)");
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

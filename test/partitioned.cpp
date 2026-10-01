@@ -30,10 +30,7 @@
 #include "consistency.hpp"
 #include "sharded_concurrency.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
-
-namespace {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Type Aliases
 
@@ -1768,148 +1765,147 @@ static void sharded_concurrency_commit_is_visible_to_what_opens_after_it() {
     test_commit_is_visible_to_what_opens_after_it<partitioned_store<strict_gated_t, hash<std::int64_t>>>();
 }
 
-} // namespace
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
 
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
     test_tally_t tally;
 
-    tally += run_test(environment, "lock_cost.cursor_beats_stepping", lock_cost_cursor_beats_stepping);
-    tally += run_test(environment, "merged_order.range_ascends", merged_order_range_ascends);
-    tally += run_test(environment, "merged_order.range_matches_stepping", merged_order_range_matches_stepping);
-    tally +=
-        run_test(environment, "merged_order.inclusive_bound_is_one_probe", merged_order_inclusive_bound_is_one_probe);
-    tally += run_test(environment, "ordered_cursor.matches_the_range", ordered_cursor_matches_the_range);
-    tally += run_test(environment, "ordered_cursor.stops_at_its_bound", ordered_cursor_stops_at_its_bound);
-    tally += run_test(environment, "ordered_cursor.begins_at_the_bound_it_was_given",
+    tally += run_test(settings, "lock_cost.cursor_beats_stepping", lock_cost_cursor_beats_stepping);
+    tally += run_test(settings, "merged_order.range_ascends", merged_order_range_ascends);
+    tally += run_test(settings, "merged_order.range_matches_stepping", merged_order_range_matches_stepping);
+    tally += run_test(settings, "merged_order.inclusive_bound_is_one_probe", merged_order_inclusive_bound_is_one_probe);
+    tally += run_test(settings, "ordered_cursor.matches_the_range", ordered_cursor_matches_the_range);
+    tally += run_test(settings, "ordered_cursor.stops_at_its_bound", ordered_cursor_stops_at_its_bound);
+    tally += run_test(settings, "ordered_cursor.begins_at_the_bound_it_was_given",
                       ordered_cursor_begins_at_the_bound_it_was_given);
     tally +=
-        run_test(environment, "ordered_cursor.survives_its_own_key_erased", ordered_cursor_survives_its_own_key_erased);
+        run_test(settings, "ordered_cursor.survives_its_own_key_erased", ordered_cursor_survives_its_own_key_erased);
+    tally += run_test(settings, "ordered_cursor.sees_a_key_inserted_ahead", ordered_cursor_sees_a_key_inserted_ahead);
+    tally += run_test(settings, "ordered_cursor.hands_every_key_once", ordered_cursor_hands_every_key_once);
+    tally += run_test(settings, "failure_policy.distinct_causes", failure_policy_distinct_causes);
+    tally += run_test(settings, "failure_policy.relayed_causes", failure_policy_relayed_causes);
     tally +=
-        run_test(environment, "ordered_cursor.sees_a_key_inserted_ahead", ordered_cursor_sees_a_key_inserted_ahead);
-    tally += run_test(environment, "ordered_cursor.hands_every_key_once", ordered_cursor_hands_every_key_once);
-    tally += run_test(environment, "failure_policy.distinct_causes", failure_policy_distinct_causes);
-    tally += run_test(environment, "failure_policy.relayed_causes", failure_policy_relayed_causes);
-    tally +=
-        run_test(environment, "sharded_ops.transaction_reports_its_reason", sharded_ops_transaction_reports_its_reason);
-    tally += run_test(environment, "sharded_ops.read_reports_what_it_could_not_record",
+        run_test(settings, "sharded_ops.transaction_reports_its_reason", sharded_ops_transaction_reports_its_reason);
+    tally += run_test(settings, "sharded_ops.read_reports_what_it_could_not_record",
                       sharded_ops_read_reports_what_it_could_not_record);
-    tally += run_test(environment, "sharded_ops.commit_publishes_all_or_nothing",
-                      sharded_ops_commit_publishes_all_or_nothing);
-    tally += run_test(environment, "failure_policy.bulk_methods", failure_policy_bulk_methods);
-    tally += run_test(environment, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
-    tally += run_test(environment, "sharded_concurrency.walks_never_race_erasures",
+    tally +=
+        run_test(settings, "sharded_ops.commit_publishes_all_or_nothing", sharded_ops_commit_publishes_all_or_nothing);
+    tally += run_test(settings, "failure_policy.bulk_methods", failure_policy_bulk_methods);
+    tally += run_test(settings, "basic_ops.empty_container_operations", basic_ops_empty_container_operations);
+    tally += run_test(settings, "sharded_concurrency.walks_never_race_erasures",
                       sharded_concurrency_walks_never_race_erasures);
-    tally += run_test(environment, "sharded_concurrency.range_walks_share_partitions",
+    tally += run_test(settings, "sharded_concurrency.range_walks_share_partitions",
                       sharded_concurrency_range_walks_share_partitions);
-    tally += run_test(environment, "sharded_ops.move_only_key_reaches_a_partition",
+    tally += run_test(settings, "sharded_ops.move_only_key_reaches_a_partition",
                       sharded_ops_move_only_key_reaches_a_partition);
-    tally +=
-        run_test(environment, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);
-    tally += run_test(environment, "sharded_concurrency.commit_is_visible_to_what_opens_after_it",
+    tally += run_test(settings, "sharded_concurrency.distinct_generations", sharded_concurrency_distinct_generations);
+    tally += run_test(settings, "sharded_concurrency.commit_is_visible_to_what_opens_after_it",
                       sharded_concurrency_commit_is_visible_to_what_opens_after_it);
-    tally += run_test(environment, "sharded_concurrency.standard_mutex_substitutes",
+    tally += run_test(settings, "sharded_concurrency.standard_mutex_substitutes",
                       sharded_concurrency_standard_mutex_substitutes);
-    tally += run_test(environment, "sharded_concurrency.stage_unwinds_on_partial_failure",
+    tally += run_test(settings, "sharded_concurrency.stage_unwinds_on_partial_failure",
                       sharded_concurrency_stage_unwinds_on_partial_failure);
-    tally += run_test(environment, "sharded_concurrency.commit_spans_partitions",
-                      sharded_concurrency_commit_spans_partitions);
-    tally += run_test(environment, "sharded_concurrency.window_read_is_validated",
+    tally +=
+        run_test(settings, "sharded_concurrency.commit_spans_partitions", sharded_concurrency_commit_spans_partitions);
+    tally += run_test(settings, "sharded_concurrency.window_read_is_validated",
                       sharded_concurrency_window_read_is_validated);
-    tally += run_test(environment, "transactional_consistency.absent_watch_survives_rollback",
+    tally += run_test(settings, "transactional_consistency.absent_watch_survives_rollback",
                       transactional_consistency_absent_watch_survives_rollback);
-    tally += run_test(environment, "basic_ops.single_element_operations", basic_ops_single_element_operations);
-    tally += run_test(environment, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
-    tally += run_test(environment, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);
+    tally += run_test(settings, "basic_ops.single_element_operations", basic_ops_single_element_operations);
+    tally += run_test(settings, "basic_ops.insertion_patterns", basic_ops_insertion_patterns);
+    tally += run_test(settings, "basic_ops.bulk_insertion_iterators", basic_ops_bulk_insertion_iterators);
     tally +=
-        run_test(environment, "basic_ops.bulk_upsert_with_duplicate_pairs", basic_ops_bulk_upsert_with_duplicate_pairs);
-    tally += run_test(environment, "basic_ops.range_query_head_state", basic_ops_range_query_head_state);
-    tally += run_test(environment, "basic_ops.erase_range_head_state", basic_ops_erase_range_head_state);
-    tally += run_test(environment, "basic_ops.heterogeneous_lookups", basic_ops_heterogeneous_lookups);
-    tally += run_test(environment, "forwarded_surface.transaction_moves_as_a_value",
+        run_test(settings, "basic_ops.bulk_upsert_with_duplicate_pairs", basic_ops_bulk_upsert_with_duplicate_pairs);
+    tally += run_test(settings, "basic_ops.range_query_head_state", basic_ops_range_query_head_state);
+    tally += run_test(settings, "basic_ops.erase_range_head_state", basic_ops_erase_range_head_state);
+    tally += run_test(settings, "basic_ops.heterogeneous_lookups", basic_ops_heterogeneous_lookups);
+    tally += run_test(settings, "forwarded_surface.transaction_moves_as_a_value",
                       forwarded_surface_transaction_moves_as_a_value);
-    tally += run_test(environment, "forwarded_surface.equal_range", forwarded_surface_equal_range);
-    tally += run_test(environment, "forwarded_surface.heterogeneous_erase", forwarded_surface_heterogeneous_erase);
-    tally += run_test(environment, "forwarded_surface.transaction_staged_surface",
+    tally += run_test(settings, "forwarded_surface.equal_range", forwarded_surface_equal_range);
+    tally += run_test(settings, "forwarded_surface.heterogeneous_erase", forwarded_surface_heterogeneous_erase);
+    tally += run_test(settings, "forwarded_surface.transaction_staged_surface",
                       forwarded_surface_transaction_staged_surface);
-    tally += run_test(environment, "forwarded_surface.version_bookkeeping", forwarded_surface_version_bookkeeping);
-    tally +=
-        run_test(environment, "forwarded_surface.nested_wrapper_behaves", forwarded_surface_nested_wrapper_behaves);
+    tally += run_test(settings, "forwarded_surface.version_bookkeeping", forwarded_surface_version_bookkeeping);
+    tally += run_test(settings, "forwarded_surface.nested_wrapper_behaves", forwarded_surface_nested_wrapper_behaves);
 
-    tally += run_test(environment, "transactional_consistency.empty_transaction_commit",
+    tally += run_test(settings, "transactional_consistency.empty_transaction_commit",
                       transactional_consistency_empty_transaction_commit);
-    tally += run_test(environment, "transactional_consistency.no_dirty_reads_multi_key",
+    tally += run_test(settings, "transactional_consistency.no_dirty_reads_multi_key",
                       transactional_consistency_no_dirty_reads_multi_key);
-    tally += run_test(environment, "transactional_consistency.new_transaction_sees_nothing_staged",
+    tally += run_test(settings, "transactional_consistency.new_transaction_sees_nothing_staged",
                       transactional_consistency_new_transaction_sees_nothing_staged);
-    tally += run_test(environment, "transactional_consistency.committed_immediately_visible",
+    tally += run_test(settings, "transactional_consistency.committed_immediately_visible",
                       transactional_consistency_committed_immediately_visible);
-    tally += run_test(environment, "transactional_consistency.multi_key_atomicity_10_keys",
+    tally += run_test(settings, "transactional_consistency.multi_key_atomicity_10_keys",
                       transactional_consistency_multi_key_atomicity_10_keys);
-    tally += run_test(environment, "transactional_consistency.rollback_makes_all_invisible",
+    tally += run_test(settings, "transactional_consistency.rollback_makes_all_invisible",
                       transactional_consistency_rollback_makes_all_invisible);
-    tally += run_test(environment, "transactional_consistency.range_query_sees_atomic_boundaries",
+    tally += run_test(settings, "transactional_consistency.range_query_sees_atomic_boundaries",
                       transactional_consistency_range_query_sees_atomic_boundaries);
-    tally += run_test(environment, "transactional_consistency.fractured_read_prevention",
+    tally += run_test(settings, "transactional_consistency.fractured_read_prevention",
                       transactional_consistency_fractured_read_prevention);
-    tally += run_test(environment, "transactional_consistency.sequential_updates_never_regress",
+    tally += run_test(settings, "transactional_consistency.sequential_updates_never_regress",
                       transactional_consistency_sequential_updates_never_regress);
-    tally += run_test(environment, "transactional_consistency.transaction_commits_maintain_order",
+    tally += run_test(settings, "transactional_consistency.transaction_commits_maintain_order",
                       transactional_consistency_transaction_commits_maintain_order);
-    tally += run_test(environment, "transactional_consistency.concurrent_transactions_on_same_key",
+    tally += run_test(settings, "transactional_consistency.concurrent_transactions_on_same_key",
                       transactional_consistency_concurrent_transactions_on_same_key);
-    tally += run_test(environment, "transactional_consistency.multi_key_conflict_any_key_fails",
+    tally += run_test(settings, "transactional_consistency.multi_key_conflict_any_key_fails",
                       transactional_consistency_multi_key_conflict_any_key_fails);
-    tally += run_test(environment, "transactional_consistency.watch_detects_external_direct_modification",
+    tally += run_test(settings, "transactional_consistency.watch_detects_external_direct_modification",
                       transactional_consistency_watch_detects_external_direct_modification);
-    tally += run_test(environment, "transactional_consistency.watch_detects_staged_invisible_writes",
+    tally += run_test(settings, "transactional_consistency.watch_detects_staged_invisible_writes",
                       transactional_consistency_watch_detects_staged_invisible_writes);
-    tally += run_test(environment, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
+    tally += run_test(settings, "transactional_consistency.watch_detects_staged_writes_of_older_generation",
                       transactional_consistency_watch_detects_staged_writes_of_older_generation);
-    tally += run_test(environment, "transactional_consistency.disjoint_keys_both_succeed",
+    tally += run_test(settings, "transactional_consistency.disjoint_keys_both_succeed",
                       transactional_consistency_disjoint_keys_both_succeed);
-    tally += run_test(environment, "transactional_consistency.lost_update_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.lost_update_matches_isolation",
                       transactional_consistency_lost_update_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.repeated_read_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.repeated_read_matches_isolation",
                       transactional_consistency_repeated_read_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.write_skew_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.write_skew_matches_isolation",
                       transactional_consistency_write_skew_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.read_conflict_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.read_conflict_matches_isolation",
                       transactional_consistency_read_conflict_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.repeated_range_matches_isolation",
+    tally += run_test(settings, "transactional_consistency.repeated_range_matches_isolation",
                       transactional_consistency_repeated_range_matches_isolation);
-    tally += run_test(environment, "transactional_consistency.delete_visibility",
-                      transactional_consistency_delete_visibility);
-    tally += run_test(environment, "transactional_consistency.reset_clears_transaction_state",
+    tally +=
+        run_test(settings, "transactional_consistency.delete_visibility", transactional_consistency_delete_visibility);
+    tally += run_test(settings, "transactional_consistency.reset_clears_transaction_state",
                       transactional_consistency_reset_clears_transaction_state);
 
-    tally += run_test(environment, "transactional_consistency.stateful_comparator_is_consulted",
+    tally += run_test(settings, "transactional_consistency.stateful_comparator_is_consulted",
                       transactional_consistency_stateful_comparator_is_consulted);
 
-    tally += run_test(environment, "transactional_consistency.group_commits_participants_together",
+    tally += run_test(settings, "transactional_consistency.group_commits_participants_together",
                       transactional_consistency_group_commits_participants_together);
-    tally += run_test(environment, "transactional_consistency.group_unwinds_every_participant_on_conflict",
+    tally += run_test(settings, "transactional_consistency.group_unwinds_every_participant_on_conflict",
                       transactional_consistency_group_unwinds_every_participant_on_conflict);
 
-    tally += run_test(environment, "transactional_consistency.find_does_not_watch",
+    tally += run_test(settings, "transactional_consistency.find_does_not_watch",
                       transactional_consistency_find_does_not_watch);
 
-    tally += run_test(environment, "sharded_concurrency.locked_store_forwards_construction_and_writes",
+    tally += run_test(settings, "sharded_concurrency.locked_store_forwards_construction_and_writes",
                       test_locked_store_forwards_construction_and_writes);
 
-    tally += run_test(environment, "forwarded_surface.strict_insert", forwarded_surface_strict_insert);
-    tally += run_test(environment, "forwarded_surface.strict_update", forwarded_surface_strict_update);
-    tally += run_test(environment, "forwarded_surface.order_statistics", forwarded_surface_order_statistics);
-    tally += run_test(environment, "forwarded_surface.vacuum", forwarded_surface_vacuum);
-    tally += run_test(environment, "forwarded_surface.update_range", forwarded_surface_update_range);
-    tally += run_test(environment, "forwarded_surface.open_ended_erase", forwarded_surface_open_ended_erase);
-    tally += run_test(environment, "forwarded_surface.smallest", forwarded_surface_smallest);
-    tally += run_test(environment, "forwarded_surface.pop_smallest", forwarded_surface_pop_smallest);
-    tally += run_test(environment, "forwarded_surface.for_each", forwarded_surface_for_each);
-    tally += run_test(environment, "forwarded_surface.for_each_sees_every_stable_element",
+    tally += run_test(settings, "forwarded_surface.strict_insert", forwarded_surface_strict_insert);
+    tally += run_test(settings, "forwarded_surface.strict_update", forwarded_surface_strict_update);
+    tally += run_test(settings, "forwarded_surface.order_statistics", forwarded_surface_order_statistics);
+    tally += run_test(settings, "forwarded_surface.vacuum", forwarded_surface_vacuum);
+    tally += run_test(settings, "forwarded_surface.update_range", forwarded_surface_update_range);
+    tally += run_test(settings, "forwarded_surface.open_ended_erase", forwarded_surface_open_ended_erase);
+    tally += run_test(settings, "forwarded_surface.smallest", forwarded_surface_smallest);
+    tally += run_test(settings, "forwarded_surface.pop_smallest", forwarded_surface_pop_smallest);
+    tally += run_test(settings, "forwarded_surface.for_each", forwarded_surface_for_each);
+    tally += run_test(settings, "forwarded_surface.for_each_sees_every_stable_element",
                       forwarded_surface_for_each_sees_every_stable_element);
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

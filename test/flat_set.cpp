@@ -21,10 +21,7 @@
 #include "fixtures.hpp"
 #include "surfaces.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
-
-namespace {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Element Types
 
@@ -236,25 +233,28 @@ void flat_set_erase_if_keeps_order() {
 
 #pragma endregion Tests
 
-} // namespace
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
 
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
     test_tally_t tally;
 
-    tally += run_test(environment, "flat_set.serial_kit", flat_set_serial_kit);
-    tally += run_test(environment, "flat_set.haswell_kit", flat_set_haswell_kit);
-    tally += run_test(environment, "flat_set.skylake_kit", flat_set_skylake_kit);
-    tally += run_test(environment, "flat_set.neon_kit", flat_set_neon_kit);
-    tally += run_test(environment, "flat_set.sve_kit", flat_set_sve_kit);
-    tally += run_test(environment, "flat_set.rvv_kit", flat_set_rvv_kit);
-    tally += run_test(environment, "flat_set.refused_allocation", flat_set_refused_allocation);
-    tally += run_test(environment, "flat_set.shared_suites", flat_set_shared_suites);
+    tally += run_test(settings, "flat_set.serial_kit", flat_set_serial_kit);
+    tally += run_test(settings, "flat_set.haswell_kit", flat_set_haswell_kit);
+    tally += run_test(settings, "flat_set.skylake_kit", flat_set_skylake_kit);
+    tally += run_test(settings, "flat_set.neon_kit", flat_set_neon_kit);
+    tally += run_test(settings, "flat_set.sve_kit", flat_set_sve_kit);
+    tally += run_test(settings, "flat_set.rvv_kit", flat_set_rvv_kit);
+    tally += run_test(settings, "flat_set.refused_allocation", flat_set_refused_allocation);
+    tally += run_test(settings, "flat_set.shared_suites", flat_set_shared_suites);
 
-    tally += run_test(environment, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
-    tally += run_test(environment, "flat_set.erase_if_keeps_order", flat_set_erase_if_keeps_order);
+    tally += run_test(settings, "flat_set.batch_is_all_or_nothing", flat_set_batch_is_all_or_nothing);
+    tally += run_test(settings, "flat_set.erase_if_keeps_order", flat_set_erase_if_keeps_order);
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

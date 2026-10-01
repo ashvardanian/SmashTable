@@ -19,10 +19,7 @@
 #include "harness.hpp"
 #include "sequence.hpp"
 
-using namespace ashvardanian::smashtable;
-using namespace ashvardanian::smashtable::test;
-
-namespace {
+namespace ashvardanian::smashtable::test {
 
 #pragma region Element Types
 
@@ -446,28 +443,30 @@ void vector_sequence_suite() {
 
 #pragma endregion Tests
 
-} // namespace
+} // namespace ashvardanian::smashtable::test
+
+using namespace ashvardanian::smashtable::test;
 
 int main(int, char **arguments) {
-    test_environment_t const environment = read_test_environment(arguments[0]);
+    settings_t const settings = read_settings(arguments[0]);
     install_test_signal_handlers();
-    log_environment(environment);
+    print(probe_machine());
+    print(settings);
     test_tally_t tally;
 
-    tally += run_test(environment, "vector.emplace_back_through_make", vector_emplace_back_through_make);
-    tally +=
-        run_test(environment, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
-    tally += run_test(environment, "vector.growth_is_amortized", vector_growth_is_amortized);
-    tally += run_test(environment, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
-    tally += run_test(environment, "vector.copy_and_swap", vector_copy_and_swap);
-    tally += run_test(environment, "vector.move_semantics", vector_move_semantics);
-    tally += run_test(environment, "vector.inserts_at_a_position", vector_inserts_at_a_position);
-    tally += run_test(environment, "vector.erases_at_a_position", vector_erases_at_a_position);
-    tally += run_test(environment, "vector.shifts_every_element_once", vector_shifts_every_element_once);
-    tally += run_test(environment, "vector.inserts_into_reserved_room", vector_inserts_into_reserved_room);
-    tally += run_test(environment, "vector.erases_hand_each_element_out", vector_erases_hand_each_element_out);
-    tally += run_test(environment, "vector.erase_if_compacts_in_one_pass", vector_erase_if_compacts_in_one_pass);
-    tally += run_test(environment, "vector.sequence_suite", vector_sequence_suite);
+    tally += run_test(settings, "vector.emplace_back_through_make", vector_emplace_back_through_make);
+    tally += run_test(settings, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
+    tally += run_test(settings, "vector.growth_is_amortized", vector_growth_is_amortized);
+    tally += run_test(settings, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
+    tally += run_test(settings, "vector.copy_and_swap", vector_copy_and_swap);
+    tally += run_test(settings, "vector.move_semantics", vector_move_semantics);
+    tally += run_test(settings, "vector.inserts_at_a_position", vector_inserts_at_a_position);
+    tally += run_test(settings, "vector.erases_at_a_position", vector_erases_at_a_position);
+    tally += run_test(settings, "vector.shifts_every_element_once", vector_shifts_every_element_once);
+    tally += run_test(settings, "vector.inserts_into_reserved_room", vector_inserts_into_reserved_room);
+    tally += run_test(settings, "vector.erases_hand_each_element_out", vector_erases_hand_each_element_out);
+    tally += run_test(settings, "vector.erase_if_compacts_in_one_pass", vector_erase_if_compacts_in_one_pass);
+    tally += run_test(settings, "vector.sequence_suite", vector_sequence_suite);
 
-    return report_test_failures(environment, tally);
+    return report_test_failures(settings, tally);
 }

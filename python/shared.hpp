@@ -44,7 +44,7 @@
 /** Every method taking arguments uses the fast convention; keywords are walked by hand. */
 #define SMASHTABLE_METHOD_FLAGS_ METH_FASTCALL | METH_KEYWORDS
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 /** Casts a fast-convention function into a method table's slot without tripping
  *  -Wcast-function-type. */
@@ -1184,4 +1184,4 @@ PyObject *entries_to_python(basic_vector<entry_t> const &collected, cursor_yield
 
 #pragma endregion Conversion
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python

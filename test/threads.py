@@ -17,15 +17,14 @@ import contextlib
 import threading
 
 import pytest
-
-import smashtable as st
-
-from .base import (
+from base import (
     enumerable_map_names,
     make,
     map_class_names,
     skip_unless_free_threaded,
 )
+
+import smashtable as st
 
 # region With the GIL
 

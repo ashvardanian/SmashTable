@@ -10,7 +10,7 @@
  */
 #include "shared.hpp"
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 #pragma region Module State
 
@@ -267,8 +267,8 @@ PyModuleDef *smashtable_module_def() noexcept { return &smashtable_module; }
 
 #pragma endregion Initialization
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python
 
 extern "C" PyMODINIT_FUNC PyInit_smashtable(void) {
-    return PyModuleDef_Init(&ashvardanian::smashtable::py::smashtable_module);
+    return PyModuleDef_Init(&ashvardanian::smashtable::python::smashtable_module);
 }

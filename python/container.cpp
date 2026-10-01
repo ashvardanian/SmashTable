@@ -19,7 +19,7 @@
 
 #include "shared.hpp"
 
-namespace ashvardanian::smashtable::py {
+namespace ashvardanian::smashtable::python {
 
 #pragma region Construction
 
@@ -1575,4 +1575,4 @@ PyType_Spec sorted_set_spec = {"smashtable.SortedSet", sizeof(container_object_t
 
 #pragma endregion Type Definitions
 
-} // namespace ashvardanian::smashtable::py
+} // namespace ashvardanian::smashtable::python

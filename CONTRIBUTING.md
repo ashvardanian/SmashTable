@@ -91,7 +91,7 @@ source .venv/bin/activate               # to activate the virtual environment
 uv pip install setuptools wheel         # to pull the build tools
 uv pip install --group test             # to pull the test tools
 uv pip install -e . --force-reinstall   # to build locally from source
-pytest test/
+python -X faulthandler -m pytest -x     # how the CI runs it
 ```
 
 The extension requires 3.12 or later, where a module can declare per-interpreter GIL support.
@@ -103,11 +103,13 @@ python -c "import sys, smashtable; assert not sys._is_gil_enabled()"
 ```
 
 `SMASHTABLE_SEED` pins the Python suite's seed too, with the same default of 42, and `random` again draws a fresh one per run.
-Either way pytest prints it in its own header, so a failing run is reproducible by copying the number back:
+Either way pytest prints it in its own header, as `- Seed: <n>`, so a failing run is reproducible by copying the number back.
+`SMASHTABLE_FILTER` keeps the tests whose node id matches it, as a regex or else as a substring, alongside `-k`:
 
 ```bash
 SMASHTABLE_SEED=random pytest test/
 SMASHTABLE_SEED=1234 pytest test/
+SMASHTABLE_FILTER="sortedmap.*str" pytest test/
 ```
 
 ### Model Checking
@@ -185,8 +187,10 @@ Please, avoid generic variable names that may lead to confusion when debugging, 
 Typical examples are `value`, `item`, `obj`, `data`, `entry`, etc.
 For example, in this codebase:
 
-- `mapping` replaces `std::pair` for key-value pairs in associative containers (maps). It has a `key` member for the lack of a better name, but the second one isn't a `value` - it's in the `mapped` variable.
-- `expected` replaces `std::optional` augmenting the semantics with error codes. It has an `outcome` always initialized member instead of a generic `value` or `object`, often nested inside some union for uninitialized states.
+- `mapping` replaces `std::pair` for key-value pairs in associative containers (maps).
+  It has a `key` member for the lack of a better name, but the second one isn't a `value` - it's in the `mapped` variable.
+- `expected` replaces `std::optional` augmenting the semantics with error codes.
+  It has an `outcome` always initialized member instead of a generic `value` or `object`, often nested inside some union for uninitialized states.
 
 ## Documentation Styling Guidelines
 

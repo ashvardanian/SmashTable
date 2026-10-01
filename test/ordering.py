@@ -12,10 +12,7 @@ Date: August 17, 2026
 """
 
 import pytest
-
-import smashtable as st
-
-from .base import (
+from base import (
     hash_map_names,
     key_types,
     populate,
@@ -23,6 +20,8 @@ from .base import (
     sorted_map_names,
     sorted_set_names,
 )
+
+import smashtable as st
 
 # region Iteration order
 

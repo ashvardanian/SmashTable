@@ -17,10 +17,7 @@ Date: August 18, 2026
 """
 
 import pytest
-
-import smashtable as st
-
-from .base import (
+from base import (
     all_class_names,
     effective_isolation,
     isolation_levels,
@@ -30,6 +27,8 @@ from .base import (
     sharing_modes,
     stamped_isolation_levels,
 )
+
+import smashtable as st
 
 # region Reporting
 
