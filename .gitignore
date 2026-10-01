@@ -38,3 +38,9 @@ __pycache__/
 .ruff_cache/
 .mypy_cache/
 .venv/
+
+# Editors, assistants, language servers and tool caches
+.cache/
+.claude/
+/compile_commands.json
+target/

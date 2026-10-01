@@ -43,7 +43,7 @@ stage_fixture_with_header() { # stage_fixture_with_header <relative-path> <<< co
     local fixture_path="$fixture_directory/$1"
     mkdir -p "$(dirname "$fixture_path")"
     case "$1" in
-    *.h | *.hpp | *.c | *.cpp | *.cu | *.cuh)
+    *.h | *.hpp | *.c | *.cpp | *.cu | *.cuh | *.hip)
         {
             printf '/**\n *  @file %s\n *  @author Selftest\n *  @date January 1, 2026\n' "$1"
             printf ' *  @brief One staged fixture for one rule.\n *\n *  The case under test follows.\n */\n'
@@ -248,6 +248,80 @@ assert_accepts "free-standing Doxygen command" include/numkong/probe.h <<'FIXTUR
 int probe(int value);
 FIXTURE
 
+assert_rejects "C library and C++ headers in one group" "misgroups its includes" include/numkong/probe.h <<'FIXTURE'
+#include <cstdint>
+#include <vector>
+FIXTURE
+
+assert_accepts "include groups in order, a blank line apart" include/numkong/probe.h <<FIXTURE
+#include <cstdint>
+
+#include <sys/types.h>
+
+#include <vector>
+
+#include <fmt/core.h>
+
+#include <usearch/index.hpp>
+
+#include "$project_directory/probe_internal.h"
+FIXTURE
+
+assert_rejects "own header in angle brackets" "is an own header" include/numkong/probe.h <<FIXTURE
+#include <$project_directory/probe_internal.h>
+FIXTURE
+
+assert_rejects "sibling header in quotes" "is a sibling header" include/numkong/probe.h <<'FIXTURE'
+#include "usearch/index.hpp"
+FIXTURE
+
+assert_rejects "quoted header that is not in the repository" "is not in this repository" include/numkong/probe.h <<'FIXTURE'
+#include "probe_internal.h"
+FIXTURE
+
+stage_fixture_with_header bench/probe.cpp <<'FIXTURE'
+#include <vector>
+
+#include "harness.h"
+FIXTURE
+stage_sibling_with_header bench/harness.h <<'FIXTURE'
+int harness(void);
+FIXTURE
+run_precommit
+expect_acceptance "quoted header beside the including file"
+
+stage_fixture_with_header include/$project_directory/probe.h <<'FIXTURE'
+#include "probe_internal.h"
+FIXTURE
+stage_sibling_with_header include/$project_directory/probe_internal.h <<'FIXTURE'
+int probe_internal(void);
+FIXTURE
+run_precommit
+expect_rejection "public header quoted without the prefix" "is a public header"
+
+assert_accepts "misordered includes under an #if" include/numkong/probe.h <<'FIXTURE'
+#include <vector>
+#if defined(PROBE_EXTRAS)
+#include <cstdint>
+#endif
+FIXTURE
+
+assert_rejects "misordered includes after an #endif" "misgroups its includes" include/numkong/probe.h <<'FIXTURE'
+#if defined(PROBE_EXTRAS)
+#include <windows.h>
+#endif
+#include <vector>
+#include <cstdint>
+FIXTURE
+
+assert_rejects "misordered includes inside an include guard" "misgroups its includes" include/numkong/probe.h <<'FIXTURE'
+#ifndef PROBE_H_
+#define PROBE_H_
+#include <vector>
+#include <cstdint>
+#endif
+FIXTURE
+
 assert_rejects "@see naming an identifier" "mixes the cross-reference tags" include/numkong/probe.h <<'FIXTURE'
 /**
  *  @brief Probes a value.
@@ -332,6 +406,28 @@ struct probe_t {
     /** The value, never a trailing ///< column. */
     int value;
 };
+FIXTURE
+
+assert_rejects "bare trailing doc marker" "with a trailing marker" include/numkong/probe.h <<'FIXTURE'
+static int probe_value; //< The value.
+FIXTURE
+
+assert_rejects "trailing field comment" "on its own line's tail" include/numkong/probe.h <<'FIXTURE'
+typedef struct {
+    int value; // The value.
+} probe_t;
+FIXTURE
+
+assert_rejects "trailing enumerator comment" "on its own line's tail" include/numkong/probe.h <<'FIXTURE'
+enum {
+    probe_one_k = 1, /* One. */
+};
+FIXTURE
+
+assert_accepts "why comment trailing a statement" include/numkong/probe.h <<'FIXTURE'
+static int probe(int value) {
+    return value + 1; // Rounds up.
+}
 FIXTURE
 
 assert_rejects "shape with x" "spells a shape" include/numkong/probe.h <<'FIXTURE'
@@ -821,6 +917,11 @@ assert_accepts "Unicode prose at 100 characters" include/numkong/probe.h <<'FIXT
 int probe(void);
 FIXTURE
 
+assert_rejects "prose past 100 columns in a HIP source" "writes prose past 100 columns" probe.hip <<'FIXTURE'
+/** A sentence that keeps going well past the prose limit of one hundred columns, and then some more. */
+int probe(void);
+FIXTURE
+
 assert_rejects "pipe table" "draws a pipe table" include/numkong/probe.h <<'FIXTURE'
 /**
  *  @brief Lists the instructions.
@@ -829,6 +930,11 @@ assert_rejects "pipe table" "draws a pipe table" include/numkong/probe.h <<'FIXT
  *  | lxsihzx | Load f16 → VSR, zero-extended |
  */
 int probe(void);
+FIXTURE
+
+assert_rejects "pipe table in a Python comment" "draws a pipe table" python/probe.py <<'FIXTURE'
+# | Kernel | Notes |
+# | dots | Inner products |
 FIXTURE
 
 assert_accepts "aligned plain table" include/numkong/probe.h <<'FIXTURE'
@@ -1007,6 +1113,17 @@ assert_accepts "prose naming a parameter, a mnemonic and a code span" include/nu
 /** Reads @p buffer with CNT, as `ptr[0]` does, and widens the value. */
 static inline int probe(int const *buffer) { return buffer[0]; }
 FIXTURE
+
+stage_fixture_with_header include/numkong/probe.h <<'FIXTURE'
+typedef int const *probe_ptr_t;
+FIXTURE
+git -C "$fixture_directory" commit --quiet -m "Chore: Seed the fixture"
+stage_sibling_with_header include/numkong/probe/serial.h <<'FIXTURE'
+/** Reads the first value. */
+static inline int probe_serial(probe_ptr_t values) { return values[0]; }
+FIXTURE
+run_precommit
+expect_acceptance "new header reusing a name from HEAD's headers"
 
 assert_rejects "line comment above a preprocessor block" "writes a // comment outside a function body" include/numkong/probe.h <<'FIXTURE'
 // EM_JS expands to an empty-parameter-list declaration, tripping -Wstrict-prototypes.
@@ -1265,6 +1382,15 @@ assert_rejects "unqualified memcpy" "unqualified memcpy" include/probe.hpp <<'FI
 inline void probe(char *to, char const *from) { memcpy(to, from, 8); }
 FIXTURE
 
+assert_rejects "unqualified memcpy behind a return" "unqualified memcpy" include/probe.hpp <<'FIXTURE'
+inline void *probe(char *to, char const *from) { return memcpy(to, from, 8); }
+FIXTURE
+
+assert_accepts "a function named memcpy, declared and defined" include/probe.hpp <<'FIXTURE'
+inline void *memcpy(void *to, void const *from) noexcept;
+inline void *memcpy(void *to, void const *from) noexcept { return std::memcpy(to, from, 8); }
+FIXTURE
+
 assert_accepts "qualified memcpy, plain region, and prose naming the bare forms" include/probe.hpp <<'FIXTURE'
 #pragma region Probes
 
@@ -1306,6 +1432,31 @@ assert_accepts "Python lowercase emphasis" python/probe.py <<'FIXTURE'
 """Reads only the header."""
 FIXTURE
 
+stage_fixture_with_header python/probe.py <<'FIXTURE'
+import os
+def probe(value):
+    return value
+FIXTURE
+git -C "$fixture_directory" commit --quiet -m "Chore: Seed the fixture"
+cat >> "$fixture_directory/python/probe.py" <<'FIXTURE'
+
+
+def settled(value):
+    return value
+FIXTURE
+git -C "$fixture_directory" add -- python/probe.py
+run_precommit
+expect_acceptance "ruff debt HEAD carries outside the added lines"
+cat >> "$fixture_directory/python/probe.py" <<'FIXTURE'
+
+
+def flagged(value):
+    return undefined_value
+FIXTURE
+git -C "$fixture_directory" add -- python/probe.py
+run_precommit
+expect_rejection "ruff finding on an added line beside that debt" "has ruff lint findings on its added lines"
+
 assert_rejects "unsorted editor settings" "unsorted top-level keys" .vscode/settings.json <<'FIXTURE'
 {
     "b": 1,
@@ -1324,9 +1475,38 @@ FIXTURE
 
 # region All File Fixtures
 
-assert_rejects "banner ruler" "decorative banner ruler" scripts/probe.sh <<'FIXTURE'
+assert_rejects "banner ruler" "adds a banner ruler" scripts/probe.sh <<'FIXTURE'
 # ----
 echo probe
+FIXTURE
+
+assert_rejects "label between rulers" "adds a banner ruler" scripts/probe.sh <<'FIXTURE'
+# ==== Probes ====
+echo probe
+FIXTURE
+
+assert_rejects "box-drawing banner in TOML" "adds a banner ruler" probe.toml <<'FIXTURE'
+# ── Probes ──────────────────
+[probe]
+name = "probe"
+FIXTURE
+
+assert_rejects "box-drawing banner in Python" "adds a banner ruler" python/probe.py <<'FIXTURE'
+# ════════════════════════════
+FIXTURE
+
+assert_accepts "YAML document marker" config/probe.yml <<'FIXTURE'
+---
+probe: key -> slot
+FIXTURE
+
+assert_accepts "region marker and arrows beside rulers" include/probe.hpp <<'FIXTURE'
+#pragma region Probes
+
+/** Maps a key → its slot. */
+inline int probe(int key) noexcept { return key; }
+
+#pragma endregion Probes
 FIXTURE
 
 assert_accepts "ruler in Markdown" docs/probe.md <<'FIXTURE'
@@ -1537,6 +1717,7 @@ assert_accepts "arrows inside HTML code spans holding a less-than" README.md <<'
 FIXTURE
 
 assert_accepts "hash inside a Python string before a return annotation" python/probe.py <<'FIXTURE'
+
 def probe(marker: str = "#") -> int:
     return len(marker)
 FIXTURE

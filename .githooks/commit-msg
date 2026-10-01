@@ -1,112 +1,66 @@
 #!/usr/bin/env bash
-# SmashTable commit-msg: enforce the commit-message contract.
 #
-#   - The subject starts with an approved verb prefix - Add / Chore / Docs / Fix / Improve /
-#      Make - followed by a capitalized summary, so the history reads as a consistent changelog.
-#      A refactor is an Improve; Chore covers housekeeping that rearranges rather than changes
-#      behaviour; Make covers changes that touch only the build or the environment, never the
-#      sources; Docs covers documentation that drifted on its own, where a doc change that
-#      accompanies the code making it true belongs in that commit instead. Merge commits are
-#      exempt, since Git writes their subject.
-#   - No AI-assistant attribution: no `Co-authored-by` bot trailer, no "Generated with/by
-#      <assistant>", no assistant name, vendor URL, or robot emoji. Authorship is the human who
-#      committed.
+# commit-msg: enforce the commit-message contract, identical in every repository that carries it.
 #
-# Bypass knowingly (you almost never should) with: git commit --no-verify
+# The subject is `<Verb>: <Summary>`, so the history reads as a changelog. A refactor is an Improve, Chore
+# rearranges without changing behaviour, Make touches only the build or the environment, Docs fixes
+# documentation that drifted on its own, and Break marks an incompatible interface change. Git writes merge,
+# `fixup!` and `squash!` subjects and TinySemVer writes `Release:` ones, so those are exempt. Authorship is
+# the human who committed, so the message carries no assistant attribution.
+#
+# Bypass knowingly, which you almost never should, with: git commit --no-verify
 
 set -u
+export LC_ALL=C
 
-message_file="$1"
+approved_verbs='Add|Break|Build|Chore|Docs|Fix|Improve|Make'
 
-# Comment lines (git's `#` scissors and helptext) never reach the final message - ignore them.
-payload=$(grep -v '^#' "$message_file")
-# The subject is the first non-blank line of what remains.
-subject=$(printf '%s\n' "$payload" | grep -vE '^[[:space:]]*$' | head -1)
-
+payload=$(grep -v '^#' "$1")
+subject=$(grep -m 1 -v '^[[:space:]]*$' <<< "$payload")
 failed=0
 
-# Verb prefix. Git writes the subject itself for merges, and for the `fixup!` and `squash!` marks
-# that `git commit --fixup` produces - those are transient and autosquash replaces them on rebase.
 case "$subject" in
-Merge*) ;;
-"fixup!"* | "squash!"*) ;;
+Merge* | Release:* | "fixup!"* | "squash!"*) ;;
 *)
-    # Capitalized, unless the summary opens with a code identifier - `update()`, `snake_case`,
-    # `SortedMap` - which carries its own case and must not be title-cased into something that no
-    # longer names the symbol. A backtick may precede it, since a symbol is quoted as one.
-    if ! printf '%s\n' "$subject" |
-        grep -qE '^(Add|Chore|Docs|Fix|Improve|Make): `?([A-Z]|[a-z_][a-z0-9_]*(\(\)|_[a-z0-9_]+))'; then
-        echo "commit-msg: the subject must be '<Verb>: <Capitalized summary>' with an approved verb -"
-        echo "            Add Chore Docs Fix Improve Make. A leading code identifier keeps its own case."
+    # A summary may open with a code identifier, as in `update()` or `snake_case`, which keeps its own case.
+    if ! [[ $subject =~ ^($approved_verbs):\ \`?([A-Z]|[a-z_][a-z0-9_]*(\(\)|_[a-z0-9_]+)) ]]; then
+        echo "commit-msg: the subject must be '<Verb>: <Capitalized summary>' with an approved verb:"
+        echo "            ${approved_verbs//|/ }. A leading code identifier keeps its own case."
         echo "            Got: ${subject:-<empty>}"
         failed=1
     fi
+    # A predicate that compares to other code needs the diff to mean anything; say what the code now does.
+    if grep -qiE '\b(the way|as|like) [^,]+ (does|did|would|says)\b' <<< "$subject"; then
+        echo "commit-msg: the subject compares to something else rather than naming what changed;"
+        echo "            say what the code now does. Got: $subject"
+        failed=1
+    fi
     ;;
 esac
 
-# AI-assistant attribution - matched generically across assistants and vendors, not one product.
-offenders=$(printf '%s\n' "$payload" | grep -inE \
-    'co-authored-by:.*(\[bot\]|\bbot\b|claude|chatgpt|gpt-[0-9]|openai|copilot|gemini|\bbard\b|cursor|codeium|devin)|generated (with|by).*\b(ai|llm|claude|chatgpt|gpt|copilot|gemini|cursor|anthropic|openai)\b|\b(anthropic|openai)\.com|claude\.ai|chatgpt\.com|claude-session|🤖' || true)
-if [ -n "$offenders" ]; then
-    echo "commit-msg: the message carries assistant attribution - authorship is the human who committed:"
-    printf '%s\n' "$offenders" | head -5
+# Widths count characters, not bytes, so an arrow or a multiplication sign takes one column. The title stays
+# readable wherever it is truncated; a body line may run long only for a URL or an indented code line.
+widths=$(awk '
+    function columns(text) { gsub(/[\200-\277]/, "", text); return length(text) }
+    !subject_seen && /[^[:space:]]/ {
+        subject_seen = 1
+        if ($0 !~ /^(Merge|Release:|fixup!|squash!)/ && columns($0) > 80) printf "title: %d characters, over 80\n", columns($0)
+        next
+    }
+    subject_seen && !/https?:\/\// && !/^(    |\t)/ && columns($0) > 100 { printf "line %d: %d columns, over 100\n", NR, columns($0) }' \
+    <<< "$payload")
+if [ -n "$widths" ]; then
+    echo "commit-msg: a title runs to at most 80 characters and a body line to 100 columns, unless it holds a URL"
+    echo "            or is indented code:"
+    head -5 <<< "$widths"
     failed=1
 fi
 
-# A subject that names a change rather than gesturing at one. Two tells, both cheap to spot and
-# both responsible for real titles in this history that said nothing on their own:
-#
-#   - The predicate compares to something else instead of stating what changed. "Unwind a refused
-#     stage the way the C++ group does" needs the diff to mean anything, while "A refused stage
-#     keeps the caller's pending writes" does not.
-#   - A vague quantifier stands in for the subject. "One vocabulary across both layers" and
-#     "Various fixes" name a mood, not a change.
-#
-# Deliberately narrow. Vagueness is a judgement call and a regex approximating it would reject more
-# good titles than bad ones; these two shapes are mechanical enough to catch without arguing.
-case "$subject" in
-Merge* | "fixup!"* | "squash!"*) ;;
-*)
-    if printf '%s\n' "$subject" | grep -qiE '\b(the way|as|like) [^,]+ (does|did|would|says)\b'; then
-        echo "commit-msg: the subject compares to something else rather than naming what changed."
-        echo "            Say what the code now does, not who it now resembles."
-        echo "            Got: $subject"
-        failed=1
-    fi
-    if printf '%s\n' "$subject" | grep -qiE '^(Add|Chore|Docs|Fix|Improve|Make): (One|Some|Several|Various|Assorted|Misc|Multiple|A few|Many)\b'; then
-        echo "commit-msg: the subject opens with a quantifier where the subject of the change belongs."
-        echo "            Name the thing that changed, or split the commit."
-        echo "            Got: $subject"
-        failed=1
-    fi
-    ;;
-esac
-
-# Widths. A subject is read in `git log --oneline`, a terminal listing and a pull-request title,
-# all of which truncate; a body is read in a terminal that does not reflow. The limits are this
-# history's own shape rather than a convention borrowed from elsewhere - subjects here run a median
-# of 57 and a ninetieth percentile of 71, bodies a median of 80. A line with no space past the limit
-# is exempt, since a bare URL or one long identifier cannot be wrapped without breaking it.
-subject_limit_k=72
-body_limit_k=100
-
-case "$subject" in
-Merge* | "fixup!"* | "squash!"*) ;;
-*)
-    if [ "${#subject}" -gt "$subject_limit_k" ]; then
-        echo "commit-msg: the subject is ${#subject} characters, over $subject_limit_k - it truncates wherever it is read."
-        echo "            Got: $subject"
-        failed=1
-    fi
-    ;;
-esac
-
-long_lines=$(printf '%s\n' "$payload" | awk -v limit="$body_limit_k" '
-    NR == 1 { next }
-    length($0) > limit && substr($0, limit) ~ / / { printf "line %d: %d characters\n", NR, length($0) }')
-if [ -n "$long_lines" ]; then
-    echo "commit-msg: the body runs past $body_limit_k characters where it could have wrapped:"
-    printf '%s\n' "$long_lines" | head -5
+offenders=$(grep -inE 'co-authored-by:.*(\[bot\]|\bbot\b|claude|chatgpt|gpt-[0-9]|openai|copilot|gemini|\bbard\b|cursor|codeium|devin)|generated (with|by).*\b(ai|llm|claude|chatgpt|gpt|copilot|gemini|cursor|anthropic|openai)\b|\b(anthropic|openai)\.com|claude\.ai|chatgpt\.com|claude-session|🤖' \
+    <<< "$payload")
+if [ -n "$offenders" ]; then
+    echo "commit-msg: the message carries AI-assistant attribution; authorship is the human who committed:"
+    head -5 <<< "$offenders"
     failed=1
 fi
 

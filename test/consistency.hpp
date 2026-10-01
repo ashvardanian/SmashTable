@@ -252,15 +252,12 @@ void test_committed_immediately_visible() {
  *
  *  @verbatim
  *  T.upsert(0..9)
- *  ─────────────────────────────────
  *  Observer sees: 0 keys
  *
  *  T.stage()
- *  ─────────────────────────────────
  *  Observer sees: 0 keys
  *
  *  T.commit()
- *  ─────────────────────────────────
  *  Observer sees: 10 keys, atomic
  *  @endverbatim
  *
@@ -366,15 +363,12 @@ void test_rollback_makes_all_invisible() {
  *
  *  @verbatim
  *  T.upsert(10..19)
- *  ─────────────────────────────────
  *  range(10,20) sees: 0 elements
  *
  *  T.stage()
- *  ─────────────────────────────────
  *  range(10,20) sees: 0 elements
  *
  *  T.commit()
- *  ─────────────────────────────────
  *  range(10,20) sees: 10 elements, atomic
  *  @endverbatim
  *
@@ -416,15 +410,12 @@ void test_range_query_sees_atomic_boundaries() {
  *  @verbatim
  *  T1.upsert(1,2,3)  →  T1.stage()
  *  T2.upsert(4,5,6)  →  T2.stage()
- *  ─────────────────────────────────
  *  Observer sees: 0 keys
  *
  *  T1.commit()
- *  ─────────────────────────────────
  *  Observer sees: 3 keys, 1 2 3 only
  *
  *  T2.commit()
- *  ─────────────────────────────────
  *  Observer sees: 6 keys, all
  *  @endverbatim
  *

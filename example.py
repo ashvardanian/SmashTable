@@ -44,7 +44,7 @@ section("Two indexes that must move together")
 #
 #     ids[42] = 'carol'                 ·
 #     names['carol'] = 42               ·
-#     ──────────────────────────────────────────────────
+#
 #     the block ends                    ✓  both, together
 by_id = st.SortedMap(key=int)
 by_name = st.SortedMap(key=str)
@@ -62,7 +62,7 @@ section("A block that raises applies nothing")
 #     ids[43] = 'dave'                  ·
 #     names['dave'] = 43                ·
 #     raise ValueError                  ✗
-#     ──────────────────────────────────────────────────
+#
 #     the block ends                    ✗  neither, and no torn state in between
 try:
     with st.transaction(by_id, by_name) as (ids, names):
@@ -81,7 +81,7 @@ section("A group may mix maps and sets, and key types")
 #     ids[7] = 'eve'                    ·  a map takes assignment
 #     names['eve'] = 7                  ·  and its own key type
 #     labels.add('staff')               ·  a set takes add
-#     ──────────────────────────────────────────────────
+#
 #     the block ends                    ✓  all three, together
 tags = st.SortedSet(key=str)
 
@@ -216,7 +216,7 @@ section("Two writers, one key: the update that would be lost")
 #     A reads 100                       ·
 #     B writes 500                      ✓
 #     A writes 90                       ✓  computed from 100, so B's write is gone
-#     ──────────────────────────────────────────────────
+#
 #     the value is 90                   ✗  and nothing reported a problem
 #
 # A watch turns that into a refusal, which a retry loop can act on.
@@ -226,7 +226,7 @@ section("Two writers, one key: the update that would be lost")
 #     A stages                          ⚡  ConflictError, nothing applied
 #     A retries, reads 500              ·
 #     A writes 490                      ✓  computed from what is actually there
-#     ──────────────────────────────────────────────────
+#
 #     the value is 490                  ✓  no update was lost
 accounts = st.SortedMap(key=str)
 accounts["alice"] = 100
@@ -263,7 +263,7 @@ section("The two phases, when the decision depends on staging")
 #     begin()                           ·
 #     view['widget'] = 0                ·
 #     stage()                           ·  validated and reserved, still invisible
-#     ──────────────────────────────────────────────────
+#
 #     rollback()                        ✗  nobody ever saw it, so nothing to undo publicly
 #     commit() instead                  ✓  would have published it
 inventory = st.SortedMap(key=str)
