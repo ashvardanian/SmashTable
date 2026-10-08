@@ -1082,7 +1082,7 @@ static char const *class_name_of(PyObject *self) noexcept {
  *  @brief Renders the contents in order, which only an ordered container can do.
  *  @param[in] yields Pairs for a map, bare members for a set.
  */
-static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept {
+static PyObject *container_repr_contents(PyObject *self, cursor_yields_t yields) noexcept {
     auto *container = object_as<container_object_t>(self);
     Py_ssize_t const total = container_length(self);
 
@@ -1132,6 +1132,16 @@ static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept
                                    total - repr_limit_k)
             : PyUnicode_FromFormat("%s(key='%s', {%U})", class_name_of(self), container->ops->name, body);
     Py_DECREF(body);
+    return result;
+}
+
+/** @brief Recursive containers elide their contents while retaining the outer representation. */
+static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept {
+    int const entered = Py_ReprEnter(self);
+    if (entered < 0) return nullptr;
+    if (entered > 0) return PyUnicode_FromString("...");
+    PyObject *result = container_repr_contents(self, yields);
+    Py_ReprLeave(self);
     return result;
 }
 
