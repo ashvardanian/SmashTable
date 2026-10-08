@@ -46,7 +46,7 @@ if (CCACHE_PROGRAM)
 endif ()
 project(
     smashtable
-    VERSION 0.3.1
+    VERSION 0.3.2
     LANGUAGES CXX
     DESCRIPTION "Safer associative containers with DBMS-like transactions in C++"
     HOMEPAGE_URL "https://github.com/ashvardanian/SmashTable"
