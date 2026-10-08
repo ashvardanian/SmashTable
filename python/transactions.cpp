@@ -256,22 +256,20 @@ static int View_contains(PyObject *self, PyObject *key) noexcept {
     return found ? 1 : 0;
 }
 
-static char const doc_View_get[] =                                                             //
-    "get(key, default=None, /)\n"                                                              //
-    "\n"                                                                                       //
-    "Value for a key inside this transaction, or default when the key is absent.\n"            //
-    "\n"                                                                                       //
-    "Reads this transaction's own uncommitted writes, and otherwise the state as of\n"         //
-    "when the transaction opened. It does NOT see writes another transaction has staged but\n" //
-    "not committed, so a read is never dirty.\n"                                               //
-    "\n"                                                                                       //
-    "Repeating a read is not guaranteed to return the same value: a committed write\n"         //
-    "from elsewhere becomes visible immediately. Call watch(key) to make the\n"                //
-    "transaction refuse to commit if that happens.\n"                                          //
-    "\n"                                                                                       //
-    "Raises:\n"                                                                                //
-    "  TypeError: If key is not of this store's key type, or this is a set.\n"                 //
-    "  StateError: If the transaction has already finished.\n";                                //
+static char const doc_View_get[] =                                                  //
+    "get(key, default=None, /)\n"                                                   //
+    "\n"                                                                            //
+    "Return the value for key, or default when the key is absent.\n"                //
+    "\n"                                                                            //
+    "Reads see this transaction's own pending writes and committed values\n"        //
+    "according to the container's isolation level. Under 'snapshot' or stricter,\n" //
+    "committed values come from the snapshot taken when the transaction opened.\n"  //
+    "Below 'snapshot', a repeated read may see a newer committed value.\n"          //
+    "Reads never see another transaction's uncommitted writes.\n"                   //
+    "\n"                                                                            //
+    "Raises:\n"                                                                     //
+    "  TypeError: If key is not of this store's key type, or this is a set.\n"      //
+    "  StateError: If the transaction has already finished.\n";                     //
 
 static PyObject *View_get(PyObject *self, PyObject *const *args, Py_ssize_t count) noexcept {
     if (count < 1 || count > 2) {
@@ -290,11 +288,11 @@ static char const doc_View_add[] =                                              
     "\n"                                                                                   //
     "Insert one member into a set participant, invisibly until the transaction commits.\n" //
     "\n"                                                                                   //
-    "Idempotent, and subject to the same visibility rule as upsert.\n"                     //
+    "Adding a member already present leaves it unchanged.\n"                               //
     "\n"                                                                                   //
     "Raises:\n"                                                                            //
-    "  TypeError: If this participant is a map, which needs a value.\n"                    //
-    "  StateError: If the transaction has already finished.\n";                            //
+    "  TypeError: If member is not of this store's key type, or this is a map.\n"          //
+    "  StateError: If the transaction is staged or has already finished.\n";               //
 
 static PyObject *View_add(PyObject *self, PyObject *member) noexcept {
     auto *view = object_as<view_object_t>(self);
@@ -328,11 +326,11 @@ static char const doc_View_discard[] =                                          
     "  bool: True when the key was present, so a caller need not look first.\n"         //
     "\n"                                                                                //
     "The removal is invisible outside the transaction until commit, and is undone by\n" //
-    "rollback or by the block raising.\n"                                               //
+    "reset() or by an exception leaving the with block.\n"                              //
     "\n"                                                                                //
     "Raises:\n"                                                                         //
     "  TypeError: If key is not of this store's key type.\n"                            //
-    "  StateError: If the transaction has already finished.\n";                         //
+    "  StateError: If the transaction is staged or has already finished.\n";            //
 
 static PyObject *View_discard(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
@@ -356,23 +354,19 @@ static PyObject *View_discard(PyObject *self, PyObject *key) noexcept {
     Py_RETURN_TRUE;
 }
 
-static char const doc_View_watch[] =                                                        //
-    "watch(key, /)\n"                                                                       //
-    "\n"                                                                                    //
-    "Refuse to commit if another writer touches this key first.\n"                          //
-    "\n"                                                                                    //
-    "This is what turns read-modify-write into a lost-update-free operation. Without\n"     //
-    "it a transaction is atomic but not serializable: two transactions can each read the\n" //
-    "same value, each write back, and one update is silently lost.\n"                       //
-    "\n"                                                                                    //
-    "Covers absence as well as presence, so watching a key that does not exist still\n"     //
-    "conflicts if someone inserts it. The conflict surfaces at stage(), not at the\n"       //
-    "write, and nothing is applied when it does.\n"                                         //
-    "\n"                                                                                    //
-    "Raises:\n"                                                                             //
-    "  ConflictError: At stage() time, never here.\n"                                       //
-    "  TypeError: If key is not of this store's key type.\n"                                //
-    "  StateError: If the transaction has already finished.\n";                             //
+static char const doc_View_watch[] =                                                  //
+    "watch(key, /)\n"                                                                 //
+    "\n"                                                                              //
+    "Track key so a conflicting change prevents the transaction from committing.\n"   //
+    "\n"                                                                              //
+    "Covers absent keys too: an insertion can conflict with a watch on a missing\n"   //
+    "key. Conflicts are checked at stage() and again at commit(). Use watch()\n"      //
+    "to protect a read-modify-write in modes that do not validate reads;\n"           //
+    "'serializable' and 'strict_serializable' validate reads automatically.\n"        //
+    "\n"                                                                              //
+    "Raises:\n"                                                                       //
+    "  TypeError: If key is not of this store's key type.\n"                          //
+    "  StateError: If the transaction cannot accept a watch in its current state.\n"; //
 
 static PyObject *View_watch(PyObject *self, PyObject *key) noexcept {
     auto *view = object_as<view_object_t>(self);
@@ -390,19 +384,21 @@ static PyObject *View_watch(PyObject *self, PyObject *key) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_View_update[] =                                                         //
-    "update(other, /)\n"                                                                      //
-    "\n"                                                                                      //
-    "Apply every pair of a mapping to this participant.\n"                                    //
-    "\n"                                                                                      //
-    "Atomic, unlike SortedMap.update: every pair lands with the rest of the transaction or\n" //
-    "none of them does. A failure part-way leaves the transaction abandonable by\n"           //
-    "rollback with nothing applied.\n"                                                        //
-    "\n"                                                                                      //
-    "Raises:\n"                                                                               //
-    "  TypeError: If other is not a mapping, or a key is of the wrong type.\n"                //
-    "  ValueError: If an element of other is not a pair.\n"                                   //
-    "  StateError: If the transaction has already finished.\n";                               //
+static char const doc_View_update[] =                                             //
+    "update(other, /)\n"                                                          //
+    "\n"                                                                          //
+    "Add every pair of a mapping to this participant's pending writes.\n"         //
+    "\n"                                                                          //
+    "Standalone map updates commit their batches immediately; participant\n"      //
+    "updates remain pending until the transaction commits. If an update fails\n"  //
+    "part-way, earlier pairs may remain pending. Call reset() to discard them,\n" //
+    "or let the exception leave the with block.\n"                                //
+    "\n"                                                                          //
+    "Raises:\n"                                                                   //
+    "  TypeError: If other is not a mapping, or a key or value is not one\n"      //
+    "    this store can hold.\n"                                                  //
+    "  ValueError: If an element of other is not a pair.\n"                       //
+    "  StateError: If the transaction is staged or has already finished.\n";      //
 
 static PyObject *View_update(PyObject *self, PyObject *other) noexcept {
     PyObject *pairs = PyMapping_Items(other);
@@ -440,23 +436,24 @@ static PyObject *View_update(PyObject *self, PyObject *other) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_View_scan[] =                                                                //
-    "scan(start=None, stop=None, *, limit=None)\n"                                                 //
-    "\n"                                                                                           //
-    "List of (key, value) pairs in key order over [start, stop), or of members for a set.\n"       //
-    "\n"                                                                                           //
-    "Sees this transaction's own staged writes, and otherwise the state as of when it\n"           //
-    "opened. Materialized in one span rather than lazily, because a walk records the\n"            //
-    "window it read and nothing else may run inside that record.\n"                                //
-    "\n"                                                                                           //
-    "Under 'serializable' or stricter, a key another transaction commits into that\n"              //
-    "window makes this transaction's commit raise PhantomConflictError, rather than\n"             //
-    "let a repeat of the walk answer differently.\n"                                               //
-    "\n"                                                                                           //
-    "Raises:\n"                                                                                    //
-    "  TypeError: If a bound is not of this store's key type, or this participant is unordered.\n" //
-    "  ValueError: If limit is negative.\n"                                                        //
-    "  StateError: If the transaction has already finished.\n";                                    //
+static char const doc_View_scan[] =                                                 //
+    "scan(start=None, stop=None, *, limit=None)\n"                                  //
+    "\n"                                                                            //
+    "Return pairs in key order over [start, stop), or members for a set.\n"         //
+    "\n"                                                                            //
+    "Reads see this transaction's own pending writes and committed values\n"        //
+    "according to the container's isolation level. Under 'snapshot' or stricter,\n" //
+    "committed values come from the snapshot taken when the transaction opened.\n"  //
+    "The result is a list, materialized in one operation rather than lazily.\n"     //
+    "\n"                                                                            //
+    "Under 'serializable' or stricter, the read window is validated at stage()\n"   //
+    "and commit(). A conflicting insertion can raise PhantomConflictError.\n"       //
+    "\n"                                                                            //
+    "Raises:\n"                                                                     //
+    "  TypeError: If a bound is not of this store's key type, or this\n"            //
+    "    participant is unordered.\n"                                               //
+    "  ValueError: If limit is negative.\n"                                         //
+    "  StateError: If the transaction has already finished.\n";                     //
 
 static PyObject *View_scan(PyObject *self, PyObject *const *args, Py_ssize_t count, PyObject *keywords) noexcept {
     auto *view = object_as<view_object_t>(self);
@@ -501,13 +498,14 @@ static PyMethodDef View_methods[] = {
     {nullptr, nullptr, 0, nullptr},
 };
 
-static char const doc_View[] =                                                               //
-    "One container's slice of a transaction.\n"                                              //
-    "\n"                                                                                     //
-    "Reads see this transaction's own writes and the state as of when the group\n"           //
-    "opened, never another transaction's staged-but-uncommitted writes. Writes stay\n"       //
-    "invisible to every other reader until the transaction commits, and vanish if it does\n" //
-    "not. A view stops working once its transaction finishes.\n";                            //
+static char const doc_View[] =                                                    //
+    "One container's slice of a transaction.\n"                                   //
+    "\n"                                                                          //
+    "Reads see this transaction's own pending writes and committed values\n"      //
+    "according to the container's isolation level, never another transaction's\n" //
+    "uncommitted writes. Writes remain invisible outside the transaction until\n" //
+    "commit(). After stage(), reads remain available but writes are refused.\n"   //
+    "A view stops working once its transaction finishes.\n";                      //
 
 static PyType_Slot view_slots[] = {
     {Py_tp_dealloc, reinterpret_cast<void *>(View_dealloc)},
@@ -651,21 +649,19 @@ static PyObject *Transaction_begin(PyObject *self, PyObject *) noexcept {
     return Py_NewRef(group->views);
 }
 
-static char const doc_stage[] =                                                          //
-    "stage()\n"                                                                          //
-    "\n"                                                                                 //
-    "Validate every watch and reserve the writes. Nothing becomes visible.\n"            //
-    "\n"                                                                                 //
-    "This is the first of the two phases. After it succeeds, commit() cannot fail for\n" //
-    "a reason this transaction could have avoided. It can still refuse over a watched\n" //
-    "key another transaction published while this one sat staged.\n"                     //
-    "\n"                                                                                 //
-    "A partial stage is never observable: if one participant refuses, every other is\n"  //
-    "unwound before this returns.\n"                                                     //
-    "\n"                                                                                 //
-    "Raises:\n"                                                                          //
-    "  ConflictError: If a watched key changed since the transaction opened.\n"          //
-    "  StateError: If the transaction is not open - already staged, or finished.\n";     //
+static char const doc_stage[] =                                                     //
+    "stage()\n"                                                                     //
+    "\n"                                                                            //
+    "Validate the transaction and reserve its pending writes without publishing.\n" //
+    "\n"                                                                            //
+    "After staging, reads remain available but writes are refused. commit()\n"      //
+    "validates again, so a conflict can still prevent publication.\n"               //
+    "If one participant refuses to stage, previously staged participants are\n"     //
+    "rolled back and the group remains open with its pending writes retained.\n"    //
+    "\n"                                                                            //
+    "Raises:\n"                                                                     //
+    "  ConflictError: If validation finds a conflicting change.\n"                  //
+    "  StateError: If the transaction is staged or has already finished.\n";        //
 
 static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
@@ -684,24 +680,26 @@ static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_commit[] =                                                          //
-    "commit()\n"                                                                          //
-    "\n"                                                                                  //
-    "Publish every staged change, one container at a time.\n"                             //
-    "\n"                                                                                  //
-    "Not a snapshot across containers. Each is applied in turn, so a thread reading\n"    //
-    "two of them while this runs may find one a step ahead of the other; a reader that\n" //
-    "needs the pair to agree should take its own transaction. Readers are never\n"        //
-    "blocked while this runs.\n"                                                          //
-    "\n"                                                                                  //
-    "A refusal before anything is published leaves the group staged, so it can still\n"   //
-    "be rolled back. A refusal after one container has published cannot be pulled\n"      //
-    "back, so the group stops calling itself staged and only reset() clears what the\n"   //
-    "rest still hold.\n"                                                                  //
-    "\n"                                                                                  //
-    "Raises:\n"                                                                           //
-    "  StateError: If the transaction was not staged first.\n"                            //
-    "  ConflictError: If a watched key was published over while the group sat staged.\n"; //
+static char const doc_commit[] =                                                     //
+    "commit()\n"                                                                     //
+    "\n"                                                                             //
+    "Validate and publish the staged writes.\n"                                      //
+    "\n"                                                                             //
+    "A group of two or more non-partitioned containers validates every\n"            //
+    "participant before publishing any writes. A group containing a partitioned\n"   //
+    "container commits participants in turn; a later refusal can leave earlier\n"    //
+    "participants published.\n"                                                      //
+    "\n"                                                                             //
+    "Publication is not one instant across containers. Independent reads can\n"      //
+    "observe different participants at different points in the commit.\n"            //
+    "\n"                                                                             //
+    "A refusal before publication leaves the group staged and permits retry or\n"    //
+    "rollback(). After partial publication, reset() discards the remaining writes\n" //
+    "but cannot undo changes already published.\n"                                   //
+    "\n"                                                                             //
+    "Raises:\n"                                                                      //
+    "  StateError: If the transaction was not staged first.\n"                       //
+    "  ConflictError: If validation finds a conflicting change.\n";                  //
 
 static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
@@ -749,18 +747,19 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_rollback[] =                                                  //
-    "rollback()\n"                                                                  //
-    "\n"                                                                            //
-    "Pull staged changes back out of the stores, leaving them as they were.\n"      //
-    "\n"                                                                            //
-    "Valid only after stage() and before commit(). Since nothing staged was ever\n" //
-    "visible, no reader can have observed what this undoes.\n"                      //
-    "\n"                                                                            //
-    "Raises:\n"                                                                     //
-    "  StateError: If the transaction was not staged.\n"                            //
-    "  SmashTableError: If a staged version was gone before the rollback reached\n" //
-    "    it, which is a broken invariant rather than a race a retry could win.\n";  //
+static char const doc_rollback[] =                                                //
+    "rollback()\n"                                                                //
+    "\n"                                                                          //
+    "Undo staging without publishing or discarding the pending writes.\n"         //
+    "\n"                                                                          //
+    "Valid only while the transaction is staged. The group becomes open again,\n" //
+    "so its retained writes can be changed or staged again. Use reset() to\n"     //
+    "discard them instead. rollback() cannot undo published changes.\n"           //
+    "\n"                                                                          //
+    "Raises:\n"                                                                   //
+    "  StateError: If the transaction was not staged.\n"                          //
+    "  SmashTableError: If a staged version is missing, indicating a broken\n"    //
+    "    invariant.\n";                                                           //
 
 static PyObject *Transaction_rollback(PyObject *self, PyObject *) noexcept {
     auto *group = object_as<transaction_object_t>(self);
@@ -868,23 +867,25 @@ static PyMethodDef Transaction_methods[] = {
     {nullptr, nullptr, 0, nullptr},
 };
 
-static char const doc_Transaction[] =                                                    //
-    "A transaction of containers staged together and then published in turn.\n"          //
-    "\n"                                                                                 //
-    "Either every store is published or none is: a body that raises resets each\n"       //
-    "participant, and a stage that one refuses unwinds the rest. Publication itself\n"   //
-    "walks the containers in turn rather than moving them at one instant, so a thread\n" //
-    "reading two of them while a commit runs may find one a step ahead - take a\n"       //
-    "transaction of your own if the pair must agree. No transaction ever reads\n"        //
-    "another's uncommitted writes. What more is promised depends on the store: its\n"    //
-    "isolation property reports the level, and below 'snapshot' a value already\n"       //
-    "read may change underneath, so a read-modify-write needs watch() to be safe.\n"     //
-    "\n"                                                                                 //
-    "Durability is memory-only: this is not a database and nothing survives the\n"       //
-    "process.\n"                                                                         //
-    "\n"                                                                                 //
-    "Used as a context manager, the block is exactly begin(), the body, stage(),\n"      //
-    "commit(); an exception discards everything instead.\n";                             //
+static char const doc_Transaction[] =                                                //
+    "A group of containers whose writes are staged together.\n"                      //
+    "\n"                                                                             //
+    "A failed stage publishes nothing and retains the pending writes. At commit,\n"  //
+    "a group of two or more non-partitioned containers validates every\n"            //
+    "participant before publishing. A group containing a partitioned container\n"    //
+    "commits participants in turn and can publish partially if a later one fails.\n" //
+    "Publication is not one instant across containers.\n"                            //
+    "\n"                                                                             //
+    "Reads never see another transaction's uncommitted writes. Each container's\n"   //
+    "isolation property reports its guarantees: below 'snapshot', repeated reads\n"  //
+    "may see newer committed values. Use watch() to protect reads that the\n"        //
+    "isolation level does not validate automatically.\n"                             //
+    "\n"                                                                             //
+    "Changes live only in memory and do not survive the process.\n"                  //
+    "\n"                                                                             //
+    "As a context manager, the block runs begin(), the body, stage(), commit().\n"   //
+    "An exception in the body discards the pending writes. A commit failure\n"       //
+    "cannot undo changes already published.\n";                                      //
 
 static PyType_Slot transaction_slots[] = {
     {Py_tp_dealloc, reinterpret_cast<void *>(Transaction_dealloc)},
