@@ -532,6 +532,18 @@ static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_
     return value_to_python(*winner);
 }
 
+/** @brief Attribute presence: 1 when found, 0 when absent, and −1 with an exception set. */
+static int has_attribute(PyObject *object, char const *name) noexcept {
+    PyObject *attribute = PyObject_GetAttrString(object, name);
+    if (attribute) {
+        Py_DECREF(attribute);
+        return 1;
+    }
+    if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return -1;
+    PyErr_Clear();
+    return 0;
+}
+
 static char const doc_map_update[] =                                               //
     "update(other, /)\n"                                                           //
     "\n"                                                                           //
@@ -545,18 +557,6 @@ static char const doc_map_update[] =                                            
     "  TypeError: If other is neither a mapping nor an iterable of pairs, or a\n"  //
     "    key or value in it is not one this store can hold.\n"                     //
     "  ValueError: If an element of other is not a pair.\n";                       //
-
-/** @brief Attribute presence: 1 when found, 0 when absent, and −1 with an exception set. */
-static int has_attribute(PyObject *object, char const *name) noexcept {
-    PyObject *attribute = PyObject_GetAttrString(object, name);
-    if (attribute) {
-        Py_DECREF(attribute);
-        return 1;
-    }
-    if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return -1;
-    PyErr_Clear();
-    return 0;
-}
 
 static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
     auto *container = object_as<container_object_t>(self);

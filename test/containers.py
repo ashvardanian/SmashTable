@@ -571,6 +571,38 @@ def test_set_algebra_propagates_a_real_error(container):
     assert container.isdisjoint(["not an int"]) is True, "a foreign member is simply not shared"
 
 
+@pytest.mark.parametrize("class_name", map_class_names)
+@pytest.mark.parametrize("key_type", ["int"])
+def test_map_update_propagates_keys_lookup_errors(container):
+    """A failing mapping attribute must not turn into an iterable update."""
+
+    class BrokenMapping:
+        @property
+        def keys(self):
+            raise RuntimeError("keys lookup failed")
+
+        def __iter__(self):
+            return iter([(1, "unexpected")])
+
+    with pytest.raises(RuntimeError, match="keys lookup failed"):
+        container.update(BrokenMapping())
+    assert len(container) == 0
+
+
+@pytest.mark.parametrize("class_name", enumerable_set_names)
+@pytest.mark.parametrize("key_type", ["int"])
+def test_set_algebra_propagates_attribute_lookup_errors(container):
+    """An exception while inspecting the other operand stays visible to the caller."""
+
+    class BrokenSet:
+        @property
+        def __contains__(self):
+            raise RuntimeError("contains lookup failed")
+
+    with pytest.raises(RuntimeError, match="contains lookup failed"):
+        container.intersection(BrokenSet())
+
+
 # endregion Input handling
 
 # region Batched writes
@@ -618,35 +650,3 @@ def test_set_update_applies_as_one_unit(container, keygen):
 
 
 # endregion Batched writes
-
-
-@pytest.mark.parametrize("class_name", map_class_names)
-@pytest.mark.parametrize("key_type", ["int"])
-def test_map_update_propagates_keys_lookup_errors(container):
-    """A failing mapping attribute must not turn into an iterable update."""
-
-    class BrokenMapping:
-        @property
-        def keys(self):
-            raise RuntimeError("keys lookup failed")
-
-        def __iter__(self):
-            return iter([(1, "unexpected")])
-
-    with pytest.raises(RuntimeError, match="keys lookup failed"):
-        container.update(BrokenMapping())
-    assert len(container) == 0
-
-
-@pytest.mark.parametrize("class_name", enumerable_set_names)
-@pytest.mark.parametrize("key_type", ["int"])
-def test_set_algebra_propagates_attribute_lookup_errors(container):
-    """An exception while inspecting the other operand stays visible to the caller."""
-
-    class BrokenSet:
-        @property
-        def __contains__(self):
-            raise RuntimeError("contains lookup failed")
-
-    with pytest.raises(RuntimeError, match="contains lookup failed"):
-        container.intersection(BrokenSet())
