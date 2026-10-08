@@ -546,12 +546,25 @@ static char const doc_map_update[] =                                            
     "    key or value in it is not one this store can hold.\n"                     //
     "  ValueError: If an element of other is not a pair.\n";                       //
 
+/** @brief Attribute presence: 1 when found, 0 when absent, and −1 with an exception set. */
+static int has_attribute(PyObject *object, char const *name) noexcept {
+    PyObject *attribute = PyObject_GetAttrString(object, name);
+    if (attribute) {
+        Py_DECREF(attribute);
+        return 1;
+    }
+    if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return -1;
+    PyErr_Clear();
+    return 0;
+}
+
 static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
     auto *container = object_as<container_object_t>(self);
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    bool const is_mapping = PyObject_HasAttrString(other, "keys");
+    int const is_mapping = has_attribute(other, "keys");
+    if (is_mapping < 0) return nullptr;
     PyObject *pairs = is_mapping ? PyMapping_Items(other) : Py_NewRef(other);
     if (!pairs) return nullptr;
     PyObject *fast = PySequence_Fast(pairs, "update() needs a mapping or an iterable of pairs");
@@ -808,7 +821,9 @@ static container_object_t *same_layout_set(PyObject *self, PyObject *other) noex
 }
 
 static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operation) noexcept {
-    if (!PyObject_HasAttrString(other, "__contains__")) Py_RETURN_NOTIMPLEMENTED;
+    int const has_contains = has_attribute(other, "__contains__");
+    if (has_contains < 0) return nullptr;
+    if (!has_contains) Py_RETURN_NOTIMPLEMENTED;
 
     PyObject *result = set_like(self);
     if (!result) return nullptr;
