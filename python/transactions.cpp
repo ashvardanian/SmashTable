@@ -390,19 +390,20 @@ static PyObject *View_watch(PyObject *self, PyObject *key) noexcept {
     Py_RETURN_NONE;
 }
 
-static char const doc_View_update[] =                                                         //
-    "update(other, /)\n"                                                                      //
-    "\n"                                                                                      //
-    "Apply every pair of a mapping to this participant.\n"                                    //
-    "\n"                                                                                      //
-    "Atomic, unlike SortedMap.update: every pair lands with the rest of the transaction or\n" //
-    "none of them does. A failure part-way leaves the transaction abandonable by\n"           //
-    "rollback with nothing applied.\n"                                                        //
-    "\n"                                                                                      //
-    "Raises:\n"                                                                               //
-    "  TypeError: If other is not a mapping, or a key is of the wrong type.\n"                //
-    "  ValueError: If an element of other is not a pair.\n"                                   //
-    "  StateError: If the transaction has already finished.\n";                               //
+static char const doc_View_update[] =                                             //
+    "update(other, /)\n"                                                          //
+    "\n"                                                                          //
+    "Apply every pair of a mapping to this participant.\n"                        //
+    "\n"                                                                          //
+    "Every pair lands with the rest of the transaction or none of them does.\n"   //
+    "Standalone map updates commit their batches immediately; this participant\n" //
+    "stages its batch until the transaction commits. A failure part-way leaves\n" //
+    "the transaction abandonable by rollback with nothing applied.\n"             //
+    "\n"                                                                          //
+    "Raises:\n"                                                                   //
+    "  TypeError: If other is not a mapping, or a key is of the wrong type.\n"    //
+    "  ValueError: If an element of other is not a pair.\n"                       //
+    "  StateError: If the transaction has already finished.\n";                   //
 
 static PyObject *View_update(PyObject *self, PyObject *other) noexcept {
     PyObject *pairs = PyMapping_Items(other);
