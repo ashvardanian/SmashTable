@@ -384,6 +384,50 @@ def test_an_unordered_container_reprs_its_shape(populated, size):
     assert repr(container) == wanted, f"{repr(container)} vs {wanted}"
 
 
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("value_mode", ["object"], indirect=True)
+def test_recursive_map_repr_elides_a_self_reference(container):
+    """Self-reference is printable without exhausting the recursion limit."""
+    container[1] = container
+    assert repr(container) == f"{type(container).__name__}(key='int', {{1: ...}})"
+
+
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - parallel copies sharing the container would change the value being rendered"
+)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("value_mode", ["object"], indirect=True)
+def test_recursive_map_repr_elides_mutual_references(container, container_class):
+    """Two maps referring to each other close the cycle with an ellipsis."""
+    other = container_class(key="int", value="object")
+    container[1] = other
+    other[2] = container
+    name = type(container).__name__
+    assert repr(container) == f"{name}(key='int', {{1: {name}(key='int', {{2: ...}})}})"
+
+
+@pytest.mark.thread_unsafe(
+    reason="its premise is a single writer - parallel copies sharing the container would change the value being rendered"
+)
+@pytest.mark.parametrize("class_name", enumerable_map_names)
+@pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
+@pytest.mark.parametrize("value_mode", ["object"], indirect=True)
+def test_map_repr_clears_its_guard_after_an_error(container):
+    """A value's failing representation must not leave its map marked recursive."""
+
+    class BrokenRepr:
+        def __repr__(self):
+            raise RuntimeError("repr failed")
+
+    container[1] = BrokenRepr()
+    with pytest.raises(RuntimeError, match="repr failed"):
+        repr(container)
+    container[1] = "recovered"
+    assert "1: 'recovered'" in repr(container)
+
+
 @pytest.mark.parametrize("class_name", enumerable_class_names)
 @pytest.mark.parametrize("key_type", key_types)
 @pytest.mark.parametrize("value_type", [pytest.param("int", id="vint")])
@@ -618,42 +662,3 @@ def test_set_update_applies_as_one_unit(container, keygen):
 
 
 # endregion Batched writes
-
-
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", ["int"])
-@pytest.mark.parametrize("value_mode", ["object"], indirect=True)
-def test_recursive_map_repr_elides_a_self_reference(container):
-    """Self-reference is printable without exhausting the recursion limit."""
-    container[1] = container
-    assert repr(container) == f"{type(container).__name__}(key='int', {{1: ...}})"
-
-
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", ["int"])
-@pytest.mark.parametrize("value_mode", ["object"], indirect=True)
-def test_recursive_map_repr_elides_mutual_references(container, container_class):
-    """Two maps referring to each other close the cycle with an ellipsis."""
-    other = container_class(key="int", value="object")
-    container[1] = other
-    other[2] = container
-    rendered = repr(container)
-    assert "2: ..." in rendered
-    assert rendered.count(type(container).__name__) == 2
-
-
-@pytest.mark.parametrize("class_name", enumerable_map_names)
-@pytest.mark.parametrize("key_type", ["int"])
-@pytest.mark.parametrize("value_mode", ["object"], indirect=True)
-def test_map_repr_clears_its_guard_after_an_error(container):
-    """A value's failing representation must not leave its map marked recursive."""
-
-    class BrokenRepr:
-        def __repr__(self):
-            raise RuntimeError("repr failed")
-
-    container[1] = BrokenRepr()
-    with pytest.raises(RuntimeError, match="repr failed"):
-        repr(container)
-    container[1] = "recovered"
-    assert "1: 'recovered'" in repr(container)
