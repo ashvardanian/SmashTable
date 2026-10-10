@@ -12,8 +12,10 @@
  *  watermark it was opened at as a floor for every member of it, and the mark is the least floor
  *  over the occupied buckets.
  *
- *  Include after `weak_memory.pml`, whose accesses every step here is spelled in, and after the
- *  model named its words and sized @c ring, which is @c ring_k. The words every model defines:
+ *  Include after `weak_memory.pml`, whose accesses every step here is spelled in, after
+ *  `monitor_wait.pml`, whose futex-style wait the ring-room wait in @c land_stamp parks on, and
+ *  after the model named its words and sized @c ring, which is @c ring_k. The words every model
+ *  defines:
  *  - @c commits, the counter @c begin_commit adds to, which is @c commits_;
  *  - @c published_stamp, the watermark, which is @c published_stamp_;
  *  - @c landed_at of a slot in `0 .. ring - 1`, which is @c landed_ indexed by stamp.
@@ -43,8 +45,11 @@
  *
  *  The knobs, each set on the `@verify` lines of the scenarios whose assertions it breaks:
  *  - @c ring_check, the wait in @c end_commit before a ring slot is reused;
+ *  - @c watermark_notify, the wake @c end_commit sends once its walk moved the watermark;
  *  - @c done_order, the order the landed mark is stored with;
  *  - @c advance_read_modify_write, the read-modify-write that reads the watermark before the walk;
+ *  - @c walk_order, the order the walk loads each next slot's mark with;
+ *  - @c take_read_modify_write, the read-modify-write @c take_snapshot reads the watermark through;
  *  - @c watermark_first, the watermark read before the buckets are scanned;
  *  - @c bucket_retag, a bucket shut to arrivals before its floor is stored;
  *  - @c head_watermark, the head bucket sealed against the watermark rather than the mark;
@@ -53,9 +58,9 @@
  *  Left out: @c low_water_mark_, since a model acts on the mark it just computed, which is the
  *  freshest such a read can be, and the word is only ever raised with a maximum and only ever read
  *  as a lower bound; @c generation_ and @c next_generation, which date transactions rather than
- *  their visibility and order nothing here; @c await_published and the waiting policy's wake, which
- *  `waiting_policy.pml` covers over the two locks; and the @c solitary_k path, which has no second
- *  thread to order against.
+ *  their visibility and order nothing here; @c await_published, whose wait on the watermark is the
+ *  ring-room wait's shape on the same word and the same wake; and the @c solitary_k path, which has
+ *  no second thread to order against.
  */
 #if ring < 1
 #error "ring is one or more"
@@ -65,11 +70,20 @@
 #ifndef ring_check
 #define ring_check true
 #endif
+#ifndef watermark_notify
+#define watermark_notify true
+#endif
 #ifndef done_order
 #define done_order order_release
 #endif
 #ifndef advance_read_modify_write
 #define advance_read_modify_write true
+#endif
+#ifndef walk_order
+#define walk_order order_acquire
+#endif
+#ifndef take_read_modify_write
+#define take_read_modify_write true
 #endif
 #ifndef watermark_first
 #define watermark_first true
@@ -243,9 +257,10 @@ inline draw_stamp(t, drawn) {
 }
 
 /** Models @c basic_commit_order::end_commit in `shared.hpp`: the slot this stamp is about to reuse
- *  waited for, the mark released into it, the watermark read newest, and the ring walked while the
- *  next slot carries the next stamp. A model with a census follows it with @c republish_mark where
- *  @c moved says the walk moved the watermark, which is the rest of @c end_commit. */
+ *  waited for, parked on the watermark between two loads, the mark released into it, the watermark
+ *  read newest, the ring walked while the next slot carries the next stamp, and the parked
+ *  committers woken where the walk moved the watermark. A model with a census follows it with
+ *  @c republish_mark where @c moved says so, which is the rest of @c end_commit. */
 inline land_stamp(t, drawn) {
     // Waited here rather than at the draw, so the write happened during the overlap rather than
     // after it; the slot still holds `drawn - ring`, and overwriting that mark loses it for good.
@@ -258,7 +273,8 @@ inline land_stamp(t, drawn) {
                :: drawn - seen > ring -> skip
                :: else -> break
                fi
-           }
+           };
+           wait_on(t, published_stamp, seen, false)
         od
     :: else
     fi;
@@ -278,7 +294,7 @@ inline land_stamp(t, drawn) {
     };
     do
     :: atomic {
-           load(t, landed_at((seen + 1) % ring), order_acquire, observed);
+           load(t, landed_at((seen + 1) % ring), walk_order, observed);
            if
            :: observed != seen + 1 -> break
            :: else
@@ -287,7 +303,15 @@ inline land_stamp(t, drawn) {
        atomic {
            read_modify_write_if(t, published_stamp, order_acq_rel, observed < seen + 1, observed, seen + 1);
            if
-           :: observed < seen + 1 -> moved = true; seen = seen + 1
+           :: observed < seen + 1 ->
+               moved = true;
+               seen = seen + 1;
+               // The wake `end_commit` sends after its walk, sent with each step: a waiter that
+               // arms in between re-checks the word, so the gap loses nothing
+               if
+               :: watermark_notify -> wake(published_stamp)
+               :: else
+               fi
            :: else -> seen = observed
            fi
        }
@@ -300,5 +324,8 @@ inline land_stamp(t, drawn) {
  *  There is no re-read: the bucket's floor is what pins retention. */
 inline take_snapshot(t, joined, snapshot) {
     join_head(t, joined);
-    read_modify_write(t, published_stamp, order_acq_rel, snapshot, snapshot)
+    if
+    :: take_read_modify_write -> read_modify_write(t, published_stamp, order_acq_rel, snapshot, snapshot)
+    :: else -> load(t, published_stamp, order_acquire, snapshot)
+    fi
 }

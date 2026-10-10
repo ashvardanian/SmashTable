@@ -118,7 +118,7 @@ The commit protocols are also checked as Promela models under Spin, and two of t
 
 ```bash
 ./verification/check.sh                          # everything; GenMC is skipped when absent
-./verification/check.sh staged_batch/flat.pml    # one scenario
+./verification/check.sh transaction_group/two_pass.pml   # one scenario
 ```
 
 Every scenario and client names the verdicts expected of it in its own `@verify` lines, and the run fails if a deliberately broken variant passes.

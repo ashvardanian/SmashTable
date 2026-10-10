@@ -11,10 +11,13 @@
  *  @c republish_mark_ computes from the watermark and the occupied buckets. Readers are counted per
  *  bucket here, never listed one by one, and a claim is a bucket index and a stamp.
  *
- *  The commit order carries no mutex at all, and four orderings stand in its place: a reader counts
- *  its snapshot into a bucket before reading the watermark, a mark reads the watermark before it
- *  scans the buckets, a landing commit reads the watermark through a read-modify-write before
- *  walking the ring, and a bucket is shut to arrivals before its floor is replaced.
+ *  The commit order carries no mutex at all, and three orderings stand in its place: a reader
+ *  counts its snapshot into a bucket before reading the watermark through a read-modify-write, a
+ *  mark reads the watermark before it scans the buckets, and a landing commit reads the watermark
+ *  through a read-modify-write before walking the ring. A bucket is also shut to arrivals before
+ *  its floor is replaced, which keeps a floor from moving under a member, yet no mark can tell: an
+ *  opener whose count missed a joiner read the watermark earlier in its modification order than
+ *  that joiner did, so the floor it stores stays at or below the joiner's stamp.
  *
  *  The mark never passes a snapshot a live claim names, which @c record_mark checks every mark
  *  anyone computes against. Each scenario beside this file plays the fewest threads and the fewest
@@ -28,6 +31,7 @@
  *  names; and @c generation_, which dates transactions rather than their visibility.
  */
 #include "../weak_memory.pml"
+#include "../monitor_wait.pml"
 
 #define ring 2
 

@@ -7,12 +7,15 @@
  *
  *  A commit draws its stamp through @c begin_commit outside the partition's mutex, joins its
  *  version to the key's run under it, lands the stamp through @c end_commit, and prunes the run
- *  under the mutex down to the mark that landing computed. Readers are counted per bucket, never
- *  listed one by one: @c take_snapshot joins the head bucket and then reads the watermark,
- *  @c share_snapshot counts a transaction in a live claim's bucket, @c retire_snapshot gives a
- *  member back, and @c republish_mark walks the watermark and the occupied floors, which is what
- *  @c basic_commit_order does in @c shared.hpp. A claim is a bucket index and a stamp. The same
- *  scenarios are `reading.pml` and `adoption.pml`.
+ *  under the mutex down to the low-water mark, read relaxed as @c prune_each_ reads it. Readers are
+ *  counted per bucket, never listed one by one: @c take_snapshot joins the head bucket and then
+ *  reads the watermark, @c share_snapshot counts a transaction in a live claim's bucket,
+ *  @c retire_snapshot gives a member back, and @c republish_mark walks the watermark and the
+ *  occupied floors into the low-water mark, which is what @c basic_commit_order does in
+ *  @c shared.hpp. A claim is a bucket index and a stamp. The same scenarios are `reading.pml` and
+ *  `adoption.pml`, and @c retention is the handover of `commit_order/retention.pml`, with the
+ *  successor joining only after the commit is joined, so that no stale read of the head can
+ *  excuse a missed rotation under weak memory.
  *
  *  One commit, as in the model. With two, @c open_next_bucket_ has two openers that can each store
  *  one bucket's floor with a plain relaxed store and no order between them, which is benign, since
@@ -21,9 +24,7 @@
  *  unrunnable rather than wrong. `watermark_first` is the knob that needs the second commit, and
  *  `reading.pml` carries it.
  *
- *  Left out, as in the model: the cached @c low_water_mark_ word, since a commit prunes at the mark
- *  it just computed, which is the freshest such a read can be; and @c generation_, which dates
- *  transactions rather than their visibility.
+ *  Left out, as in the model: @c generation_, which dates transactions and not their visibility.
  *
  *  Every mutant fails under `sc` as well, since each turns on an interleaving rather than a
  *  reordering.
@@ -42,6 +43,12 @@
  *  @verify fail sc,rc11,imm adoption_join_first_false: the adopted stamp is only as pinned as the
  *      claim it came from; with the watermark read before the bucket is joined, a mark computed in
  *      that gap passes it
+ *  @verify pass sc,rc11,imm retention
+ *  @verify fail sc,rc11,imm retention_head_watermark_false: @c republish_mark_ seals the head
+ *      bucket against the watermark; sealed against the mark it lowered first, which equals the
+ *      floor of a head bucket holding the least one, the commit's landing never moves the head, the
+ *      successor joins the first reader's bucket, and the low-water mark stays on that bucket's
+ *      floor once the first reader is gone
  */
 #include <atomic> // `std::atomic` - the mutex, the stamp counter, the watermark, the ring and the census
 
@@ -52,12 +59,14 @@ struct knobs_t {
     bool held_claim = true;
     bool join_first = true;
     bool shared_claim = true;
+    bool head_watermark = true;
 };
 
 constexpr knobs_t header_k {};
 constexpr knobs_t held_claim_false_k {.held_claim = false};
 constexpr knobs_t join_first_false_k {.join_first = false};
 constexpr knobs_t shared_claim_false_k {.shared_claim = false};
+constexpr knobs_t head_watermark_false_k {.head_watermark = false};
 
 /** A mutex in one word: an acquiring exchange takes it from zero, a releasing store returns it. */
 struct spin_mutex_t {
@@ -94,6 +103,7 @@ constexpr bucket_word_t open_snapshots_mask_k = 0xFFFFFFFFull; // where a bucket
 spin_mutex_t partition_mutex;
 std::atomic<int> commits {0};
 std::atomic<int> published_stamp {0};
+std::atomic<int> low_water_mark {0};
 std::atomic<int> landed[ring_k] = {0, 0};
 std::atomic<bucket_word_t> head {0};
 std::atomic<bucket_word_t> snapshots[buckets_k] = {0, 0};
@@ -105,13 +115,17 @@ bool version_freed[versions_k] = {false, false};
 int versions_written = 1;
 
 /** Raises @p word to @p floor under @p order and answers what it held, never lowering it: the
- *  release-only @c atomic_max_fetch on the head, the acq_rel @c atomic_fetch_max on the mark. */
+ *  release-only @c atomic_max_fetch on the head and the low-water mark, the acq_rel
+ *  @c atomic_fetch_max on the watermark. */
 template <typename word_type_>
 word_type_ raise_to(std::atomic<word_type_> &word, word_type_ floor, std::memory_order order) noexcept {
-    word_type_ observed = word.load(std::memory_order_relaxed);
-    while (observed < floor)
-        if (word.compare_exchange_strong(observed, floor, order, std::memory_order_relaxed)) break;
-    return observed;
+    // Re-loaded every turn: GenMC reads a turn whose exchange failed as a spin, so an exchange that
+    // failed on the very value it would leave on looks like a spin that never ends.
+    for (;;) {
+        word_type_ observed = word.load(std::memory_order_relaxed);
+        if (observed >= floor || word.compare_exchange_strong(observed, floor, order, std::memory_order_relaxed))
+            return observed;
+    }
 }
 
 /** Models @c basic_commit_order::record_snapshot_: counts one snapshot into the head bucket,
@@ -157,20 +171,20 @@ int folded_floor(int bucket, int least) noexcept {
  *  Spelled without a loop, since GenMC bounds every loop to the runner's unroll count. */
 int scan_floors() noexcept { return folded_floor(1, folded_floor(0, no_floor_k)); }
 
-/**
- *  @brief republish_mark_: the watermark read newest first, then the buckets, so a reader joining
- *      after that read draws at or above it and one joining before it is counted by the scan.
- *  @return The least of the watermark and every occupied bucket's floor.
- */
-int republish_mark() noexcept {
-    int mark = published_stamp.fetch_add(0, std::memory_order_acq_rel);
+/** Models @c basic_commit_order::republish_mark_: the watermark read newest first, then the
+ *  buckets, so a reader joining after that read draws at or above it and one joining before it is
+ *  counted by the scan; the least of them raises the low-water mark. */
+template <knobs_t const &knobs_>
+void republish_mark() noexcept {
+    int const published_now = published_stamp.fetch_add(0, std::memory_order_acq_rel);
     bucket_word_t const opened = head.load(std::memory_order_relaxed);
     int const least = scan_floors();
-    if (least != no_floor_k && least < mark) mark = least;
-    // Sealed here rather than on a timer: a head bucket whose floor has fallen behind the mark is one
-    // every later reader over-retains on.
-    if (floors[opened % buckets_k].load(std::memory_order_relaxed) < mark) open_next_bucket(opened, mark);
-    return mark;
+    int const oldest_needed = least != no_floor_k && least < published_now ? least : published_now;
+    raise_to(low_water_mark, oldest_needed, std::memory_order_release);
+    // Against what is published, never against what is needed: a head bucket holding the least
+    // floor equals the mark by construction, so comparing those two would never move the head.
+    int const sealed_at = knobs_.head_watermark ? published_now : oldest_needed;
+    if (floors[opened % buckets_k].load(std::memory_order_relaxed) < sealed_at) open_next_bucket(opened, sealed_at);
 }
 
 /**
@@ -206,21 +220,20 @@ int share_snapshot(snapshot_claim_t const &held, snapshot_claim_t &claim) noexce
 
 /** Models @c basic_commit_order::retire_snapshot_: takes one snapshot back out with a release, so
  *  whoever sees a bucket drain sees its members' claims; only a drain recomputes the mark. */
+template <knobs_t const &knobs_>
 void retire_snapshot(snapshot_claim_t &claim) noexcept {
     bucket_word_t const before = snapshots[claim.bucket].fetch_sub(1, std::memory_order_release);
-    if ((before & open_snapshots_mask_k) == 1) republish_mark();
+    if ((before & open_snapshots_mask_k) == 1) republish_mark<knobs_>();
 }
 
 /** Draws a stamp in one unconditional relaxed add, so a draw never waits and never refuses. Models
  *  @c basic_commit_order::begin_commit. */
 int draw_stamp() noexcept { return commits.fetch_add(1, std::memory_order_relaxed) + 1; }
 
-/**
- *  @brief end_commit: the slot waited for, the mark released into it, the watermark walked in stamp
- *      order, and the low-water mark republished where the walk moved it.
- *  @return The mark this commit may prune at, which is zero where its walk moved nothing.
- */
-int land_stamp(int stamp) noexcept {
+/** Models @c basic_commit_order::end_commit: the slot waited for, the mark released into it, the
+ *  watermark walked in stamp order, and the low-water mark republished where the walk moved it. */
+template <knobs_t const &knobs_>
+void land_stamp(int stamp) noexcept {
     // The slot still holds `stamp - ring_k`, and overwriting a mark the watermark has not consumed loses it.
     while (stamp - published_stamp.load(std::memory_order_acquire) > ring_k) {}
     landed[stamp % ring_k].store(stamp, std::memory_order_release);
@@ -232,7 +245,7 @@ int land_stamp(int stamp) noexcept {
         moved = moved || before < seen + 1;
         seen = before < seen + 1 ? seen + 1 : before;
     }
-    return moved ? republish_mark() : 0;
+    if (moved) republish_mark<knobs_>();
 }
 
 /** Whether @p version is newer than @p found among those @p snapshot covers. */
@@ -257,14 +270,15 @@ void prune(int mark) noexcept {
 }
 
 /** One commit: draws a stamp, publishes the version under the mutex, lands it, prunes the run. */
+template <knobs_t const &knobs_>
 void *commit(void *) noexcept {
     int const drawn = draw_stamp();
     partition_mutex.lock(); // publish_under: the version joins the key's run
     version_stamp[versions_written++] = drawn;
     partition_mutex.unlock();
-    int const mark = land_stamp(drawn);
-    partition_mutex.lock(); // prune_committed: at the mark this commit just computed
-    prune(mark);
+    land_stamp<knobs_>(drawn);
+    partition_mutex.lock(); // prune_committed: at the low-water mark, read relaxed as `prune_each_` reads it
+    prune(low_water_mark.load(std::memory_order_relaxed));
     partition_mutex.unlock();
     return nullptr;
 }
@@ -272,10 +286,10 @@ void *commit(void *) noexcept {
 /** `reader_t`: the claim joins the census and holds the stamp both reads are answered at. */
 template <knobs_t const &knobs_>
 int read_twice() noexcept {
-    thread_t const committer = spawn(commit);
+    thread_t const committer = spawn(commit<knobs_>);
     snapshot_claim_t reader;
     int const snapshot = take_snapshot<knobs_>(reader);
-    if constexpr (!knobs_.held_claim) retire_snapshot(reader);
+    if constexpr (!knobs_.held_claim) retire_snapshot<knobs_>(reader);
     // reader_t::find, twice, each under the partition's mutex and neither writing anything
     partition_mutex.lock();
     int const first = resolve(snapshot);
@@ -285,7 +299,7 @@ int read_twice() noexcept {
     int const second = resolve(snapshot);
     verify(second == first && !version_freed[second]);
     partition_mutex.unlock();
-    if constexpr (knobs_.held_claim) retire_snapshot(reader);
+    if constexpr (knobs_.held_claim) retire_snapshot<knobs_>(reader);
     join(committer);
     return 0;
 }
@@ -294,19 +308,35 @@ int read_twice() noexcept {
  *  in it, then the reader closes, leaving the transaction to pin the stamp both of them read at. */
 template <knobs_t const &knobs_>
 int adopt() noexcept {
-    thread_t const committer = spawn(commit);
+    thread_t const committer = spawn(commit<knobs_>);
     snapshot_claim_t reader;
     take_snapshot<knobs_>(reader);
     snapshot_claim_t adopting;
     if constexpr (knobs_.shared_claim) share_snapshot(reader, adopting);
     else adopting = reader;
-    retire_snapshot(reader);
+    retire_snapshot<knobs_>(reader);
     partition_mutex.lock();
     int const adopted = resolve(adopting.snapshot);
     verify(adopted != none_k && !version_freed[adopted]);
     partition_mutex.unlock();
-    if constexpr (knobs_.shared_claim) retire_snapshot(adopting);
+    if constexpr (knobs_.shared_claim) retire_snapshot<knobs_>(adopting);
     join(committer);
+    return 0;
+}
+
+/** A successor's claim taken once the commit landed, while the first reader still holds one; the
+ *  first one's departure leaves the successor's floor, the watermark, as the only one left. */
+template <knobs_t const &knobs_>
+int hand_over() noexcept {
+    thread_t const committer = spawn(commit<knobs_>);
+    snapshot_claim_t reader;
+    take_snapshot<knobs_>(reader);
+    join(committer);
+    snapshot_claim_t successor;
+    take_snapshot<knobs_>(successor);
+    retire_snapshot<knobs_>(reader);
+    verify(low_water_mark.load(std::memory_order_relaxed) == published_stamp.load(std::memory_order_relaxed));
+    retire_snapshot<knobs_>(successor);
     return 0;
 }
 
@@ -316,3 +346,5 @@ extern "C" int reading_join_first_false() { return read_twice<join_first_false_k
 extern "C" int adoption() { return adopt<header_k>(); }
 extern "C" int adoption_shared_claim_false() { return adopt<shared_claim_false_k>(); }
 extern "C" int adoption_join_first_false() { return adopt<join_first_false_k>(); }
+extern "C" int retention() { return hand_over<header_k>(); }
+extern "C" int retention_head_watermark_false() { return hand_over<head_watermark_false_k>(); }

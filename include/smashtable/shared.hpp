@@ -3957,15 +3957,16 @@ enum class order_sharing_t : bool {
  *
  *  @section commit_order_ordering Ordering
  *
- *  Four orderings carry the guarantees under @c shared_k, and @c verification/commit_order.pml
- *  drops each in turn. A reader joins its bucket and then reads the watermark through a
- *  read-modify-write, so a mark computed after the join counts it, and one computed before it
- *  stands at or below the stamp the reader is handed. A mark reads the watermark through a
- *  read-modify-write @b before scanning the buckets, never after, or a reader joining in between is
- *  missed. A landed commit reads the watermark through a read-modify-write before it walks the
- *  ring, or two commits landing at once store-buffer past each other and a mark is left for the
- *  next commit to find. And a bucket is retagged shut to arrivals @b before its floor is stored, or
- *  a joiner lands in a bucket whose floor has moved above the snapshot it takes.
+ *  Three orderings carry the guarantees under @c shared_k, and the models in
+ *  @c verification/commit_order/ drop each in turn. A reader joins its bucket and then reads the
+ *  watermark through a read-modify-write, so a mark computed after the join counts it, and one
+ *  computed before it stands at or below the stamp the reader is handed. A mark reads the watermark
+ *  through a read-modify-write @b before scanning the buckets, never after, or a reader joining in
+ *  between is missed. A landed commit reads the watermark through a read-modify-write before it
+ *  walks the ring, or two commits landing at once store-buffer past each other and a mark is left
+ *  for the next commit to find. A bucket is also retagged shut to arrivals @b before its floor is
+ *  stored, which keeps the floor from moving under a member; a joiner the retag misses read the
+ *  watermark before the opener did, so the floor stays at or below its snapshot either way.
  *
  *  Under @c solitary_k none of that applies, because there is no second thread to order against.
  *

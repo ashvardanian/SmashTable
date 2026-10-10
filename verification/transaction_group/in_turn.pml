@@ -19,6 +19,7 @@
 #define history_depth 11
 #define split_commit false
 #define shared_clock false
+#define groups_write false
 #include "protocol.pml"
 
 proctype group(byte t) { stage_and_commit(t) }

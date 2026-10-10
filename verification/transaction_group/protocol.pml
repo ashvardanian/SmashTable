@@ -11,9 +11,10 @@
  *  mutex from its validation to its publication, so nothing moves in between.
  *
  *  Two groups and one writer. Each group watches one key per store while it stages, and publishes
- *  one key per store; the writer commits over the watched key of the second store, under that
- *  store's unique lock, at any point. A group's stage may be refused at the second store, as an
- *  inner store may refuse it, and then unwinds the first. Its commit validates every watch, holding
+ *  one key per store, which with @c groups_write is the key it watched there and the other group
+ *  watches too; the writer commits over the watched key of the second store, under that store's
+ *  unique lock, at any point. A group's stage may be refused at the second store, as an inner
+ *  store may refuse it, and then unwinds the first. Its commit validates every watch, holding
  *  each store's lock as it goes, and publishes under those holds; a refusal gives every hold back
  *  at once, then the first group reads the store it validated first and drops the group, and the
  *  second rolls back under fresh locks. The two groups split the read and the rollback between
@@ -29,10 +30,12 @@
  *  - after a refused stage no store holds the group's staged mark.
  *
  *  Every scenario beside this file defines its shape, @c split_commit for stores that split their
- *  commit into a validation and a publication, and @c shared_clock for stores on one
- *  @c basic_commit_order.
+ *  commit into a validation and a publication, @c shared_clock for stores on one
+ *  @c basic_commit_order, and @c groups_write for groups whose publication writes the very key
+ *  they watched, which the other group watches too.
  */
 #include "../weak_memory.pml"
+#include "../monitor_wait.pml"
 #include "../spin_shared_mutex.pml"
 
 #define stores 2
@@ -196,6 +199,10 @@ inline stage_and_commit(t) {
             // `publish_under`: nothing moved since the validation, or the update is lost:
             // `locked_store::transaction_t::publish_under` in `locked_store.hpp`.
             assert(newest_value(watched(reached)) == watch_seen[at(t, reached)]);
+            if
+            :: groups_write -> read_modify_write(t, watched(reached), order_relaxed, seen, seen + 1)
+            :: else
+            fi;
             published_at[at(t, reached)] = true;
             staged_at[at(t, reached)] = false;
             if

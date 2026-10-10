@@ -49,6 +49,7 @@
 #define location_count (2 * partitions + 2 + ring)
 #define history_depth 6
 #include "weak_memory.pml"
+#include "monitor_wait.pml"
 #include "spin_shared_mutex.pml"
 
 /** The words: each partition's mutex and its tombstone stamp, zero while the key is present, then

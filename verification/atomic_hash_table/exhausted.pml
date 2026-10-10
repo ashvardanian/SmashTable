@@ -15,6 +15,7 @@
 #define location_count 5
 #define history_depth 9
 #define slots 1
+#define key_of(t) (10 + (t))
 #include "protocol.pml"
 
 proctype emplacer(byte t) { emplace(t) }

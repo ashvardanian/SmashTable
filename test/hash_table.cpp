@@ -306,12 +306,14 @@ static void unordered_concurrency_update_and_erase() {
 
 #pragma region Batch Atomicity Tests
 
-/** Every range modifier refused at every point it asks for memory leaves the table as it was. */
+/** Every range modifier refused at every point it asks for memory or copies an element leaves the
+ *  table as it was. */
 void hash_table_batch_is_all_or_nothing() {
     using ledger_set_t = hash_set<trivial_key_t, default_hash_t, equal_to_t, stateful_allocator_t>;
     test_every_offered_surface<ledger_set_t>([](allocation_ledger_t &ledger) noexcept {
         return ledger_set_t(default_hash_t {}, equal_to_t {}, stateful_allocator_t(1, ledger));
     });
+    test_batch_refuses_copies_whole<hash_set<budgeted_key_t>>();
 }
 
 #pragma endregion Batch Atomicity Tests

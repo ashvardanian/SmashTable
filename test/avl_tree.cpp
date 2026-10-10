@@ -1104,11 +1104,13 @@ static void allocation_failure_insert_probes_before_allocating() {
     ledger.verify_balanced();
 }
 
-/** Every range modifier refused at every point it asks for memory leaves the tree as it was. */
+/** Every range modifier refused at every point it asks for memory or copies an element leaves the
+ *  tree as it was. */
 void allocation_failure_batch_is_all_or_nothing() {
     using ledger_set_t = avl_set<trivial_key_t, less_t, stateful_allocator_t>;
     test_every_offered_surface<ledger_set_t>(
         [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
+    test_batch_refuses_copies_whole<avl_set<budgeted_key_t, std::less<void>, std::allocator<budgeted_key_t>>>();
 }
 
 #pragma endregion Allocation Failure

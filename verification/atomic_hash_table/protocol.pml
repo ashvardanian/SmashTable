@@ -16,14 +16,15 @@
  *  emplacer posts its count as a no-return add with release, as the code does. The eraser's two
  *  moves are spelled performed, since the module lands one post per thread at a time.
  *
- *  What a loser of the slot lock does between two attempts is `waiting_policy.pml`'s, chosen by
- *  @c waiting: the header word alone decides who holds a slot, so every invariant has to hold
- *  under all four policies.
+ *  A loser of the slot lock re-reads the header until the slot reads unlocked, which covers every
+ *  policy the lock takes: a @c waiting_policy returns on its own, whether it stalls, yields or
+ *  waits on the line under a deadline, so none can lose a wake-up, and they differ only in how
+ *  late a loser notices the slot is free.
  *
- *  Every scenario beside this file defines its shape and @c slots, the slots the probe walks.
+ *  Every scenario beside this file defines its shape, @c slots, the slots the probe walks, and
+ *  @c key_of, the key each emplacer carries; the finder and the eraser look for the first one's.
  */
 #include "../weak_memory.pml"
-#include "../waiting_policy.pml"
 
 /** The words: the header, one key per slot, and the two counters. */
 #define header 0
@@ -36,7 +37,6 @@
 #define deleted(slot) (1 << (2 + (slot)))
 #define mask(slot) (populated(slot) | deleted(slot))
 #define unset 0
-#define key_of(t) (10 + (t))
 
 /** The knobs: the header's choices, which `@verify` lines override to replay counterexamples. */
 #ifndef lock_order
@@ -63,7 +63,7 @@ inline lock(t, slot) {
     :: read_modify_write_if(t, header, lock_order, (seen & mask(slot)) != mask(slot), seen, seen | mask(slot));
        if
        :: (seen & mask(slot)) != mask(slot) -> staged = seen & mask(slot); break
-       :: else -> wait_until(header, (newest_value(header) & mask(slot)) != mask(slot))
+       :: else -> (newest_value(header) & mask(slot)) != mask(slot)
        fi
     od
 }
@@ -147,8 +147,8 @@ done:
     finished++
 }
 
-/** Once everyone returned: no slot locked, and the counters equal to the occupied slots and never
- *  below zero. It reads no word and plays no thread. */
+/** Once everyone returned: no slot locked, the counters equal to the occupied slots and never below
+ *  zero, and no key populated in two slots. It reads no word and plays no thread. */
 inline audit() {
     int seen, occupied;
     (finished == 4);
@@ -156,5 +156,7 @@ inline audit() {
     assert((seen & mask(0)) != mask(0) && (seen & mask(1)) != mask(1));
     occupied = ((seen & mask(0)) != 0) + ((seen & mask(1)) != 0);
     assert(newest_value(populated_count) + newest_value(deleted_count) == occupied);
-    assert(newest_value(populated_count) >= 0 && newest_value(deleted_count) >= 0)
+    assert(newest_value(populated_count) >= 0 && newest_value(deleted_count) >= 0);
+    assert((seen & mask(0)) != populated(0) || (seen & mask(1)) != populated(1) ||
+           newest_value(key(0)) != newest_value(key(1)))
 }

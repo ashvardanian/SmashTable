@@ -8,13 +8,9 @@
  *  The emplacers carry distinct keys and probe from the first slot; the finder and the eraser look
  *  for the first emplacer's key. A populated slot's key is never the initial value: the emplacer's
  *  release and the next holder's acquire carry the key. Every slot ends unlocked, and the counters
- *  end equal to the occupied slots and never go below zero on the way. The waiting policies run
- *  here, since this is the smallest model over the slot lock.
+ *  end equal to the occupied slots and never go below zero on the way.
  *
  *  @verify pass sc,rc11
- *  @verify pass rc11 waiting=pausing
- *  @verify pass rc11 waiting=on_the_address
- *  @verify pass rc11 waiting=parking
  *  @verify fail rc11 unlock_order=order_relaxed: the unlock's xor releases the key written under
  *      the slot lock; relaxed, the finder that takes the slot next reads the key of a populated
  *      slot before it was written
@@ -31,6 +27,7 @@
 #define location_count 5
 #define history_depth 15
 #define slots 2
+#define key_of(t) (10 + (t))
 #include "protocol.pml"
 
 proctype emplacer(byte t) { emplace(t) }

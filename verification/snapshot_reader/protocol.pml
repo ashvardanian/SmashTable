@@ -36,6 +36,7 @@
  *  write the key behind the reader.
  */
 #include "../weak_memory.pml"
+#include "../monitor_wait.pml"
 #include "../spin_shared_mutex.pml"
 
 #if committers < 1 || committers > 2

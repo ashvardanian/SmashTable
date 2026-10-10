@@ -41,6 +41,16 @@
  *      against as it stores. The shape is an interleaving rather than a reordering, so sequential
  *      consistency is where it is cheapest, and three committers under the views do not finish
  *      inside the memory this suite gives a model
+ *  @verify fail rc11 walk_order=order_relaxed: the walk loads each next slot's mark with acquire;
+ *      relaxed, the committer that walks past another's mark carries none of that committer's
+ *      version to the reader, which reads a version its snapshot covers unwritten
+ *  @verify stuck sc committers=3 recheck=false: the third committer parks on the watermark until
+ *      the ring has room for it, re-reading the watermark after arming; without the re-check, the
+ *      walks that make the room land and wake between its load and its arming, and it sleeps on a
+ *      ring that already has room
+ *  @verify stuck sc committers=3 watermark_notify=false: @c end_commit wakes the parked
+ *      committers once its walk moved the watermark, since a store wakes nobody; without the
+ *      wake, the third committer parked for ring room sleeps through the walks that made it
  */
 #ifndef committers
 #define committers 2
@@ -53,6 +63,7 @@
 #define location_count (2 + ring + committers)
 #define history_depth (2 * committers + 2)
 #include "weak_memory.pml"
+#include "monitor_wait.pml"
 
 /** The words: the stamp counter, the watermark, the ring of marks, and a version per committer. */
 #define commits 0

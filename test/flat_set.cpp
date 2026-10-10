@@ -203,11 +203,14 @@ void flat_set_shared_suites(test_context_t const &context) {
     test_heterogeneous_heavy_string_view_find<heavy_set_t>();
 }
 
-/** Every range modifier refused at every point it asks for memory leaves the set as it was. */
+/** Every range modifier refused at every point it asks for memory or copies an element leaves the
+ *  set as it was. */
 void flat_set_batch_is_all_or_nothing() {
     using ledger_set_t = basic_flat_set<trivial_key_t, less_t, serial_row_kit_t, stateful_allocator_t>;
     test_every_offered_surface<ledger_set_t>(
         [](allocation_ledger_t &ledger) noexcept { return ledger_set_t(less_t {}, stateful_allocator_t(1, ledger)); });
+    test_batch_refuses_copies_whole<
+        basic_flat_set<budgeted_key_t, std::less<void>, serial_row_kit_t, std::allocator<budgeted_key_t>>>();
 }
 
 /** One predicate sweep keeps the survivors ordered and yields each removed element in turn. */
