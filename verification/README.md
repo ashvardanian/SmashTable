@@ -1,89 +1,66 @@
 # Verification
 
 Model checking for the protocols the stores promise: the two-phase group commit, the partitioned commit under one stamp, the commit order's ring and reader census, the slot lock of the atomic hash table, the shared mutex every locked store takes, and the staged batch every range modifier runs.
-[Spin](https://spinroot.com) checks each as a Promela model under the memory models of [ForkUnion's `verification/`](https://github.com/ashvardanian/ForkUnion), which sits beside this repository in whichever superproject vendors both, and is checked out beside it in CI; `./check.sh` runs everything here and compares each verdict with the expected one.
+[Spin](https://spinroot.com) checks each as a Promela model, and [GenMC](https://github.com/MPI-SWS/genmc) checks two of them as C++ under SC, RC11 and IMM, the model of compiled code on x86, Arm and POWER.
 
-- `weak_memory.pml` — the forwarder to ForkUnion's memory module.
-- `waiting_policy.pml` — what a loser of either lock does between two attempts, shared by the two models that spell a lock.
-  `-Dwaiting=spinning`, the default, re-reads the word until it admits the attempt; `-Dwaiting=pausing` adds a step that touches no location; `-Dwaiting=on_the_address` wakes on any move of the word; `-Dwaiting=parking` blocks on nothing and retries whenever it is scheduled.
-- `spin_shared_mutex.pml` — `spin_shared_mutex_t` as one word, the lock an acquire bounded add and the unlock a release, shared by every model that spells a store lock.
-  `-Dwaiting=` for the policy its two retry loops plug in.
-- `locked_store.pml` — `locked_store`: one shared mutex per call, exclusion, and a reader inside the lock seeing a commit whole.
-- `transaction_group.pml` — `transaction_group`: staging in address order and the unwind of a refused prefix, the two-pass commit that asks every participant before any writes, the in-turn commit's tear, and a participant holding its lock across the phases and giving it back at a refusal.
-  `-Dscenario=one_stamp` for stores on one clock: the group's stamp drawn before any store is written and the watermark moved after the last, against a reader that must see the group whole.
-- `partitioned_store.pml` — `partitioned_store`: the reached partitions held ascending, the stamp drawn before any write and the watermark moved after the last, and the cursor's epoch.
-  `-Dscenario=cursor` for the epoch.
-- `commit_order.pml` — `basic_commit_order`: the stamp ring, the watermark walk, the reader buckets and the marks they bound, over the steps in `commit_order_steps.pml`.
-- `atomic_hash_table.pml` — `atomic_hash_table`: the slot lock driven up with acquire and released with an xor, the counters under it, the finder, and a full table.
-  `-Dscenario=exhausted` for one slot, and `-Dwaiting=` for the policy the slot lock's retry loop plugs in.
-- `snapshot_reader.pml` — `snapshot_store::reader_t`: its claim joining the census under the clock's mutex, reads at its stamp while commits prune the key's version run, and a transaction adopting the stamp.
-  `-Dscenario=adoption` for the adoption.
-- `partitioned_erase.pml` — `partitioned_store`'s store-level window writes: every partition held, one stamp drawn once all of them staged, stamped into each, and the watermark moved after the last.
-- `staged_batch.pml` — the range modifiers of `basic_avl_tree`, `basic_flat_set` and `basic_hash_table`: the range staged in a container of the destination's own kind, the two causes that can refuse met there, and the absorb that asks the allocator at most once.
-  `-Dscenario=tree`, the default, for the merge that relinks and asks for nothing; `-Dscenario=flat` for the merged array; `-Dscenario=table` for `reserve_more`.
-- `snapshot_reader.cpp` — the pinned reader and its adoption as a GenMC client over `std::atomic`.
-- `partitioned_erase.cpp` — the one-stamp window write as a GenMC client over `std::atomic`.
+- `weak_memory.pml` is the C++ memory model as views, for Promela, under three models chosen by `-Dmemory=`: `sc`, one copy of every word; `rc11`, the default, RC11's release-acquire-relaxed fragment; and `far`, which also posts a relaxed no-return add the way RAO-INT does.
+- `check.sh` is the runner, and `genmc.hpp` the threads and the assertion a client takes from GenMC.
+- `waiting_policy.pml`, `spin_shared_mutex.pml` and `commit_order_steps.pml` are protocols several components include.
 
-## What the models found, and what changed for it
+## Writing a model
 
-A `locked_store` dropped its mutex between the two phases of a split commit.
-`validate_for_commit` took the shared lock and released it, `publish_under` took the unique lock after, and the inner publication is documented "only ever called after `validate_for_commit` answered success, with nothing since": a writer committing over a watched key in the gap was the lost update the watch was taken against.
-The partition locks of a `partitioned_store` cover the gap, but a group built straight from locked stores, the README's own example, had nothing over it.
-`transaction_group.pml` found it with one writer against two groups; the validation now takes the mutex exclusively and, when it answers success, keeps it until the publication, the rollback or the reset that follows, and `-Dwithout_held_validation` keeps the counterexample.
-Two groups holding across their phases cannot deadlock because both take the stores ascending, which the group already argued and `-Dwithout_address_order` now shows by reversing one of them.
+A component is one mechanism of the code under test: a flat `<name>.pml` while it has one scenario, and a directory `<name>/` once it has a second, holding a `protocol.pml` with its words, values, knobs and inlines, one file per scenario, and a `client.cpp` when GenMC checks the same words.
+A scenario defines its shape, `thread_count`, `location_count` and `history_depth`, includes its protocol, and starts its roles from one `init { atomic { run <role>(<thread>); … } }`; the depth is the exact minimum every `rc11` and `far` line of the scenario accepts.
+There is no conditional compilation: a knob is a choice the code under test makes, defaulted under `#ifndef` and read in a plain `if :: knob -> … :: else fi`, and memory-model differences are expressions on `memory`.
+A client spells the same knobs as fields of a `knobs_t`, one `constexpr knobs_t <variant>_k` per variant behind a `template <knobs_t const &knobs_>`, and one `extern "C"` entry per variant, `<scenario>` or `<scenario>_<knob>_<value>`.
 
-That hold then outlived a refusal: a refused validation kept its store's mutex, and so did every store asked before it, so the caller's next read of any of them waited on its own thread.
-The fuzzer found it rather than a model, since the model rolled back straight after the refusal and the rollback reused the holds.
-A refused validation now gives its hold straight back, a caller that asked several stores gives back the holds of those asked before the refusal, and the rollback takes its locks anew.
-In `transaction_group.pml` one refused group now reads a store it validated and the other rolls back under fresh locks, and `-Dwithout_refusal_release` keeps the holds and deadlocks at that read.
+Every expected verdict is a `@verify` line in the docblock of the file it checks:
 
-The atomic hash table counted a slot populated after it had unlocked it.
-`emplace` released the slot and then added to `populated_count`, while `erase` subtracted under the lock, so an eraser slipping in between took the unsigned count through zero.
-The count is a statistic and nothing reads it for a decision, but `atomic_hash_table.pml` showed the dip, the add moved under the lock, and `-Dwithout_count_under_lock` keeps the old order.
-The slot lock also re-issued its `fetch_or` on every miss, a store to a header thirty-two slots share; it reads until the two bits are not both set before it claims now, the shape the model's own lock had.
+```
+@verify <pass|fail|stuck> <memory>[,<memory>...] [<knob>=<value> ...][: <finding>]   in a scenario
+@verify <pass|fail|stuck> <memory>[,<memory>...] <entry>[: <finding>]                in a client
+```
 
-The commit order carries no mutex at all, and four orderings stand in its place.
-A reader counts its snapshot into a bucket before reading the watermark, a mark reads the watermark before it scans the buckets, a landing commit reads the watermark through a read-modify-write before walking the ring, and a bucket is shut to arrivals before its floor is replaced.
-`commit_order.pml` drops each in turn under `-Dwithout_*`, and `low_water_mark_` is read without any lock by the pruner, where a stale read is a lower mark, which frees less and never a version a live claim names.
+`pass` is a search that completed with no error, `fail` a violated assertion, and `stuck` an invalid end state in Spin or a liveness violation in GenMC; a search cut short, a knob defined twice, or a write past the scenario's shape is `broken`.
+Every scenario has a `pass` line, every knob appears on some line, and adding a scenario, a knob or a finding never edits `check.sh`.
 
-A store-level window write over partitions sharing a clock drew one stamp per partition.
-`erase_range`, `erase_from`, `erase_up_to` and `update_range` held every partition exclusively and called each part's own, whose publication drew, stamped and published a stamp of its own in turn, while a snapshot is drawn from the clock without any partition lock.
-A reader drawing between two of those publications named the first partition's stamp and not the second's, and saw the window half written once the locks came free.
-`partitioned_erase.pml` finds it with one eraser and one reader; the partitions now stage into publications and one stamp publishes all of them, and `-Dwithout_one_stamp` keeps the counterexample.
+## What the models found
 
-`snapshot_reader.pml` found nothing to change.
-It confirms that the claim a pinned reader holds, and the claim an adopting transaction links beside it, are what keep a prune off the version each reads, and its two variants without a claim show the prune that would land otherwise.
+Each finding is the `@verify` line that replays it, where the full counterexample is written out.
 
-`staged_batch.pml` found nothing to change either.
-It confirms that both causes a batch has to survive, the allocator refusing a request and an element refusing its own duplication, are met while the range is still outside the destination, and that the absorb past them asks for room once or not at all.
-Spin reports the tree's refusal branch as unreachable under `-Dscenario=tree`, which is the merge relinking rather than allocating, stated as a verdict rather than as a docblock.
-Its three variants are the batch before it staged, a merge that copied rather than relinked, and the key check moved past the absorb.
-The last is the sharpest: with the absorb ahead of it, `update`'s check for a key that is not here finds the key the absorb has just written, so the batch answers success over a destination it should never have touched.
+- `validate_for_commit` holds a locked store's mutex exclusively until the publication, the rollback or the reset that follows; dropped between the phases, a writer commits over a watched key in the gap: [`transaction_group/`](transaction_group/).
+- Two groups holding across their phases take the stores ascending, or they deadlock: [`transaction_group/`](transaction_group/).
+- A refused validation gives its hold straight back, and so do the stores asked before it, or the caller's next read waits on its own thread: [`transaction_group/`](transaction_group/).
+- The atomic hash table counts a slot populated under the slot's lock, or an eraser slipping in between takes the count through zero: [`atomic_hash_table/`](atomic_hash_table/).
+- The commit order stands on four orderings in place of a mutex: a reader counts into a bucket before reading the watermark, a mark reads the watermark before scanning the buckets, a landing commit reads the watermark through a read-modify-write before walking the ring, and a bucket shuts to arrivals before its floor is replaced: [`commit_order/`](commit_order/), [`commit_order_publication.pml`](commit_order_publication.pml).
+- A store-level window write over partitions sharing a clock publishes every partition under one stamp, or a reader drawing between two publications sees the window half written: [`partitioned_erase.pml`](partitioned_erase.pml), [`partitioned_erase.cpp`](partitioned_erase.cpp).
+- The claim a pinned reader holds, and the one an adopting transaction links beside it, keep a prune off the version each reads: [`snapshot_reader/`](snapshot_reader/).
+- A staged batch meets the allocator's refusal and an element's refusal while the range is still outside the destination, and checks for a key before the absorb writes it: [`staged_batch/`](staged_batch/).
 
 ## What is not covered
 
-The in-turn commit of stores that do not split theirs is documented as a tear when a later participant refuses, and `-Dwhole_across_stores` is the assertion that shows it rather than a fix.
+The in-turn commit of stores that do not split theirs is documented as a tear when a later participant refuses, and `whole_across_stores=true` is the assertion that shows it rather than a fix.
 The stage's unwind discards each rollback's status; an inner rollback fails only with a store-level fault the participant reports again on its next call, and the stage already returns the refusal that matters.
 The trees, the vectors and the single-writer stores are documented one-thread cores, and only their staged batch has a model.
 The GenMC clients spell their mutexes as one exchanged word rather than `spin_shared_mutex_t`, whose shape `spin_shared_mutex.pml` already checks, and they run only where GenMC is installed.
 
-`staged_batch.pml` runs three keys and a range of three, which is enough for a key already there, a key that is free and a key the range repeats, and not enough for the probe of an open table.
+`staged_batch/` runs three keys and a range of three, which is enough for a key already there, a key that is free and a key the range repeats, and not enough for the probe of an open table.
 That `apply_each_` cannot refuse once `reserve_more` has returned rests on the growth threshold leaving a quarter of the slots free and on a bounded probe walking all of them, which is `hash_layout.hpp`'s property and has no model of its own.
-A table whose element duplicates without refusing stages nothing and writes the caller's range straight in; `-Dscenario=table` covers that path as the same one allocation, since the two differ in what they duplicate rather than in what a refusal leaves behind.
+A table whose element duplicates without refusing stages nothing and writes the caller's range straight in; `staged_batch/table.pml` covers that path as the same one allocation, since the two differ in what they duplicate rather than in what a refusal leaves behind.
 Only `basic_avl_tree` spells `update` over a range, so the model's fourth verb stands for the tree alone.
 
-The waiting policies run over `locked_store.pml` and `atomic_hash_table.pml`, the smallest model over each of the two locks; the models that layer a store protocol on the same mutex run under the default, since a policy admitting more interleavings for the lock admits them for everything above it.
+The waiting policies run over `locked_store.pml` and `atomic_hash_table/`, the smallest model over each of the two locks; the models that layer a store protocol on the same mutex run under the default, since a policy admitting more interleavings for the lock admits them for everything above it.
 A policy that sleeps on a notification of its own, rather than on the word the lock lives in, is covered only for when it retries: the wake lives in the word's own history here, so a wake-up lost between a waiter deciding to sleep and a releaser looking for waiters is not a shape these models can express.
 
 ## Running
 
 ```sh
-./check.sh
+./check.sh                                  # everything; GenMC is skipped when absent
+./check.sh staged_batch/flat.pml            # one scenario
+GENMC=~/genmc/build/bin/genmc ./check.sh    # with the clients
 ```
 
-Inside a superproject the runner finds ForkUnion two directories up, as the forwarder does; standalone, check ForkUnion out beside this repository, which is what CI does.
-Every `verify` line names a model, the expected verdict and the defines, so a new variant is one line.
-Counting the verdicts here would drift the moment a line is added, so the file is the count.
+Verdicts run `VERIFY_JOBS` at a time, four by default, since each pan holds a hash table of its own.
 
 A green suite is narrower than it looks, and this is worth saying plainly.
-Six defects in `basic_commit_order` were found by the C++ tests while every model passed: two of them no model here can express — a livelock leaves no invalid end state under `-DSAFETY`, and two unordered relaxed stores are a shape rather than a value — and the other four were arithmetic and object lifetime, which these models abstract away.
+Six defects in `basic_commit_order` were found by the C++ tests while every model passed: two of them no model here can express, since a livelock leaves no invalid end state under `-DSAFETY` and two unordered relaxed stores are a shape rather than a value, and the other four were arithmetic and object lifetime, which these models abstract away.

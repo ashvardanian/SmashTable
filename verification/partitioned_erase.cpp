@@ -10,15 +10,29 @@
  *  @c publish_every_part_ does for @c erase_range and its neighbours. A reader takes a claim and
  *  reads each partition under that partition's mutex; a watcher holds nothing and claims nothing,
  *  reading the watermark with acquire and the tombstones relaxed, which is what shows the one stamp
- *  rather than the mutual exclusion makes the window whole. @c -Dwithout_one_stamp draws and lands
- *  a stamp per partition, and both of them catch the window half erased.
+ *  rather than the mutual exclusion makes the window whole. The same scenario is
+ *  `partitioned_erase.pml`.
  *
- *  No census, as in @c partitioned_erase.pml: nothing here prunes, so a claim is the stamp
- *  @c take_snapshot hands back and the buckets, the floors and the low-water mark are left out.
+ *  No census, as in the model: nothing here prunes, so a claim is the stamp @c take_snapshot hands
+ *  back and the buckets, the floors and the low-water mark are left out.
+ *
+ *  @verify pass sc,rc11,imm partitioned_erase
+ *  @verify fail sc,rc11,imm partitioned_erase_one_stamp_false: @c publish_every_part_ publishes
+ *      every staged partition under one stamp; with a stamp per partition, a reader drawing between
+ *      two publications names the first partition's stamp and not the second's, and both observers
+ *      see the window half erased, an interleaving that needs no reordering
  */
 #include <atomic> // `std::atomic` - the mutexes, the tombstone stamps, the watermark and the ring
 
 #include "genmc.hpp"
+
+/** The header's choices; each mutant entry changes one. */
+struct knobs_t {
+    bool one_stamp = true;
+};
+
+constexpr knobs_t header_k {};
+constexpr knobs_t one_stamp_false_k {.one_stamp = false};
 
 /** A mutex as one word, taken by an acquiring exchange from zero, released by a releasing store. */
 struct spin_mutex_t {
@@ -82,21 +96,23 @@ void take_snapshot(snapshot_claim_t &claim) noexcept {
 
 /** Holds both partitions ascending, writes the tombstones and lands the stamp once. Models
  *  @c partitioned_store::publish_every_part_. */
+template <knobs_t const &knobs_>
 void *erase_window(void *) noexcept {
     partition_mutexes[0].lock();
     partition_mutexes[1].lock();
-#ifdef without_one_stamp
-    for (int partition = 0; partition != partitions_k; ++partition) {
+    if constexpr (knobs_.one_stamp) {
         int const drawn = draw_stamp();
-        tombstones[partition].store(drawn, std::memory_order_relaxed);
+        for (int partition = 0; partition != partitions_k; ++partition)
+            tombstones[partition].store(drawn, std::memory_order_relaxed);
         land_stamp(drawn);
     }
-#else
-    int const drawn = draw_stamp();
-    for (int partition = 0; partition != partitions_k; ++partition)
-        tombstones[partition].store(drawn, std::memory_order_relaxed);
-    land_stamp(drawn);
-#endif
+    else {
+        for (int partition = 0; partition != partitions_k; ++partition) {
+            int const drawn = draw_stamp();
+            tombstones[partition].store(drawn, std::memory_order_relaxed);
+            land_stamp(drawn);
+        }
+    }
     partition_mutexes[1].unlock();
     partition_mutexes[0].unlock();
     return nullptr;
@@ -114,8 +130,10 @@ void *watch_window(void *) noexcept {
     return nullptr;
 }
 
-int main() {
-    thread_t const eraser = spawn(erase_window);
+/** The eraser and the watcher on threads of their own, and the pinned reader on this one. */
+template <knobs_t const &knobs_>
+int erase_and_read() noexcept {
+    thread_t const eraser = spawn(erase_window<knobs_>);
     thread_t const watcher = spawn(watch_window);
 
     // A pinned reader: the claim taken outside the partitions, each partition read under its own lock.
@@ -134,3 +152,6 @@ int main() {
     join(eraser);
     return 0;
 }
+
+extern "C" int partitioned_erase() { return erase_and_read<header_k>(); }
+extern "C" int partitioned_erase_one_stamp_false() { return erase_and_read<one_stamp_false_k>(); }

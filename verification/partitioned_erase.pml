@@ -2,8 +2,8 @@
  *  @file verification/partitioned_erase.pml
  *  @author Ash Vardanian
  *  @date September 16, 2026
- *  @brief A store-level window write spanning every partition of @c partitioned_store, as
- *      @c publish_every_part_ in `include/smashtable/partitioned_store.hpp` makes one.
+ *  @brief A store-level window write spanning every partition of @c partitioned_store under one
+ *      stamp, as @c publish_every_part_ in `include/smashtable/partitioned_store.hpp` makes one.
  *
  *  Every partition is held exclusively for the whole span by @c every_part_lock, one stamp drawn by
  *  @c begin_commit once all of them staged, every partition's tombstone written under that one
@@ -21,11 +21,10 @@
  *  the hold would see a consistent pair however the stamps were drawn.
  *
  *  No census. Nothing here prunes or reclaims, and a reader that only compares tombstone stamps
- *  against a snapshot needs the stamp alone, so this model defines @c buckets as zero: its claim is
- *  a bucket index nobody keeps and the stamp @c take_snapshot hands back, and @c retire_snapshot
- *  gives nothing back. What the buckets, the floors and the low-water mark buy a reader is
- *  `commit_order.pml`'s subject, and the two words per bucket they cost are what this model spends
- *  on a second partition instead.
+ *  against a snapshot needs the stamp alone, so its claim is the stamp the watermark's
+ *  read-modify-write hands back, and giving it back gives nothing back. What the buckets, the
+ *  floors and the low-water mark buy a reader is `commit_order/`'s subject, and the two words per
+ *  bucket they cost are what this model spends on a second partition instead.
  *
  *  Invariants:
  *  - the reader sees both keys erased or neither: its snapshot names the one stamp or does not;
@@ -33,30 +32,24 @@
  *    since the watermark reaches the stamp only once both tombstones carry it and the watermark's
  *    own read-modify-write carries them to whoever acquires it.
  *
- *  `-Dwithout_one_stamp` draws and lands a stamp per partition, which is what each part's own
- *  publication does when called in turn, and both observers catch the window half erased.
+ *  Left out: @c low_water_mark_, since nothing here prunes; @c generation_, which dates
+ *  transactions rather than their visibility; and a second committer, so the ring is never
+ *  contended here and what @c end_commit does when two commits land at once is
+ *  `commit_order_publication.pml`'s.
  *
- *  The words, eight of the module's nine: `mutex(0..1)` 0 and 1, `tombstone(0..1)` 2 and 3,
- *  @c commits 4, @c published_stamp 5, and `landed_at(0..1)` 6 and 7. Left out: @c head, @c members
- *  and @c floors, since the model keeps no census; @c low_water_mark_, since nothing here prunes;
- *  @c generation_, which dates transactions rather than their visibility; and a second committer,
- *  so the ring is never contended here and what @c end_commit does when two commits land at once is
- *  `commit_order.pml`'s.
+ *  @verify pass sc,rc11,far
+ *  @verify fail sc,rc11,far one_stamp=false: @c publish_every_part_ publishes every staged
+ *      partition under one stamp; with a stamp per partition, as each part's own publication draws,
+ *      a reader drawing its snapshot from the clock between two publications names the first
+ *      partition's stamp and not the second's, and both observers see the window half erased
  */
+#define partitions 2
+#define ring 2
+#define thread_count 3
+#define location_count (2 * partitions + 2 + ring)
+#define history_depth 6
 #include "weak_memory.pml"
 #include "spin_shared_mutex.pml"
-
-/** The threads, by role, apart from the processes that play them. */
-#define eraser_thread 0
-#define reader_thread 1
-#define watcher_thread 2
-#define partitions 2
-
-/** The ring, and no census at all, sized before the words are spelled over them. */
-#ifndef ring
-#define ring 2
-#endif
-#define buckets 0
 
 /** The words: each partition's mutex and its tombstone stamp, zero while the key is present, then
  *  the order's stamp counter, watermark and ring of landed marks. */
@@ -66,69 +59,70 @@
 #define published_stamp (2 * partitions + 1)
 #define landed_at(slot) (2 * partitions + 2 + (slot))
 
-/*  The words have to fit the module's @c location_count, which every model here shares. */
-#if 2 * partitions + 2 + ring > location_count
-#error "the partitions and the ring together outgrow the module's words"
+/** The knob: the header's choice, which a `@verify` line overrides to replay its counterexample. */
+#ifndef one_stamp
+#define one_stamp true
 #endif
 
 #include "commit_order_steps.pml"
 
 /** Every partition held ascending, the tombstones written, the stamp landed:
  *  @c partitioned_store::publish_every_part_. */
-active proctype eraser() {
+proctype eraser(byte t) {
     byte partition;
     int seen, observed, drawn;
     bool moved;
     // `every_part_lock`, ascending and exclusive, held from the first staging to the last prune
-    lock(eraser_thread, mutex(0));
-    lock(eraser_thread, mutex(1));
-#ifdef without_one_stamp
-    // Each part's own publication, called in turn: a stamp drawn and landed per partition
-    for (partition : 0 .. partitions - 1) {
-        draw_stamp(eraser_thread, drawn);
-        store(eraser_thread, tombstone(partition), order_relaxed, drawn);
-        land_stamp(eraser_thread, drawn)
-    };
-#else
-    // `begin_commit` once, every partition's tombstone written under that stamp, `end_commit` once
-    draw_stamp(eraser_thread, drawn);
-    for (partition : 0 .. partitions - 1) { store(eraser_thread, tombstone(partition), order_relaxed, drawn) };
-    land_stamp(eraser_thread, drawn);
-#endif
-    unlock(eraser_thread, mutex(1));
-    unlock(eraser_thread, mutex(0))
+    lock(t, mutex(0));
+    lock(t, mutex(1));
+    if
+    :: one_stamp ->
+        // `begin_commit` once, every tombstone written under that stamp, `end_commit` once
+        draw_stamp(t, drawn);
+        for (partition : 0 .. partitions - 1) { store(t, tombstone(partition), order_relaxed, drawn) };
+        land_stamp(t, drawn)
+    :: else ->
+        // Each part's own publication, called in turn: a stamp drawn and landed per partition
+        for (partition : 0 .. partitions - 1) {
+            draw_stamp(t, drawn);
+            store(t, tombstone(partition), order_relaxed, drawn);
+            land_stamp(t, drawn)
+        }
+    fi;
+    unlock(t, mutex(1));
+    unlock(t, mutex(0))
 }
 
 /** A pinned reader: the claim taken outside the partitions, each partition read under
  *  its own share. */
-active proctype reader() {
-    byte partition, joined;
+proctype reader(byte t) {
+    byte partition;
     int seen, snapshot, stamped;
     bool erased[partitions];
     // `take_snapshot`: the watermark read newest, which with no census is the whole claim
-    take_snapshot(reader_thread, joined, snapshot);
+    read_modify_write(t, published_stamp, order_acq_rel, snapshot, snapshot);
     for (partition : 0 .. partitions - 1) {
-        lock_shared(reader_thread, mutex(partition));
-        load(reader_thread, tombstone(partition), order_relaxed, stamped);
+        lock_shared(t, mutex(partition));
+        load(t, tombstone(partition), order_relaxed, stamped);
         erased[partition] = (stamped != 0 && stamped <= snapshot);
-        unlock_shared(reader_thread, mutex(partition))
+        unlock_shared(t, mutex(partition))
     };
     // The whole window or none of it: the snapshot names the one stamp or it does not
-    assert(erased[0] == erased[1]);
-    // `retire_snapshot`: the claim given back, which with no census gives nothing back
-    retire_snapshot(reader_thread, joined)
+    assert(erased[0] == erased[1])
 }
 
 /** The publication alone, with no partition held and no claim taken: what the one stamp buys a
  *  reader that the locks cannot. */
-active proctype watcher() {
+proctype watcher(byte t) {
     byte partition;
     int watermark, stamped;
     bool covered[partitions];
-    load(watcher_thread, published_stamp, order_acquire, watermark);
+    load(t, published_stamp, order_acquire, watermark);
     for (partition : 0 .. partitions - 1) {
-        load(watcher_thread, tombstone(partition), order_relaxed, stamped);
+        load(t, tombstone(partition), order_relaxed, stamped);
         covered[partition] = (stamped != 0 && stamped <= watermark)
     };
     assert(covered[0] == covered[1])
 }
+
+init { atomic { run eraser(0); run reader(1); run watcher(2) } }

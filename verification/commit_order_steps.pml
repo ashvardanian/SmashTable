@@ -13,22 +13,21 @@
  *  over the occupied buckets.
  *
  *  Include after `weak_memory.pml`, whose accesses every step here is spelled in, and after the
- *  model named its words. The words a model defines before the include:
+ *  model named its words and sized @c ring, which is @c ring_k. The words every model defines:
  *  - @c commits, the counter @c begin_commit adds to, which is @c commits_;
  *  - @c published_stamp, the watermark, which is @c published_stamp_;
- *  - @c landed_at of a slot in `0 .. ring - 1`, which is @c landed_ indexed by stamp;
+ *  - @c landed_at of a slot in `0 .. ring - 1`, which is @c landed_ indexed by stamp.
+ *
+ *  A model with a census also sizes @c buckets, which is @c buckets_k, and defines:
  *  - @c head, the monotone bucket cursor, which is @c head_;
  *  - @c members of a bucket in `0 .. buckets - 1`, the tagged live count, which is @c snapshots_;
  *  - @c floors of a bucket in `0 .. buckets - 1`, the watermark each bucket was opened at.
  *
- *  A model that keeps no census defines @c buckets as zero and names none of the last three; its
- *  @c take_snapshot is the watermark read alone and its @c retire_snapshot gives nothing back.
- *
- *  @c ring and @c buckets size the words, so a model that spells its own word indices defines both
- *  before this include rather than after it; the `#ifndef` defaults here are for a model that does
- *  not. One bucket is the head's own, so it has nowhere to rotate to and a reader handing over to
- *  the next pins the first one's floor for good; that is the configuration the `buckets_k >= 2`
- *  static assert refuses, and a model that wants to see it fail asks for it by name.
+ *  A model with no census never expands the census inlines, so it names none of those words: its
+ *  claim is the watermark's read-modify-write alone, and giving it back gives nothing back. One
+ *  bucket is the head's own, so it has nowhere to rotate to and a reader handing over to the next
+ *  pins the first one's floor for good; that is the configuration the `buckets_k >= 2` static
+ *  assert refuses, and a model that wants to see it fail asks for it by name.
  *
  *  Every modelled access is its own step, since the step boundary is what the memory model orders.
  *  The purely local statement that reads an access's result shares that access's @c atomic instead
@@ -36,40 +35,20 @@
  *  than one point per line; nothing an access can observe moves across such a boundary.
  *
  *  Every inline uses the caller's scratch, and a caller declares what its own calls reach:
- *  @c draw_stamp uses @c seen; @c land_stamp uses @c seen, @c observed and @c moved, and @c mark
- *  and the mark's own scratch where it republishes; @c take_snapshot uses @c observed, @c opened
- *  and @c exchanged; @c retire_snapshot uses @c observed, @c exchanged and @c mark;
- *  @c republish_mark uses @c observed, @c opened, @c least, @c scanned and @c exchanged;
- *  @c share_snapshot uses none. The full set is `int seen, observed, opened, least, mark`,
- *  `byte scanned` and `bool exchanged, moved`.
+ *  @c draw_stamp uses @c seen; @c land_stamp uses @c seen, @c observed and @c moved;
+ *  @c take_snapshot uses @c observed, @c opened and @c exchanged; @c retire_snapshot uses
+ *  @c observed, @c exchanged and @c mark; @c republish_mark uses @c observed, @c opened, @c least,
+ *  @c scanned and @c exchanged; @c share_snapshot uses none. The full set is
+ *  `int seen, observed, opened, least, mark`, `byte scanned` and `bool exchanged, moved`.
  *
- *  The weakenings, each expected to fail wherever a model asserts what it drops:
- *
- *  @c without_ring_check drops the wait in @c end_commit before a ring slot is reused, so a mark
- *  the watermark has not consumed is overwritten, which @c land_stamp asserts against as it stores.
- *
- *  @c without_done_release stores the landed mark relaxed, so a committer walking past another's
- *  mark carries none of that committer's writes to a reader.
- *
- *  @c without_advance_rmw reads the watermark with a plain acquire load before the walk, so two
- *  commits landing at once store-buffer past each other and a mark is left for the next commit.
- *
- *  @c without_watermark_first scans the buckets before reading the watermark, so a reader joining
- *  in between is counted by neither.
- *
- *  @c without_bucket_retag stores a bucket's floor before shutting it to arrivals, so a joiner is
- *  counted in a bucket whose floor is being replaced. No model here claims it fails, because a
- *  joiner reads its stamp after joining while an opener stores a floor it read before that, and the
- *  release sequence over the watermark leaves the floor at or below the snapshot whichever way the
- *  two interleave; what the retag buys is that the floor of a bucket with a member never moves at
- *  all, which is a shape rather than a value and which no assertion here names.
- *
- *  @c without_head_watermark seals the head bucket against the mark rather than against the
- *  watermark, which are equal by construction wherever that bucket holds the least floor, so the
- *  head never rotates and every later reader over-retains on a floor it has no reason to hold.
- *
- *  @c without_share_release posts the shared member relaxed, which `-Dmemory=far` lands only after
- *  the claim it was shared from has retired and drained the bucket.
+ *  The knobs, each set on the `@verify` lines of the scenarios whose assertions it breaks:
+ *  - @c ring_check, the wait in @c end_commit before a ring slot is reused;
+ *  - @c done_order, the order the landed mark is stored with;
+ *  - @c advance_read_modify_write, the read-modify-write that reads the watermark before the walk;
+ *  - @c watermark_first, the watermark read before the buckets are scanned;
+ *  - @c bucket_retag, a bucket shut to arrivals before its floor is stored;
+ *  - @c head_watermark, the head bucket sealed against the watermark rather than the mark;
+ *  - @c share_order, the order the shared member is posted with.
  *
  *  Left out: @c low_water_mark_, since a model acts on the mark it just computed, which is the
  *  freshest such a read can be, and the word is only ever raised with a maximum and only ever read
@@ -78,37 +57,32 @@
  *  `waiting_policy.pml` covers over the two locks; and the @c solitary_k path, which has no second
  *  thread to order against.
  */
-
-/** How many commits may sit past the watermark before a landing one waits, which is @c ring_k. */
-#ifndef ring
-#define ring 2
-#endif
-
-/** How many floors the census keeps, which is @c buckets_k; zero keeps none. */
-#ifndef buckets
-#define buckets 2
-#endif
-
 #if ring < 1
 #error "ring is one or more"
 #endif
-#if buckets < 0
-#error "buckets is zero or more"
-#endif
 
-#ifdef without_done_release
-#define landed_order order_relaxed
-#else
-#define landed_order order_release
+/** The knobs: the header's choices, which `@verify` lines override to replay counterexamples. */
+#ifndef ring_check
+#define ring_check true
 #endif
-
-#ifdef without_share_release
-#define share_order order_relaxed
-#else
+#ifndef done_order
+#define done_order order_release
+#endif
+#ifndef advance_read_modify_write
+#define advance_read_modify_write true
+#endif
+#ifndef watermark_first
+#define watermark_first true
+#endif
+#ifndef bucket_retag
+#define bucket_retag true
+#endif
+#ifndef head_watermark
+#define head_watermark true
+#endif
+#ifndef share_order
 #define share_order order_release
 #endif
-
-#if buckets > 0
 
 /** The head value that opened a bucket sits above its live count in one word, as @c snapshots_
  *  packs a tag over a count; eight leaves room for every count and every head value a model
@@ -159,16 +133,7 @@ inline open_next_bucket(t, opened_head, watermark) {
         exchanged = live_of(observed) == 0 && tag_of(observed) != ((opened_head + 1) % census_scale)
     };
     if
-    :: exchanged ->
-#ifdef without_bucket_retag
-        store(t, floors(bucket_of(opened_head + 1)), order_relaxed, watermark);
-        compare_exchange(t, members(bucket_of(opened_head + 1)), order_acq_rel, observed,
-                         tagged(opened_head + 1), exchanged);
-        if
-        :: exchanged -> raise_word(t, head, opened_head + 1)
-        :: else
-        fi
-#else
+    :: exchanged && bucket_retag ->
         compare_exchange(t, members(bucket_of(opened_head + 1)), order_acq_rel, observed,
                          tagged(opened_head + 1), exchanged);
         if
@@ -177,7 +142,14 @@ inline open_next_bucket(t, opened_head, watermark) {
             raise_word(t, head, opened_head + 1)
         :: else
         fi
-#endif
+    :: exchanged && !bucket_retag ->
+        store(t, floors(bucket_of(opened_head + 1)), order_relaxed, watermark);
+        compare_exchange(t, members(bucket_of(opened_head + 1)), order_acq_rel, observed,
+                         tagged(opened_head + 1), exchanged);
+        if
+        :: exchanged -> raise_word(t, head, opened_head + 1)
+        :: else
+        fi
     :: else
     fi;
     exchanged = false
@@ -212,27 +184,25 @@ inline scan_floors(t, least_floor) {
  *  construction, so comparing those two would leave the head where it is and pin every later reader
  *  to a floor it has no reason to hold. */
 inline republish_mark(t, oldest_needed) {
-#ifdef without_watermark_first
-    scan_floors(t, least);
-    load(t, head, order_relaxed, opened);
-    read_modify_write(t, published_stamp, order_acq_rel, oldest_needed, oldest_needed);
-#else
-    read_modify_write(t, published_stamp, order_acq_rel, oldest_needed, oldest_needed);
-    load(t, head, order_relaxed, opened);
-    scan_floors(t, least);
-#endif
-#ifdef without_head_watermark
     if
-    :: least != no_floor && least < oldest_needed -> oldest_needed = least
-    :: else
+    :: watermark_first ->
+        read_modify_write(t, published_stamp, order_acq_rel, oldest_needed, oldest_needed);
+        load(t, head, order_relaxed, opened);
+        scan_floors(t, least)
+    :: else ->
+        scan_floors(t, least);
+        load(t, head, order_relaxed, opened);
+        read_modify_write(t, published_stamp, order_acq_rel, oldest_needed, oldest_needed)
     fi;
-    atomic { load(t, floors(bucket_of(opened)), order_relaxed, observed); exchanged = observed < oldest_needed };
-    if
-    :: exchanged -> open_next_bucket(t, opened, oldest_needed)
-    :: else
-    fi
-#else
-    atomic { load(t, floors(bucket_of(opened)), order_relaxed, observed); exchanged = observed < oldest_needed };
+    // The seal: against the watermark, or without `head_watermark`, against the mark lowered first
+    atomic {
+        if
+        :: !head_watermark && least != no_floor && least < oldest_needed -> oldest_needed = least
+        :: else
+        fi;
+        load(t, floors(bucket_of(opened)), order_relaxed, observed);
+        exchanged = observed < oldest_needed
+    };
     if
     :: exchanged -> open_next_bucket(t, opened, oldest_needed)
     :: else
@@ -241,7 +211,6 @@ inline republish_mark(t, oldest_needed) {
     :: least != no_floor && least < oldest_needed -> oldest_needed = least
     :: else
     fi
-#endif
 }
 
 /** Models @c basic_commit_order::share_snapshot in `shared.hpp`: one more member of the bucket a
@@ -267,15 +236,6 @@ inline retire_snapshot(t, joined) {
     fi
 }
 
-#else
-
-/*  No census: nothing here counts readers, so a shared claim is a bucket index nobody keeps and a
- *  retired one gives nothing back. */
-inline share_snapshot(t, held_bucket, joined) { joined = held_bucket }
-inline retire_snapshot(t, joined) { skip }
-
-#endif
-
 /** Models @c basic_commit_order::begin_commit in `shared.hpp`: one unconditional add, so a draw
  *  never waits and never refuses. */
 inline draw_stamp(t, drawn) {
@@ -284,33 +244,38 @@ inline draw_stamp(t, drawn) {
 
 /** Models @c basic_commit_order::end_commit in `shared.hpp`: the slot this stamp is about to reuse
  *  waited for, the mark released into it, the watermark read newest, and the ring walked while the
- *  next slot carries the next stamp. */
+ *  next slot carries the next stamp. A model with a census follows it with @c republish_mark where
+ *  @c moved says the walk moved the watermark, which is the rest of @c end_commit. */
 inline land_stamp(t, drawn) {
-#ifndef without_ring_check
-    // Waited here rather than at the draw, so the write already happened during the overlap rather
-    // than after it; the slot still holds `drawn - ring`, and overwriting that mark loses it for good.
-    do
-    :: atomic {
-           load(t, published_stamp, order_acquire, seen);
-           if
-           :: drawn - seen > ring -> skip
-           :: else -> break
-           fi
-       }
-    od;
-#endif
+    // Waited here rather than at the draw, so the write happened during the overlap rather than
+    // after it; the slot still holds `drawn - ring`, and overwriting that mark loses it for good.
+    if
+    :: ring_check ->
+        do
+        :: atomic {
+               load(t, published_stamp, order_acquire, seen);
+               if
+               :: drawn - seen > ring -> skip
+               :: else -> break
+               fi
+           }
+        od
+    :: else
+    fi;
     // The slot's previous stamp is one the watermark already passed, or its mark would be lost.
     atomic {
         assert(drawn - newest_value(published_stamp) <= ring);
-        store(t, landed_at(drawn % ring), landed_order, drawn)
+        store(t, landed_at(drawn % ring), done_order, drawn)
     };
-#ifdef without_advance_rmw
-    atomic { load(t, published_stamp, order_acquire, seen); moved = false };
-#else
     // Reading the newest, not merely loading: a plain load could miss a neighbour's mark and leave
     // ours for the next commit to publish.
-    atomic { read_modify_write(t, published_stamp, order_acq_rel, seen, seen); moved = false };
-#endif
+    atomic {
+        if
+        :: advance_read_modify_write -> read_modify_write(t, published_stamp, order_acq_rel, seen, seen)
+        :: else -> load(t, published_stamp, order_acquire, seen)
+        fi;
+        moved = false
+    };
     do
     :: atomic {
            load(t, landed_at((seen + 1) % ring), order_acquire, observed);
@@ -327,24 +292,13 @@ inline land_stamp(t, drawn) {
            fi
        }
     od
-#if buckets > 0
-    ;
-    if
-    :: moved -> republish_mark(t, mark)
-    :: else
-    fi
-#endif
 }
 
-/** Models @c basic_commit_order::take_snapshot in `shared.hpp`: the bucket joined, then the
- *  watermark read newest, which is the reader's half of the pair - a mark computed after this
- *  counts the member above, and one computed before it stands at or below the stamp returned. There
- *  is no re-read: the bucket's floor is what pins retention. */
+/** Models @c basic_commit_order::take_snapshot in `shared.hpp` over a census: the bucket joined,
+ *  then the watermark read newest, which is the reader's half of the pair: a mark computed after
+ *  this counts the member above, and one computed before it stands at or below the stamp returned.
+ *  There is no re-read: the bucket's floor is what pins retention. */
 inline take_snapshot(t, joined, snapshot) {
-#if buckets > 0
     join_head(t, joined);
-#else
-    joined = 0;
-#endif
     read_modify_write(t, published_stamp, order_acq_rel, snapshot, snapshot)
 }

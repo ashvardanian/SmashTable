@@ -89,24 +89,38 @@ jobs:
           test -z "$failed"
 
   verify_models:
-    name: Check Promela models
+    name: Check Promela models and GenMC clients
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - name: Checkout
         uses: actions/checkout@v7
-        with:
-          path: smashtable
-      - name: Checkout ForkUnion for the memory model and the runner
+      - name: Install Spin, Clang and the GenMC build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y spin cmake clang-20 llvm-20-dev libffi-dev zlib1g-dev libedit-dev
+      - name: Checkout GenMC
         uses: actions/checkout@v7
         with:
-          repository: ashvardanian/ForkUnion
-          ref: main-v4
-          path: forkunion
-      - name: Install Spin
-        run: sudo apt-get update && sudo apt-get install -y spin
-      - name: Check the models
-        run: smashtable/verification/check.sh
+          repository: MPI-SWS/genmc
+          ref: 9f6c4c0772d0c42b325681581acc6a0f3eb9b5f7
+          path: genmc
+      - name: Restore the GenMC build
+        id: genmc
+        uses: actions/cache@v6
+        with:
+          path: genmc/build
+          key: genmc-9f6c4c0-clang-20
+      - name: Build GenMC
+        if: steps.genmc.outputs.cache-hit != 'true'
+        run: |
+          cmake -S genmc -B genmc/build -D CMAKE_BUILD_TYPE=Release -D CMAKE_C_COMPILER=clang-20 -D CMAKE_CXX_COMPILER=clang++-20 -D LLVM_DIR=/usr/lib/llvm-20/lib/cmake/llvm
+          cmake --build genmc/build --parallel
+      - name: Check the models and the clients
+        run: verification/check.sh
+        env:
+          GENMC: ${{ github.workspace }}/genmc/build/bin/genmc
+          GENMC_CLANG: clang++-20
 
   test_ubuntu:
     name: ${{ matrix.name }}

@@ -2,9 +2,9 @@
  *  @file verification/waiting_policy.pml
  *  @author Ash Vardanian
  *  @date September 18, 2026
- *  @brief What a loser of a lock does between two attempts, as `-Dwaiting=`: the policy @c lock and
- *      @c lock_shared of `spin_shared_mutex.pml`, and the slot lock of `atomic_hash_table.pml`,
- *      plug into their retry loops.
+ *  @brief What a loser of a lock does between two attempts, as the @c waiting knob: the policy
+ *      @c lock and @c lock_shared of `spin_shared_mutex.pml`, and the slot lock of
+ *      `atomic_hash_table/`, plug into their retry loops.
  *
  *  A policy decides how long a waiter takes to notice that the word moved, never what the word may
  *  say, so every safety property either model asserts has to hold under all four of them, and a
@@ -13,7 +13,7 @@
  *  - @c spinning, the default: the word re-read until it admits the attempt.
  *  - @c pausing: the same, with a step that touches no location between two reads.
  *  - @c on_the_address: a wait on the word itself, which returns as soon as the word differs from
- *    the one the failed attempt read - possibly one that still refuses, so the loop runs again.
+ *    the one the failed attempt read, possibly one that still refuses, so the loop runs again.
  *  - @c parking: the waiter hands the core over and retries whenever it is scheduled again, which
  *    may be at any moment; it blocks on nothing and so admits the most interleavings of the four.
  *
@@ -39,12 +39,11 @@
  *  @param[in] word The location waited on.
  *  @param[in] admits What a re-reading waiter blocks on.
  */
-#if waiting == spinning
-inline wait_until(word, admits) { (admits) }
-#elif waiting == pausing
-inline wait_until(word, admits) { skip; (admits) }
-#elif waiting == on_the_address
-inline wait_until(word, admits) { (newest_value(word) != seen) }
-#else
-inline wait_until(word, admits) { skip }
-#endif
+inline wait_until(word, admits) {
+    if
+    :: waiting == spinning -> (admits)
+    :: waiting == pausing -> skip; (admits)
+    :: waiting == on_the_address -> (newest_value(word) != seen)
+    :: waiting == parking -> skip
+    fi
+}

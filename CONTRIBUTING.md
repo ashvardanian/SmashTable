@@ -114,14 +114,14 @@ SMASHTABLE_FILTER="sortedmap.*str" pytest test/
 
 ### Model Checking
 
-The commit protocols are also checked as Promela models under Spin, and two of them as GenMC clients over `std::atomic`; the README's Model Checking section says what each model covers.
-The memory model comes from ForkUnion's `verification/`, checked out beside this repository, which is what CI does:
+The commit protocols are also checked as Promela models under Spin, and two of them as GenMC clients over `std::atomic`; `verification/README.md` says what each model covers.
 
 ```bash
-./verification/check.sh
+./verification/check.sh                          # everything; GenMC is skipped when absent
+./verification/check.sh staged_batch/flat.pml    # one scenario
 ```
 
-Every `verify` line names a model, the verdict expected of it and its defines, and the run fails if a deliberately broken variant passes.
+Every scenario and client names the verdicts expected of it in its own `@verify` lines, and the run fails if a deliberately broken variant passes.
 
 ### Git Hooks
 

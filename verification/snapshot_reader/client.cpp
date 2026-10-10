@@ -1,5 +1,5 @@
 /**
- *  @file verification/snapshot_reader.cpp
+ *  @file verification/snapshot_reader/client.cpp
  *  @author Ash Vardanian
  *  @date September 15, 2026
  *  @brief GenMC client for @c snapshot_store::reader_t against a commit that prunes behind it,
@@ -11,38 +11,53 @@
  *  listed one by one: @c take_snapshot joins the head bucket and then reads the watermark,
  *  @c share_snapshot counts a transaction in a live claim's bucket, @c retire_snapshot gives a
  *  member back, and @c republish_mark walks the watermark and the occupied floors, which is what
- *  @c basic_commit_order does in @c shared.hpp. A claim is a bucket index and a stamp.
- *
- *  @c -Dscenario=adoption has a transaction adopt the reader's stamp and read after the reader has
- *  closed; the default reads twice through the reader itself. @c -Dwithout_held_claim gives the
- *  claim back before the reads, @c -Dwithout_join_first reads the watermark before joining the
- *  bucket, and @c -Dwithout_shared_claim adopts the stamp with no member of its own: each lets a
- *  prune free a version still being read. The same scenarios are @c snapshot_reader.pml.
+ *  @c basic_commit_order does in @c shared.hpp. A claim is a bucket index and a stamp. The same
+ *  scenarios are `reading.pml` and `adoption.pml`.
  *
  *  One commit, as in the model. With two, @c open_next_bucket_ has two openers that can each store
- *  one bucket's floor with a plain relaxed store and no order between them - benign, since either
- *  mark was computed before any member of that bucket read its own stamp - but GenMC's in-place
- *  revisiting refuses unordered writes outright, so a second committer makes the client unrunnable
- *  rather than wrong. @c -Dwithout_watermark_first is the weakening that needs the second commit,
- *  and @c snapshot_reader.pml carries it.
+ *  one bucket's floor with a plain relaxed store and no order between them, which is benign, since
+ *  either mark was computed before any member of that bucket read its own stamp, but GenMC's
+ *  in-place revisiting refuses unordered writes outright, so a second committer makes the client
+ *  unrunnable rather than wrong. `watermark_first` is the knob that needs the second commit, and
+ *  `reading.pml` carries it.
  *
  *  Left out, as in the model: the cached @c low_water_mark_ word, since a commit prunes at the mark
  *  it just computed, which is the freshest such a read can be; and @c generation_, which dates
  *  transactions rather than their visibility.
+ *
+ *  Every mutant fails under `sc` as well, since each turns on an interleaving rather than a
+ *  reordering.
+ *
+ *  @verify pass sc,rc11,imm reading
+ *  @verify fail sc,rc11,imm reading_held_claim_false: the reader holds its claim until after its
+ *      last read; giving it back before the reads, the commit's prune frees the version out from
+ *      under the first of them
+ *  @verify fail sc,rc11,imm reading_join_first_false: `take_snapshot` joins the bucket before it
+ *      reads the watermark; reading the watermark first, a mark computed in that gap counts nobody
+ *      while standing above the stamp the reader is handed
+ *  @verify pass sc,rc11,imm adoption
+ *  @verify fail sc,rc11,imm adoption_shared_claim_false: the adopting transaction is counted in the
+ *      reader's bucket before the reader leaves it; copying the stamp alone, the drain that follows
+ *      lets the mark past it
+ *  @verify fail sc,rc11,imm adoption_join_first_false: the adopted stamp is only as pinned as the
+ *      claim it came from; with the watermark read before the bucket is joined, a mark computed in
+ *      that gap passes it
  */
 #include <atomic> // `std::atomic` - the mutex, the stamp counter, the watermark, the ring and the census
 
 #include "genmc.hpp"
 
-/** The knob's values are integers, so a typo fails the range check below. */
-#define reading 1
-#define adoption 2
-#ifndef scenario
-#define scenario reading
-#endif
-#if scenario < reading || scenario > adoption
-#error "scenario is reading or adoption"
-#endif
+/** The header's choices; each mutant entry changes one. */
+struct knobs_t {
+    bool held_claim = true;
+    bool join_first = true;
+    bool shared_claim = true;
+};
+
+constexpr knobs_t header_k {};
+constexpr knobs_t held_claim_false_k {.held_claim = false};
+constexpr knobs_t join_first_false_k {.join_first = false};
+constexpr knobs_t shared_claim_false_k {.shared_claim = false};
 
 /** A mutex in one word: an acquiring exchange takes it from zero, a releasing store returns it. */
 struct spin_mutex_t {
@@ -148,15 +163,9 @@ int scan_floors() noexcept { return folded_floor(1, folded_floor(0, no_floor_k))
  *  @return The least of the watermark and every occupied bucket's floor.
  */
 int republish_mark() noexcept {
-#ifdef without_watermark_first
-    int const least = scan_floors();
-    bucket_word_t const opened = head.load(std::memory_order_relaxed);
-    int mark = published_stamp.fetch_add(0, std::memory_order_acq_rel);
-#else
     int mark = published_stamp.fetch_add(0, std::memory_order_acq_rel);
     bucket_word_t const opened = head.load(std::memory_order_relaxed);
     int const least = scan_floors();
-#endif
     if (least != no_floor_k && least < mark) mark = least;
     // Sealed here rather than on a timer: a head bucket whose floor has fallen behind the mark is one
     // every later reader over-retains on.
@@ -170,14 +179,16 @@ int republish_mark() noexcept {
  *      stands at or below the stamp returned.
  *  @return The snapshot @p claim now reads at.
  */
+template <knobs_t const &knobs_>
 int take_snapshot(snapshot_claim_t &claim) noexcept {
-#ifdef without_join_first
-    claim.snapshot = published_stamp.fetch_add(0, std::memory_order_acq_rel);
-    claim.bucket = record_snapshot();
-#else
-    claim.bucket = record_snapshot();
-    claim.snapshot = published_stamp.fetch_add(0, std::memory_order_acq_rel);
-#endif
+    if constexpr (knobs_.join_first) {
+        claim.bucket = record_snapshot();
+        claim.snapshot = published_stamp.fetch_add(0, std::memory_order_acq_rel);
+    }
+    else {
+        claim.snapshot = published_stamp.fetch_add(0, std::memory_order_acq_rel);
+        claim.bucket = record_snapshot();
+    }
     return claim.snapshot;
 }
 
@@ -258,17 +269,13 @@ void *commit(void *) noexcept {
     return nullptr;
 }
 
-int main() {
+/** `reader_t`: the claim joins the census and holds the stamp both reads are answered at. */
+template <knobs_t const &knobs_>
+int read_twice() noexcept {
     thread_t const committer = spawn(commit);
-
-    // reader_t: the claim joins the census and holds the stamp every read is answered at
     snapshot_claim_t reader;
-    int const snapshot = take_snapshot(reader);
-
-#if scenario == reading
-#ifdef without_held_claim
-    retire_snapshot(reader);
-#endif
+    int const snapshot = take_snapshot<knobs_>(reader);
+    if constexpr (!knobs_.held_claim) retire_snapshot(reader);
     // reader_t::find, twice, each under the partition's mutex and neither writing anything
     partition_mutex.lock();
     int const first = resolve(snapshot);
@@ -278,29 +285,34 @@ int main() {
     int const second = resolve(snapshot);
     verify(second == first && !version_freed[second]);
     partition_mutex.unlock();
-#ifndef without_held_claim
-    retire_snapshot(reader);
-#endif
-#else
-    // transaction_t(store, reader): the transaction counted in the reader's bucket while the reader is in it
+    if constexpr (knobs_.held_claim) retire_snapshot(reader);
+    join(committer);
+    return 0;
+}
+
+/** `transaction_t(store, reader)`: the transaction counted in the reader's bucket while the reader is
+ *  in it, then the reader closes, leaving the transaction to pin the stamp both of them read at. */
+template <knobs_t const &knobs_>
+int adopt() noexcept {
+    thread_t const committer = spawn(commit);
+    snapshot_claim_t reader;
+    take_snapshot<knobs_>(reader);
     snapshot_claim_t adopting;
-#ifdef without_shared_claim
-    adopting.bucket = reader.bucket;
-    adopting.snapshot = reader.snapshot;
-#else
-    share_snapshot(reader, adopting);
-#endif
-    // the reader closes, leaving the transaction to pin the stamp both of them read at
+    if constexpr (knobs_.shared_claim) share_snapshot(reader, adopting);
+    else adopting = reader;
     retire_snapshot(reader);
     partition_mutex.lock();
     int const adopted = resolve(adopting.snapshot);
     verify(adopted != none_k && !version_freed[adopted]);
     partition_mutex.unlock();
-#ifndef without_shared_claim
-    retire_snapshot(adopting);
-#endif
-#endif
-
+    if constexpr (knobs_.shared_claim) retire_snapshot(adopting);
     join(committer);
     return 0;
 }
+
+extern "C" int reading() { return read_twice<header_k>(); }
+extern "C" int reading_held_claim_false() { return read_twice<held_claim_false_k>(); }
+extern "C" int reading_join_first_false() { return read_twice<join_first_false_k>(); }
+extern "C" int adoption() { return adopt<header_k>(); }
+extern "C" int adoption_shared_claim_false() { return adopt<shared_claim_false_k>(); }
+extern "C" int adoption_join_first_false() { return adopt<join_first_false_k>(); }
