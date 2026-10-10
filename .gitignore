@@ -44,3 +44,16 @@ __pycache__/
 .claude/
 /compile_commands.json
 target/
+
+# Windows compiler, build-runner, and local validation artifacts
+/.vs/
+/Testing/
+*.obj
+*.lib
+*.exp
+*.pdb
+*.ilk
+*.exe
+/.tmp/
+/tmp/
+/.venv*/

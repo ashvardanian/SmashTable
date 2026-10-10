@@ -43,6 +43,14 @@
 # `python/` directly, as a wheel build has no use for the test and install machinery below.
 cmake_minimum_required(VERSION 3.21)
 
+# Embedded debug information avoids depending on a running MSVC PDB server during probes.
+if (POLICY CMP0141)
+    cmake_policy(SET CMP0141 NEW)
+    if (NOT DEFINED CMAKE_MSVC_DEBUG_INFORMATION_FORMAT)
+        set(CMAKE_MSVC_DEBUG_INFORMATION_FORMAT "$<$<CONFIG:Debug,RelWithDebInfo>:Embedded>")
+    endif ()
+endif ()
+
 # Leverage `ccache` where it is installed, which turns a rebuild of an unchanged translation unit into a
 # lookup. This tree compiles 16 of them, several taking tens of seconds, so the cache earns its keep.
 find_program(CCACHE_PROGRAM ccache)
@@ -209,8 +217,13 @@ if (SMASHTABLE_BUILD_TEST)
         # `--expt-relaxed-constexpr` is what makes the library's `constexpr` surface device-callable;
         # without it every probe, lock and unlock is a host function a kernel may not call.
         target_compile_options(
-            smashtable_test_concurrent_cuda PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>
+            smashtable_test_concurrent_cuda PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>"
         )
+        if (MSVC)
+            target_compile_options(
+                smashtable_test_concurrent_cuda PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>"
+            )
+        endif ()
         message(STATUS "smashtable: CUDA test enabled for ${CMAKE_CUDA_ARCHITECTURES}")
     endif ()
 

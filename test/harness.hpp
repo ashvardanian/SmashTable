@@ -254,9 +254,13 @@ struct file_output_iterator_t {
  *  no buffer to size: a long @c what() prints whole instead of being truncated to fit.
  */
 template <typename... args_types_>
-inline void print_line(std::FILE *stream, std::format_string<args_types_...> pattern, args_types_ &&...args) noexcept {
+inline void print_line([[maybe_unused]] std::FILE *stream, [[maybe_unused]] std::format_string<args_types_...> pattern,
+                       [[maybe_unused]] args_types_ &&...args) noexcept {
+    // Host formatting must stay out of NVCC's relaxed constexpr device pass.
+#if !defined(__CUDA_ARCH__)
     std::format_to(file_output_iterator_t {stream}, pattern, std::forward<args_types_>(args)...);
     std::fputc('\n', stream);
+#endif
 }
 
 #pragma endregion Formatted Output
@@ -364,7 +368,8 @@ struct machine_t {
 inline machine_t probe_machine() noexcept { return {detect_row_kit()}; }
 
 /** Prints the version line, the kits compiled and runnable, and the kit dispatch picks. */
-inline void print(machine_t const &machine) noexcept {
+inline void print([[maybe_unused]] machine_t const &machine) noexcept {
+#if !defined(__CUDA_ARCH__)
     auto const print_kits = [](char const *label, bool (*holds)(row_kit_t) noexcept) noexcept {
         file_output_iterator_t output = std::format_to(file_output_iterator_t {stdout}, "- {}:", label);
         char const *separator = " ";
@@ -377,6 +382,7 @@ inline void print(machine_t const &machine) noexcept {
     print_kits("Compiled for", row_kit_compiled);
     print_kits("This machine", row_kit_supported);
     print_line(stdout, "- Dispatches to: {}", name_of(machine.detected));
+#endif
 }
 
 #pragma endregion Settings

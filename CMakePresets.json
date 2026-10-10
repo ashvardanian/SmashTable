@@ -5,7 +5,7 @@
     {
       "name": "base",
       "hidden": true,
-      "description": "Ninja, a build tree named after the preset, and a compilation database for the language server. No compiler is pinned here: `debug` and `release` inherit `clang`, and a CI row overrides it with -D CMAKE_CXX_COMPILER.",
+      "description": "Ninja, a flat build_<preset> directory, and a compilation database. Select the compiler through a preset, CC/CXX, or CMakeUserPresets.json.",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/build_${presetName}",
       "cacheVariables": {
@@ -26,14 +26,19 @@
       "hidden": true,
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Windows" }
     },
-
     {
       "name": "debug",
       "inherits": ["base", "clang"],
       "description": "Warnings are errors here, which is the bar the pre-release workflow holds.",
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug" },
+      "displayName": "Debug"
     },
-    { "name": "release", "inherits": ["base", "clang"], "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" } },
+    {
+      "name": "release",
+      "inherits": ["base", "clang"],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
+      "displayName": "Release"
+    },
     {
       "name": "asan",
       "inherits": ["base", "gcc"],
@@ -73,13 +78,21 @@
         "CMAKE_BUILD_TYPE": "Release",
         "SMASHTABLE_BUILD_CUDA": "ON",
         "CMAKE_CUDA_ARCHITECTURES": "90;100"
-      }
+      },
+      "displayName": "CUDA - tests"
     },
     {
-      "name": "msvc_x64",
+      "name": "msvc2026_x64",
       "inherits": ["base", "windows"],
       "generator": "Visual Studio 18 2026",
-      "architecture": "x64"
+      "architecture": "x64",
+      "displayName": "Windows x64 - Visual Studio 2026"
+    },
+    {
+      "name": "msvc2022_x64",
+      "inherits": "msvc2026_x64",
+      "displayName": "Windows x64 - Visual Studio 2022",
+      "generator": "Visual Studio 17 2022"
     }
   ],
   "buildPresets": [
@@ -89,7 +102,8 @@
     { "name": "tsan", "configurePreset": "tsan" },
     { "name": "linux_i386", "configurePreset": "linux_i386" },
     { "name": "cuda", "configurePreset": "cuda" },
-    { "name": "msvc_x64", "configurePreset": "msvc_x64", "configuration": "Release" }
+    { "name": "msvc2026_x64", "configurePreset": "msvc2026_x64", "configuration": "Release" },
+    { "name": "msvc2022_x64", "configurePreset": "msvc2022_x64", "configuration": "Release" }
   ],
   "testPresets": [
     {
@@ -109,7 +123,8 @@
       "configurePreset": "cuda",
       "filter": { "include": { "name": "test_atomic_cuda" } }
     },
-    { "name": "msvc_x64", "inherits": "base", "configurePreset": "msvc_x64", "configuration": "Release" }
+    { "name": "msvc2026_x64", "inherits": "base", "configurePreset": "msvc2026_x64", "configuration": "Release" },
+    { "name": "msvc2022_x64", "inherits": "base", "configurePreset": "msvc2022_x64", "configuration": "Release" }
   ],
   "workflowPresets": [
     {

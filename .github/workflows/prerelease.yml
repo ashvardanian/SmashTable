@@ -235,11 +235,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Configure
-        run: cmake --preset msvc_x64
+        run: cmake --preset msvc2026_x64
       - name: Build
-        run: cmake --build --preset msvc_x64 --parallel
+        run: cmake --build --preset msvc2026_x64 --parallel
       - name: Test
-        run: ctest --preset msvc_x64
+        run: ctest --preset msvc2026_x64
 
   test_python:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
