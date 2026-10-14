@@ -1,0 +1,15 @@
+[package]
+name = "smashtable"
+description = "Associative containers with DBMS-like transactions, as C++20 headers for crates that build them through CMake"
+version = "1.0.0-rc.1"
+edition = "2021"
+authors = ["Ash Vardanian"]
+license = "Apache-2.0"
+repository = "https://github.com/ashvardanian/SmashTable"
+include = ["/Cargo.toml", "/build.rs", "/rust/**", "/CMakeLists.txt", "/VERSION", "/cmake/**", "/include/**"]
+# Cargo hands `DEP_SMASHTABLE_SOURCE` to dependents only from a package with a `links` key.
+links = "smashtable"
+
+[lib]
+name = "smashtable"
+path = "rust/lib.rs"
