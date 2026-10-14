@@ -29,9 +29,9 @@
 #     `test/unordered.hpp` instead, including the threaded ones.
 #   * smashtable_test_monotonic_hash - the transactional store over the open-addressed table,
 #     running only the point-access suites an unordered core can answer.
-#   * smashtable_test_row_search, _flat_set, _ring - the ordered kits: every compiled row kit the processor
-#     runs against the serial kit, the static B-tree and S+ tree against a sorted array, the micro-set
-#     through each kit, and the ring.
+#   * smashtable_test_row_search, _flat_set, _ring, _elias_fano - the ordered kits: every compiled row kit the
+#     processor runs against the serial kit, the static B-tree and S+ tree against a sorted array, the micro-set
+#     through each kit, the ring, and the Elias-Fano sequence against its source array.
 #   * smashtable_bench_row_search - row kits per row width, and both immutable layouts against a binary
 #     search, printing a machine block. Needs `-D SMASHTABLE_BUILD_BENCH=ON` and is never registered
 #     with CTest, so no suite pays for compiling it.
@@ -175,6 +175,7 @@ if (SMASHTABLE_BUILD_TEST)
               row_search
               flat_set
               ring
+              elias_fano
     )
         add_executable(smashtable_test_${subject} test/${subject}.cpp)
         target_include_directories(smashtable_test_${subject} PRIVATE test/)

@@ -14,7 +14,7 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 
 ```bash
   basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring
-  immutable_*        → built once from sorted keys   B-tree · S+ tree
+  immutable_*        → built once from sorted keys   B-tree · S+ tree · Elias-Fano
   atomic_*           → pinned, GPU-capable        hash
        ↑ ::adopt() moves one allocation between the two, no rehash, no copy
 
@@ -42,6 +42,7 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `basic_ring`                | …                       |  one thread   |      …       |         …         |
 | `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
 | `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
+| `immutable_elias_fano`      | …                       |    none ¹⁰    |      …       |     `select`      |
 | `atomic_hash_table`         | … ⁴                     |  per slot ⁴   |      …       |         …         |
 | `monotonic_store`           | Monotonic Atomic View ⁶ |  one thread   |      ✔       |     inherits      |
 | `snapshot_store`            | Snapshot ⁷              |  one thread   |      ✔       |    inherits ²     |
@@ -469,7 +470,8 @@ Headers group as:
 
   Immutable, built once from a sorted span
     ├─ immutable_b_tree<T, KeysPerRow, Kit, Alloc>     # keys on every level
-    └─ immutable_splus_tree<T, KeysPerRow, Kit, Alloc> # every key in the leaves, separators above
+    ├─ immutable_splus_tree<T, KeysPerRow, Kit, Alloc> # every key in the leaves, separators above
+    └─ immutable_elias_fano<T, Alloc>                  # non-decreasing integers in a few bits apiece
 
   atomic_*              → Pinned core. Fixed capacity, atomic per slot, callback reads.
     └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
@@ -500,6 +502,7 @@ A core that can grow repoints the regions every live slot reference and every no
 | The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                       | …                                    |
 | The same, and keyed                         | `basic_hash_table`                                       | …                                    |
 | Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`              | …                                    |
+| Built once from sorted integers, compressed | `immutable_elias_fano`                                   | …                                    |
 | Many threads, capacity fixed up front       | `atomic_hash_table`                                      | …                                    |
 | Many threads, and the container still grows | any core above                                           | `locked_store` · `partitioned_store` |
 | Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store` | either wrapper                       |
@@ -597,6 +600,20 @@ A 16-byte key is stored either interleaved or split into a column of high words 
 
 `immutable_b_set` and `immutable_splus_set` hold bare keys; `immutable_b_map` and `immutable_splus_map` pair each key with a value.
 A map keeps the rows byte-identical to its set twin and puts the values in one array the rank indexes, so every kit still loads a row of nothing but keys, and `mapped_at(rank)` costs one further cache line.
+
+### Elias-Fano Sequences
+
+> `smashtable/immutable_elias_fano.hpp`
+
+`immutable_elias_fano` keeps non-decreasing integers - the offsets of variable-length rows, say - in at most 2 + ⌈log₂(universe / count)⌉ bits apiece, and `select(i)` reads the `i`-th one back in constant time.
+The low bits of every value are packed side by side and the high bits are stored in unary, with every 256th set bit's position sampled, so a `select` jumps to a sample and counts a handful of words.
+`make` takes the values whole, or pulls them in order through a callback, so a column of offsets streams in from storage without ever sitting in memory at full width.
+
+```cpp
+std::uint64_t const offsets[] = {0, 3, 3, 10, 42};
+auto sequence = immutable_elias_fano<>::make(std::span<std::uint64_t const>(offsets));
+std::uint64_t const row_bytes = sequence->select(3) - sequence->select(2); // 7
+```
 
 ### Transactional Stores
 
