@@ -76,9 +76,8 @@
 #include <cassert> // `assert`
 #include <cstdint> // `std::uint64_t`
 
-#include <iterator> // `std::forward_iterator`, `std::advance`
-
-#include <limits>  // `std::numeric_limits`
+#include <concepts> // `std::predicate`, `std::strict_weak_order`
+#include <limits>   // `std::numeric_limits`
 #include <memory>  // `std::allocator`
 #include <utility> // `std::exchange`
 
@@ -116,12 +115,16 @@ namespace ashvardanian::smashtable {
  *      lookups, define `using is_transparent = void;` inside the comparator.
  */
 template <typename value_type_, typename comparator_type_>
-class basic_avl_node {
+class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, comparator_type_>, comparator_type_> {
   public:
     using value_t = value_type_;
     using comparator_t = comparator_type_;
     using height_t = std::ptrdiff_t;
     using node_t = basic_avl_node;
+    using search_t = binary_node_search<node_t, comparator_t>;
+    using search_t::find;
+    using search_t::lower_bound;
+    using search_t::upper_bound;
 
     value_t payload;
     node_t *left = nullptr;
@@ -222,83 +225,6 @@ class basic_avl_node {
     }
 
     /**
-     *  @brief Searches for an entry in this subtree.
-     *  @param[in] node The root of the subtree to search.
-     *  @param[in] comparable Any key comparable with stored entries.
-     *  @param[in] comparator The comparator instance (may be stateful).
-     *  @return A pointer to the found node, or @c nullptr if nothing was found.
-     */
-    template <typename comparable_type_>
-    static node_t *find(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
-        while (node) {
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) node = node->left;
-            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable)))
-                node = node->right;
-            else break;
-        }
-        return node;
-    }
-
-    /**
-     *  @brief Finds the smallest entry that is bigger than or equal to the provided key.
-     *  @param[in] node The root of the subtree to search.
-     *  @param[in] comparable Any key comparable with stored entries.
-     *  @param[in] comparator The comparator instance (may be stateful).
-     *  @return A pointer to the found node, or @c nullptr if no such element was found.
-     */
-    template <typename comparable_type_>
-    static node_t *lower_bound(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
-        node_t *successor = nullptr;
-        while (node) {
-            // If the given key is less than the root node, visit the left
-            // subtree, taking current node as potential successor.
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
-                successor = node;
-                node = node->left;
-            }
-
-            // Of the given key is more than the root node, visit the right
-            // subtree.
-            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) {
-                node = node->right;
-            }
-
-            // If a node with the desired value is found, the successor is the
-            // minimum value node in its right subtree (if any).
-            else {
-                successor = node;
-                node = node->left;
-            }
-        }
-        return successor;
-    }
-
-    /**
-     *  @brief Finds the smallest entry that is bigger than the provided key.
-     *  @param[in] node The root of the subtree to search.
-     *  @param[in] comparable Any key comparable with stored entries.
-     *  @param[in] comparator The comparator instance (may be stateful).
-     *  @return A pointer to the found node, or @c nullptr if no such element was found.
-     */
-    template <typename comparable_type_>
-    static node_t *upper_bound(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
-        node_t *successor = nullptr;
-        while (node) {
-            // If the given key is less than the root node, visit the left
-            // subtree, taking current node as potential successor.
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
-                successor = node;
-                node = node->left;
-            }
-            // Otherwise, we must go right. This covers both the case where
-            // the node's entry is less than the comparable, and the case where
-            // they are equal.
-            else { node = node->right; }
-        }
-        return successor;
-    }
-
-    /**
      *  @brief Searches for the lowest common ancestor of two keys.
      *  @param[in] node The root of the subtree to search.
      *  @param[in] a The first key.
@@ -369,6 +295,7 @@ class basic_avl_node {
      *  @note Uses single-pass reservoir sampling for O(n) time with true uniform distribution.
      */
     template <typename generator_type_>
+        requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
     static node_t *sample(node_t *node, generator_type_ &&generator) noexcept {
         if (!node) return nullptr;
 
@@ -395,6 +322,8 @@ class basic_avl_node {
      *  @note Uses single-pass reservoir sampling for O(n) time with uniform distribution.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_>
+        requires uniform_random_bits<std::remove_cvref_t<generator_type_>> &&
+                 std::predicate<predicate_type_ &, node_t *>
     static node_t *sample_range( //
         node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
         generator_type_ &&generator, predicate_type_ &&predicate) noexcept {
@@ -419,19 +348,17 @@ class basic_avl_node {
      *  @param[in] predicate Predicate to filter nodes.
      *  @param[inout] seen Count of matching nodes processed (can span multiple calls).
      *  @param[in] reservoir_capacity Maximum number of samples to collect.
-     *  @param[out] reservoir Random access iterator to output buffer.
+     *  @param[out] reservoir Buffer the samples land in, written by index.
      *  @note Uses Algorithm R (reservoir sampling) for uniform k-sample in single pass.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_,
-              typename output_iterator_type_>
+              indexed_writable_iterator<value_t> output_iterator_type_>
+        requires uniform_random_bits<std::remove_cvref_t<generator_type_>> &&
+                 std::predicate<predicate_type_ &, node_t *>
     static void sample_range( //
         node_t *node, lower_type_ &&low, upper_type_ &&high, comparator_t const &comparator,
         generator_type_ &&generator, predicate_type_ &&predicate, std::size_t &seen, std::size_t reservoir_capacity,
         output_iterator_type_ &&reservoir) noexcept {
-
-        using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
-        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
-        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
         [[maybe_unused]] status_t const walked = range(node, low, high, comparator, [&](node_t *node) noexcept {
             if (!predicate(node)) return;
@@ -619,14 +546,14 @@ class basic_avl_node {
      *      recursively picking middle element as root.
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
      */
-    template <std::forward_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
+    template <multipass_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
                                             node_allocator_type_ &allocator) noexcept {
         if (count == 0) return {};
 
         std::size_t const middle = count / 2;
         iterator_type_ middle_iterator = first;
-        std::advance(middle_iterator, middle);
+        advance_iterator(middle_iterator, middle);
 
         // Duplicated before a node is asked for, so an element refusing its own copy strands nothing.
         expected<value_t> duplicated = copy_safely(*middle_iterator);
@@ -777,6 +704,7 @@ class basic_avl_node {
     };
 
     template <typename predicate_type_, typename node_deallocator_type_>
+        requires std::predicate<predicate_type_ &, value_t &>
     static erase_if_result_t erase_if(node_t *node, predicate_type_ &&predicate,
                                       node_deallocator_type_ &&node_deallocator,
                                       comparator_t const &comparator) noexcept {
@@ -1179,6 +1107,11 @@ class basic_avl_node {
  */
 template <typename value_type_, typename comparator_type_ = less_t,
           typename allocator_type_ = std::allocator<basic_avl_node<value_type_, comparator_type_>>>
+    requires std::strict_weak_order<comparator_type_ const &, typename mapping_key_type_or_itself<value_type_>::type,
+                                    typename mapping_key_type_or_itself<value_type_>::type> &&
+             allocator_of<typename std::allocator_traits<allocator_type_>::template rebind_alloc<
+                              basic_avl_node<value_type_, comparator_type_>>,
+                          basic_avl_node<value_type_, comparator_type_>>
 class basic_avl_tree {
   public:
     using node_t = basic_avl_node<value_type_, comparator_type_>;
@@ -1241,7 +1174,6 @@ class basic_avl_tree {
         friend class const_iterator;
 
       public:
-        using iterator_category = std::bidirectional_iterator_tag;
         using value_type = value_t;
         using difference_type = std::ptrdiff_t;
         using pointer = value_t *;
@@ -1292,7 +1224,6 @@ class basic_avl_tree {
         friend class basic_avl_tree;
 
       public:
-        using iterator_category = std::bidirectional_iterator_tag;
         using value_type = value_t const;
         using difference_type = std::ptrdiff_t;
         using pointer = value_t const *;
@@ -1338,8 +1269,8 @@ class basic_avl_tree {
         bool operator!=(const_iterator const &other) const noexcept { return node_ != other.node_; }
     };
 
-    using reverse_iterator = std::reverse_iterator<iterator>;
-    using const_reverse_iterator = std::reverse_iterator<const_iterator>;
+    using reverse_iterator = reversed_iterator<iterator>;
+    using const_reverse_iterator = reversed_iterator<const_iterator>;
 
   private:
     node_t *root_ = nullptr;
@@ -1917,6 +1848,7 @@ class basic_avl_tree {
 #pragma region Modifiers
 
     template <typename predicate_type_>
+        requires std::predicate<predicate_type_ &, value_t &>
     std::size_t erase_if(predicate_type_ &&predicate) noexcept {
         auto result = node_t::erase_if(
             root_, std::forward<predicate_type_>(predicate),
@@ -2152,13 +2084,13 @@ class basic_avl_tree {
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
      */
-    template <incumbent_policy_t policy_, typename input_iterator_type_, typename... tags_types_>
+    template <incumbent_policy_t policy_, readable_iterator input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(basic_avl_tree &staged, input_iterator_type_ first, input_iterator_type_ last,
                                  tags_types_...) noexcept {
         if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            static_assert(std::forward_iterator<input_iterator_type_>,
+            static_assert(multipass_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
-            std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
+            std::size_t const count = distance_between(first, last);
             typename node_t::build_result_t const built = node_t::build_from_sorted(first, count, staged.allocator_);
             // Hooked up even on a refusal, so the staging tree frees whatever was built and its
             // size never disagrees with its root.
@@ -2199,7 +2131,7 @@ class basic_avl_tree {
      *
      *  @note Complexity: O(n log n) to build, or O(n) under @c assume_sorted_t, then O(merge).
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {
@@ -2230,7 +2162,7 @@ class basic_avl_tree {
      *
      *  @note Complexity: O(n log n) to build or O(n) under @c assume_sorted_t, plus O(m+n) checks.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {
@@ -2287,7 +2219,7 @@ class basic_avl_tree {
      *  build plus O(merge) time. With @c assume_unique_t, O(log n) to O(m+n) optimized merge that
      *  assumes no conflicts; without, O(m log n) upsert merge that updates duplicates.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {
@@ -2343,7 +2275,7 @@ class basic_avl_tree {
      *  @note All-or-nothing on failure: if any key is missing, nothing is updated. Temporary tree
      *      is destroyed via RAII, this tree remains unchanged.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {
@@ -2507,7 +2439,8 @@ class basic_avl_tree {
      */
     erase_result_t erase(iterator position) noexcept {
         if (position == end()) return {end(), {success_k}};
-        auto next = std::next(position);
+        iterator next = position;
+        ++next;
         bool erased = erase(*position);
         return {next, erased ? success_k : status_t::unknown_k};
     }

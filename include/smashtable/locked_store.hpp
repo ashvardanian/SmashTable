@@ -470,7 +470,8 @@ class locked_store {
 
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+                  typename generator_type_ = no_op_t,
+                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
@@ -739,7 +740,8 @@ class locked_store {
         return inner_store_.update(std::move(element));
     }
 
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         unique_lock _ {mutex_};
         return inner_store_.upsert(begin, end);
@@ -775,7 +777,8 @@ class locked_store {
 
     /** Inherits the inner store's all-or-nothing batch, held under this store's write lock
      *  throughout. */
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         unique_lock _ {mutex_};
         return inner_store_.insert_if_missing(begin, end);
@@ -1142,7 +1145,8 @@ class locked_store {
                                        std::forward<callback_type_>(callback));
     }
 
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires offers_sample_reservoir<inner_store_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>

@@ -596,7 +596,7 @@ walk_control_t for_each_in_hash_bucket(hash_slot_ref<value_type_, hasher_type_> 
  *  @tparam hasher_type_ Hash function object, only used to derive the offset type.
  *  @tparam allocator_type_ Supplies and reclaims the single byte buffer.
  */
-template <typename value_type_, typename hasher_type_, typename allocator_type_>
+template <typename value_type_, typename hasher_type_, allocator_of<std::byte> allocator_type_>
 struct hash_storage {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;

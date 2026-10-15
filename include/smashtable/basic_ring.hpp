@@ -31,7 +31,7 @@ enum class ring_eviction_t : bool {
 
 /** A first-in first-out ring of at most @c capacity elements of @p value_type_, which a failed push
  *  reports. */
-template <typename value_type_, typename allocator_type_ = default_allocator<value_type_>>
+template <typename value_type_, allocator_of<value_type_> allocator_type_ = default_allocator<value_type_>>
 class basic_ring {
   public:
     using value_t = value_type_;

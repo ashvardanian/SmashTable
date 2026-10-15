@@ -691,6 +691,36 @@ class partitioned_store {
         return first_failure(walked, answered);
     }
 
+    /**
+     *  @brief Hands @p callback, in merged order, every member from the fronts @p seed_front opens
+     *      up to @p upper, excluded, or to the last member where @p upper is @c unbounded.
+     *  @param[in] seed_front Opens one partition's front, as `seed_front(part, fill)`, and answers
+     *      what that read reported.
+     *  @return The first refusal a seed, a lookup or the walk itself met.
+     *  @warning Every partition must already be held, as @c walk_merged_ requires.
+     */
+    template <typename parts_type_, typename seed_type_, typename upper_type_, typename callback_type_>
+    static status_t range_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
+                                  upper_type_ const &upper, callback_type_ &callback) noexcept {
+        status_t reached = success_k;
+        status_t const walked = walk_merged_(
+            comparator, parts,
+            [&](std::size_t partition_index, auto &&fill) noexcept {
+                reached = first_failure(reached, seed_front(parts[partition_index], fill));
+            },
+            [&](std::size_t partition_index, identifier_t const &key) noexcept {
+                if constexpr (!std::same_as<upper_type_, unbounded_t>)
+                    if (!comparator(key, upper)) return walk_control_t::halt_k;
+                walk_control_t control = walk_control_t::resume_k;
+                reached = first_failure(
+                    reached, parts[partition_index].find(
+                                 key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
+                                 no_op_t {}));
+                return control;
+            });
+        return first_failure(reached, walked);
+    }
+
   public:
     /**
      *  @brief A resumable walk of the merged order that holds no lock between its steps.
@@ -1004,23 +1034,10 @@ class partitioned_store {
         {
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             partitions_at_t const parts {store_->partitions_, snapshot_};
-            status_t reached = success_k;
-            status_t const walked = walk_merged_(
+            return range_merged_(
                 store_->comparator_, parts,
-                [&](std::size_t partition_index, auto &&fill) noexcept {
-                    reached = first_failure(reached, parts[partition_index].lower_bound(lower, fill, no_op_t {}));
-                },
-                [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (!store_->comparator_(key, upper)) return walk_control_t::halt_k;
-                    walk_control_t control = walk_control_t::resume_k;
-                    reached = first_failure(
-                        reached,
-                        parts[partition_index].find(
-                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
-                            no_op_t {}));
-                    return control;
-                });
-            return first_failure(reached, walked);
+                [&](auto const &part, auto &&fill) noexcept { return part.lower_bound(lower, fill, no_op_t {}); },
+                upper, callback);
         }
 
         /**
@@ -1035,22 +1052,10 @@ class partitioned_store {
         {
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
             partitions_at_t const parts {store_->partitions_, snapshot_};
-            status_t reached = success_k;
-            status_t const walked = walk_merged_(
+            return range_merged_(
                 store_->comparator_, parts,
-                [&](std::size_t partition_index, auto &&fill) noexcept {
-                    reached = first_failure(reached, parts[partition_index].lower_bound(lower, fill, no_op_t {}));
-                },
-                [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    walk_control_t control = walk_control_t::resume_k;
-                    reached = first_failure(
-                        reached,
-                        parts[partition_index].find(
-                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
-                            no_op_t {}));
-                    return control;
-                });
-            return first_failure(reached, walked);
+                [&](auto const &part, auto &&fill) noexcept { return part.lower_bound(lower, fill, no_op_t {}); },
+                unbounded, callback);
         }
     };
 
@@ -1707,22 +1712,10 @@ class partitioned_store {
             settle_snapshot_();
             if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
-            status_t reached = success_k;
-            status_t const walked = store_t::walk_merged_(
+            return store_t::range_merged_(
                 store_->comparator_, partitions_,
-                [&](std::size_t partition_index, auto &&fill) noexcept {
-                    reached = first_failure(reached, partitions_[partition_index].lower_bound(lower, fill, no_op_t {}));
-                },
-                [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    walk_control_t control = walk_control_t::resume_k;
-                    reached = first_failure(
-                        reached,
-                        partitions_[partition_index].find(
-                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
-                            no_op_t {}));
-                    return control;
-                });
-            return first_failure(reached, walked);
+                [&](auto const &part, auto &&fill) noexcept { return part.lower_bound(lower, fill, no_op_t {}); },
+                unbounded, callback);
         }
 
         /**
@@ -1746,23 +1739,10 @@ class partitioned_store {
             settle_snapshot_();
             if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
-            status_t reached = success_k;
-            status_t const walked = store_t::walk_merged_(
+            return store_t::range_merged_(
                 store_->comparator_, partitions_,
-                [&](std::size_t partition_index, auto &&fill) noexcept {
-                    reached = first_failure(reached, partitions_[partition_index].smallest(fill, no_op_t {}));
-                },
-                [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (!store_->comparator_(key, upper)) return walk_control_t::halt_k;
-                    walk_control_t control = walk_control_t::resume_k;
-                    reached = first_failure(
-                        reached,
-                        partitions_[partition_index].find(
-                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
-                            no_op_t {}));
-                    return control;
-                });
-            return first_failure(reached, walked);
+                [](auto const &part, auto &&fill) noexcept { return part.smallest(fill, no_op_t {}); }, upper,
+                callback);
         }
 
         /**
@@ -1898,23 +1878,10 @@ class partitioned_store {
             settle_snapshot_();
             if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
             every_part_lock<shared_lock_t> _ {store_->mutexes_};
-            status_t reached = success_k;
-            status_t const walked = store_t::walk_merged_(
+            return store_t::range_merged_(
                 store_->comparator_, partitions_,
-                [&](std::size_t partition_index, auto &&fill) noexcept {
-                    reached = first_failure(reached, partitions_[partition_index].lower_bound(lower, fill, no_op_t {}));
-                },
-                [&](std::size_t partition_index, identifier_t const &key) noexcept {
-                    if (!store_->comparator_(key, upper)) return walk_control_t::halt_k;
-                    walk_control_t control = walk_control_t::resume_k;
-                    reached = first_failure(
-                        reached,
-                        partitions_[partition_index].find(
-                            key, [&](value_t const &element) noexcept { control = hand_over(callback, element); },
-                            no_op_t {}));
-                    return control;
-                });
-            return first_failure(reached, walked);
+                [&](auto const &part, auto &&fill) noexcept { return part.lower_bound(lower, fill, no_op_t {}); },
+                upper, callback);
         }
 
         status_t upsert(value_t &&element) noexcept {
@@ -2150,7 +2117,8 @@ class partitioned_store {
 
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+                  typename generator_type_ = no_op_t,
+                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
@@ -2513,7 +2481,8 @@ class partitioned_store {
                                                   std::forward<callback_missing_type_>(callback_missing));
     }
 
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         // This might be implemented more efficiently, but using
         // a transaction beneath looks like the most straightforward approach.
@@ -2623,7 +2592,8 @@ class partitioned_store {
      *  commit, and a refusal before it unwinds every reservation the batch took. Writing element by
      *  element under a partition lock would publish a prefix another thread could read.
      */
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto opened = transaction();
         // A transaction that cannot open failed to allocate its per-partition state; nothing was
@@ -3078,7 +3048,8 @@ class partitioned_store {
      *  @warning One partition is locked at a time rather than all of them, so a writer moving an
      *      entry between partitions can have it sampled twice or not at all.
      */
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires offers_sample_reservoir<inner_store_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>

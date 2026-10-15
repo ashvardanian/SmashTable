@@ -13,7 +13,6 @@
 #include <cassert> // `assert`
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`
 
-#include <iterator>    // `std::iterator_traits`
 #include <memory>      // `std::allocator_traits`
 #include <type_traits> // `std::conditional_t`
 #include <utility>     // `std::exchange`, `std::move`
@@ -1148,9 +1147,7 @@ class snapshot_store {
                 changes_.lower_bound(comparable), store_ref().visible_at_(comparable, snapshot_),
                 [&](value_t const &value) noexcept {
                     landed = true;
-                    identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    recorded = first_failure(recorded, record_window_read_(comparable, key, access_t::none_k));
-                    recorded = first_failure(recorded, record_read_(key));
+                    recorded = first_failure(recorded, record_stopped_walk_(comparable, value, access_t::none_k));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
@@ -1184,9 +1181,8 @@ class snapshot_store {
                 changes_.begin(), store_ref().visible_from_(store_ref().entries_.begin(), snapshot_),
                 [&](value_t const &value) noexcept {
                     landed = true;
-                    identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    recorded = first_failure(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
-                    recorded = first_failure(recorded, record_read_(key));
+                    recorded = first_failure(recorded, record_stopped_walk_(mapping_key_or_itself<value_t>(value),
+                                                                            value, access_t::from_the_lowest_k));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
@@ -1209,9 +1205,7 @@ class snapshot_store {
                 store_ref().visible_from_(store_ref().entries_.upper_bound(comparable), snapshot_),
                 [&](value_t const &value) noexcept {
                     landed = true;
-                    identifier_t const &key = mapping_key_or_itself<value_t>(value);
-                    recorded = first_failure(recorded, record_window_read_(comparable, key, access_t::none_k));
-                    recorded = first_failure(recorded, record_read_(key));
+                    recorded = first_failure(recorded, record_stopped_walk_(comparable, value, access_t::none_k));
                     callback_found(value);
                 },
                 [&]() noexcept { callback_missing(); });
@@ -1368,8 +1362,8 @@ class snapshot_store {
                 identifier_t const &key = mapping_key_or_itself<value_t>(version.payload);
                 // An ordinal is decided by how many keys precede it, so the window is everything
                 // below the one it lands on - a key appearing above cannot move it.
-                recorded = first_failure(recorded, record_window_read_(key, key, access_t::from_the_lowest_k));
-                recorded = first_failure(recorded, record_read_(key));
+                recorded =
+                    first_failure(recorded, record_stopped_walk_(key, version.payload, access_t::from_the_lowest_k));
                 callback_found(version.payload);
                 found = true;
                 return walk_control_t::halt_k;
@@ -1566,7 +1560,8 @@ class snapshot_store {
 
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+                  typename generator_type_ = no_op_t,
+                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
@@ -3135,7 +3130,7 @@ class snapshot_store {
      *
      *  Duplicates inside the range therefore collapse onto one version rather than being refused.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(candidate));
@@ -3150,7 +3145,7 @@ class snapshot_store {
      *  @return Success, @c write_conflict_k or @c read_conflict_k when another writer took one of
      *      these keys, or an allocation failure. Nothing is published unless all of it is.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.insert_if_missing(std::move(candidate));
@@ -3162,7 +3157,7 @@ class snapshot_store {
      *  @return Success, @c write_conflict_k when another writer took one of these keys - this path
      *      reads none of them - or an allocation failure. Nothing is published unless all of it is.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.upsert(std::move(candidate));
@@ -3175,7 +3170,7 @@ class snapshot_store {
      *      writer took one of these keys, or an allocation failure. Nothing is published unless all
      *      of it is.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.update(std::move(candidate));
@@ -3405,16 +3400,14 @@ class snapshot_store {
      *  @param[in] reservoir_capacity How many samples the buffer holds.
      *  @param[out] reservoir Random-access iterator to that buffer.
      */
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires ordered_core_k && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
-        using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
-        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
-        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
         return range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                      [&](value_t const &value) noexcept {
@@ -3515,7 +3508,7 @@ class snapshot_store {
     /** Stages every element of [ @p first, @p last ) into one transaction and commits it.
      *  @p stage_one decides what each element means, which is the only difference between the
      *  strict, lenient, overwriting and updating bulk modifiers. */
-    template <typename input_iterator_type_, typename stage_one_type_>
+    template <readable_iterator input_iterator_type_, typename stage_one_type_>
     status_t commit_each_(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
         if (first == last) return success_k;
         auto opened = transaction();

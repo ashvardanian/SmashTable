@@ -37,7 +37,8 @@ namespace ashvardanian::smashtable {
 /** An immutable sequence of non-decreasing unsigned integers, built once from values pulled in
  *  order and read back by position - the offsets of variable-length rows, a few bits apiece.
  *  @p row_kit_type_ scans the high parts in @c select where it has a scan of its own. */
-template <typename value_type_ = std::uint64_t, typename allocator_type_ = default_allocator<std::uint64_t>,
+template <typename value_type_ = std::uint64_t,
+          allocator_of<std::uint64_t> allocator_type_ = default_allocator<std::uint64_t>,
           row_kit row_kit_type_ = native_row_kit_t>
 class immutable_elias_fano {
   public:

@@ -1135,7 +1135,8 @@ class monotonic_store {
 
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+                  typename generator_type_ = no_op_t,
+                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
@@ -1697,7 +1698,7 @@ class monotonic_store {
      *  @param[in] stage_one Stages one element into the open transaction, reporting the outcome.
      *  @return The first failure any step reported, or the status of the commit.
      */
-    template <typename input_iterator_type_, typename stage_one_type_>
+    template <readable_iterator input_iterator_type_, typename stage_one_type_>
     status_t commit_each_(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
         if (first == last) return success_k;
         auto opened = transaction();
@@ -1986,7 +1987,7 @@ class monotonic_store {
      *  @return Success, @c key_already_exists_k if any key exists, or out_of_memory_heap_k.
      *      Operation is atomic (all-or-nothing).
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         // Duplicates inside the range collapse onto a single staged version, so the strictness is
         // about the store's own keys rather than about the range repeating itself.
@@ -2006,7 +2007,7 @@ class monotonic_store {
      *  @param[in] last End of range to insert.
      *  @return Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.insert_if_missing(std::move(candidate));
@@ -2021,7 +2022,7 @@ class monotonic_store {
      *  @param[in] last End of range to upsert.
      *  @return Success or out_of_memory_heap_k. Operation is atomic (all-or-nothing).
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [](transaction_t &staging, value_t &&candidate) noexcept {
             return staging.upsert(std::move(candidate));
@@ -2036,7 +2037,7 @@ class monotonic_store {
      *  @param[in] last End of range to update.
      *  @return Success or key_not_found_k if any key missing. Operation is atomic (all-or-nothing).
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         return commit_each_(first, last, [this](transaction_t &staging, value_t &&candidate) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(candidate));
@@ -2394,17 +2395,14 @@ class monotonic_store {
         return success_k;
     }
 
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires ordered_collection<versioned_chains_t> && uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
-
-        using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
-        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
-        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
         auto sampler = [&](value_t const &value) noexcept {
             if (seen < reservoir_capacity) reservoir[seen] = value;

@@ -35,9 +35,7 @@
 #include <cassert> // `assert`
 #include <cstdint> // `std::uint64_t`
 
-#include <iterator> // `std::forward_iterator`, `std::advance`
-
-#include <concepts>    // `std::convertible_to`
+#include <concepts>    // `std::convertible_to`, `std::predicate`, `std::strict_weak_order`
 #include <memory>      // `std::allocator`
 #include <type_traits> // `std::conditional_t`, `std::is_same_v`
 #include <utility>     // `std::exchange`, `std::move`
@@ -103,13 +101,18 @@ struct no_augmented_count_t {};
  *  of times per write - one wrapper operation is free to retag several entries.
  */
 template <typename value_type_, typename comparator_type_, typename augmentation_type_ = no_augmentation_t>
-class basic_wb_node {
+class basic_wb_node
+    : public binary_node_search<basic_wb_node<value_type_, comparator_type_, augmentation_type_>, comparator_type_> {
   public:
     using value_t = value_type_;
     using comparator_t = comparator_type_;
     using augmentation_t = augmentation_type_;
     using size_t = std::size_t;
     using node_t = basic_wb_node;
+    using search_t = binary_node_search<node_t, comparator_t>;
+    using search_t::find;
+    using search_t::lower_bound;
+    using search_t::upper_bound;
 
     /** True when a second count is maintained, which is what gates every augmented code path. */
     static constexpr bool is_augmented_k = !std::is_same_v<augmentation_t, no_augmentation_t>;
@@ -166,64 +169,6 @@ class basic_wb_node {
         if (!node) return nullptr;
         while (node->right) node = node->right;
         return node;
-    }
-
-    /**
-     *  @brief Find exact match for a key.
-     *  @param[in] node Root of subtree to search.
-     *  @param[in] comparable Key to search for.
-     *  @param[in] comparator Comparator instance (may be stateful).
-     *  @return Pointer to node if found, nullptr otherwise.
-     */
-    template <typename comparable_type_>
-    static node_t *find(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
-        while (node) {
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) node = node->left;
-            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable)))
-                node = node->right;
-            else break;
-        }
-        return node;
-    }
-
-    /**
-     *  @brief Find smallest element >= comparable (lower bound).
-     *  @param[in] node Root of subtree to search.
-     *  @param[in] comparable Key to search for.
-     *  @param[in] comparator Comparator instance (may be stateful).
-     *  @return Pointer to lower bound node, or nullptr if all elements < comparable.
-     */
-    template <typename comparable_type_>
-    static node_t *lower_bound(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
-        node_t *result = nullptr;
-        while (node) {
-            if (!comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) {
-                result = node;
-                node = node->left;
-            }
-            else { node = node->right; }
-        }
-        return result;
-    }
-
-    /**
-     *  @brief Find smallest element > comparable (upper bound).
-     *  @param[in] node Root of subtree to search.
-     *  @param[in] comparable Key to search for.
-     *  @param[in] comparator Comparator instance (may be stateful).
-     *  @return Pointer to upper bound node, or nullptr if all elements <= comparable.
-     */
-    template <typename comparable_type_>
-    static node_t *upper_bound(node_t *node, comparable_type_ &&comparable, comparator_t const &comparator) noexcept {
-        node_t *result = nullptr;
-        while (node) {
-            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
-                result = node;
-                node = node->left;
-            }
-            else { node = node->right; }
-        }
-        return result;
     }
 
     /**
@@ -499,14 +444,14 @@ class basic_wb_node {
      *  @return What was built and why the build stopped.
      *  @warning An unsorted range builds a tree whose structure is undefined.
      */
-    template <std::forward_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
+    template <multipass_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
                                             node_allocator_type_ &allocator) noexcept {
         if (count == 0) return {};
 
         std::size_t const middle = count / 2;
         iterator_type_ middle_iterator = first;
-        std::advance(middle_iterator, middle);
+        advance_iterator(middle_iterator, middle);
 
         // Duplicated before a node is asked for, so an element refusing its own copy strands nothing.
         expected<value_t> duplicated = copy_safely(*middle_iterator);
@@ -869,6 +814,7 @@ class basic_wb_node {
      *  halves may shed any number of nodes, so the two survivors are re-joined rather than stitched
      *  back in place - rotating once could not close a gap of many weight classes. */
     template <typename predicate_type_, typename node_deallocator_type_>
+        requires std::predicate<predicate_type_ &, value_t &>
     static erase_if_result_t erase_if(node_t *node, predicate_type_ &&predicate,
                                       node_deallocator_type_ &&node_deallocator,
                                       comparator_t const &comparator) noexcept {
@@ -889,6 +835,9 @@ class basic_wb_node {
 
     /** Uniformly samples one node whose key lies in [lower, upper), or nullptr when empty. */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename predicate_type_ = no_op_t>
+        requires uniform_random_bits<std::remove_cvref_t<generator_type_>> &&
+                 (std::same_as<std::remove_cvref_t<predicate_type_>, no_op_t> ||
+                  std::predicate<predicate_type_ &, node_t *>)
     static node_t *sample_range(node_t *node, lower_type_ &&lower, upper_type_ &&upper, comparator_t const &comparator,
                                 generator_type_ &&generator, predicate_type_ &&predicate = {}) noexcept {
 
@@ -1032,6 +981,8 @@ class basic_wb_node {
 template <typename value_type_, typename comparator_type_ = less_t,
           typename node_allocator_type_ = std::allocator<basic_wb_node<value_type_, comparator_type_>>,
           typename augmentation_type_ = no_augmentation_t>
+    requires std::strict_weak_order<comparator_type_ const &, typename mapping_key_type_or_itself<value_type_>::type,
+                                    typename mapping_key_type_or_itself<value_type_>::type>
 class basic_wb_tree {
   public:
     using value_t = value_type_;
@@ -1308,6 +1259,7 @@ class basic_wb_tree {
 
     /** Drops every element satisfying @p predicate and reports how many went. */
     template <typename predicate_type_>
+        requires std::predicate<predicate_type_ &, value_t &>
     std::size_t erase_if(predicate_type_ &&predicate) noexcept {
         auto result = node_t::erase_if(
             root_, std::forward<predicate_type_>(predicate),
@@ -1640,13 +1592,13 @@ class basic_wb_tree {
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
      *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
      */
-    template <incumbent_policy_t policy_, typename input_iterator_type_, typename... tags_types_>
+    template <incumbent_policy_t policy_, readable_iterator input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(wb_tree_t &staged, input_iterator_type_ first, input_iterator_type_ last,
                                  tags_types_...) noexcept {
         if constexpr (contains_type<assume_sorted_t, tags_types_...>()) {
-            static_assert(std::forward_iterator<input_iterator_type_>,
+            static_assert(multipass_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
-            std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
+            std::size_t const count = distance_between(first, last);
             typename node_t::build_result_t const built = node_t::build_from_sorted(first, count, staged.allocator_);
             // Hooked up even on a refusal, so the staging tree frees whatever was built and its
             // size never disagrees with its root.
@@ -1681,7 +1633,7 @@ class basic_wb_tree {
      *  element refusing its own copy are both met while the staging tree is built, and the merge
      *  absorbing it only relinks nodes.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {
@@ -1705,7 +1657,7 @@ class basic_wb_tree {
      *  All-or-nothing over this tree from the first element on, a taken key included: the whole
      *  range is staged and checked before the merge absorbing it relinks a single node.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {
@@ -1731,7 +1683,7 @@ class basic_wb_tree {
      *  All-or-nothing over this tree from the first element on; a key already here takes the
      *  newcomer's entry during the merge, which moves it rather than copying it.
      */
-    template <typename input_iterator_type_, typename... tags_types_>
+    template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
         requires(promises_about_the_range<tags_types_> && ...)
     {

@@ -13,8 +13,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
-#include <concepts>    // `std::same_as`
-#include <iterator>    // `std::distance`, `std::forward_iterator`
+#include <concepts>    // `std::same_as`, `std::predicate`, `std::strict_weak_order`
 #include <memory>      // `std::allocator_traits`
 #include <span>        // `std::span`
 #include <type_traits> // `std::false_type`, `std::is_nothrow_move_assignable_v`
@@ -30,6 +29,7 @@ namespace ashvardanian::smashtable {
  *  through a binary search with the comparator otherwise. */
 template <typename value_type_, typename comparator_type_ = less_t, row_kit row_kit_type_ = native_row_kit_t,
           typename allocator_type_ = default_allocator<value_type_>>
+    requires std::strict_weak_order<comparator_type_ const &, value_type_, value_type_>
 class basic_flat_set {
   public:
 #pragma region Type Vocabulary
@@ -240,7 +240,7 @@ class basic_flat_set {
      *  All-or-nothing over this set from the first element on: the staging set holds every element
      *  before the merge begins, and the merge makes its one allocation before it moves anything.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return success_k;
         basic_flat_set staged = stage_alike();
@@ -257,7 +257,7 @@ class basic_flat_set {
      *  All-or-nothing over this set from the first element on, a taken key included: the whole
      *  range is staged and checked before the merge absorbing it allocates anything.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return success_k;
         basic_flat_set staged = stage_alike();
@@ -276,7 +276,7 @@ class basic_flat_set {
      *  All-or-nothing over this set from the first element on; an element already here is
      *  overwritten by the merge, which moves rather than copies once its buffer is secured.
      */
-    template <typename input_iterator_type_>
+    template <readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
         if (first == last) return success_k;
         basic_flat_set staged = stage_alike();
@@ -308,6 +308,7 @@ class basic_flat_set {
     /** Removes every element @p predicate admits, handing each to @p callback first, and answers
      *  how many went. */
     template <typename predicate_type_, typename callback_type_ = no_op_t>
+        requires std::predicate<predicate_type_ &, value_t &>
     std::size_t erase_if(predicate_type_ &&predicate, callback_type_ &&callback = {}) noexcept {
         return elements_.erase_if(std::forward<predicate_type_>(predicate), std::forward<callback_type_>(callback));
     }
@@ -326,12 +327,11 @@ class basic_flat_set {
      *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element not in it.
      *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
      */
-    template <incumbent_policy_t policy_, typename input_iterator_type_>
+    template <incumbent_policy_t policy_, readable_iterator input_iterator_type_>
     static status_t stage_range_(basic_flat_set &staged, input_iterator_type_ first,
                                  input_iterator_type_ last) noexcept {
-        if constexpr (std::forward_iterator<input_iterator_type_>)
-            if (status_t const room = staged.elements_.reserve(static_cast<std::size_t>(std::distance(first, last)));
-                failed(room))
+        if constexpr (multipass_iterator<input_iterator_type_>)
+            if (status_t const room = staged.elements_.reserve(distance_between(first, last)); failed(room))
                 return room;
         return stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept -> status_t {
             // Each verb collapses a key repeated inside the range the way its own name reads.

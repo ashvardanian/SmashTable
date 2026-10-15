@@ -34,7 +34,7 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include <concepts> // `std::invocable`
+#include <concepts> // `std::invocable`, `std::predicate`
 #include <memory>   // `std::allocator_traits`
 #include <utility>  // `std::exchange`, `std::forward`
 
@@ -55,7 +55,7 @@ namespace ashvardanian::smashtable {
  *
  *  @see https://en.cppreference.com/w/cpp/container/vector
  */
-template <typename value_type_, typename allocator_type_ = default_allocator<value_type_>>
+template <typename value_type_, allocator_of<value_type_> allocator_type_ = default_allocator<value_type_>>
 class basic_vector {
   public:
     using value_t = value_type_;
@@ -311,7 +311,7 @@ class basic_vector {
      *  @return How many elements were removed.
      */
     template <typename predicate_type_, typename callback_type_ = no_op_t>
-        requires std::invocable<callback_type_ &, value_t &>
+        requires std::predicate<predicate_type_ &, value_t &> && std::invocable<callback_type_ &, value_t &>
     std::size_t erase_if(predicate_type_ &&predicate, callback_type_ &&callback = {}) noexcept {
         std::size_t kept = 0;
         for (std::size_t index = 0; index != size_; ++index) {

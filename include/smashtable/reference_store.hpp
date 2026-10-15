@@ -11,6 +11,7 @@
 #include <cassert> // `assert`
 #include <cstdint> // `std::uint8_t`
 
+#include <concepts>    // `std::strict_weak_order`
 #include <memory>      // `std::allocator` as default
 #include <set>         // `std::set` for inner versioned entries
 #include <stdexcept>   // `std::length_error`, which MSVC does not reach through `<set>`
@@ -118,6 +119,8 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  */
 template < //
     typename value_type_, typename comparator_type_ = less_t, typename allocator_type_ = std::allocator<std::uint8_t>>
+    requires std::strict_weak_order<comparator_type_ const &, typename mapping_key_type_or_itself<value_type_>::type,
+                                    typename mapping_key_type_or_itself<value_type_>::type>
 class reference_store {
 
 #pragma region Type Definitions
@@ -1040,7 +1043,8 @@ class reference_store {
 
         /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
-                  typename generator_type_ = no_op_t, typename output_iterator_type_ = no_op_t>
+                  typename generator_type_ = no_op_t,
+                  indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
         status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                                   std::size_t &seen, std::size_t capacity,
                                   output_iterator_type_ &&reservoir) const noexcept
@@ -1646,7 +1650,8 @@ class reference_store {
      *  @param[in] end Iterator past the last element.
      *  @return Success or error code (e.g., out of memory).
      */
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t insert_or_assign(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         generation_t const generation = next_generation_();
         commit_stamp_t const stamp = next_commit_stamp_();
@@ -1672,7 +1677,8 @@ class reference_store {
      *  @param[in] end Iterator past the last element.
      *  @return Success or error code (e.g., out of memory).
      */
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         return insert_or_assign(begin, end);
     }
@@ -1683,7 +1689,8 @@ class reference_store {
      *  @param[in] end Iterator past the last element.
      *  @return Success or error code (e.g., out of memory).
      */
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t insert_if_missing(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
@@ -1703,7 +1710,8 @@ class reference_store {
      *  @return Success, @c key_not_found_k if any key is absent, or an allocation failure. Nothing
      *      is written unless all of it is.
      */
-    template <typename elements_begin_type_, typename elements_end_type_ = elements_begin_type_>
+    template <readable_iterator elements_begin_type_,
+              iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t update(elements_begin_type_ begin, elements_end_type_ end) noexcept {
         auto maybe_txn = transaction();
         if (!maybe_txn) return status_t::out_of_memory_heap_k;
@@ -2228,19 +2236,16 @@ class reference_store {
      *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
      *  @param[inout] seen Count of entries processed (can span multiple calls).
      *  @param[in] reservoir_capacity Maximum number of samples to collect.
-     *  @param[out] reservoir Random access iterator to output buffer.
+     *  @param[out] reservoir Buffer the samples land in, written by index.
      */
-    template <typename lower_type_, typename upper_type_, typename generator_type_, typename output_iterator_type_>
+    template <typename lower_type_, typename upper_type_, typename generator_type_,
+              indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
                               std::size_t reservoir_capacity, output_iterator_type_ &&reservoir) const noexcept
         requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
     {
         static_assert(std::is_nothrow_copy_assignable_v<value_t>,
                       "sampling copies each drawn element into the caller's buffer, so that copy must not throw");
-
-        using output_iterator_t = std::remove_reference_t<output_iterator_type_>;
-        using output_category_t = typename std::iterator_traits<output_iterator_t>::iterator_category;
-        static_assert(std::is_same<std::random_access_iterator_tag, output_category_t>(), "Must be random access!");
 
         auto sampler = [&](value_t const &element) noexcept {
             if (seen < reservoir_capacity) reservoir[seen] = element;
