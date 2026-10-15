@@ -515,22 +515,22 @@ struct neon_row_kit_t {
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
                                                  std::uint32_t wanted) noexcept {
         uint32x4_t const threshold = vdupq_n_u32(wanted);
-        std::size_t below = 0;
+        uint32x4_t accumulated = vdupq_n_u32(0);
         std::size_t offset = 0;
         for (; offset + 4 <= keys.size(); offset += 4)
-            below += vaddvq_u32(vshrq_n_u32(vcltq_u32(vld1q_u32(keys.data() + offset), threshold), 31));
-        return below + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+            accumulated = vsubq_u32(accumulated, vcltq_u32(vld1q_u32(keys.data() + offset), threshold));
+        return vaddvq_u32(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
     }
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::int32_t const, extent_> keys,
                                                  std::int32_t wanted) noexcept {
         int32x4_t const threshold = vdupq_n_s32(wanted);
-        std::size_t below = 0;
+        uint32x4_t accumulated = vdupq_n_u32(0);
         std::size_t offset = 0;
         for (; offset + 4 <= keys.size(); offset += 4)
-            below += vaddvq_u32(vshrq_n_u32(vcltq_s32(vld1q_s32(keys.data() + offset), threshold), 31));
-        return below + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+            accumulated = vsubq_u32(accumulated, vcltq_s32(vld1q_s32(keys.data() + offset), threshold));
+        return vaddvq_u32(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
     }
 
     template <std::size_t extent_>
