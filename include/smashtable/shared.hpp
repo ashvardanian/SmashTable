@@ -190,8 +190,8 @@
 #if SMASHTABLE_TARGET_RVV
 #include <riscv_vector.h>
 #endif
-#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && defined(__linux__)
-#include <sys/auxv.h> // `getauxval`, `AT_HWCAP`
+#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (defined(__linux__) || defined(__FreeBSD__))
+#include <sys/auxv.h> // `getauxval` on Linux, `elf_aux_info` on FreeBSD, `AT_HWCAP`
 #endif
 
 namespace ashvardanian::smashtable {

@@ -117,13 +117,19 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
     default: return false;
     }
 }
-#elif SMASHTABLE_ARCH_ARM64_ && defined(__linux__)
+#elif (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (defined(__linux__) || defined(__FreeBSD__))
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
-    unsigned long const capabilities = getauxval(AT_HWCAP);
+    unsigned long capabilities = 0; // `AT_HWCAP` carries the same bits on both kernels
+#if defined(__FreeBSD__)
+    elf_aux_info(AT_HWCAP, &capabilities, sizeof(capabilities));
+#else
+    capabilities = getauxval(AT_HWCAP);
+#endif
     switch (kit) {
     case row_kit_t::serial_k: return true;
     case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON && (capabilities & (1ul << 1)) != 0; // `HWCAP_ASIMD`
     case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE && (capabilities & (1ul << 22)) != 0;  // `HWCAP_SVE`
+    case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV && (capabilities & (1ul << ('V' - 'A'))) != 0;
     default: return false;
     }
 }
@@ -131,15 +137,6 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     // Advanced SIMD is the AArch64 baseline; SVE is only probed where the kernel reports it.
     return kit == row_kit_t::serial_k || (kit == row_kit_t::neon_k && SMASHTABLE_TARGET_NEON);
-}
-#elif SMASHTABLE_ARCH_RISCV64_ && defined(__linux__)
-[[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
-    unsigned long const capabilities = getauxval(AT_HWCAP);
-    switch (kit) {
-    case row_kit_t::serial_k: return true;
-    case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV && (capabilities & (1ul << ('V' - 'A'))) != 0;
-    default: return false;
-    }
 }
 #else
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept { return kit == row_kit_t::serial_k; }
