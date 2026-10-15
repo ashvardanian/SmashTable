@@ -262,6 +262,16 @@ static void unordered_ops_unrepresentable_capacity() {
     test_unordered_unrepresentable_capacity<string_map_t>();
 }
 
+/** Tests that a move into fewer slots than elements refuses up front and leaves the source whole */
+static void unordered_ops_move_into_too_few_slots() {
+    trivial_set_t set;
+    for (std::size_t key = 0; key != 100; ++key) st_verify_(set.upsert(std::size_t {key}));
+    trivial_set_t const moved = set.move_to_new(hash_slots_count_t::from_slots(32));
+    st_verify_eq_(moved.bucket_count(), 0u);
+    st_verify_eq_(set.size(), 100u);
+    for (std::size_t key = 0; key != 100; ++key) st_verify_eq_(set.contains(key), true);
+}
+
 #pragma endregion Saturation and Refusal Tests
 
 #pragma region Kit Window Tests
@@ -385,6 +395,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
     tally += run_test(settings, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
     tally += run_test(settings, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
+    tally += run_test(settings, "unordered_ops.move_into_too_few_slots", unordered_ops_move_into_too_few_slots);
     tally += run_test(settings, "hash_table.serial_kit", hash_table_serial_kit);
     tally += run_test(settings, "hash_table.haswell_kit", hash_table_haswell_kit);
     tally += run_test(settings, "hash_table.skylake_kit", hash_table_skylake_kit);

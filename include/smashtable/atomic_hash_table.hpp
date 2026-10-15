@@ -59,6 +59,7 @@
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
+#include <concepts>    // `std::equivalence_relation`
 #include <type_traits> // `std::is_trivially_destructible`
 #include <utility>     // `std::move`, `std::forward`
 
@@ -86,9 +87,12 @@ namespace ashvardanian::smashtable {
  *  @tparam atomic_reference_ The reference every header word and counter is owned through.
  */
 template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator_t,
+          allocator_of<std::byte> allocator_type_ = default_allocator_t,
           waiting_policy<std::uint64_t const *, std::uint64_t> waiting_policy_type_ = bare_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
+    requires key_hasher<hasher_type_, typename hash_layout_for<value_type_, hasher_type_>::key_t> &&
+             std::equivalence_relation<equals_type_ const &, typename hash_layout_for<value_type_, hasher_type_>::key_t,
+                                       typename hash_layout_for<value_type_, hasher_type_>::key_t>
 class atomic_hash_table {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
@@ -325,39 +329,19 @@ class atomic_hash_table {
             return false;
 
         offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t const initial_offset = hasher_(wanted) & offset_mask;
-        offset_t offset = initial_offset;
+        offset_t offset = hasher_(wanted) & offset_mask;
         slot_ref_type_ slot;
-        bool found = false;
-
-        while (true) {
+        for (offset_t probes = 0; probes != storage_.slots_count; ++probes, offset = (offset + 1) & offset_mask) {
             storage_.retarget_slot(slot, offset);
             slot.lock();
-
-            // Checking for equality isn't safe, if we operate on uninitialized
-            // memory and call some complex comparison operators on them.
-            // So instead of one runtime `if`, we have two nested `if`s.
-            if (slot.is_populated()) {
-                if (equals_(slot.key(), wanted)) {
-                    callback(slot);
-                    slot.unlock();
-                    found = true;
-                    break;
-                }
-                slot.unlock();
-            }
-            else if (slot.is_deleted()) { slot.unlock(); }
-            else {
-                // A "free" slot ends the probe sequence.
-                slot.unlock();
-                break;
-            }
-
-            offset = (offset + 1) & offset_mask;
-            if (offset == initial_offset) break;
+            // Only populated slots compare, since a key's equality may read uninitialized memory.
+            bool const matched = slot.is_populated() && equals_(slot.key(), wanted);
+            if (matched) callback(slot);
+            bool const ends_run = matched || slot.is_free();
+            slot.unlock();
+            if (ends_run) return matched;
         }
-
-        return found;
+        return false;
     }
 
     /**

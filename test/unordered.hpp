@@ -776,6 +776,17 @@ void test_unordered_full_table_refusals(std::size_t extra_attempts = 64) {
     // Everything that did fit is still reachable, and an overwrite of a present key still lands.
     for (std::size_t identifier = 0; identifier < slots; ++identifier)
         unordered_verify_present(container, identifier, identifier);
+
+    // A walk that visits every match wraps the whole full table, and still meets each key once.
+    for (std::size_t identifier = 0; identifier < slots; ++identifier) {
+        std::size_t visits = 0;
+        container.probe_to_visit(unordered_key_from<typename container_t::key_type>(identifier),
+                                 [&](auto const &) noexcept {
+                                     ++visits;
+                                     return walk_control_t::resume_k;
+                                 });
+        st_verify_eq_(visits, 1u);
+    }
     if constexpr (unordered_has_values<container_t>) {
         unordered_emplace_valued(container, 0, 7, assume_reserved_t {});
         st_verify_eq_(container.size(), slots);

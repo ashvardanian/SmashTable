@@ -51,7 +51,7 @@
 #include <atomic>      // `std::atomic_ref`
 #include <bit>         // `std::countl_zero`
 #include <compare>     // `std::compare_three_way`, for the total order over unrelated pointers
-#include <concepts>    // `std::convertible_to`, `std::same_as`
+#include <concepts>    // `std::convertible_to`, `std::same_as`, `std::integral`, `std::unsigned_integral`
 #include <limits>      // `std::numeric_limits`
 #include <new>         // `::operator new`, `std::align_val_t`, `std::nothrow`
 #include <tuple>       // `std::tuple`
@@ -570,18 +570,132 @@ struct hash<key_type_, std::void_t<decltype(std::declval<key_type_ const &>().da
     }
 };
 
+/** A hasher that answers an unsigned integer for @p key_type_, which a table slots the key by. */
+template <typename hasher_type_, typename key_type_>
+concept key_hasher = requires(hasher_type_ const &hasher, key_type_ const &key) {
+    { hasher(key) } -> std::unsigned_integral;
+};
+
 /** The first of a pack, for a caller that needs one representative of several arguments. */
 template <typename first_type_, typename... rest_types_>
 [[nodiscard]] constexpr first_type_ &first_of(first_type_ &first, rest_types_ &...) noexcept {
     return first;
 }
 
-/** How many steps separate two iterators, without the sixteen thousand lines of @c \<iterator\>. */
+/** A position a walk reads through, steps forward and compares to where it stops, as `*iterator`,
+ *  `++iterator` and `first != last` - all a bulk write consuming its input once needs, spelled here
+ *  rather than in @c \<iterator\>. */
 template <typename iterator_type_>
-constexpr std::size_t distance_between(iterator_type_ first, iterator_type_ last) noexcept {
-    std::size_t count = 0;
-    for (; first != last; ++first) ++count;
-    return count;
+concept readable_iterator =
+    std::movable<iterator_type_> && std::equality_comparable<iterator_type_> && requires(iterator_type_ iterator) {
+        *iterator;
+        ++iterator;
+    };
+
+/** A readable iterator whose copies re-read the same positions: it compares to them and
+ *  dereferences to a reference, the multi-pass rule a counted or halving walk relies on. */
+template <typename iterator_type_>
+concept multipass_iterator =
+    readable_iterator<iterator_type_> && std::copyable<iterator_type_> && std::equality_comparable<iterator_type_> &&
+    std::is_reference_v<decltype(*std::declval<iterator_type_ &>())>;
+
+/** Where a walk from @p iterator_type_ stops, compared against it from either side. */
+template <typename sentinel_type_, typename iterator_type_>
+concept iterator_sentinel =
+    readable_iterator<iterator_type_> && requires(iterator_type_ const &iterator, sentinel_type_ const &sentinel) {
+        { iterator == sentinel } -> std::convertible_to<bool>;
+        { iterator != sentinel } -> std::convertible_to<bool>;
+    };
+
+/** A position a walk writes @p value_type_ through and steps forward, as `*iterator = value`. */
+template <typename iterator_type_, typename value_type_>
+concept writable_iterator = requires(iterator_type_ iterator, value_type_ &&value) {
+    *iterator = std::forward<value_type_>(value);
+    ++iterator;
+};
+
+/** A position a reservoir writes @p value_type_ into by index, as `iterator[index] = value`. */
+template <typename iterator_type_, typename value_type_>
+concept indexed_writable_iterator =
+    requires(iterator_type_ iterator, std::size_t index, value_type_ const &value) { iterator[index] = value; };
+
+/** Steps @p iterator forward @p count positions, in one jump where it supports `+=`. */
+template <readable_iterator iterator_type_>
+constexpr void advance_iterator(iterator_type_ &iterator, std::size_t count) noexcept {
+    if constexpr (requires { iterator += static_cast<std::ptrdiff_t>(count); })
+        iterator += static_cast<std::ptrdiff_t>(count);
+    else
+        for (; count; --count) ++iterator;
+}
+
+/** Reads a contiguous run as rvalues, so a bulk write moves its staged copies rather than copying
+ *  them again. */
+template <typename value_type_>
+struct moving_pointer {
+    value_type_ *position;
+
+    constexpr value_type_ &&operator*() const noexcept { return static_cast<value_type_ &&>(*position); }
+    constexpr moving_pointer &operator++() noexcept {
+        ++position;
+        return *this;
+    }
+    constexpr bool operator==(moving_pointer const &) const noexcept = default;
+};
+
+/** Walks a bidirectional @p iterator_type_ backwards, standing one position past the element it
+ *  reads, so the reversed begin is the forward end. */
+template <typename iterator_type_>
+class reversed_iterator {
+    iterator_type_ base_ {};
+
+  public:
+    using value_type = typename iterator_type_::value_type;
+    using difference_type = typename iterator_type_::difference_type;
+    using pointer = typename iterator_type_::pointer;
+    using reference = typename iterator_type_::reference;
+
+    constexpr reversed_iterator() noexcept = default;
+    constexpr explicit reversed_iterator(iterator_type_ base) noexcept : base_(base) {}
+
+    /** The forward position one past the element this one reads. */
+    constexpr iterator_type_ base() const noexcept { return base_; }
+
+    constexpr reference operator*() const noexcept {
+        iterator_type_ previous = base_;
+        --previous;
+        return *previous;
+    }
+    constexpr pointer operator->() const noexcept { return &**this; }
+    constexpr reversed_iterator &operator++() noexcept {
+        --base_;
+        return *this;
+    }
+    constexpr reversed_iterator operator++(int) noexcept {
+        reversed_iterator const previous = *this;
+        --base_;
+        return previous;
+    }
+    constexpr reversed_iterator &operator--() noexcept {
+        ++base_;
+        return *this;
+    }
+    constexpr reversed_iterator operator--(int) noexcept {
+        reversed_iterator const previous = *this;
+        ++base_;
+        return previous;
+    }
+    constexpr bool operator==(reversed_iterator const &other) const noexcept { return base_ == other.base_; }
+};
+
+/** How many steps separate two positions, in one subtraction where they support it. */
+template <multipass_iterator iterator_type_, iterator_sentinel<iterator_type_> sentinel_type_>
+constexpr std::size_t distance_between(iterator_type_ first, sentinel_type_ const &last) noexcept {
+    if constexpr (requires { last - first; }) return static_cast<std::size_t>(last - first);
+    else {
+        std::size_t count = 0;
+        for (; first != last; ++first) ++count;
+        return count;
+    }
 }
 
 /** Sentinel type for range-based iteration end conditions. */
@@ -903,7 +1017,7 @@ concept duplication_can_refuse = !std::is_nothrow_copy_constructible_v<type_>;
  *  rvalues moves, which is what a move iterator asks for. Nothing here reaches the destination -
  *  what @p stage_one does with an element is where a batch decides whether it can still be undone.
  */
-template <typename value_type_, typename input_iterator_type_, typename stage_one_type_>
+template <typename value_type_, readable_iterator input_iterator_type_, typename stage_one_type_>
 status_t stage_each(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
     for (; first != last; ++first) {
         if constexpr (!std::is_lvalue_reference_v<decltype(*first)>) {
@@ -1143,6 +1257,22 @@ template <typename callback_type_, typename element_type_>
         return walk_control_t::resume_k;
     }
 }
+
+/** Hands a walk's first element to @p callback and halts it, for a search wanting one match from
+ *  a walk that would otherwise visit every one. */
+template <typename callback_type_>
+struct first_only {
+    callback_type_ &callback;
+
+    template <typename element_type_>
+    constexpr walk_control_t operator()(element_type_ &&element) const noexcept {
+        callback(std::forward<element_type_>(element));
+        return walk_control_t::halt_k;
+    }
+};
+
+template <typename callback_type_>
+first_only(callback_type_ &) -> first_only<callback_type_>;
 
 /** Whether @p offered is at least as strong a promise as @p required. */
 constexpr bool at_least(isolation_t offered, isolation_t required) noexcept {
@@ -1729,7 +1859,7 @@ inline constexpr auto memory_order_acq_rel_k = std::memory_order_acq_rel;
  *  8, so a counter that is perfectly well-behaved on x86-64 becomes undefined when built for i386.
  *  Every counter the helpers below touch carries this.
  */
-template <typename integral_type_>
+template <std::integral integral_type_>
 inline constexpr std::size_t atomic_alignment = atomic_ref<integral_type_>::required_alignment;
 
 /**
@@ -1739,7 +1869,7 @@ inline constexpr std::size_t atomic_alignment = atomic_ref<integral_type_>::requ
  *  identity and recency - because one location has a total modification order. It publishes
  *  nothing: a caller needing the data a counter describes to be visible must order that itself.
  */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type_ addend) noexcept {
     return atomic_ref<integral_type_>(counter).fetch_add(addend, memory_order_relaxed_k) + addend;
 }
@@ -1751,7 +1881,7 @@ constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type
  *      @c atomic_ref over one is undefined. Every caller reaches a mutable member of a mutable
  *      container through a @c const member function, which is what makes the cast below sound.
  */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
     return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(memory_order_relaxed_k);
 }
@@ -1759,7 +1889,7 @@ constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
 /** Relaxed atomic write of a counter other threads may be reading. The mirror of @c atomic_load,
  *  and just as unordered: a caller needing the data a counter describes to be visible alongside it
  *  must order that itself. */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexcept {
     atomic_ref<integral_type_>(counter).store(value, memory_order_relaxed_k);
 }
@@ -1771,13 +1901,13 @@ constexpr void atomic_store(integral_type_ &counter, integral_type_ value) noexc
  *  sequence, so a store made before this call is visible to whoever reads the word afterwards. That
  *  is what an announce-then-re-read protocol needs and what a load cannot give it.
  */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr integral_type_ atomic_load_newest(integral_type_ &word) noexcept {
     return atomic_ref<integral_type_>(word).fetch_add(integral_type_ {0}, memory_order_acq_rel_k);
 }
 
 /** Relaxed atomic decrement of a plain counter, returning the post-decrement value. */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type_ subtrahend) noexcept {
     return atomic_ref<integral_type_>(counter).fetch_sub(subtrahend, memory_order_relaxed_k) - subtrahend;
 }
@@ -1787,13 +1917,13 @@ constexpr integral_type_ atomic_sub_fetch(integral_type_ &counter, integral_type
  *  @warning Wakes only where writers call @c atomic_notify_all; bare @c atomic_store wakes nobody.
  *  @sa The same @c const-path caveat as @c atomic_load applies to the cast.
  */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr void atomic_wait(integral_type_ const &counter, integral_type_ observed) noexcept {
     atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).wait(observed, memory_order_relaxed_k);
 }
 
 /** Wakes every waiter parked on @p counter. The mirror of @c atomic_wait. */
-template <typename integral_type_>
+template <std::integral integral_type_>
 constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
     atomic_ref<integral_type_>(counter).notify_all();
 }
@@ -1833,7 +1963,7 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
 };
 
 /** Posts @p addend onto @p word without reading what was there. */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_add(integral_type_ &word, integral_type_ addend, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>) reference.add(addend, order);
@@ -1841,7 +1971,7 @@ constexpr void atomic_post_add(integral_type_ &word, integral_type_ addend, orde
 }
 
 /** Posts @p subtrahend off @p word without reading what was there. */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_sub(integral_type_ &word, integral_type_ subtrahend, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
@@ -1850,7 +1980,7 @@ constexpr void atomic_post_sub(integral_type_ &word, integral_type_ subtrahend, 
 }
 
 /** Posts @p bits set in @p word without reading what was there. */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_set_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
@@ -1859,7 +1989,7 @@ constexpr void atomic_post_set_bits(integral_type_ &word, integral_type_ bits, o
 }
 
 /** Posts @p bits cleared in @p word without reading what was there. */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
@@ -1873,7 +2003,7 @@ constexpr void atomic_post_clear_bits(integral_type_ &word, integral_type_ bits,
  *  One instruction through a reference that spells @c fetch_max, and the compare-exchange loop it
  *  replaces otherwise. A word only ever raised this way is monotone whoever writes it.
  */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_>
 constexpr void atomic_max_fetch(integral_type_ &word, integral_type_ floor) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>) {
@@ -1894,7 +2024,7 @@ constexpr void atomic_max_fetch(integral_type_ &word, integral_type_ floor) noex
  *  before C++26, and the compare-exchange loop it replaces otherwise. A word only ever raised this
  *  way is monotone whoever writes it.
  */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 [[nodiscard]] constexpr integral_type_ atomic_fetch_max(integral_type_ &word, integral_type_ floor,
                                                         order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
@@ -1908,13 +2038,13 @@ template <template <typename> class atomic_reference_ = atomic_ref, typename int
 }
 
 /** Raises @p word to @p floor without reading what was there, which Arm spells @c stumax. */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_max(integral_type_ &word, integral_type_ floor, order_type_ order) noexcept {
     [[maybe_unused]] integral_type_ const before = atomic_fetch_max<atomic_reference_>(word, floor, order);
 }
 
 /** Posts @p bits flipped in @p word without reading what was there. */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_flip_bits(integral_type_ &word, integral_type_ bits, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
@@ -1930,7 +2060,7 @@ constexpr void atomic_post_flip_bits(integral_type_ &word, integral_type_ bits, 
  *  becomes an argument the instruction decides on, so a refused caller writes nothing and leaves
  *  the line where it was. Without the extended form this is the compare-exchange loop it replaces.
  */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 [[nodiscard]] constexpr integral_type_ atomic_fetch_add_if_at_most(integral_type_ &word, integral_type_ addend,
                                                                    integral_type_ limit, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
@@ -1950,7 +2080,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, typename int
  *      @p floor.
  *  @return What @p word held before, which is below @p floor exactly when nothing was written.
  */
-template <template <typename> class atomic_reference_ = atomic_ref, typename integral_type_, typename order_type_>
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 [[nodiscard]] constexpr integral_type_ atomic_fetch_sub_if_at_least(integral_type_ &word, integral_type_ subtrahend,
                                                                     integral_type_ floor, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
@@ -2042,6 +2172,7 @@ concept uniform_random_bits = requires(generator_type_ &generator) {
  *      and the results concatenated, since masking a short draw could never reach the high bits.
  */
 template <typename generator_type_>
+    requires uniform_random_bits<std::remove_cvref_t<generator_type_>>
 constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound) noexcept {
     using generator_t = std::remove_reference_t<generator_type_>;
     if (bound <= 1) return 0;
@@ -2075,6 +2206,62 @@ constexpr value_type_ roundup_to_multiple(value_type_ x) noexcept {
 }
 
 #pragma endregion Numeric Helpers
+
+#pragma region Tree Search
+
+/**
+ *  @brief The searches every binary node shares, over its @c left, @c right and @c payload, so
+ *      the AVL and weight-balanced nodes answer bounds identically.
+ *  @tparam node_type_ The node deriving from this, which these walk and hand back.
+ */
+template <typename node_type_, typename comparator_type_>
+struct binary_node_search {
+
+    /** The node of the subtree at @p node holding @p comparable, or @c nullptr. */
+    template <typename comparable_type_>
+    static node_type_ *find(node_type_ *node, comparable_type_ const &comparable,
+                            comparator_type_ const &comparator) noexcept {
+        while (node) {
+            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) node = node->left;
+            else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable)))
+                node = node->right;
+            else break;
+        }
+        return node;
+    }
+
+    /** The first node of the subtree at @p node not ordered below @p comparable, or @c nullptr. */
+    template <typename comparable_type_>
+    static node_type_ *lower_bound(node_type_ *node, comparable_type_ const &comparable,
+                                   comparator_type_ const &comparator) noexcept {
+        node_type_ *result = nullptr;
+        while (node) {
+            if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(comparable))) node = node->right;
+            else {
+                result = node;
+                node = node->left;
+            }
+        }
+        return result;
+    }
+
+    /** The first node of the subtree at @p node ordered above @p comparable, or @c nullptr. */
+    template <typename comparable_type_>
+    static node_type_ *upper_bound(node_type_ *node, comparable_type_ const &comparable,
+                                   comparator_type_ const &comparator) noexcept {
+        node_type_ *result = nullptr;
+        while (node) {
+            if (comparator(mapping_key_or_itself(comparable), mapping_key_or_itself(node->payload))) {
+                result = node;
+                node = node->left;
+            }
+            else node = node->right;
+        }
+        return result;
+    }
+};
+
+#pragma endregion Tree Search
 
 #pragma region Tree Concepts
 
@@ -2349,11 +2536,14 @@ concept offers_sample_one =
 
 /** Whether the store fills a reservoir from a window. */
 template <typename store_type_>
-concept offers_sample_reservoir = requires(store_type_ const &store, typename store_type_::identifier_t const &lower,
-                                           typename store_type_::identifier_t const &upper, no_entropy_t generator,
-                                           std::size_t &seen, std::size_t capacity, no_op_t reservoir) {
-    { store.sample_reservoir(lower, upper, generator, seen, capacity, reservoir) } noexcept -> std::same_as<status_t>;
-};
+concept offers_sample_reservoir =
+    requires(store_type_ const &store, typename store_type_::identifier_t const &lower,
+             typename store_type_::identifier_t const &upper, no_entropy_t generator, std::size_t &seen,
+             std::size_t capacity, typename store_type_::value_t *reservoir) {
+        {
+            store.sample_reservoir(lower, upper, generator, seen, capacity, reservoir)
+        } noexcept -> std::same_as<status_t>;
+    };
 
 /** Whether an open transaction stages a tombstone for every member it reads. */
 template <typename store_type_>
@@ -2543,7 +2733,7 @@ template <typename store_type_>
 concept transaction_offers_sample_reservoir =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &lower,
              typename store_type_::identifier_t const &upper, no_entropy_t generator, std::size_t &seen,
-             std::size_t capacity, no_op_t reservoir) {
+             std::size_t capacity, typename store_type_::value_t *reservoir) {
         {
             transaction.sample_reservoir(lower, upper, generator, seen, capacity, reservoir)
         } noexcept -> std::same_as<status_t>;
@@ -3298,7 +3488,7 @@ class transaction_group {
                 one = visit_at_(order_[position],
                                 [snapshot](auto &transaction) noexcept { return transaction.reset_at(snapshot); });
             else one = visit_at_(order_[position], group_step<group_phase_t::reset_k> {});
-            if (failed(one)) result = one;
+            result = first_failure(result, one);
         }
         staging_ = staging_t::pending_k;
         return result;
@@ -4116,14 +4306,14 @@ class basic_commit_order {
         sharing_ == order_sharing_t::shared_k ? cache_line_bytes_k : alignof(generation_t);
 
     /** Reads @p word: atomically where threads share this order, plainly where one owns it. */
-    template <typename integral_type_>
+    template <std::integral integral_type_>
     static integral_type_ read_(integral_type_ const &word) noexcept {
         if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load(word);
         else return word;
     }
 
     /** Writes @p value into @p word, atomically only where it must be. */
-    template <typename integral_type_>
+    template <std::integral integral_type_>
     static void write_(integral_type_ &word, integral_type_ value) noexcept {
         if constexpr (sharing_ == order_sharing_t::shared_k) atomic_store<integral_type_>(word, value);
         else word = value;
@@ -4131,14 +4321,14 @@ class basic_commit_order {
 
     /** Reads the newest value of @p word, which only a read-modify-write can promise under
      *  sharing. */
-    template <typename integral_type_>
+    template <std::integral integral_type_>
     static integral_type_ read_newest_(integral_type_ &word) noexcept {
         if constexpr (sharing_ == order_sharing_t::shared_k) return atomic_load_newest(word);
         else return word;
     }
 
     /** Raises @p word to @p floor, never lowering it. */
-    template <typename integral_type_>
+    template <std::integral integral_type_>
     static void raise_(integral_type_ &word, integral_type_ floor) noexcept {
         if constexpr (sharing_ == order_sharing_t::shared_k) atomic_max_fetch<atomic_ref, integral_type_>(word, floor);
         else if (word < floor) word = floor;

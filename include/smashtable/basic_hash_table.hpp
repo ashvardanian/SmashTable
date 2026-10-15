@@ -64,9 +64,8 @@
 #include <cstdlib> // `std::abort`
 #include <cstring> // `std::memcpy`
 
-#include <iterator>    // `std::make_move_iterator`
 #include <limits>      // `std::numeric_limits`
-#include <type_traits> // `std::is_same`, `std::enable_if`
+#include <type_traits> // `std::conditional_t`, `std::enable_if`
 #include <utility>     // `std::move`, `std::swap`
 
 #include "smashtable/basic_vector.hpp"
@@ -76,20 +75,6 @@
 namespace ashvardanian::smashtable {
 
 #pragma region Iterators
-
-/** Detects iterators by their @c iterator_category, without hard-erroring on other types. */
-template <typename type_, typename = void>
-struct is_iterator_type : std::false_type {};
-
-template <typename type_>
-struct is_iterator_type<type_, std::void_t<decltype(*std::declval<type_ &>()), decltype(++std::declval<type_ &>())>>
-    : std::true_type {};
-
-/** Type trait to check if a type is an iterator. */
-template <typename type_>
-constexpr bool is_iterator() {
-    return is_iterator_type<std::remove_cvref_t<type_>>::value;
-}
 
 /**
  *  @brief Forward iterator for hash tables using simplified slot-based addressing.
@@ -176,7 +161,10 @@ struct hash_table_iterator : public hash_slot_ref<value_type_, hasher_type_> {
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
  */
 template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator_t, row_kit row_kit_type_ = native_row_kit_t>
+          allocator_of<std::byte> allocator_type_ = default_allocator_t, row_kit row_kit_type_ = native_row_kit_t>
+    requires key_hasher<hasher_type_, typename hash_layout_for<value_type_, hasher_type_>::key_t> &&
+             std::equivalence_relation<equals_type_ const &, typename hash_layout_for<value_type_, hasher_type_>::key_t,
+                                       typename hash_layout_for<value_type_, hasher_type_>::key_t>
 class basic_hash_table {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
@@ -337,28 +325,58 @@ class basic_hash_table {
                std::same_as<std::remove_cvref_t<comparable_key_type_>, std::remove_cv_t<key_t>>;
     }
 
-    /** Where @p wanted sits, compared a window at a time; @c slots_count when absent. */
-    offset_t probe_windows_to_find_(key_t const &wanted) const noexcept {
-        using word_t = std::make_unsigned_t<std::remove_cv_t<key_t>>;
-        constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
-        offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t offset = hasher_(wanted) & offset_mask;
-        // One window past the table's own count, since the first starts part-way into its window.
-        for (offset_t windows = 0; windows <= storage_.slots_count / mask_equal_width_k; ++windows) {
-            offset_t const window = offset & ~offset_t {mask_equal_width_k - 1};
-            hash_window_slots_t const slots = hash_window_slots<mask_equal_width_k>(
-                storage_.headers[window / hash_bucket_capacity_k], window, offset);
-            if (slots.candidates) {
-                std::span<word_t const, mask_equal_width_k> const keys(
-                    reinterpret_cast<word_t const *>(storage_.keys + window), mask_equal_width_k);
-                hash_bucket_mask_t const matched =
-                    row_kit_type_::mask_equal(keys, static_cast<word_t>(wanted)) & slots.candidates;
-                if (matched) return window + static_cast<offset_t>(countr_zero(matched));
+    /**
+     *  @brief Walks the probe run of @p wanted through @p table, handing @p call each populated
+     *      slot whose key equals it until @p call halts, as @c hand_over reads its answer.
+     *
+     *  Bounded by the slot count, so an empty or full table ends it too. Only a free slot ends the
+     *  run: a deleted one hides keys behind it, and a locked one, which a growable table never
+     *  holds, would be corruption to read past rather than a miss to report. A @c window_key
+     *  compares a whole window of keys per step through the row kit.
+     */
+    template <typename table_type_, typename comparable_key_type_, typename callback_type_>
+    static void walk_probe_run_(table_type_ &table, comparable_key_type_ const &wanted,
+                                callback_type_ &&call) noexcept {
+        using slot_t = std::conditional_t<std::is_const_v<table_type_>, const_slot_ref_t, slot_ref_t>;
+        offset_t const slots_count = table.storage_.slots_count;
+        if (!slots_count) return;
+        offset_t const offset_mask = slots_count - 1;
+        offset_t offset = table.hasher_(wanted) & offset_mask;
+        slot_t slot;
+
+        if constexpr (probes_windows_<comparable_key_type_>()) {
+            using word_t = std::make_unsigned_t<std::remove_cv_t<key_t>>;
+            constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
+            offset_t const windows_count = slots_count / mask_equal_width_k;
+            offset_t const entry = offset;
+            for (offset_t windows = 0; windows <= windows_count; ++windows) {
+                offset_t const window = offset & ~offset_t {mask_equal_width_k - 1};
+                hash_window_slots_t slots = hash_window_slots<mask_equal_width_k>(
+                    table.storage_.headers[window / hash_bucket_capacity_k], window, offset);
+                // The last step wraps onto the first window, already seen from the entry on.
+                if (windows == windows_count) slots.candidates &= (hash_bucket_mask_t {1} << (entry - window)) - 1;
+                if (slots.candidates) {
+                    std::span<word_t const, mask_equal_width_k> const keys(
+                        reinterpret_cast<word_t const *>(table.storage_.keys + window), mask_equal_width_k);
+                    hash_bucket_mask_t matched =
+                        row_kit_type_::mask_equal(keys, static_cast<word_t>(wanted)) & slots.candidates;
+                    for (; matched; matched &= matched - 1) {
+                        table.unsafe_retarget(slot, window + static_cast<offset_t>(countr_zero(matched)));
+                        if (hand_over(call, slot) == walk_control_t::halt_k) return;
+                    }
+                }
+                if (slots.ends_probe) return;
+                offset = (window + mask_equal_width_k) & offset_mask;
             }
-            if (slots.ends_probe) break;
-            offset = (window + mask_equal_width_k) & offset_mask;
         }
-        return storage_.slots_count;
+        else
+            for (offset_t probes = 0; probes != slots_count; ++probes, offset = (offset + 1) & offset_mask) {
+                table.unsafe_retarget(slot, offset);
+                if (slot.is_free()) return;
+                // Only populated slots compare, as a key's equality may read uninitialized bytes.
+                if (!slot.is_populated() || !table.equals_(slot.key(), wanted)) continue;
+                if (hand_over(call, slot) == walk_control_t::halt_k) return;
+            }
     }
 
     /** What a failed insertion reports: the end position, and why it stored nothing. */
@@ -440,8 +458,7 @@ class basic_hash_table {
      *  A refusal leaves nothing allocated: the table is new and empty, so there is no earlier state
      *  for a half-filled one to be told apart from.
      */
-    template <typename begin_iterator_type_, typename end_iterator_type_,
-              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_>
     static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end, hasher_t hasher = {},
                                            equals_t equals = {}, allocator_t allocator = {}) noexcept {
         auto table = make(hash_slots_count_t {static_cast<std::size_t>(distance_between(begin, end))},
@@ -534,47 +551,7 @@ class basic_hash_table {
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
                 return;
-        assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
-
-        if constexpr (probes_windows_<comparable_key_type_>()) {
-            offset_t const found = probe_windows_to_find_(wanted);
-            if (found == storage_.slots_count) return;
-            const_slot_ref_t slot;
-            unsafe_retarget(slot, found);
-            call(slot);
-            return;
-        }
-
-        offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t const initial_offset = hasher_(wanted) & offset_mask;
-        offset_t offset = initial_offset;
-        const_slot_ref_t slot;
-
-        while (true) {
-            unsafe_retarget(slot, offset);
-
-            // Checking for equality isn't safe, if we operate on uninitialized
-            // memory and call some complex comparison operators on them.
-            // So instead of one runtime `if`, we have two nested `if`s.
-            if (slot.is_populated()) {
-                if (equals_(slot.key(), wanted)) {
-                    call(slot);
-                    break;
-                }
-                offset = (offset + 1) & offset_mask;
-                if (offset == initial_offset) break;
-            }
-            else if (slot.is_deleted()) {
-                offset = (offset + 1) & offset_mask;
-                if (offset == initial_offset) break;
-            }
-            else {
-                // A "free" slot ends the probe sequence, and a locked one would truncate it, so
-                // the state is checked rather than inferred from "not populated, not deleted".
-                assert(slot.is_free() && "A growable table is single-threaded, so no slot can be locked");
-                break;
-            }
-        }
+        walk_probe_run_(*this, wanted, first_only {call});
     }
 
     /**
@@ -595,38 +572,7 @@ class basic_hash_table {
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
                 return;
-        assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
-
-        offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t const initial_offset = hasher_(wanted) & offset_mask;
-        offset_t offset = initial_offset;
-        const_slot_ref_t slot;
-
-        while (true) {
-            unsafe_retarget(slot, offset);
-
-            // Checking for equality isn't safe, if we operate on uninitialized
-            // memory and call some complex comparison operators on them.
-            // So instead of one runtime `if`, we have two nested `if`s.
-            if (slot.is_populated()) {
-                if (equals_(slot.key(), wanted))
-                    if (call(slot) == walk_control_t::halt_k) break;
-                offset = (offset + 1) & offset_mask;
-                if (offset == initial_offset) break;
-            }
-            else if (slot.is_deleted()) {
-                // A tombstone only interrupts the run for a reader that stops at the first match,
-                // and this walk wants the ones behind it.
-                offset = (offset + 1) & offset_mask;
-                if (offset == initial_offset) break;
-            }
-            else {
-                // A "free" slot ends the probe sequence, and a locked one would truncate it, so
-                // the state is checked rather than inferred from "not populated, not deleted".
-                assert(slot.is_free() && "A growable table is single-threaded, so no slot can be locked");
-                break;
-            }
-        }
+        walk_probe_run_(*this, wanted, call);
     }
 
     /**
@@ -645,42 +591,7 @@ class basic_hash_table {
         if constexpr (!contains_type<assume_reserved_t, tags_types_...>())
             if (!storage_.populated_count) [[unlikely]]
                 return;
-        assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
-
-        if constexpr (probes_windows_<comparable_key_type_>()) {
-            offset_t const found = probe_windows_to_find_(wanted);
-            if (found == storage_.slots_count) return;
-            slot_ref_t slot;
-            unsafe_retarget(slot, found);
-            call(slot);
-            return;
-        }
-
-        offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t const initial_offset = hasher_(wanted) & offset_mask;
-        offset_t offset = initial_offset;
-        slot_ref_t slot;
-
-        while (true) {
-            unsafe_retarget(slot, offset);
-
-            if (slot.is_populated()) {
-                if (equals_(slot.key(), wanted)) {
-                    call(slot);
-                    break;
-                }
-                offset = (offset + 1) & offset_mask;
-                if (offset == initial_offset) break;
-            }
-            else if (slot.is_deleted()) {
-                offset = (offset + 1) & offset_mask;
-                if (offset == initial_offset) break;
-            }
-            else {
-                assert(slot.is_free() && "A growable table is single-threaded, so no slot can be locked");
-                break;
-            }
-        }
+        walk_probe_run_(*this, wanted, first_only {call});
     }
 
     /**
@@ -1141,10 +1052,11 @@ class basic_hash_table {
      *  @note With maps this expects a @c mapping, exposing @c key and @c mapped members.
      */
     template <emplace_report_t report_ = emplace_report_t::no_result_k, typename temporary_pack_type_,
-              typename... tags_types_, typename std::enable_if<!is_iterator<temporary_pack_type_>(), int>::type = 0>
+              typename... tags_types_>
     std::conditional_t<report_ == emplace_report_t::insert_result_k, insert_result_t, void> insert(
         temporary_pack_type_ &&pack, tags_types_... tags) noexcept
-        requires(promises_something<tags_types_> && ...)
+        requires(!readable_iterator<std::remove_cvref_t<temporary_pack_type_>> &&
+                 (promises_something<tags_types_> && ...))
     {
         if constexpr (has_values_k)
             return emplace<report_>(std::forward<temporary_pack_type_>(pack).key,
@@ -1165,8 +1077,8 @@ class basic_hash_table {
      *  can refuse its own copy is duplicated in full before the first of them lands, because a slot
      *  once written cannot be un-written without leaving a tombstone that moves later probes.
      */
-    template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
-              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_,
+              typename... tags_types_>
     status_t upsert(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
         requires(promises_about_the_room<tags_types_> && ...)
     {
@@ -1180,8 +1092,8 @@ class basic_hash_table {
      *
      *  All-or-nothing over this table from the first element on, on the same terms as @c upsert.
      */
-    template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
-              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_,
+              typename... tags_types_>
     status_t insert_if_missing(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
         requires(promises_about_the_room<tags_types_> && ...)
     {
@@ -1196,8 +1108,8 @@ class basic_hash_table {
      *  All-or-nothing over this table from the first element on, a taken key included: every key is
      *  checked against the table before the first of them is written.
      */
-    template <typename begin_iterator_type_, typename end_iterator_type_, typename... tags_types_,
-              typename std::enable_if<is_iterator<begin_iterator_type_>(), int>::type = 0>
+    template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_,
+              typename... tags_types_>
     status_t insert(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
         requires(promises_about_the_room<tags_types_> && ...)
     {
@@ -1266,8 +1178,8 @@ class basic_hash_table {
      *  @brief Writes every element of [ @p begin, @p end ) into room this table already holds.
      *  @return The first refusal, which only a caller that did not secure the room can provoke.
      */
-    template <incumbent_policy_t policy_, typename begin_iterator_type_, typename end_iterator_type_,
-              typename... tags_types_>
+    template <incumbent_policy_t policy_, readable_iterator begin_iterator_type_,
+              iterator_sentinel<begin_iterator_type_> end_iterator_type_, typename... tags_types_>
     status_t apply_each_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
         requires(promises_something<tags_types_> && ...)
     {
@@ -1287,8 +1199,8 @@ class basic_hash_table {
      *  @tparam policy_ What a key already here does to the element arriving over it.
      *  @return The first refusal, or @c success_k for the whole range.
      */
-    template <incumbent_policy_t policy_, typename begin_iterator_type_, typename end_iterator_type_,
-              typename... tags_types_>
+    template <incumbent_policy_t policy_, multipass_iterator begin_iterator_type_,
+              iterator_sentinel<begin_iterator_type_> end_iterator_type_, typename... tags_types_>
     status_t absorb_range_(begin_iterator_type_ begin, end_iterator_type_ end, tags_types_... tags) noexcept
         requires(promises_something<tags_types_> && ...)
     {
@@ -1307,8 +1219,8 @@ class basic_hash_table {
                 if (failed(built)) return built;
                 if (reserve_more(static_cast<offset_t>(staged.size())) == reserve_result_t::failed_k)
                     return out_of_memory_heap_k;
-                return apply_each_<policy_>(std::make_move_iterator(staged.begin()),
-                                            std::make_move_iterator(staged.end()), assume_reserved_t {}, tags...);
+                return apply_each_<policy_>(moving_pointer {staged.begin()}, moving_pointer {staged.end()},
+                                            assume_reserved_t {}, tags...);
             }
             else {
                 if (reserve_more(count) == reserve_result_t::failed_k) return out_of_memory_heap_k;
@@ -1470,9 +1382,8 @@ class basic_hash_table {
     /**
      *  @brief Creates a new buffer of the requested capacity and rehashes the present data into it.
      *      Move-constructors are used, avoiding copies, and this table is left deallocated.
-     *  @return An unallocated table when the allocator refused or nothing was asked for, leaving
-     *      this one untouched.
-     *  @warning The new capacity can't be less than the current @c size().
+     *  @return An unallocated table when the allocator refused, nothing was asked for, or the
+     *      request has fewer slots than this table has elements, leaving this one untouched.
      */
     basic_hash_table move_to_new(hash_slots_count_t slots_count) noexcept {
 
@@ -1480,7 +1391,9 @@ class basic_hash_table {
         // a null headers region, so it leaves through the same door an allocation failure does.
         basic_hash_table target(slots_count, hasher_, equals_, get_allocator());
         if (!target.storage_.is_allocated()) return target;
-        assert(target.capacity() >= size() && "Not enough space in the new Hash-Table!");
+        // Fewer slots than elements would refuse emplaces midway, after some already moved over.
+        if (target.storage_.slots_count < size())
+            return basic_hash_table(hash_slots_count_t {}, hasher_, equals_, get_allocator());
 
         [[maybe_unused]] status_t const visited = for_each([&target](slot_ref_t const &source_slot) noexcept {
             if constexpr (has_values_k)
