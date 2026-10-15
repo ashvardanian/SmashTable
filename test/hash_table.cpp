@@ -264,6 +264,34 @@ static void unordered_ops_unrepresentable_capacity() {
 
 #pragma endregion Saturation and Refusal Tests
 
+#pragma region Kit Window Tests
+
+/** Window lookups over 4- and 8-byte keys through growth, tombstones and full tables. */
+template <typename kit_type_>
+void verify_kit(kit_type_) {
+    using narrow_set_t = basic_hash_table<std::uint32_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
+    using wide_set_t = basic_hash_table<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
+    test_unordered_growth_through_rehashes<narrow_set_t>();
+    test_unordered_growth_through_rehashes<wide_set_t>();
+    test_unordered_tombstone_reuse<narrow_set_t>();
+    test_unordered_tombstone_reuse<wide_set_t>();
+    test_unordered_full_table_refusals<narrow_set_t>();
+    test_unordered_full_table_refusals<wide_set_t>();
+}
+
+void verify_through(row_kit_t kit) {
+    if (row_kit_supported(kit)) visit_row_kit(kit, [](row_kit auto kit_instance) { verify_kit(kit_instance); });
+}
+
+static void hash_table_serial_kit() { verify_through(row_kit_t::serial_k); }
+static void hash_table_haswell_kit() { verify_through(row_kit_t::haswell_k); }
+static void hash_table_skylake_kit() { verify_through(row_kit_t::skylake_k); }
+static void hash_table_neon_kit() { verify_through(row_kit_t::neon_k); }
+static void hash_table_sve_kit() { verify_through(row_kit_t::sve_k); }
+static void hash_table_rvv_kit() { verify_through(row_kit_t::rvv_k); }
+
+#pragma endregion Kit Window Tests
+
 #pragma region Multi Match Probe Walk Tests
 
 /** Tests that the walk reaches every version of one key in a shared run, and no foreign key */
@@ -354,6 +382,12 @@ int main(int, char **arguments) {
     tally += run_test(settings, "unordered_ops.pinned_reports_status", unordered_ops_pinned_reports_status);
     tally += run_test(settings, "unordered_ops.rehash_to_nothing", unordered_ops_rehash_to_nothing);
     tally += run_test(settings, "unordered_ops.unrepresentable_capacity", unordered_ops_unrepresentable_capacity);
+    tally += run_test(settings, "hash_table.serial_kit", hash_table_serial_kit);
+    tally += run_test(settings, "hash_table.haswell_kit", hash_table_haswell_kit);
+    tally += run_test(settings, "hash_table.skylake_kit", hash_table_skylake_kit);
+    tally += run_test(settings, "hash_table.neon_kit", hash_table_neon_kit);
+    tally += run_test(settings, "hash_table.sve_kit", hash_table_sve_kit);
+    tally += run_test(settings, "hash_table.rvv_kit", hash_table_rvv_kit);
 
     tally += run_test(settings, "unordered_visit.every_match", unordered_visit_every_match);
     tally += run_test(settings, "unordered_visit.early_exit", unordered_visit_early_exit);

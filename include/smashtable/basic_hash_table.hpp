@@ -69,8 +69,9 @@
 #include <type_traits> // `std::is_same`, `std::enable_if`
 #include <utility>     // `std::move`, `std::swap`
 
-#include "basic_vector.hpp"
-#include "hash_layout.hpp"
+#include "smashtable/basic_vector.hpp"
+#include "smashtable/hash_layout.hpp"
+#include "smashtable/row_search.hpp" // `row_kit`, `native_row_kit_t`
 
 namespace ashvardanian::smashtable {
 
@@ -168,12 +169,14 @@ struct hash_table_iterator : public hash_slot_ref<value_type_, hasher_type_> {
  *      copy-constructible. Defaults to a transparent @c std::equal_to.
  *  @tparam allocator_type_ Allocator for internal memory management. Defaults to
  *      @c default_allocator_t.
+ *  @tparam row_kit_type_ The kit comparing a window of its @c mask_equal_width_k integer keys at
+ *      once in @c find and @c contains, the newest one the compiler's flags promise by default.
  *
  *  @see https://en.cppreference.com/w/cpp/container/unordered_set
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
  */
 template <typename value_type_, typename hasher_type_ = default_hash_t, typename equals_type_ = equal_to_t,
-          typename allocator_type_ = default_allocator_t>
+          typename allocator_type_ = default_allocator_t, row_kit row_kit_type_ = native_row_kit_t>
 class basic_hash_table {
 
     using layout_t = hash_layout_for<value_type_, hasher_type_>;
@@ -307,7 +310,8 @@ class basic_hash_table {
      *  decorates its elements - wrapping them in version metadata, say - needs the equality
      *  restated alongside the hasher, since both must address the decorated shape. */
     template <typename other_element_type_, typename other_hasher_type_, typename other_equals_type_ = equals_t>
-    using rebind = basic_hash_table<other_element_type_, other_hasher_type_, other_equals_type_, allocator_t>;
+    using rebind =
+        basic_hash_table<other_element_type_, other_hasher_type_, other_equals_type_, allocator_t, row_kit_type_>;
 
   private:
     /** The single allocation, the three regions carved from it, and the counters. */
@@ -324,6 +328,38 @@ class basic_hash_table {
     basic_hash_table(hash_slots_count_t slots, hasher_t hasher, equals_t equals, allocator_t allocator) noexcept
         : storage_(storage_t::make(slots, std::move(allocator))), hasher_(std::move(hasher)),
           equals_(std::move(equals)) {}
+
+    /** Whether looking up @p comparable_key_type_ compares a window of keys at once: a
+     *  @c window_key looked up as itself under plain equality. */
+    template <typename comparable_key_type_>
+    static constexpr bool probes_windows_() noexcept {
+        return window_key<std::remove_cv_t<key_t>> && std::same_as<equals_t, equal_to_t> &&
+               std::same_as<std::remove_cvref_t<comparable_key_type_>, std::remove_cv_t<key_t>>;
+    }
+
+    /** Where @p wanted sits, compared a window at a time; @c slots_count when absent. */
+    offset_t probe_windows_to_find_(key_t const &wanted) const noexcept {
+        using word_t = std::make_unsigned_t<std::remove_cv_t<key_t>>;
+        constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
+        offset_t const offset_mask = storage_.slots_count - 1;
+        offset_t offset = hasher_(wanted) & offset_mask;
+        // One window past the table's own count, since the first starts part-way into its window.
+        for (offset_t windows = 0; windows <= storage_.slots_count / mask_equal_width_k; ++windows) {
+            offset_t const window = offset & ~offset_t {mask_equal_width_k - 1};
+            hash_window_slots_t const slots = hash_window_slots<mask_equal_width_k>(
+                storage_.headers[window / hash_bucket_capacity_k], window, offset);
+            if (slots.candidates) {
+                std::span<word_t const, mask_equal_width_k> const keys(
+                    reinterpret_cast<word_t const *>(storage_.keys + window), mask_equal_width_k);
+                hash_bucket_mask_t const matched =
+                    row_kit_type_::mask_equal(keys, static_cast<word_t>(wanted)) & slots.candidates;
+                if (matched) return window + static_cast<offset_t>(countr_zero(matched));
+            }
+            if (slots.ends_probe) break;
+            offset = (window + mask_equal_width_k) & offset_mask;
+        }
+        return storage_.slots_count;
+    }
 
     /** What a failed insertion reports: the end position, and why it stored nothing. */
     insert_result_t missed_position_(upsert_result_t outcome) noexcept {
@@ -503,6 +539,15 @@ class basic_hash_table {
                 return;
         assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
 
+        if constexpr (probes_windows_<comparable_key_type_>()) {
+            offset_t const found = probe_windows_to_find_(wanted);
+            if (found == storage_.slots_count) return;
+            const_slot_ref_t slot;
+            unsafe_retarget(slot, found);
+            call(slot);
+            return;
+        }
+
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t const initial_offset = hasher_(wanted) & offset_mask;
         offset_t offset = initial_offset;
@@ -604,6 +649,15 @@ class basic_hash_table {
             if (!storage_.populated_count) [[unlikely]]
                 return;
         assert(storage_.slots_count != 0 && "assume_reserved promised a table with slots to probe");
+
+        if constexpr (probes_windows_<comparable_key_type_>()) {
+            offset_t const found = probe_windows_to_find_(wanted);
+            if (found == storage_.slots_count) return;
+            slot_ref_t slot;
+            unsafe_retarget(slot, found);
+            call(slot);
+            return;
+        }
 
         offset_t const offset_mask = storage_.slots_count - 1;
         offset_t const initial_offset = hasher_(wanted) & offset_mask;

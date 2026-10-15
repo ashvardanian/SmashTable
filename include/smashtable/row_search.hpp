@@ -159,6 +159,9 @@ struct serial_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::serial_k;
     static constexpr bool compiled_k = true;
 
+    /** Keys one @c mask_equal compares, its answer in the low bits of a 32-bit mask. */
+    static constexpr std::size_t mask_equal_width_k = 16;
+
     /** How many of @p keys order below @p wanted; for a sorted row, the lower bound. */
     template <typename key_type_, std::size_t extent_>
         requires row_searchable_key<key_type_>
@@ -182,6 +185,18 @@ struct serial_row_kit_t {
                                               (high_words[index] == wanted.high && low_words[index] < wanted.low));
         return below;
     }
+
+    /** Which of @p keys equal @p wanted, one bit per key, the lowest for the first: a hash table's
+     *  window, where slots nobody filled compare too and the caller masks them off. */
+    template <typename word_type_>
+        requires std::same_as<word_type_, std::uint32_t> || std::same_as<word_type_, std::uint64_t>
+    [[nodiscard]] static constexpr std::uint32_t mask_equal(std::span<word_type_ const, mask_equal_width_k> keys,
+                                                            word_type_ wanted) noexcept {
+        std::uint32_t matched = 0;
+        for (std::size_t index = 0; index != keys.size(); ++index)
+            matched |= static_cast<std::uint32_t>(keys[index] == wanted) << index;
+        return matched;
+    }
 };
 
 #pragma endregion Serial Kit
@@ -200,6 +215,7 @@ struct serial_row_kit_t {
 struct haswell_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::haswell_k;
     static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = 16;
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
@@ -300,6 +316,34 @@ struct haswell_row_kit_t {
                serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
     }
 
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
+                                                  std::uint32_t wanted) noexcept {
+        __m256i const needle = _mm256_set1_epi32(static_cast<std::int32_t>(wanted));
+        std::uint32_t matched = 0;
+        for (std::size_t offset = 0; offset != keys.size(); offset += 8) {
+            __m256i const loaded =
+                _mm256_loadu_si256(static_cast<__m256i const *>(static_cast<void const *>(keys.data() + offset)));
+            matched |=
+                static_cast<std::uint32_t>(_mm256_movemask_ps(_mm256_castsi256_ps(_mm256_cmpeq_epi32(loaded, needle))))
+                << offset;
+        }
+        return matched;
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
+                                                  std::uint64_t wanted) noexcept {
+        __m256i const needle = _mm256_set1_epi64x(static_cast<std::int64_t>(wanted));
+        std::uint32_t matched = 0;
+        for (std::size_t offset = 0; offset != keys.size(); offset += 4) {
+            __m256i const loaded =
+                _mm256_loadu_si256(static_cast<__m256i const *>(static_cast<void const *>(keys.data() + offset)));
+            matched |=
+                static_cast<std::uint32_t>(_mm256_movemask_pd(_mm256_castsi256_pd(_mm256_cmpeq_epi64(loaded, needle))))
+                << offset;
+        }
+        return matched;
+    }
+
   private:
     template <std::size_t extent_>
     static std::size_t count_below_words_(std::span<std::uint64_t const, extent_> words, std::uint64_t wanted,
@@ -364,6 +408,7 @@ struct haswell_row_kit_t {
 struct skylake_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::skylake_k;
     static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = 16;
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
@@ -470,6 +515,20 @@ struct skylake_row_kit_t {
         return below;
     }
 
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
+                                                  std::uint32_t wanted) noexcept {
+        return _mm512_cmpeq_epi32_mask(_mm512_loadu_si512(keys.data()),
+                                       _mm512_set1_epi32(static_cast<std::int32_t>(wanted)));
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
+                                                  std::uint64_t wanted) noexcept {
+        __m512i const needle = _mm512_set1_epi64(static_cast<std::int64_t>(wanted));
+        std::uint32_t const low = _mm512_cmpeq_epi64_mask(_mm512_loadu_si512(keys.data()), needle);
+        std::uint32_t const high = _mm512_cmpeq_epi64_mask(_mm512_loadu_si512(keys.data() + 8), needle);
+        return low | (high << 8);
+    }
+
   private:
     static __mmask8 present_words_(std::size_t remaining) noexcept {
         return remaining >= 8 ? __mmask8(0xFF) : __mmask8((1u << remaining) - 1u);
@@ -507,6 +566,7 @@ struct skylake_row_kit_t {
 struct neon_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::neon_k;
     static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = 16;
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
@@ -597,6 +657,40 @@ struct neon_row_kit_t {
         return vaddvq_u64(accumulated) +
                serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
     }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
+                                                  std::uint32_t wanted) noexcept {
+        uint32x4_t const needle = vdupq_n_u32(wanted);
+        std::uint32_t const *const words = keys.data();
+        uint16x8_t const low = vcombine_u16(vmovn_u32(vceqq_u32(vld1q_u32(words), needle)),
+                                            vmovn_u32(vceqq_u32(vld1q_u32(words + 4), needle)));
+        uint16x8_t const high = vcombine_u16(vmovn_u32(vceqq_u32(vld1q_u32(words + 8), needle)),
+                                             vmovn_u32(vceqq_u32(vld1q_u32(words + 12), needle)));
+        return mask_of_lanes_(vcombine_u8(vmovn_u16(low), vmovn_u16(high)));
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
+                                                  std::uint64_t wanted) noexcept {
+        uint64x2_t const needle = vdupq_n_u64(wanted);
+        uint8x8_t halves[2];
+        for (std::size_t half = 0; half != 2; ++half) {
+            std::uint64_t const *const words = keys.data() + half * 8;
+            uint32x4_t const low = vcombine_u32(vmovn_u64(vceqq_u64(vld1q_u64(words), needle)),
+                                                vmovn_u64(vceqq_u64(vld1q_u64(words + 2), needle)));
+            uint32x4_t const high = vcombine_u32(vmovn_u64(vceqq_u64(vld1q_u64(words + 4), needle)),
+                                                 vmovn_u64(vceqq_u64(vld1q_u64(words + 6), needle)));
+            halves[half] = vmovn_u16(vcombine_u16(vmovn_u32(low), vmovn_u32(high)));
+        }
+        return mask_of_lanes_(vcombine_u8(halves[0], halves[1]));
+    }
+
+  private:
+    /** Packs sixteen all-ones or all-zeros byte lanes into 16 bits; NEON has no movemask. */
+    static std::uint32_t mask_of_lanes_(uint8x16_t lanes) noexcept {
+        static constexpr std::uint8_t weights_k[16] = {1, 2, 4, 8, 16, 32, 64, 128, 1, 2, 4, 8, 16, 32, 64, 128};
+        uint8x16_t const weighted = vandq_u8(lanes, vld1q_u8(weights_k));
+        return static_cast<std::uint32_t>(vaddv_u8(vget_low_u8(weighted)) | vaddv_u8(vget_high_u8(weighted)) << 8);
+    }
 };
 
 #if defined(__clang__)
@@ -630,6 +724,7 @@ struct neon_row_kit_t {
 struct sve_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::sve_k;
     static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = neon_row_kit_t::mask_equal_width_k;
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
@@ -718,6 +813,18 @@ struct sve_row_kit_t {
             }
         return below;
     }
+
+    /** A predicate has no cheap move into a general register, so a window takes the NEON form
+     *  every SVE core carries. */
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
+                                                  std::uint32_t wanted) noexcept {
+        return neon_row_kit_t::mask_equal(keys, wanted);
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
+                                                  std::uint64_t wanted) noexcept {
+        return neon_row_kit_t::mask_equal(keys, wanted);
+    }
 };
 
 #if defined(__clang__)
@@ -748,6 +855,7 @@ struct sve_row_kit_t {
 struct rvv_row_kit_t {
     static constexpr row_kit_t kit_k = row_kit_t::rvv_k;
     static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = 16;
 
     template <std::size_t extent_>
     [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
@@ -841,6 +949,26 @@ struct rvv_row_kit_t {
             }
         return below;
     }
+
+    /** One compare over the whole window: the V extension's 128-bit floor fits it in a register
+     *  group, and the mask is stored as the bytes the caller wants. */
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::uint32_t mask_equal(
+        std::span<std::uint32_t const, mask_equal_width_k> keys, std::uint32_t wanted) noexcept {
+        std::size_t const length = __riscv_vsetvl_e32m4(keys.size());
+        vbool8_t const equal = __riscv_vmseq_vx_u32m4_b8(__riscv_vle32_v_u32m4(keys.data(), length), wanted, length);
+        std::uint8_t bits[2] = {0, 0};
+        __riscv_vsm_v_b8(bits, equal, length);
+        return static_cast<std::uint32_t>(bits[0] | bits[1] << 8);
+    }
+
+    [[nodiscard]] SMASHTABLE_RVV_ATTRIBUTE_ static std::uint32_t mask_equal(
+        std::span<std::uint64_t const, mask_equal_width_k> keys, std::uint64_t wanted) noexcept {
+        std::size_t const length = __riscv_vsetvl_e64m8(keys.size());
+        vbool8_t const equal = __riscv_vmseq_vx_u64m8_b8(__riscv_vle64_v_u64m8(keys.data(), length), wanted, length);
+        std::uint8_t bits[2] = {0, 0};
+        __riscv_vsm_v_b8(bits, equal, length);
+        return static_cast<std::uint32_t>(bits[0] | bits[1] << 8);
+    }
 };
 
 #if defined(__clang__)
@@ -860,12 +988,17 @@ struct rvv_row_kit_t {
 
 #pragma region Kit Dispatch
 
-/** A kit this build carries, answering every key type and both 16-byte layouts. */
+/** A kit this build carries, ranking every key type in both 16-byte layouts and masking its
+ *  @c mask_equal_width_k of equal 4- or 8-byte keys at once, at most a 32-bit mask's worth. */
 template <typename kit_type_>
-concept row_kit = kit_type_::compiled_k &&
+concept row_kit = kit_type_::compiled_k && (kit_type_::mask_equal_width_k <= 32) &&
                   requires(std::span<std::uint32_t const> narrow_keys, std::span<std::int32_t const> signed_narrow_keys,
                            std::span<std::uint64_t const> words, std::span<std::int64_t const> signed_keys,
-                           std::span<key128_t const> wide_keys) {
+                           std::span<key128_t const> wide_keys,
+                           std::span<std::uint32_t const, kit_type_::mask_equal_width_k> narrow_window,
+                           std::span<std::uint64_t const, kit_type_::mask_equal_width_k> window) {
+                      { kit_type_::mask_equal(narrow_window, std::uint32_t {}) } -> std::same_as<std::uint32_t>;
+                      { kit_type_::mask_equal(window, std::uint64_t {}) } -> std::same_as<std::uint32_t>;
                       { kit_type_::count_below(narrow_keys, std::uint32_t {}) } -> std::same_as<std::size_t>;
                       { kit_type_::count_below(signed_narrow_keys, std::int32_t {}) } -> std::same_as<std::size_t>;
                       { kit_type_::count_below(words, std::uint64_t {}) } -> std::same_as<std::size_t>;

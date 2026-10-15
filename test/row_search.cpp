@@ -190,6 +190,29 @@ void verify_rows_of(std::mt19937_64 &generator) {
     }
 }
 
+/** Masks of equal keys against a plain loop, the wanted key at every position and at none. */
+template <typename kit_type_, typename word_type_>
+void verify_masks_of(std::mt19937_64 &generator) {
+    constexpr std::size_t mask_equal_width_k = kit_type_::mask_equal_width_k;
+    word_type_ keys[mask_equal_width_k];
+    for (std::size_t round = 0; round != 256; ++round) {
+        // Narrow values make repeats likely, so several keys can match at once.
+        for (word_type_ &key : keys) key = static_cast<word_type_>(round % 2 ? generator() % 4 : generator());
+        // The largest word must match too, where a signed compare of unsigned keys would wrap.
+        keys[round % mask_equal_width_k] = std::numeric_limits<word_type_>::max();
+        std::span<word_type_ const, mask_equal_width_k> const row(keys);
+        // Every key in turn, then one drawn afresh that is most likely absent.
+        for (std::size_t position = 0; position <= mask_equal_width_k; ++position) {
+            word_type_ const wanted =
+                position != mask_equal_width_k ? keys[position] : static_cast<word_type_>(generator());
+            std::uint32_t expected = 0;
+            for (std::size_t index = 0; index != mask_equal_width_k; ++index)
+                expected |= static_cast<std::uint32_t>(keys[index] == wanted) << index;
+            st_verify_eq_(kit_type_::mask_equal(row, wanted), expected);
+        }
+    }
+}
+
 template <typename kit_type_>
 void verify_kit_rows(test_context_t const &context, kit_type_) {
     std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
@@ -198,6 +221,8 @@ void verify_kit_rows(test_context_t const &context, kit_type_) {
     verify_rows_of<kit_type_, std::uint64_t>(generator);
     verify_rows_of<kit_type_, std::int64_t>(generator);
     verify_rows_of<kit_type_, key128_t>(generator);
+    verify_masks_of<kit_type_, std::uint32_t>(generator);
+    verify_masks_of<kit_type_, std::uint64_t>(generator);
 }
 
 #pragma endregion Kit Equivalence

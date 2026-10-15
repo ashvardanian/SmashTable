@@ -88,6 +88,12 @@ static_assert(sizeof(hash_bucket_head_t) == sizeof(std::uint64_t));
 /** Bitmask selecting one slot within a bucket header lane. */
 using hash_bucket_mask_t = std::uint32_t;
 
+/** A key a lookup compares a window at a time: a 4- or 8-byte integer, read as unsigned. */
+template <typename key_type_>
+concept window_key = std::is_integral_v<key_type_> && !std::is_same_v<key_type_, bool> &&
+                     (std::is_same_v<std::make_unsigned_t<key_type_>, std::uint32_t> ||
+                      std::is_same_v<std::make_unsigned_t<key_type_>, std::uint64_t>);
+
 /** The four states a slot can be in, spelled out by the two header lanes. */
 enum class hash_slot_state_t : std::uint8_t {
 
@@ -521,6 +527,28 @@ class hash_atomic_slot_ref : public hash_slot_ref<value_type_, hasher_type_> {
 #pragma endregion Slot References
 
 #pragma region Bucket Algorithms
+
+/** The slots of a window a probe may still match, and whether a free slot ends the probe there. */
+struct hash_window_slots_t {
+    hash_bucket_mask_t candidates;
+    bool ends_probe;
+};
+
+/** Reads the @p width_ slots starting at slot @p window of the bucket @p head describes, for a
+ *  probe entering them at slot @p entry: the live slots from @p entry up to the first free one. */
+template <std::size_t width_>
+    requires(hash_bucket_capacity_k % width_ == 0)
+constexpr hash_window_slots_t hash_window_slots(hash_bucket_head_t const &head, std::size_t window,
+                                                std::size_t entry) noexcept {
+    hash_bucket_mask_t const whole = ~hash_bucket_mask_t {0} >> (hash_bucket_capacity_k - width_);
+    unsigned const shift = static_cast<unsigned>(window % hash_bucket_capacity_k);
+    hash_bucket_mask_t const populations = (head.lanes.populations >> shift) & whole;
+    hash_bucket_mask_t const deletions = (head.lanes.deletions >> shift) & whole;
+    hash_bucket_mask_t const from = (whole << (entry - window)) & whole;
+    hash_bucket_mask_t const freed = ~(populations | deletions) & from;
+    hash_bucket_mask_t const before_free = freed ? (freed & (0u - freed)) - 1u : whole;
+    return {populations & ~deletions & from & before_free, freed != 0};
+}
 
 /**
  *  @brief Iterates over the populated slots of a bucket by scanning its population bitmap.
