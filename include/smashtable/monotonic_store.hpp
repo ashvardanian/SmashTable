@@ -687,11 +687,7 @@ class monotonic_store {
         status_t range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) const noexcept
             requires ordered_collection<versioned_chains_t>
         {
-            auto const less = changes_.key_comp();
-            return walk_from_(
-                std::forward<lower_type_>(lower),
-                [&](auto const &candidate) noexcept { return less(candidate, upper); },
-                std::forward<callback_type_>(callback));
+            return walk_from_(std::forward<lower_type_>(lower), upper, std::forward<callback_type_>(callback));
         }
 
         /**
@@ -702,9 +698,7 @@ class monotonic_store {
         status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
             requires ordered_collection<versioned_chains_t>
         {
-            return walk_from_(
-                std::forward<lower_type_>(lower), [](auto const &) noexcept { return true; },
-                std::forward<callback_type_>(callback));
+            return walk_from_(std::forward<lower_type_>(lower), unbounded, std::forward<callback_type_>(callback));
         }
 
         /**
@@ -721,11 +715,7 @@ class monotonic_store {
         {
             expected<value_t> lowest = smallest_copy_();
             if (!lowest) return lowest.status() == key_not_found_k ? success_k : lowest.status();
-            auto const less = changes_.key_comp();
-            return walk_from_(
-                mapping_key_or_itself<value_t>(*lowest),
-                [&](auto const &candidate) noexcept { return less(candidate, upper); },
-                std::forward<callback_type_>(callback));
+            return walk_from_(mapping_key_or_itself<value_t>(*lowest), upper, std::forward<callback_type_>(callback));
         }
 
         /** Copies the lowest member this transaction reads, so a walk has a key to start from. */
@@ -772,16 +762,25 @@ class monotonic_store {
             return success_k;
         }
 
+        /** Whether @p candidate orders before @p upper, which every member does where the walk is
+         *  @c unbounded. */
+        template <typename candidate_type_, typename upper_type_>
+        [[nodiscard]] bool before_upper_(candidate_type_ const &candidate, upper_type_ const &upper) const noexcept {
+            if constexpr (std::same_as<upper_type_, unbounded_t>) return true;
+            else return changes_.key_comp()(candidate, upper);
+        }
+
         /**
-         *  @brief Merges the staged and committed sides from @p lower while @p within accepts.
+         *  @brief Merges the staged and committed sides from @p lower up to @p upper, excluded, or
+         *      to the last member where @p upper is @c unbounded.
          *
          *  The bounds are compared through the transparent comparator rather than materialized as
          *  an @c identifier_t, which a move-only key cannot copy into. A key this transaction
          *  touched is answered from its own version, so the committed side skips whatever
          *  @c changes_ speaks for and no key is emitted twice.
          */
-        template <typename lower_type_, typename within_type_, typename callback_type_>
-        status_t walk_from_(lower_type_ &&lower, within_type_ &&within, callback_type_ &&callback) const noexcept
+        template <typename lower_type_, typename upper_type_, typename callback_type_>
+        status_t walk_from_(lower_type_ &&lower, upper_type_ const &upper, callback_type_ &&callback) const noexcept
             requires ordered_collection<versioned_chains_t>
         {
             auto const &store = store_ref();
@@ -793,12 +792,13 @@ class monotonic_store {
             auto const less = changes_.key_comp();
             for (;;) {
                 versioned_t const *staged = nullptr;
-                while (!staged && staged_cursor != changes_.end() && within(*staged_cursor)) {
+                while (!staged && staged_cursor != changes_.end() && before_upper_(*staged_cursor, upper)) {
                     if (staged_cursor->presence == presence_t::present_k) staged = &*staged_cursor;
                     else ++staged_cursor;
                 }
                 versioned_t const *committed = nullptr;
-                while (!committed && committed_cursor != store.entries_.end() && within(*committed_cursor)) {
+                while (!committed && committed_cursor != store.entries_.end() &&
+                       before_upper_(*committed_cursor, upper)) {
                     if (!stages_(*committed_cursor)) committed = store_t::readable_version_(*committed_cursor);
                     if (!committed) ++committed_cursor;
                 }
@@ -1045,13 +1045,8 @@ class monotonic_store {
         status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires ordered_collection<versioned_chains_t>
         {
-            auto const less = changes_.key_comp();
-            return erase_walked_(
-                [&](auto &&step) noexcept {
-                    return walk_from_(
-                        lower, [&](auto const &candidate) noexcept { return less(candidate, upper); }, step);
-                },
-                std::forward<callback_type_>(callback));
+            return erase_walked_([&](auto &&step) noexcept { return walk_from_(lower, upper, step); },
+                                 std::forward<callback_type_>(callback));
         }
 
         /** Stages a tombstone for every member at or after @p lower, @p lower included. */
@@ -1059,11 +1054,8 @@ class monotonic_store {
         status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires ordered_collection<versioned_chains_t>
         {
-            return erase_walked_(
-                [&](auto &&step) noexcept {
-                    return walk_from_(lower, [](auto const &) noexcept { return true; }, step);
-                },
-                std::forward<callback_type_>(callback));
+            return erase_walked_([&](auto &&step) noexcept { return walk_from_(lower, unbounded, step); },
+                                 std::forward<callback_type_>(callback));
         }
 
         /** Stages a tombstone for every member before @p upper, @p upper excluded. */
@@ -1075,13 +1067,8 @@ class monotonic_store {
             // member this transaction reads is asked for and used as the bound.
             expected<value_t> lowest = smallest_copy_();
             if (!lowest) return lowest.status() == key_not_found_k ? success_k : lowest.status();
-            auto const less = changes_.key_comp();
             return erase_walked_(
-                [&](auto &&step) noexcept {
-                    return walk_from_(
-                        mapping_key_or_itself<value_t>(*lowest),
-                        [&](auto const &candidate) noexcept { return less(candidate, upper); }, step);
-                },
+                [&](auto &&step) noexcept { return walk_from_(mapping_key_or_itself<value_t>(*lowest), upper, step); },
                 std::forward<callback_type_>(callback));
         }
 

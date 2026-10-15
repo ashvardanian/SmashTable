@@ -489,6 +489,14 @@ struct default_allocator {
 /** The byte allocator every table is carved from unless a caller names another. */
 using default_allocator_t = default_allocator<std::byte>;
 
+/** An allocator handing out raw storage for @p value_type_, or @c nullptr where it cannot, as
+ *  @c default_allocator does and every caller here checks. */
+template <typename allocator_type_, typename value_type_>
+concept allocator_of = requires(allocator_type_ &allocator, value_type_ *pointer, std::size_t count) {
+    { allocator.allocate(count) } -> std::same_as<value_type_ *>;
+    allocator.deallocate(pointer, count);
+};
+
 /**
  *  @brief Transparent ordering and equality, so a container needs no @c \<functional\>.
  *
@@ -663,6 +671,12 @@ struct assume_sorted_t {
     explicit assume_sorted_t() = default;
 };
 inline constexpr assume_sorted_t assume_sorted {};
+
+/** Stands for the missing upper end of a range, so a walk bounded above runs to the last member. */
+struct unbounded_t {
+    explicit unbounded_t() = default;
+};
+inline constexpr unbounded_t unbounded {};
 
 /**
  *  @brief Compile-time check if a type appears in parameter pack.
@@ -2825,6 +2839,36 @@ concept optimistically_concurrent_store =
         { transaction.reset() } noexcept -> std::same_as<status_t>;
     };
 
+/** A phase a transaction group drives through every participant, one at a time. */
+enum class group_phase_t : std::uint8_t {
+    validate_k,
+    release_validation_k,
+    stage_k,
+    publish_k,
+    commit_k,
+    prune_k,
+    rollback_k,
+    reset_k,
+};
+
+/** Runs @p phase_ on whichever participant a group's visit lands on; a phase that cannot refuse
+ *  answers @c success_k. */
+template <group_phase_t phase_>
+struct group_step {
+    template <typename transaction_type_>
+    status_t operator()(transaction_type_ &transaction) const noexcept {
+        if constexpr (phase_ == group_phase_t::validate_k) return transaction.validate_for_commit();
+        else if constexpr (phase_ == group_phase_t::release_validation_k) transaction.release_validation();
+        else if constexpr (phase_ == group_phase_t::stage_k) return transaction.stage();
+        else if constexpr (phase_ == group_phase_t::publish_k) transaction.publish_under();
+        else if constexpr (phase_ == group_phase_t::commit_k) return transaction.commit();
+        else if constexpr (phase_ == group_phase_t::prune_k) transaction.prune_committed();
+        else if constexpr (phase_ == group_phase_t::rollback_k) return transaction.rollback();
+        else return transaction.reset();
+        return success_k;
+    }
+};
+
 /**
  *  @brief Stages @p stage_changes into @p transaction and commits it, at most @p attempts times.
  *  @param[in] stage_changes Invoked as `stage_changes(transaction)` on every attempt; must be
@@ -2989,15 +3033,11 @@ class transaction_group {
      */
     status_t validate_participants_() noexcept {
         for (std::size_t position = 0; position != participants_k; ++position)
-            if (status_t const refused = visit_at_(
-                    order_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+            if (status_t const refused = visit_at_(order_[position], group_step<group_phase_t::validate_k> {});
                 failed(refused)) {
                 while (position != 0) {
                     [[maybe_unused]] status_t const released =
-                        visit_at_(order_[--position], [](auto &transaction) noexcept {
-                            transaction.release_validation();
-                            return success_k;
-                        });
+                        visit_at_(order_[--position], group_step<group_phase_t::release_validation_k> {});
                 }
                 return refused;
             }
@@ -3119,7 +3159,7 @@ class transaction_group {
         std::size_t staged_count = 0;
         status_t result = success_k;
         for (std::size_t position = 0; position != participants_k; ++position) {
-            result = visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.stage(); });
+            result = visit_at_(order_[position], group_step<group_phase_t::stage_k> {});
             if (failed(result)) break;
             ++staged_count;
         }
@@ -3128,7 +3168,7 @@ class transaction_group {
             while (staged_count != 0) {
                 --staged_count;
                 [[maybe_unused]] status_t const unwound =
-                    visit_at_(order_[staged_count], [](auto &transaction) noexcept { return transaction.rollback(); });
+                    visit_at_(order_[staged_count], group_step<group_phase_t::rollback_k> {});
             }
             return result;
         }
@@ -3205,16 +3245,13 @@ class transaction_group {
             if (status_t const refused = validate_participants_(); failed(refused)) return refused;
 
             for (std::size_t position = 0; position != participants_k; ++position) {
-                [[maybe_unused]] status_t const published = visit_at_(order_[position], [](auto &transaction) noexcept {
-                    transaction.publish_under();
-                    return success_k;
-                });
+                [[maybe_unused]] status_t const published =
+                    visit_at_(order_[position], group_step<group_phase_t::publish_k> {});
             }
         }
         else {
             for (std::size_t position = 0; position != participants_k; ++position)
-                if (status_t const refused =
-                        visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.commit(); });
+                if (status_t const refused = visit_at_(order_[position], group_step<group_phase_t::commit_k> {});
                     failed(refused)) {
                     // Whatever the earlier participants published is out, so the group stops calling
                     // itself staged and leaves `reset` to discard the rest.
@@ -3241,8 +3278,7 @@ class transaction_group {
         // Ascending store address, as every forward pass takes - only an unwind descends - so a
         // participant holding a lock across the phases cannot deadlock against another group.
         for (std::size_t position = 0; position != participants_k; ++position)
-            if (status_t const refused =
-                    visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
+            if (status_t const refused = visit_at_(order_[position], group_step<group_phase_t::rollback_k> {});
                 failed(refused))
                 return refused;
         staging_ = staging_t::pending_k;
@@ -3261,7 +3297,7 @@ class transaction_group {
             if constexpr (shares_one_order_k)
                 one = visit_at_(order_[position],
                                 [snapshot](auto &transaction) noexcept { return transaction.reset_at(snapshot); });
-            else one = visit_at_(order_[position], [](auto &transaction) noexcept { return transaction.reset(); });
+            else one = visit_at_(order_[position], group_step<group_phase_t::reset_k> {});
             if (failed(one)) result = one;
         }
         staging_ = staging_t::pending_k;
@@ -3407,15 +3443,11 @@ class dynamic_transaction_group {
      */
     status_t validate_participants_() noexcept {
         for (std::size_t position = 0; position != joined_count_; ++position)
-            if (status_t const refused = visit_(
-                    joined_[position], [](auto &transaction) noexcept { return transaction.validate_for_commit(); });
+            if (status_t const refused = visit_(joined_[position], group_step<group_phase_t::validate_k> {});
                 failed(refused)) {
                 while (position != 0) {
                     [[maybe_unused]] status_t const released =
-                        visit_(joined_[--position], [](auto &transaction) noexcept {
-                            transaction.release_validation();
-                            return success_k;
-                        });
+                        visit_(joined_[--position], group_step<group_phase_t::release_validation_k> {});
                 }
                 return refused;
             }
@@ -3541,7 +3573,7 @@ class dynamic_transaction_group {
         std::size_t staged_count = 0;
         status_t result = success_k;
         for (; staged_count != joined_count_; ++staged_count) {
-            result = visit_(joined_[staged_count], [](auto &transaction) noexcept { return transaction.stage(); });
+            result = visit_(joined_[staged_count], group_step<group_phase_t::stage_k> {});
             if (failed(result)) break;
         }
 
@@ -3549,7 +3581,7 @@ class dynamic_transaction_group {
             while (staged_count != 0) {
                 --staged_count;
                 [[maybe_unused]] status_t const unwound =
-                    visit_(joined_[staged_count], [](auto &transaction) noexcept { return transaction.rollback(); });
+                    visit_(joined_[staged_count], group_step<group_phase_t::rollback_k> {});
             }
             return result;
         }
@@ -3590,10 +3622,8 @@ class dynamic_transaction_group {
             order.await_published(in_flight.stamp());
             // Reclaimed under the old claim, since the participants are gone before it moves.
             for (std::size_t position = 0; position != joined_count_; ++position) {
-                [[maybe_unused]] status_t const settled = visit_(joined_[position], [](auto &transaction) noexcept {
-                    transaction.prune_committed();
-                    return success_k;
-                });
+                [[maybe_unused]] status_t const settled =
+                    visit_(joined_[position], group_step<group_phase_t::prune_k> {});
             }
             stamp = static_cast<generation_t>(in_flight.stamp());
         }
@@ -3613,8 +3643,7 @@ class dynamic_transaction_group {
     status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
         for (std::size_t position = 0; position != joined_count_; ++position)
-            if (status_t const refused =
-                    visit_(joined_[position], [](auto &transaction) noexcept { return transaction.rollback(); });
+            if (status_t const refused = visit_(joined_[position], group_step<group_phase_t::rollback_k> {});
                 failed(refused))
                 return refused;
         staging_ = staging_t::pending_k;

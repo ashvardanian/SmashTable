@@ -495,13 +495,13 @@ class basic_wb_node {
 
     /**
      *  @brief Builds a balanced tree from sorted range [ @p first, @p first + @p count ) in O(n).
-     *  @param[in] allocate_node Hands back a raw node, or @c nullptr when it cannot.
+     *  @param[inout] allocator Hands back a raw node, or @c nullptr when it cannot.
      *  @return What was built and why the build stopped.
      *  @warning An unsorted range builds a tree whose structure is undefined.
      */
-    template <typename iterator_type_, typename allocator_func_>
+    template <std::forward_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
-                                            allocator_func_ &&allocate_node) noexcept {
+                                            node_allocator_type_ &allocator) noexcept {
         if (count == 0) return {};
 
         std::size_t const middle = count / 2;
@@ -512,7 +512,7 @@ class basic_wb_node {
         expected<value_t> duplicated = copy_safely(*middle_iterator);
         if (!duplicated) return {nullptr, duplicated.status()};
 
-        node_t *root = allocate_node();
+        node_t *root = allocator.allocate(1);
         if (!root) return {nullptr, status_t::out_of_memory_heap_k};
         new (&root->payload) value_t(*std::move(duplicated));
         root->left = nullptr;
@@ -520,7 +520,7 @@ class basic_wb_node {
         reset_to_leaf(root);
 
         // A refused subtree still hangs off this root, so whoever owns the root frees all of it.
-        build_result_t const left = build_from_sorted(first, middle, allocate_node);
+        build_result_t const left = build_from_sorted(first, middle, allocator);
         root->left = left.root;
         if (failed(left.status)) {
             update_size(root);
@@ -529,7 +529,7 @@ class basic_wb_node {
 
         iterator_type_ right_first = middle_iterator;
         ++right_first;
-        build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
+        build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocator);
         root->right = right.root;
         update_size(root);
         if (failed(right.status)) return {root, right.status, 1 + left.count + right.count};
@@ -804,15 +804,15 @@ class basic_wb_node {
      *  @param[in] node Root of subtree.
      *  @param[in] payload Entry to insert or assign (moved).
      *  @param[in] comparator Comparator for element comparison.
-     *  @param[in] node_allocator Allocator that returns a new node pointer, or nullptr on failure.
+     *  @param[inout] allocator Hands back a raw node, or @c nullptr when it cannot.
      *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
-    template <typename node_allocator_type_>
+    template <allocator_of<node_t> node_allocator_type_>
     static find_or_make_result_t upsert(node_t *node, value_type_ &&payload, comparator_t const &comparator,
-                                        node_allocator_type_ &&node_allocator) noexcept {
+                                        node_allocator_type_ &allocator) noexcept {
         // Base case: empty tree, allocate new node
         if (!node) {
-            node_t *new_node = node_allocator();
+            node_t *new_node = allocator.allocate(1);
             if (!new_node) return {nullptr, nullptr, node_placement_t::refused_k};
             new (&new_node->payload) value_type_(std::move(payload));
             new_node->left = nullptr;
@@ -823,7 +823,7 @@ class basic_wb_node {
 
         // Recursive case: search for insertion point
         if (comparator(mapping_key_or_itself(payload), mapping_key_or_itself(node->payload))) {
-            auto result = upsert(node->left, std::move(payload), comparator, node_allocator);
+            auto result = upsert(node->left, std::move(payload), comparator, allocator);
             node->left = result.root;
             if (result.placement == node_placement_t::made_k) {
                 update_size(node);
@@ -834,7 +834,7 @@ class basic_wb_node {
             return {node, result.match, result.placement};
         }
         else if (comparator(mapping_key_or_itself(node->payload), mapping_key_or_itself(payload))) {
-            auto result = upsert(node->right, std::move(payload), comparator, node_allocator);
+            auto result = upsert(node->right, std::move(payload), comparator, allocator);
             node->right = result.root;
             if (result.placement == node_placement_t::made_k) {
                 update_size(node);
@@ -1147,8 +1147,7 @@ class basic_wb_tree {
         // descent below only moves it once the allocation has succeeded.
         if (node_t *existing = node_t::find(root_, payload, comparator_))
             return {existing, node_t::node_placement_t::matched_k};
-        auto result =
-            node_t::upsert(root_, std::move(payload), comparator_, [&]() noexcept { return allocator_.allocate(1); });
+        auto result = node_t::upsert(root_, std::move(payload), comparator_, allocator_);
         root_ = result.root;
         size_ += result.placement == node_t::node_placement_t::made_k;
         return {result.match, result.placement};
@@ -1163,8 +1162,7 @@ class basic_wb_tree {
      */
     template <typename comparable_type_>
     upserted_node_t insert_or_assign(comparable_type_ &&comparable) noexcept {
-        auto result = node_t::upsert(root_, std::forward<comparable_type_>(comparable), comparator_,
-                                     [&]() noexcept { return allocator_.allocate(1); });
+        auto result = node_t::upsert(root_, std::forward<comparable_type_>(comparable), comparator_, allocator_);
         root_ = result.root;
         size_ += result.placement == node_t::node_placement_t::made_k;
         return {result.match, result.placement};
@@ -1649,8 +1647,7 @@ class basic_wb_tree {
             static_assert(std::forward_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
             std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
-            typename node_t::build_result_t const built =
-                node_t::build_from_sorted(first, count, [&]() noexcept { return staged.allocator_.allocate(1); });
+            typename node_t::build_result_t const built = node_t::build_from_sorted(first, count, staged.allocator_);
             // Hooked up even on a refusal, so the staging tree frees whatever was built and its
             // size never disagrees with its root.
             staged.root_ = built.root;

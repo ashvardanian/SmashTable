@@ -386,11 +386,8 @@ class basic_hash_table {
     reserve_result_t reserve_for_absent_key_(comparable_key_type_ const &wanted, tags_types_...) noexcept {
         offset_t const planned_elements = 1 + storage_.populated_count + storage_.deleted_count;
         if (planned_elements <= storage_.growth_threshold) return reserve_result_t::unchanged_k;
-        if constexpr (!contains_type<assume_unique_t, tags_types_...>()) {
-            bool key_is_present = false;
-            probe_to_find(wanted, [&](auto const &) noexcept { key_is_present = true; });
-            if (key_is_present) return reserve_result_t::unchanged_k;
-        }
+        if constexpr (!contains_type<assume_unique_t, tags_types_...>())
+            if (*contains(wanted)) return reserve_result_t::unchanged_k;
         return reserve(planned_elements);
     }
 

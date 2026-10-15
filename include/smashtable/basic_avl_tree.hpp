@@ -612,16 +612,16 @@ class basic_avl_node {
      *
      *  @param[in] first Iterator to beginning of sorted range.
      *  @param[in] count Number of elements in range.
-     *  @param[in] allocate_node Allocator returning a new node pointer or nullptr on failure.
+     *  @param[inout] allocator Hands back a raw node, or @c nullptr when it cannot.
      *  @return What was built and why the build stopped, which is @c success_k for the whole range.
      *
      *  @note Complexity: O(n) time, O(log n) recursion depth. Builds perfectly balanced tree by
      *      recursively picking middle element as root.
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
      */
-    template <typename iterator_type_, typename allocator_func_>
+    template <std::forward_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
-                                            allocator_func_ &&allocate_node) noexcept {
+                                            node_allocator_type_ &allocator) noexcept {
         if (count == 0) return {};
 
         std::size_t const middle = count / 2;
@@ -632,7 +632,7 @@ class basic_avl_node {
         expected<value_t> duplicated = copy_safely(*middle_iterator);
         if (!duplicated) return {nullptr, duplicated.status()};
 
-        node_t *root = allocate_node();
+        node_t *root = allocator.allocate(1);
         if (!root) return {nullptr, status_t::out_of_memory_heap_k};
         new (&root->payload) value_t(*std::move(duplicated));
         // Raw memory, so the link to the parent is only correct once the caller overwrites it.
@@ -641,14 +641,14 @@ class basic_avl_node {
         root->right = nullptr;
 
         // A refused subtree still hangs off this root, so whoever owns the root frees all of it.
-        build_result_t const left = build_from_sorted(first, middle, allocate_node);
+        build_result_t const left = build_from_sorted(first, middle, allocator);
         root->left = left.root;
         if (root->left) root->left->parent = root;
         if (failed(left.status)) return {root, left.status, 1 + left.count};
 
         iterator_type_ right_first = middle_iterator;
         ++right_first;
-        build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocate_node);
+        build_result_t const right = build_from_sorted(right_first, count - middle - 1, allocator);
         root->right = right.root;
         if (root->right) root->right->parent = root;
         if (failed(right.status)) return {root, right.status, 1 + left.count + right.count};
@@ -2159,8 +2159,7 @@ class basic_avl_tree {
             static_assert(std::forward_iterator<input_iterator_type_>,
                           "a sorted build seeks the middle of its range, which a single-pass range cannot answer");
             std::size_t const count = static_cast<std::size_t>(std::distance(first, last));
-            typename node_t::build_result_t const built =
-                node_t::build_from_sorted(first, count, [&]() noexcept { return staged.allocator_.allocate(1); });
+            typename node_t::build_result_t const built = node_t::build_from_sorted(first, count, staged.allocator_);
             // Hooked up even on a refusal, so the staging tree frees whatever was built and its
             // size never disagrees with its root.
             staged.root_ = built.root;

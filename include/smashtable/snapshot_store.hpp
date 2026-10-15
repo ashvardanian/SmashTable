@@ -2297,12 +2297,10 @@ class snapshot_store {
     template <typename callback_type_>
     void for_each_at_(generation_t snapshot, callback_type_ &&callback) const noexcept {
         if constexpr (ordered_core_k) {
-            walk_visible_keys_(
-                entries_.begin(), [](versioned_t const &) noexcept { return true; }, snapshot,
-                [&](value_t const &value) noexcept {
-                    if (hand_over(callback, value) == walk_control_t::halt_k) return walk_control_t::halt_k;
-                    return walk_control_t::resume_k;
-                });
+            walk_visible_keys_(entries_.begin(), unbounded, snapshot, [&](value_t const &value) noexcept {
+                if (hand_over(callback, value) == walk_control_t::halt_k) return walk_control_t::halt_k;
+                return walk_control_t::resume_k;
+            });
         }
         else {
             for (auto cursor = entries_.begin(); cursor != entries_.end(); ++cursor) {
@@ -2317,21 +2315,29 @@ class snapshot_store {
 
 #pragma region Ordered Walks
 
+    /** Whether the run headed by @p head orders before @p upper, which every run does where the
+     *  walk is @c unbounded. */
+    template <typename upper_type_>
+    [[nodiscard]] bool before_upper_(versioned_t const &head, upper_type_ const &upper) const noexcept {
+        if constexpr (std::same_as<upper_type_, unbounded_t>) return true;
+        else return entries_.key_comp().per_key_compare(head, upper);
+    }
+
     /**
      *  @brief Hands @p callback the value @p snapshot reads for each key from @p cursor onward,
-     *      stopping when @p within rejects a key or the callback halts.
+     *      stopping at @p upper, excluded, or when the callback halts.
      *
      *  The run-by-run stepping lives in @c visible_cursor_t, so the push-style walk and the
-     *  resumable one can never disagree about which version of a key a snapshot reads. @p within is
+     *  resumable one can never disagree about which version of a key a snapshot reads. The bound is
      *  asked of the run's first entry, so a bounded walk stops without stepping past its window.
      */
-    template <typename within_type_, typename callback_type_>
-    void walk_visible_keys_(entry_iterator_t start, within_type_ &&within, generation_t snapshot,
+    template <typename upper_type_, typename callback_type_>
+    void walk_visible_keys_(entry_iterator_t start, upper_type_ const &upper, generation_t snapshot,
                             callback_type_ &&callback) const noexcept
         requires ordered_core_k
     {
         for (visible_cursor_t cursor(*this, start, snapshot); !cursor.exhausted(); cursor.step_()) {
-            if (!within(*cursor.position_)) break;
+            if (!before_upper_(*cursor.position_, upper)) break;
             if (!cursor.standing_) continue;
             if (callback(cursor.standing_->payload) == walk_control_t::halt_k) break;
         }
@@ -2360,11 +2366,8 @@ class snapshot_store {
                    callback_type_ &&callback) const noexcept
         requires ordered_core_k
     {
-        auto const ordering = entries_.key_comp();
-        walk_visible_keys_(
-            entries_.lower_bound(std::forward<lower_type_>(lower)),
-            [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); }, snapshot,
-            std::forward<callback_type_>(callback));
+        walk_visible_keys_(entries_.lower_bound(std::forward<lower_type_>(lower)), upper, snapshot,
+                           std::forward<callback_type_>(callback));
     }
 
     /** Hands @p callback every value at or after @p lower as @p snapshot reads them. */
@@ -2372,10 +2375,8 @@ class snapshot_store {
     void range_from_at_(lower_type_ &&lower, generation_t snapshot, callback_type_ &&callback) const noexcept
         requires ordered_core_k
     {
-        walk_visible_keys_(
-            entries_.lower_bound(std::forward<lower_type_>(lower)),
-            []([[maybe_unused]] versioned_t const &head) noexcept { return true; }, snapshot,
-            std::forward<callback_type_>(callback));
+        walk_visible_keys_(entries_.lower_bound(std::forward<lower_type_>(lower)), unbounded, snapshot,
+                           std::forward<callback_type_>(callback));
     }
 
     /** Hands @p callback every value before @p upper as @p snapshot reads them. */
@@ -2383,10 +2384,7 @@ class snapshot_store {
     void range_up_to_at_(upper_type_ &&upper, generation_t snapshot, callback_type_ &&callback) const noexcept
         requires ordered_core_k
     {
-        auto const ordering = entries_.key_comp();
-        walk_visible_keys_(
-            entries_.begin(), [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); },
-            snapshot, std::forward<callback_type_>(callback));
+        walk_visible_keys_(entries_.begin(), upper, snapshot, std::forward<callback_type_>(callback));
     }
 
 #pragma endregion Ordered Walks
@@ -2883,13 +2881,11 @@ class snapshot_store {
         requires ordered_core_k
     {
         value_t const *found = nullptr;
-        walk_visible_keys_(
-            entries_.lower_bound(std::forward<comparable_type_>(comparable)),
-            [](versioned_t const &) noexcept { return true; }, published_stamp_(),
-            [&](value_t const &value) noexcept {
-                found = &value;
-                return walk_control_t::halt_k;
-            });
+        walk_visible_keys_(entries_.lower_bound(std::forward<comparable_type_>(comparable)), unbounded,
+                           published_stamp_(), [&](value_t const &value) noexcept {
+                               found = &value;
+                               return walk_control_t::halt_k;
+                           });
         if (found) callback_found(*found);
         else callback_missing();
         return success_k;
@@ -2903,13 +2899,11 @@ class snapshot_store {
         requires ordered_core_k
     {
         value_t const *found = nullptr;
-        walk_visible_keys_(
-            entries_.upper_bound(std::forward<comparable_type_>(comparable)),
-            [](versioned_t const &) noexcept { return true; }, published_stamp_(),
-            [&](value_t const &value) noexcept {
-                found = &value;
-                return walk_control_t::halt_k;
-            });
+        walk_visible_keys_(entries_.upper_bound(std::forward<comparable_type_>(comparable)), unbounded,
+                           published_stamp_(), [&](value_t const &value) noexcept {
+                               found = &value;
+                               return walk_control_t::halt_k;
+                           });
         if (found) callback_found(*found);
         else callback_missing();
         return success_k;
@@ -3448,9 +3442,7 @@ class snapshot_store {
      *      bare zero standing for both, which is why the count travels inside @c expected.
      */
     expected<std::size_t> vacuum() noexcept {
-        if constexpr (ordered_core_k) {
-            return vacuum_runs_(entries_.begin(), [](versioned_t const &) noexcept { return true; });
-        }
+        if constexpr (ordered_core_k) { return vacuum_runs_(entries_.begin(), unbounded); }
         else {
             // Pruning a key is idempotent, so meeting the same key once per version it still carries
             // costs a probe and changes nothing after the first pass over it.
@@ -3474,21 +3466,19 @@ class snapshot_store {
     expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
         requires ordered_core_k
     {
-        auto const ordering = entries_.key_comp();
-        return vacuum_runs_(entries_.lower_bound(std::forward<lower_type_>(lower)),
-                            [&](versioned_t const &head) noexcept { return ordering.per_key_compare(head, upper); });
+        return vacuum_runs_(entries_.lower_bound(std::forward<lower_type_>(lower)), upper);
     }
 
 #pragma endregion Vacuuming
 
   private:
     /**
-     *  @brief Frees every unreachable version, run by run, from @p start until @p within rejects a
-     *      run. @p within sees a run's first entry before anything in that run is erased.
+     *  @brief Frees every unreachable version, run by run, from @p start up to the run of @p upper,
+     *      excluded, asking the bound of each run's first entry before erasing anything in it.
      *  @return How many versions were reclaimed.
      */
-    template <typename mutable_iterator_type_, typename within_type_>
-    std::size_t vacuum_runs_(mutable_iterator_type_ start, within_type_ &&within) noexcept
+    template <typename mutable_iterator_type_, typename upper_type_>
+    std::size_t vacuum_runs_(mutable_iterator_type_ start, upper_type_ const &upper) noexcept
         requires ordered_core_k
     {
         generation_t const mark = low_water_mark_();
@@ -3496,7 +3486,7 @@ class snapshot_store {
         auto cursor = start;
         while (cursor != entries_.end()) {
             versioned_t const &head = *cursor;
-            if (!within(head)) break;
+            if (!before_upper_(head, upper)) break;
 
             versioned_t const *newest = nullptr;
             auto run_end = cursor;
