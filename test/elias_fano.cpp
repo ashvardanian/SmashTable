@@ -102,6 +102,15 @@ void verify_kit(test_context_t const &context, kit_type_) {
                 st_verify_eq_(chunked->select(position), values[position]);
             }
         }
+
+    // Only a corrupted sequence asks past its last set bit, and the scan stops at the span instead
+    // of reading beyond it - through the serial tail, and through a kit's own wider steps.
+    using scan_kit_t = std::conditional_t<select_kit<kit_type_>, kit_type_, serial_row_kit_t>;
+    for (std::size_t const length : {std::size_t(1), std::size_t(3), std::size_t(17)}) {
+        std::vector<std::uint64_t> words(length, 0);
+        words[0] = 1;
+        st_verify_eq_(scan_kit_t::select_set_bit(std::span<std::uint64_t const>(words), 0, 1), length * 64);
+    }
 }
 
 void verify_through(test_context_t const &context, row_kit_t kit) {

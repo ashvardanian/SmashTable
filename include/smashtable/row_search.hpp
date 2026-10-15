@@ -218,19 +218,27 @@ struct serial_row_kit_t {
      *  @brief Where the @p remaining -th set bit after set bit @p sampled of @p words sits,
      *      counting @p sampled as the zeroth: the scan an Elias-Fano select runs from its sample.
      *
-     *  The bit must exist and @p remaining must be positive. Kits that scan several words per
-     *  instruction may read up to seven words past the one holding the answer, which the sequence
-     *  keeps as padding.
+     *  @p remaining must be positive. A bit @p words does not hold, which only a corrupted sequence
+     *  asks for, answers `words.size() * 64`, past every real bit, rather than reading past the
+     *  span. Kits scanning several words per instruction finish the span's last few here.
      */
     [[nodiscard]] static std::uint64_t select_set_bit(std::span<std::uint64_t const> words, std::uint64_t sampled,
                                                       std::size_t remaining) noexcept {
-        std::size_t word_index = static_cast<std::size_t>(sampled / 64);
-        std::uint64_t word = words[word_index] & ((~std::uint64_t {0} << (sampled % 64)) << 1);
+        std::size_t const word_index = static_cast<std::size_t>(sampled / 64);
+        return select_onward(words, word_index, words[word_index] & ((~std::uint64_t {0} << (sampled % 64)) << 1),
+                             remaining);
+    }
+
+    /** Continues a select at @p word, what remains to count of the word at @p word_index, never
+     *  reading past @p words. */
+    [[nodiscard]] static std::uint64_t select_onward(std::span<std::uint64_t const> words, std::size_t word_index,
+                                                     std::uint64_t word, std::size_t remaining) noexcept {
         while (true) {
             std::size_t const ones = static_cast<std::size_t>(popcount(word));
             if (remaining <= ones) return word_index * 64 + select_in_word(word, remaining - 1);
             remaining -= ones;
-            word = words[++word_index];
+            if (++word_index == words.size()) return words.size() * 64;
+            word = words[word_index];
         }
     }
 
@@ -635,7 +643,7 @@ struct icelake_row_kit_t : skylake_row_kit_t {
         __m512i const by_one = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
         __m512i const by_two = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
         __m512i const by_four = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
-        while (true) {
+        for (; word_index + 8 <= words.size(); word_index += 8) {
             __m512i sums = _mm512_popcnt_epi64(_mm512_loadu_si512(words.data() + word_index));
             sums = _mm512_add_epi64(sums, _mm512_maskz_permutexvar_epi64(0xFE, by_one, sums));
             sums = _mm512_add_epi64(sums, _mm512_maskz_permutexvar_epi64(0xFC, by_two, sums));
@@ -648,8 +656,9 @@ struct icelake_row_kit_t : skylake_row_kit_t {
                 return (word_index + lane) * 64 + select_in_word(words[word_index + lane], remaining - before - 1);
             }
             remaining -= lane_of_(sums, 7);
-            word_index += 8;
         }
+        if (word_index == words.size()) return words.size() * 64;
+        return serial_row_kit_t::select_onward(words, word_index, words[word_index], remaining);
     }
 
     /** The offset of the @p rank -th set bit of @p word, counted from zero, found by @c PDEP. */
@@ -823,7 +832,7 @@ struct neon_row_kit_t {
         if (remaining <= first_ones) return word_index * 64 + serial_row_kit_t::select_in_word(first, remaining - 1);
         remaining -= first_ones;
         ++word_index;
-        while (true) {
+        for (; word_index + 2 <= words.size(); word_index += 2) {
             uint8x16_t const bytes = vcntq_u8(vreinterpretq_u8_u64(vld1q_u64(words.data() + word_index)));
             uint64x2_t const counts = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(bytes)));
             std::size_t const low = vgetq_lane_u64(counts, 0);
@@ -834,8 +843,9 @@ struct neon_row_kit_t {
                 return (word_index + 1) * 64 +
                        serial_row_kit_t::select_in_word(words[word_index + 1], remaining - low - 1);
             remaining -= both;
-            word_index += 2;
         }
+        if (word_index == words.size()) return words.size() * 64;
+        return serial_row_kit_t::select_onward(words, word_index, words[word_index], remaining);
     }
 
   private:
