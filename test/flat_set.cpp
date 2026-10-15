@@ -151,6 +151,7 @@ void verify_through(test_context_t const &context, row_kit_t kit) {
 void flat_set_serial_kit(test_context_t const &context) { verify_through(context, row_kit_t::serial_k); }
 void flat_set_haswell_kit(test_context_t const &context) { verify_through(context, row_kit_t::haswell_k); }
 void flat_set_skylake_kit(test_context_t const &context) { verify_through(context, row_kit_t::skylake_k); }
+void flat_set_icelake_kit(test_context_t const &context) { verify_through(context, row_kit_t::icelake_k); }
 void flat_set_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
 void flat_set_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
 void flat_set_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
@@ -250,6 +251,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "flat_set.serial_kit", flat_set_serial_kit);
     tally += run_test(settings, "flat_set.haswell_kit", flat_set_haswell_kit);
     tally += run_test(settings, "flat_set.skylake_kit", flat_set_skylake_kit);
+    tally += run_test(settings, "flat_set.icelake_kit", flat_set_icelake_kit);
     tally += run_test(settings, "flat_set.neon_kit", flat_set_neon_kit);
     tally += run_test(settings, "flat_set.sve_kit", flat_set_sve_kit);
     tally += run_test(settings, "flat_set.rvv_kit", flat_set_rvv_kit);

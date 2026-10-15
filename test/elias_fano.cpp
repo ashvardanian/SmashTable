@@ -50,9 +50,10 @@ static std::vector<std::uint64_t> make_values(std::mt19937_64 &generator, std::s
 }
 
 /** Builds @p values pulled @p chunk at a time, the way a reader streams an offsets column. */
-static expected<sequence_t> make_chunked(std::span<std::uint64_t const> values, std::size_t chunk) {
+template <typename sequence_type_ = sequence_t>
+static expected<sequence_type_> make_chunked(std::span<std::uint64_t const> values, std::size_t chunk) {
     std::uint64_t const universe = values.empty() ? 0 : values.back();
-    return sequence_t::make(values.size(), universe, [values, chunk](std::size_t first) noexcept {
+    return sequence_type_::make(values.size(), universe, [values, chunk](std::size_t first) noexcept {
         std::size_t const pulled = values.size() - first < chunk ? values.size() - first : chunk;
         return expected<std::span<std::uint64_t const>>(values.subspan(first, pulled), success_k);
     });
@@ -81,15 +82,17 @@ void elias_fano_edges() {
 }
 
 /** Every value of every gap shape reads back at its position, whole or pulled in chunks, across
- *  the sample stride. */
-void elias_fano_select_matches_source(test_context_t const &context) {
-    std::mt19937_64 generator(mix_seed(context.seed, __func__));
+ *  the sample stride, through one kit's select scan. */
+template <typename kit_type_>
+void verify_kit(test_context_t const &context, kit_type_) {
+    using kit_sequence_t = immutable_elias_fano<std::uint64_t, default_allocator<std::uint64_t>, kit_type_>;
+    std::mt19937_64 generator(mix_seed(context.seed, name_of(kit_type_::kit_k)));
     for (std::size_t const count : {std::size_t(1), std::size_t(255), std::size_t(256), std::size_t(257),
                                     std::size_t(4099), std::size_t(1) << 18})
         for (gaps_t const gaps : {gaps_t::dense_k, gaps_t::sparse_k, gaps_t::runs_k, gaps_t::jumps_k}) {
             std::vector<std::uint64_t> const values = make_values(generator, count, gaps);
-            auto whole = sequence_t::make(std::span<std::uint64_t const>(values));
-            auto chunked = make_chunked(values, 1 + generator() % 1000);
+            auto whole = kit_sequence_t::make(std::span<std::uint64_t const>(values));
+            auto chunked = make_chunked<kit_sequence_t>(values, 1 + generator() % 1000);
             st_verify_(whole);
             st_verify_(chunked);
             st_verify_eq_(whole->size(), count);
@@ -100,6 +103,19 @@ void elias_fano_select_matches_source(test_context_t const &context) {
             }
         }
 }
+
+void verify_through(test_context_t const &context, row_kit_t kit) {
+    if (row_kit_supported(kit))
+        visit_row_kit(kit, [&](row_kit auto kit_instance) noexcept { verify_kit(context, kit_instance); });
+}
+
+void elias_fano_serial_kit(test_context_t const &context) { verify_through(context, row_kit_t::serial_k); }
+void elias_fano_haswell_kit(test_context_t const &context) { verify_through(context, row_kit_t::haswell_k); }
+void elias_fano_skylake_kit(test_context_t const &context) { verify_through(context, row_kit_t::skylake_k); }
+void elias_fano_icelake_kit(test_context_t const &context) { verify_through(context, row_kit_t::icelake_k); }
+void elias_fano_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
+void elias_fano_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
+void elias_fano_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
 
 /** Narrower values take the same layout, read back at their own width. */
 void elias_fano_narrow_values(test_context_t const &context) {
@@ -145,7 +161,8 @@ void elias_fano_space_bound(test_context_t const &context) {
     auto sequence = sequence_t::make(std::span<std::uint64_t const>(values));
     st_verify_(sequence);
     std::size_t const low_bits = std::bit_width(values.back() / count) - 1;
-    std::size_t const bound_bits = count * (3 + low_bits) + count / 4 + 3 * 64;
+    // Three words round the three arrays up, and seven pad the high parts for the kits' scans.
+    std::size_t const bound_bits = count * (3 + low_bits) + count / 4 + (3 + 7) * 64;
     st_verify_le_(sequence->size_bytes() * 8, bound_bits);
 }
 
@@ -164,7 +181,13 @@ int main(int, char **arguments) {
     test_tally_t tally;
 
     tally += run_test(settings, "elias_fano.edges", elias_fano_edges);
-    tally += run_test(settings, "elias_fano.select_matches_source", elias_fano_select_matches_source);
+    tally += run_test(settings, "elias_fano.serial_kit", elias_fano_serial_kit);
+    tally += run_test(settings, "elias_fano.haswell_kit", elias_fano_haswell_kit);
+    tally += run_test(settings, "elias_fano.skylake_kit", elias_fano_skylake_kit);
+    tally += run_test(settings, "elias_fano.icelake_kit", elias_fano_icelake_kit);
+    tally += run_test(settings, "elias_fano.neon_kit", elias_fano_neon_kit);
+    tally += run_test(settings, "elias_fano.sve_kit", elias_fano_sve_kit);
+    tally += run_test(settings, "elias_fano.rvv_kit", elias_fano_rvv_kit);
     tally += run_test(settings, "elias_fano.narrow_values", elias_fano_narrow_values);
     tally += run_test(settings, "elias_fano.refusals", elias_fano_refusals);
     tally += run_test(settings, "elias_fano.space_bound", elias_fano_space_bound);

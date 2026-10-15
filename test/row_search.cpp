@@ -358,6 +358,7 @@ void row_search_serial_matches_definitions(test_context_t const &context) {
 void row_search_serial_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::serial_k); }
 void row_search_haswell_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::haswell_k); }
 void row_search_skylake_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::skylake_k); }
+void row_search_icelake_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::icelake_k); }
 void row_search_neon_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::neon_k); }
 void row_search_sve_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::sve_k); }
 void row_search_rvv_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::rvv_k); }
@@ -365,6 +366,7 @@ void row_search_rvv_kit(test_context_t const &context) { verify_rows_through(con
 void layouts_serial_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::serial_k); }
 void layouts_haswell_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::haswell_k); }
 void layouts_skylake_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::skylake_k); }
+void layouts_icelake_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::icelake_k); }
 void layouts_neon_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::neon_k); }
 void layouts_sve_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::sve_k); }
 void layouts_rvv_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::rvv_k); }
@@ -396,12 +398,14 @@ int main(int, char **arguments) {
     tally += run_test(settings, "row_search.serial_kit", row_search_serial_kit);
     tally += run_test(settings, "row_search.haswell_kit", row_search_haswell_kit);
     tally += run_test(settings, "row_search.skylake_kit", row_search_skylake_kit);
+    tally += run_test(settings, "row_search.icelake_kit", row_search_icelake_kit);
     tally += run_test(settings, "row_search.neon_kit", row_search_neon_kit);
     tally += run_test(settings, "row_search.sve_kit", row_search_sve_kit);
     tally += run_test(settings, "row_search.rvv_kit", row_search_rvv_kit);
     tally += run_test(settings, "layouts.serial_kit", layouts_serial_kit);
     tally += run_test(settings, "layouts.haswell_kit", layouts_haswell_kit);
     tally += run_test(settings, "layouts.skylake_kit", layouts_skylake_kit);
+    tally += run_test(settings, "layouts.icelake_kit", layouts_icelake_kit);
     tally += run_test(settings, "layouts.neon_kit", layouts_neon_kit);
     tally += run_test(settings, "layouts.sve_kit", layouts_sve_kit);
     tally += run_test(settings, "layouts.rvv_kit", layouts_rvv_kit);

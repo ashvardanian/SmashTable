@@ -47,14 +47,16 @@ enum class row_kit_t : std::uint8_t {
     serial_k,
     haswell_k,
     skylake_k,
+    icelake_k,
     neon_k,
     sve_k,
     rvv_k,
 };
 
 /** Every kit in enumerator order, for a benchmark or a log that walks them all. */
-inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::haswell_k, row_kit_t::skylake_k,
-                                                row_kit_t::neon_k,   row_kit_t::sve_k,     row_kit_t::rvv_k};
+inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t::haswell_k, row_kit_t::skylake_k,
+                                                row_kit_t::icelake_k, row_kit_t::neon_k,    row_kit_t::sve_k,
+                                                row_kit_t::rvv_k};
 
 /** The enumerator's own name without its suffix, for a benchmark or a log. */
 [[nodiscard]] constexpr char const *name_of(row_kit_t kit) noexcept {
@@ -62,6 +64,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
     case row_kit_t::serial_k: return "serial";
     case row_kit_t::haswell_k: return "haswell";
     case row_kit_t::skylake_k: return "skylake";
+    case row_kit_t::icelake_k: return "icelake";
     case row_kit_t::neon_k: return "neon";
     case row_kit_t::sve_k: return "sve";
     case row_kit_t::rvv_k: return "rvv";
@@ -75,6 +78,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
     case row_kit_t::serial_k: return true;
     case row_kit_t::haswell_k: return SMASHTABLE_TARGET_HASWELL;
     case row_kit_t::skylake_k: return SMASHTABLE_TARGET_SKYLAKE;
+    case row_kit_t::icelake_k: return SMASHTABLE_TARGET_ICELAKE;
     case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON;
     case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE;
     case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV;
@@ -91,10 +95,12 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
                               __builtin_cpu_supports("bmi2") && __builtin_cpu_supports("popcnt");
     bool const runs_skylake = runs_haswell && __builtin_cpu_supports("avx512f") && __builtin_cpu_supports("avx512vl") &&
                               __builtin_cpu_supports("avx512bw") && __builtin_cpu_supports("avx512dq");
+    bool const runs_icelake = runs_skylake && __builtin_cpu_supports("avx512vpopcntdq");
     switch (kit) {
     case row_kit_t::serial_k: return true;
     case row_kit_t::haswell_k: return SMASHTABLE_TARGET_HASWELL && runs_haswell;
     case row_kit_t::skylake_k: return SMASHTABLE_TARGET_SKYLAKE && runs_skylake;
+    case row_kit_t::icelake_k: return SMASHTABLE_TARGET_ICELAKE && runs_icelake;
     default: return false;
     }
 }
@@ -110,10 +116,12 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
     bool const runs_haswell = has_popcnt && (saved_state & 0x6) == 0x6 && has_leaf7(3) && has_leaf7(5) && has_leaf7(8);
     bool const runs_skylake = runs_haswell && (saved_state & 0xE6) == 0xE6 && has_leaf7(16) && has_leaf7(17) &&
                               has_leaf7(30) && has_leaf7(31);
+    bool const runs_icelake = runs_skylake && ((registers[2] >> 14) & 1) != 0; // `AVX512_VPOPCNTDQ` sits in ECX
     switch (kit) {
     case row_kit_t::serial_k: return true;
     case row_kit_t::haswell_k: return SMASHTABLE_TARGET_HASWELL && runs_haswell;
     case row_kit_t::skylake_k: return SMASHTABLE_TARGET_SKYLAKE && runs_skylake;
+    case row_kit_t::icelake_k: return SMASHTABLE_TARGET_ICELAKE && runs_icelake;
     default: return false;
     }
 }
@@ -144,8 +152,8 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k, row_kit_t::
 
 /** The newest kit this build carries and the processor can run, falling back to @c serial_k. */
 [[nodiscard]] inline row_kit_t detect_row_kit() noexcept {
-    for (row_kit_t const kit :
-         {row_kit_t::skylake_k, row_kit_t::haswell_k, row_kit_t::sve_k, row_kit_t::neon_k, row_kit_t::rvv_k})
+    for (row_kit_t const kit : {row_kit_t::icelake_k, row_kit_t::skylake_k, row_kit_t::haswell_k, row_kit_t::sve_k,
+                                row_kit_t::neon_k, row_kit_t::rvv_k})
         if (row_kit_supported(kit)) return kit;
     return row_kit_t::serial_k;
 }
@@ -196,6 +204,43 @@ struct serial_row_kit_t {
         for (std::size_t index = 0; index != keys.size(); ++index)
             matched |= static_cast<std::uint32_t>(keys[index] == wanted) << index;
         return matched;
+    }
+
+    /**
+     *  @brief Where the @p remaining -th set bit after set bit @p sampled of @p words sits,
+     *      counting @p sampled as the zeroth: the scan an Elias-Fano select runs from its sample.
+     *
+     *  The bit must exist and @p remaining must be positive. Kits that scan several words per
+     *  instruction may read up to seven words past the one holding the answer, which the sequence
+     *  keeps as padding.
+     */
+    [[nodiscard]] static std::uint64_t select_set_bit(std::span<std::uint64_t const> words, std::uint64_t sampled,
+                                                      std::size_t remaining) noexcept {
+        std::size_t word_index = static_cast<std::size_t>(sampled / 64);
+        std::uint64_t word = words[word_index] & ((~std::uint64_t {0} << (sampled % 64)) << 1);
+        while (true) {
+            std::size_t const ones = static_cast<std::size_t>(popcount(word));
+            if (remaining <= ones) return word_index * 64 + select_in_word(word, remaining - 1);
+            remaining -= ones;
+            word = words[++word_index];
+        }
+    }
+
+    /** The offset of the @p rank -th set bit of @p word, counted from zero, found by halving. */
+    [[nodiscard]] static constexpr unsigned select_in_word(std::uint64_t word, std::size_t rank) noexcept {
+        unsigned offset = 0;
+        for (unsigned half = 32; half; half >>= 1) {
+            std::uint64_t const lower = word & ((std::uint64_t {1} << half) - 1);
+            std::size_t const ones = static_cast<std::size_t>(popcount(lower));
+            if (rank < ones) {
+                word = lower;
+                continue;
+            }
+            rank -= ones;
+            word >>= half;
+            offset += half;
+        }
+        return offset;
     }
 };
 
@@ -552,6 +597,82 @@ struct skylake_row_kit_t {
 
 #pragma endregion Skylake Kit
 
+#pragma region Ice Lake Kit
+
+#if SMASHTABLE_TARGET_ICELAKE
+#if defined(__clang__)
+#pragma clang attribute push(                                                                           \
+    __attribute__((target("avx2,avx512f,avx512vl,avx512bw,avx512dq,avx512vpopcntdq,bmi,bmi2,popcnt"))), \
+    apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("avx2", "avx512f", "avx512vl", "avx512bw", "avx512dq", "avx512vpopcntdq", "bmi", "bmi2", "popcnt")
+#endif
+
+/** The Skylake kit plus @c VPOPCNTQ, counting eight words of a bit vector per instruction, and a
+ *  @c PDEP every such core runs in hardware, unlike the microcoded one of the Zen 2 parts the
+ *  Haswell kit also serves. */
+struct icelake_row_kit_t : skylake_row_kit_t {
+    static constexpr row_kit_t kit_k = row_kit_t::icelake_k;
+
+    [[nodiscard]] static std::uint64_t select_set_bit(std::span<std::uint64_t const> words, std::uint64_t sampled,
+                                                      std::size_t remaining) noexcept {
+        std::size_t word_index = static_cast<std::size_t>(sampled / 64);
+        std::uint64_t const first = words[word_index] & ((~std::uint64_t {0} << (sampled % 64)) << 1);
+        std::size_t const first_ones = static_cast<std::size_t>(popcount(first));
+        if (remaining <= first_ones) return word_index * 64 + select_in_word(first, remaining - 1);
+        remaining -= first_ones;
+        ++word_index;
+        // Shifting the counts up one, two and four lanes, three adds leave inclusive prefix sums.
+        __m512i const by_one = _mm512_set_epi64(6, 5, 4, 3, 2, 1, 0, 0);
+        __m512i const by_two = _mm512_set_epi64(5, 4, 3, 2, 1, 0, 0, 0);
+        __m512i const by_four = _mm512_set_epi64(3, 2, 1, 0, 0, 0, 0, 0);
+        while (true) {
+            __m512i sums = _mm512_popcnt_epi64(_mm512_loadu_si512(words.data() + word_index));
+            sums = _mm512_add_epi64(sums, _mm512_maskz_permutexvar_epi64(0xFE, by_one, sums));
+            sums = _mm512_add_epi64(sums, _mm512_maskz_permutexvar_epi64(0xFC, by_two, sums));
+            sums = _mm512_add_epi64(sums, _mm512_maskz_permutexvar_epi64(0xF0, by_four, sums));
+            __mmask8 const reached =
+                _mm512_cmpge_epu64_mask(sums, _mm512_set1_epi64(static_cast<std::int64_t>(remaining)));
+            if (reached) {
+                unsigned const lane = static_cast<unsigned>(countr_zero(reached));
+                std::size_t const before = lane ? lane_of_(sums, lane - 1) : 0;
+                return (word_index + lane) * 64 + select_in_word(words[word_index + lane], remaining - before - 1);
+            }
+            remaining -= lane_of_(sums, 7);
+            word_index += 8;
+        }
+    }
+
+    /** The offset of the @p rank -th set bit of @p word, counted from zero, found by @c PDEP. */
+    [[nodiscard]] static unsigned select_in_word(std::uint64_t word, std::size_t rank) noexcept {
+        return static_cast<unsigned>(_tzcnt_u64(_pdep_u64(std::uint64_t {1} << rank, word)));
+    }
+
+  private:
+    static std::size_t lane_of_(__m512i lanes, unsigned lane) noexcept {
+        __m512i const moved = _mm512_permutexvar_epi64(_mm512_set1_epi64(lane), lanes);
+        return static_cast<std::size_t>(_mm_cvtsi128_si64(_mm512_castsi512_si128(moved)));
+    }
+};
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+#else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
+struct icelake_row_kit_t {
+    static constexpr row_kit_t kit_k = row_kit_t::icelake_k;
+    static constexpr bool compiled_k = false;
+};
+#endif
+
+#pragma endregion Ice Lake Kit
+
 #pragma region NEON Kit
 
 #if SMASHTABLE_TARGET_NEON
@@ -682,6 +803,31 @@ struct neon_row_kit_t {
             halves[half] = vmovn_u16(vcombine_u16(vmovn_u32(low), vmovn_u32(high)));
         }
         return mask_of_lanes_(vcombine_u8(halves[0], halves[1]));
+    }
+
+    /** Two words per @c CNT, which AArch64 only offers on vector registers, so a scalar popcount
+     *  pays a register move each way. */
+    [[nodiscard]] static std::uint64_t select_set_bit(std::span<std::uint64_t const> words, std::uint64_t sampled,
+                                                      std::size_t remaining) noexcept {
+        std::size_t word_index = static_cast<std::size_t>(sampled / 64);
+        std::uint64_t const first = words[word_index] & ((~std::uint64_t {0} << (sampled % 64)) << 1);
+        std::size_t const first_ones = vaddv_u8(vcnt_u8(vcreate_u8(first)));
+        if (remaining <= first_ones) return word_index * 64 + serial_row_kit_t::select_in_word(first, remaining - 1);
+        remaining -= first_ones;
+        ++word_index;
+        while (true) {
+            uint8x16_t const bytes = vcntq_u8(vreinterpretq_u8_u64(vld1q_u64(words.data() + word_index)));
+            uint64x2_t const counts = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(bytes)));
+            std::size_t const low = vgetq_lane_u64(counts, 0);
+            if (remaining <= low)
+                return word_index * 64 + serial_row_kit_t::select_in_word(words[word_index], remaining - 1);
+            std::size_t const both = low + vgetq_lane_u64(counts, 1);
+            if (remaining <= both)
+                return (word_index + 1) * 64 +
+                       serial_row_kit_t::select_in_word(words[word_index + 1], remaining - low - 1);
+            remaining -= both;
+            word_index += 2;
+        }
     }
 
   private:
@@ -824,6 +970,11 @@ struct sve_row_kit_t {
     [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
                                                   std::uint64_t wanted) noexcept {
         return neon_row_kit_t::mask_equal(keys, wanted);
+    }
+
+    [[nodiscard]] static std::uint64_t select_set_bit(std::span<std::uint64_t const> words, std::uint64_t sampled,
+                                                      std::size_t remaining) noexcept {
+        return neon_row_kit_t::select_set_bit(words, sampled, remaining);
     }
 };
 
@@ -1007,8 +1158,19 @@ concept row_kit = kit_type_::compiled_k && (kit_type_::mask_equal_width_k <= 32)
                       { kit_type_::count_below(words, words, key128_t {}) } -> std::same_as<std::size_t>;
                   };
 
+/** A kit with a select scan of its own, several words per instruction; the others take the serial
+ *  kit's, which every Elias-Fano sequence can fall back on. */
+template <typename kit_type_>
+concept select_kit =
+    row_kit<kit_type_> && requires(std::span<std::uint64_t const> words, std::uint64_t sampled, std::size_t remaining) {
+        { kit_type_::select_set_bit(words, sampled, remaining) } -> std::same_as<std::uint64_t>;
+    };
+
 /** The newest kit the compiler's flags promise, for code selecting at compile time, not at open. */
-#if SMASHTABLE_TARGET_SKYLAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && \
+#if SMASHTABLE_TARGET_ICELAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && \
+    defined(__AVX512DQ__) && defined(__AVX512VPOPCNTDQ__) && defined(__BMI2__)
+using native_row_kit_t = icelake_row_kit_t;
+#elif SMASHTABLE_TARGET_SKYLAKE && defined(__AVX512F__) && defined(__AVX512VL__) && defined(__AVX512BW__) && \
     defined(__AVX512DQ__)
 using native_row_kit_t = skylake_row_kit_t;
 #elif SMASHTABLE_TARGET_HASWELL && defined(__AVX2__) && defined(__BMI2__)
@@ -1039,6 +1201,9 @@ constexpr decltype(auto) visit_row_kit(row_kit_t kit, callback_type_ &&callback)
         break;
     case row_kit_t::skylake_k:
         if constexpr (skylake_row_kit_t::compiled_k) return callback(skylake_row_kit_t {});
+        break;
+    case row_kit_t::icelake_k:
+        if constexpr (icelake_row_kit_t::compiled_k) return callback(icelake_row_kit_t {});
         break;
     case row_kit_t::neon_k:
         if constexpr (neon_row_kit_t::compiled_k) return callback(neon_row_kit_t {});

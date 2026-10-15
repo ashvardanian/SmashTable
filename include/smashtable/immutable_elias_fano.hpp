@@ -30,12 +30,15 @@
 #include <utility>     // `std::exchange`, `std::move`
 
 #include "smashtable/basic_vector.hpp"
+#include "smashtable/row_search.hpp" // `row_kit`, `native_row_kit_t`
 
 namespace ashvardanian::smashtable {
 
 /** An immutable sequence of non-decreasing unsigned integers, built once from values pulled in
- *  order and read back by position - the offsets of variable-length rows, a few bits apiece. */
-template <typename value_type_ = std::uint64_t, typename allocator_type_ = default_allocator<std::uint64_t>>
+ *  order and read back by position - the offsets of variable-length rows, a few bits apiece.
+ *  @p row_kit_type_ scans the high parts in @c select where it has a scan of its own. */
+template <typename value_type_ = std::uint64_t, typename allocator_type_ = default_allocator<std::uint64_t>,
+          row_kit row_kit_type_ = native_row_kit_t>
 class immutable_elias_fano {
   public:
     using value_t = value_type_;
@@ -104,7 +107,9 @@ class immutable_elias_fano {
         std::uint64_t const high_bits = count ? count + (std::uint64_t(universe) >> low_bits) + 1 : 0;
         if (status_t const status = sequence.lows_.resize(words_for_(std::uint64_t(count) * low_bits)); failed(status))
             return status;
-        if (status_t const status = sequence.highs_.resize(words_for_(high_bits)); failed(status)) return status;
+        // A kit's select may read seven words past the one it lands in, so those stay zeroed.
+        std::size_t const high_words = count ? words_for_(high_bits) + 7 : 0;
+        if (status_t const status = sequence.highs_.resize(high_words); failed(status)) return status;
         if (status_t const status = sequence.samples_.resize((count + select_stride_k - 1) / select_stride_k);
             failed(status))
             return status;
@@ -180,34 +185,11 @@ class immutable_elias_fano {
      *  whole words at a time. */
     std::uint64_t select_high_bit_(std::size_t position) const noexcept {
         std::uint64_t const sampled = samples_[position / select_stride_k];
-        std::size_t remaining = position % select_stride_k;
+        std::size_t const remaining = position % select_stride_k;
         if (!remaining) return sampled;
-        std::size_t word_index = static_cast<std::size_t>(sampled / 64);
-        std::uint64_t word = highs_[word_index] & (~std::uint64_t(0) << (sampled % 64));
-        word &= word - 1; // The sampled bit is the lowest one left, and it is already counted.
-        while (true) {
-            std::size_t const ones = static_cast<std::size_t>(std::popcount(word));
-            if (remaining <= ones) return std::uint64_t(word_index) * 64 + select_in_word_(word, remaining - 1);
-            remaining -= ones;
-            word = highs_[++word_index];
-        }
-    }
-
-    /** The offset of the @p rank -th set bit of @p word, counted from zero, found by halving. */
-    static unsigned select_in_word_(std::uint64_t word, std::size_t rank) noexcept {
-        unsigned offset = 0;
-        for (unsigned half = 32; half; half >>= 1) {
-            std::uint64_t const lower = word & ((std::uint64_t(1) << half) - 1);
-            std::size_t const ones = static_cast<std::size_t>(std::popcount(lower));
-            if (rank < ones) {
-                word = lower;
-                continue;
-            }
-            rank -= ones;
-            word >>= half;
-            offset += half;
-        }
-        return offset;
+        using select_kit_t = std::conditional_t<select_kit<row_kit_type_>, row_kit_type_, serial_row_kit_t>;
+        return select_kit_t::select_set_bit(std::span<std::uint64_t const>(highs_.data(), highs_.size()), sampled,
+                                            remaining);
     }
 };
 

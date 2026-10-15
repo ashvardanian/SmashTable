@@ -280,12 +280,14 @@ void verify_kit(kit_type_) {
 }
 
 void verify_through(row_kit_t kit) {
-    if (row_kit_supported(kit)) visit_row_kit(kit, [](row_kit auto kit_instance) { verify_kit(kit_instance); });
+    if (row_kit_supported(kit))
+        visit_row_kit(kit, [](row_kit auto kit_instance) noexcept { verify_kit(kit_instance); });
 }
 
 static void hash_table_serial_kit() { verify_through(row_kit_t::serial_k); }
 static void hash_table_haswell_kit() { verify_through(row_kit_t::haswell_k); }
 static void hash_table_skylake_kit() { verify_through(row_kit_t::skylake_k); }
+static void hash_table_icelake_kit() { verify_through(row_kit_t::icelake_k); }
 static void hash_table_neon_kit() { verify_through(row_kit_t::neon_k); }
 static void hash_table_sve_kit() { verify_through(row_kit_t::sve_k); }
 static void hash_table_rvv_kit() { verify_through(row_kit_t::rvv_k); }
@@ -385,6 +387,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "hash_table.serial_kit", hash_table_serial_kit);
     tally += run_test(settings, "hash_table.haswell_kit", hash_table_haswell_kit);
     tally += run_test(settings, "hash_table.skylake_kit", hash_table_skylake_kit);
+    tally += run_test(settings, "hash_table.icelake_kit", hash_table_icelake_kit);
     tally += run_test(settings, "hash_table.neon_kit", hash_table_neon_kit);
     tally += run_test(settings, "hash_table.sve_kit", hash_table_sve_kit);
     tally += run_test(settings, "hash_table.rvv_kit", hash_table_rvv_kit);
