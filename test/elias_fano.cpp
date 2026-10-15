@@ -116,6 +116,7 @@ void elias_fano_icelake_kit(test_context_t const &context) { verify_through(cont
 void elias_fano_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
 void elias_fano_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
 void elias_fano_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
+void elias_fano_v128_kit(test_context_t const &context) { verify_through(context, row_kit_t::v128_k); }
 
 /** Narrower values take the same layout, read back at their own width. */
 void elias_fano_narrow_values(test_context_t const &context) {
@@ -188,6 +189,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "elias_fano.neon_kit", elias_fano_neon_kit);
     tally += run_test(settings, "elias_fano.sve_kit", elias_fano_sve_kit);
     tally += run_test(settings, "elias_fano.rvv_kit", elias_fano_rvv_kit);
+    tally += run_test(settings, "elias_fano.v128_kit", elias_fano_v128_kit);
     tally += run_test(settings, "elias_fano.narrow_values", elias_fano_narrow_values);
     tally += run_test(settings, "elias_fano.refusals", elias_fano_refusals);
     tally += run_test(settings, "elias_fano.space_bound", elias_fano_space_bound);

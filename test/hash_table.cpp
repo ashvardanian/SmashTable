@@ -291,6 +291,7 @@ static void hash_table_icelake_kit() { verify_through(row_kit_t::icelake_k); }
 static void hash_table_neon_kit() { verify_through(row_kit_t::neon_k); }
 static void hash_table_sve_kit() { verify_through(row_kit_t::sve_k); }
 static void hash_table_rvv_kit() { verify_through(row_kit_t::rvv_k); }
+static void hash_table_v128_kit() { verify_through(row_kit_t::v128_k); }
 
 #pragma endregion Kit Window Tests
 
@@ -391,6 +392,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "hash_table.neon_kit", hash_table_neon_kit);
     tally += run_test(settings, "hash_table.sve_kit", hash_table_sve_kit);
     tally += run_test(settings, "hash_table.rvv_kit", hash_table_rvv_kit);
+    tally += run_test(settings, "hash_table.v128_kit", hash_table_v128_kit);
 
     tally += run_test(settings, "unordered_visit.every_match", unordered_visit_every_match);
     tally += run_test(settings, "unordered_visit.early_exit", unordered_visit_early_exit);

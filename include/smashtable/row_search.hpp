@@ -51,12 +51,13 @@ enum class row_kit_t : std::uint8_t {
     neon_k,
     sve_k,
     rvv_k,
+    v128_k,
 };
 
 /** Every kit in enumerator order, for a benchmark or a log that walks them all. */
 inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t::haswell_k, row_kit_t::skylake_k,
                                                 row_kit_t::icelake_k, row_kit_t::neon_k,    row_kit_t::sve_k,
-                                                row_kit_t::rvv_k};
+                                                row_kit_t::rvv_k,     row_kit_t::v128_k};
 
 /** The enumerator's own name without its suffix, for a benchmark or a log. */
 [[nodiscard]] constexpr char const *name_of(row_kit_t kit) noexcept {
@@ -68,6 +69,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     case row_kit_t::neon_k: return "neon";
     case row_kit_t::sve_k: return "sve";
     case row_kit_t::rvv_k: return "rvv";
+    case row_kit_t::v128_k: return "v128";
     }
     return "unrecognized";
 }
@@ -82,6 +84,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON;
     case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE;
     case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV;
+    case row_kit_t::v128_k: return SMASHTABLE_TARGET_V128;
     }
     return false;
 }
@@ -146,6 +149,11 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     // Advanced SIMD is the AArch64 baseline; SVE is only probed where the kernel reports it.
     return kit == row_kit_t::serial_k || (kit == row_kit_t::neon_k && SMASHTABLE_TARGET_NEON);
 }
+#elif SMASHTABLE_TARGET_V128
+[[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
+    // A module carrying SIMD only loads where the engine runs it, so building it in is the proof.
+    return kit == row_kit_t::serial_k || kit == row_kit_t::v128_k;
+}
 #else
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept { return kit == row_kit_t::serial_k; }
 #endif
@@ -153,7 +161,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 /** The newest kit this build carries and the processor can run, falling back to @c serial_k. */
 [[nodiscard]] inline row_kit_t detect_row_kit() noexcept {
     for (row_kit_t const kit : {row_kit_t::icelake_k, row_kit_t::skylake_k, row_kit_t::haswell_k, row_kit_t::sve_k,
-                                row_kit_t::neon_k, row_kit_t::rvv_k})
+                                row_kit_t::neon_k, row_kit_t::rvv_k, row_kit_t::v128_k})
         if (row_kit_supported(kit)) return kit;
     return row_kit_t::serial_k;
 }
@@ -1137,6 +1145,163 @@ struct rvv_row_kit_t {
 
 #pragma endregion RVV Kit
 
+#pragma region V128 Kit
+
+#if SMASHTABLE_TARGET_V128
+
+/** WebAssembly SIMD over two 64-bit or four 32-bit keys per load; unsigned 64-bit order by flipping
+ *  the sign bit, since the instruction set compares 64-bit lanes only as signed. */
+struct v128_row_kit_t {
+    static constexpr row_kit_t kit_k = row_kit_t::v128_k;
+    static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = 16;
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
+                                                 std::uint32_t wanted) noexcept {
+        v128_t const threshold = wasm_u32x4_splat(wanted);
+        v128_t accumulated = wasm_i32x4_splat(0);
+        std::size_t offset = 0;
+        for (; offset + 4 <= keys.size(); offset += 4)
+            accumulated = wasm_i32x4_sub(accumulated, wasm_u32x4_lt(wasm_v128_load(keys.data() + offset), threshold));
+        return sum_u32_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::int32_t const, extent_> keys,
+                                                 std::int32_t wanted) noexcept {
+        v128_t const threshold = wasm_i32x4_splat(wanted);
+        v128_t accumulated = wasm_i32x4_splat(0);
+        std::size_t offset = 0;
+        for (; offset + 4 <= keys.size(); offset += 4)
+            accumulated = wasm_i32x4_sub(accumulated, wasm_i32x4_lt(wasm_v128_load(keys.data() + offset), threshold));
+        return sum_u32_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::uint64_t const, extent_> keys,
+                                                 std::uint64_t wanted) noexcept {
+        return count_below_words_(keys, wanted, std::uint64_t {1} << 63);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::int64_t const, extent_> keys,
+                                                 std::int64_t wanted) noexcept {
+        std::span<std::uint64_t const, extent_> const words(
+            static_cast<std::uint64_t const *>(static_cast<void const *>(keys.data())), keys.size());
+        return count_below_words_(words, static_cast<std::uint64_t>(wanted), 0);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<key128_t const, extent_> keys, key128_t wanted) noexcept {
+        std::uint64_t const sign_bit = std::uint64_t {1} << 63;
+        v128_t const sign = wasm_u64x2_splat(sign_bit);
+        v128_t const high_threshold = wasm_u64x2_splat(wanted.high ^ sign_bit);
+        v128_t const low_threshold = wasm_u64x2_splat(wanted.low ^ sign_bit);
+        v128_t accumulated = wasm_i64x2_splat(0);
+        std::size_t offset = 0;
+        for (; offset + 2 <= keys.size(); offset += 2) {
+            std::uint64_t const *const words =
+                static_cast<std::uint64_t const *>(static_cast<void const *>(keys.data() + offset));
+            v128_t const first_key = wasm_v128_load(words);
+            v128_t const second_key = wasm_v128_load(words + 2);
+            v128_t const high = wasm_v128_xor(wasm_i64x2_shuffle(first_key, second_key, 0, 2), sign);
+            v128_t const low = wasm_v128_xor(wasm_i64x2_shuffle(first_key, second_key, 1, 3), sign);
+            v128_t const low_below =
+                wasm_v128_and(wasm_i64x2_eq(high, high_threshold), wasm_i64x2_lt(low, low_threshold));
+            accumulated = wasm_i64x2_sub(accumulated, wasm_v128_or(wasm_i64x2_lt(high, high_threshold), low_below));
+        }
+        return sum_u64_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::uint64_t const, extent_> high_words,
+                                                 std::span<std::uint64_t const, extent_> low_words,
+                                                 key128_t wanted) noexcept {
+        assert(high_words.size() == low_words.size() && "a split row has one low word per high word");
+        std::uint64_t const sign_bit = std::uint64_t {1} << 63;
+        v128_t const sign = wasm_u64x2_splat(sign_bit);
+        v128_t const high_threshold = wasm_u64x2_splat(wanted.high ^ sign_bit);
+        v128_t const low_threshold = wasm_u64x2_splat(wanted.low ^ sign_bit);
+        std::size_t const whole = high_words.size() - high_words.size() % 2;
+        v128_t accumulated = wasm_i64x2_splat(0);
+        v128_t tied = wasm_i64x2_splat(0);
+        for (std::size_t offset = 0; offset < whole; offset += 2) {
+            v128_t const high = wasm_v128_xor(wasm_v128_load(high_words.data() + offset), sign);
+            accumulated = wasm_i64x2_sub(accumulated, wasm_i64x2_lt(high, high_threshold));
+            tied = wasm_v128_or(tied, wasm_i64x2_eq(high, high_threshold));
+        }
+        // One branch per row, not per load: a present key ties once, at an unpredictable spot.
+        if (wasm_v128_any_true(tied))
+            for (std::size_t offset = 0; offset < whole; offset += 2) {
+                v128_t const high = wasm_v128_xor(wasm_v128_load(high_words.data() + offset), sign);
+                v128_t const low = wasm_v128_xor(wasm_v128_load(low_words.data() + offset), sign);
+                v128_t const low_below =
+                    wasm_v128_and(wasm_i64x2_eq(high, high_threshold), wasm_i64x2_lt(low, low_threshold));
+                accumulated = wasm_i64x2_sub(accumulated, low_below);
+            }
+        return sum_u64_lanes_(accumulated) +
+               serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
+                                                  std::uint32_t wanted) noexcept {
+        v128_t const needle = wasm_u32x4_splat(wanted);
+        std::uint32_t matched = 0;
+        for (std::size_t offset = 0; offset != keys.size(); offset += 4)
+            matched |= wasm_i32x4_bitmask(wasm_i32x4_eq(wasm_v128_load(keys.data() + offset), needle)) << offset;
+        return matched;
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
+                                                  std::uint64_t wanted) noexcept {
+        v128_t const needle = wasm_u64x2_splat(wanted);
+        std::uint32_t matched = 0;
+        for (std::size_t offset = 0; offset != keys.size(); offset += 2)
+            matched |= wasm_i64x2_bitmask(wasm_i64x2_eq(wasm_v128_load(keys.data() + offset), needle)) << offset;
+        return matched;
+    }
+
+  private:
+    template <std::size_t extent_>
+    static std::size_t count_below_words_(std::span<std::uint64_t const, extent_> words, std::uint64_t wanted,
+                                          std::uint64_t flip) noexcept {
+        v128_t const flipper = wasm_u64x2_splat(flip);
+        v128_t const threshold = wasm_u64x2_splat(wanted ^ flip);
+        v128_t accumulated = wasm_i64x2_splat(0);
+        std::size_t offset = 0;
+        for (; offset + 2 <= words.size(); offset += 2) {
+            v128_t const flipped = wasm_v128_xor(wasm_v128_load(words.data() + offset), flipper);
+            accumulated = wasm_i64x2_sub(accumulated, wasm_i64x2_lt(flipped, threshold));
+        }
+        std::size_t below = sum_u64_lanes_(accumulated);
+        for (; offset < words.size(); ++offset)
+            below += static_cast<std::size_t>(static_cast<std::int64_t>(words[offset] ^ flip) <
+                                              static_cast<std::int64_t>(wanted ^ flip));
+        return below;
+    }
+
+    static std::size_t sum_u32_lanes_(v128_t lanes) noexcept {
+        return static_cast<std::size_t>(wasm_u32x4_extract_lane(lanes, 0)) + wasm_u32x4_extract_lane(lanes, 1) +
+               wasm_u32x4_extract_lane(lanes, 2) + wasm_u32x4_extract_lane(lanes, 3);
+    }
+
+    static std::size_t sum_u64_lanes_(v128_t lanes) noexcept {
+        return static_cast<std::size_t>(wasm_u64x2_extract_lane(lanes, 0) + wasm_u64x2_extract_lane(lanes, 1));
+    }
+};
+#else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
+struct v128_row_kit_t {
+    static constexpr row_kit_t kit_k = row_kit_t::v128_k;
+    static constexpr bool compiled_k = false;
+};
+#endif
+
+#pragma endregion V128 Kit
+
 #pragma region Kit Dispatch
 
 /** A kit this build carries, ranking every key type in both 16-byte layouts and masking its
@@ -1181,6 +1346,8 @@ using native_row_kit_t = sve_row_kit_t;
 using native_row_kit_t = neon_row_kit_t;
 #elif SMASHTABLE_TARGET_RVV && defined(__riscv_v)
 using native_row_kit_t = rvv_row_kit_t;
+#elif SMASHTABLE_TARGET_V128
+using native_row_kit_t = v128_row_kit_t;
 #else
 using native_row_kit_t = serial_row_kit_t;
 #endif
@@ -1213,6 +1380,9 @@ constexpr decltype(auto) visit_row_kit(row_kit_t kit, callback_type_ &&callback)
         break;
     case row_kit_t::rvv_k:
         if constexpr (rvv_row_kit_t::compiled_k) return callback(rvv_row_kit_t {});
+        break;
+    case row_kit_t::v128_k:
+        if constexpr (v128_row_kit_t::compiled_k) return callback(v128_row_kit_t {});
         break;
     case row_kit_t::serial_k: break;
     }

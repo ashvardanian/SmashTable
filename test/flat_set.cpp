@@ -155,6 +155,7 @@ void flat_set_icelake_kit(test_context_t const &context) { verify_through(contex
 void flat_set_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
 void flat_set_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
 void flat_set_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
+void flat_set_v128_kit(test_context_t const &context) { verify_through(context, row_kit_t::v128_k); }
 
 /** A refused allocation reports itself and leaves the set as it was. */
 void flat_set_refused_allocation() {
@@ -255,6 +256,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "flat_set.neon_kit", flat_set_neon_kit);
     tally += run_test(settings, "flat_set.sve_kit", flat_set_sve_kit);
     tally += run_test(settings, "flat_set.rvv_kit", flat_set_rvv_kit);
+    tally += run_test(settings, "flat_set.v128_kit", flat_set_v128_kit);
     tally += run_test(settings, "flat_set.refused_allocation", flat_set_refused_allocation);
     tally += run_test(settings, "flat_set.shared_suites", flat_set_shared_suites);
 

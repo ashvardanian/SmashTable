@@ -176,6 +176,19 @@
 #define SMASHTABLE_TARGET_RVV 0
 #endif
 
+/* A WebAssembly module validates whole, so SIMD in any function needs it from every engine that
+ * loads the module: the kit follows the build's own flag rather than a target attribute. */
+#if !defined(SMASHTABLE_TARGET_V128)
+#if defined(__wasm_simd128__)
+#define SMASHTABLE_TARGET_V128 1
+#else
+#define SMASHTABLE_TARGET_V128 0
+#endif
+#elif SMASHTABLE_TARGET_V128 && !defined(__wasm_simd128__)
+#undef SMASHTABLE_TARGET_V128
+#define SMASHTABLE_TARGET_V128 0
+#endif
+
 /** GCC on RISC-V rejects `#pragma GCC target`, so RVV functions carry the attribute one by one. */
 #if SMASHTABLE_TARGET_RVV && !defined(__clang__) && defined(__GNUC__)
 #define SMASHTABLE_RVV_ATTRIBUTE_ __attribute__((target("arch=+v")))
@@ -197,6 +210,9 @@
 #endif
 #if SMASHTABLE_TARGET_RVV
 #include <riscv_vector.h>
+#endif
+#if SMASHTABLE_TARGET_V128
+#include <wasm_simd128.h>
 #endif
 #if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (defined(__linux__) || defined(__FreeBSD__))
 #include <sys/auxv.h> // `getauxval` on Linux, `elf_aux_info` on FreeBSD, `AT_HWCAP`
