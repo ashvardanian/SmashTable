@@ -1946,6 +1946,18 @@ assert_rejects "STL container in the binding" "reaches for an STL container" pyt
 static inline void probe() { std::vector<int> values; }
 FIXTURE
 
+assert_rejects "STL container in a library header" "keeps out of include/" include/smashtable/probe.hpp <<'FIXTURE'
+#include <vector>
+FIXTURE
+
+assert_rejects "iterator header in a library header" "keeps out of include/" include/smashtable/probe.hpp <<'FIXTURE'
+#include <iterator>
+FIXTURE
+
+assert_accepts "STL container in the reference store baseline" include/smashtable/reference_store.hpp <<'FIXTURE'
+#include <vector>
+FIXTURE
+
 assert_rejects "lambda invoked where it closes" "invokes a lambda where it closes" include/smashtable/probe.hpp <<'FIXTURE'
 inline int probe() { return [] { return 1; }(); }
 FIXTURE

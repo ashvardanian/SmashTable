@@ -2319,6 +2319,23 @@ check_binding_owns_no_containers() {
         "basic_vector, whose failures are statuses:"
 }
 
+# Rejects an STL container, `<iterator>`, `<algorithm>`, `<functional>`, `<ranges>` or `<string>` in a library
+# header, because each costs every unit including SmashTable tens of thousands of preprocessed lines, and the
+# iterator concepts and steps it needs are spelled in `shared.hpp`. `reference_store.hpp` alone may hold
+# containers: it is the `std::set` baseline the other stores are tested against.
+check_library_headers_stay_light() {
+    local banned='iterator|algorithm|functional|ranges|string'
+    [ "$staged_path" = include/smashtable/reference_store.hpp ] ||
+        banned="$banned|vector|set|map|unordered_map|unordered_set|deque|list|forward_list|queue|stack"
+    local heavy
+    heavy=$(printf '%s\n' "$staged_added_text" |
+        grep -E "^\+[[:space:]]*#[[:space:]]*include[[:space:]]*<($banned)>" || true)
+    [ -z "$heavy" ] || reject_with_reason "$heavy" \
+        "$staged_path includes a standard header the library keeps out of include/ - an STL container" \
+        "belongs only in the reference_store.hpp baseline, and iteration takes the readable_iterator" \
+        "family, advance_iterator and distance_between from shared.hpp instead of <iterator>:"
+}
+
 # Rejects a lambda called the moment it closes, because it is a function denied a name and a docblock,
 # usually hiding a branch.
 check_lambda_not_invoked_where_it_closes() {
@@ -2416,6 +2433,7 @@ run_project_checks() {
     esac
     case "$staged_path" in
     python/*.cpp | python/*.hpp) check_binding_owns_no_containers ;;
+    include/smashtable/*.hpp) check_library_headers_stay_light ;;
     esac
     case "$staged_path" in
     *.h | *.hpp | *.cpp | *.cc | *.cu | *.cuh)
