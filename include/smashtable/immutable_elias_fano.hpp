@@ -7,10 +7,11 @@
  *
  *  @section immutable_elias_fano_layout Layout
  *
- *  Every value splits at @c low_bits, the floor of log2(universe / count). The low parts are
- *  packed side by side, @c low_bits each. The high parts are stored in unary: value @c i sets bit
- *  `(value >> low_bits) + i` of a vector that never exceeds `count + (universe >> low_bits) + 1`
- *  bits, so the position of the @c i -th set bit, less @c i, is the high part of value @c i.
+ *  Every value splits at @c low_bits, the floor of log2(universe / count). The low parts sit in an
+ *  @c immutable_packed_array based at zero, @c low_bits each. The high parts are stored in unary:
+ *  value @c i sets bit `(value >> low_bits) + i` of a vector that never exceeds
+ *  `count + (universe >> low_bits) + 1` bits, so the position of the @c i -th set bit, less @c i,
+ *  is the high part of value @c i.
  *
  *  @section immutable_elias_fano_select Select
  *
@@ -26,10 +27,11 @@
 #include <bit>         // `std::bit_width`, `std::popcount`
 #include <memory>      // `std::allocator_traits`
 #include <span>        // `std::span`
-#include <type_traits> // `std::is_unsigned_v`
+#include <type_traits> // `std::conditional_t`, `std::is_unsigned_v`
 #include <utility>     // `std::exchange`, `std::move`
 
 #include "smashtable/basic_vector.hpp"
+#include "smashtable/immutable_packed_array.hpp"
 #include "smashtable/row_search.hpp" // `row_kit`, `native_row_kit_t`
 
 namespace ashvardanian::smashtable {
@@ -58,12 +60,12 @@ class immutable_elias_fano {
   private:
     using words_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<std::uint64_t>;
     using words_t = basic_vector<std::uint64_t, words_allocator_t>;
+    using lows_t = immutable_packed_array<value_t, words_allocator_t>;
 
-    words_t lows_;
+    lows_t lows_;
     words_t highs_;
     words_t samples_; // ? Positions in `highs_` of every `select_stride_k`-th set bit
     std::size_t size_ {0};
-    unsigned low_bits_ {0};
 
   public:
     immutable_elias_fano() noexcept = default;
@@ -74,7 +76,7 @@ class immutable_elias_fano {
 
     immutable_elias_fano(immutable_elias_fano &&other) noexcept
         : lows_(std::move(other.lows_)), highs_(std::move(other.highs_)), samples_(std::move(other.samples_)),
-          size_(std::exchange(other.size_, 0)), low_bits_(std::exchange(other.low_bits_, 0)) {}
+          size_(std::exchange(other.size_, 0)) {}
 
     immutable_elias_fano &operator=(immutable_elias_fano &&other) noexcept {
         if (this == &other) return *this;
@@ -82,7 +84,6 @@ class immutable_elias_fano {
         highs_ = std::move(other.highs_);
         samples_ = std::move(other.samples_);
         size_ = std::exchange(other.size_, 0);
-        low_bits_ = std::exchange(other.low_bits_, 0);
         return *this;
     }
 
@@ -106,17 +107,16 @@ class immutable_elias_fano {
         unsigned const low_bits =
             count && universe / count ? static_cast<unsigned>(std::bit_width(std::uint64_t(universe / count)) - 1) : 0;
         std::uint64_t const high_bits = count ? count + (std::uint64_t(universe) >> low_bits) + 1 : 0;
-        if (status_t const status = sequence.lows_.resize(words_for_(std::uint64_t(count) * low_bits)); failed(status))
-            return status;
         // A kit's select may read seven words past the one it lands in, so those stay zeroed.
-        std::size_t const high_words = count ? words_for_(high_bits) + 7 : 0;
+        std::size_t const high_words = count ? packed_words_for_(high_bits, 1) + 7 : 0;
+        if (status_t const status = sequence.lows_.reset_(count, value_t {0}, low_bits); failed(status)) return status;
         if (status_t const status = sequence.highs_.resize(high_words); failed(status)) return status;
         if (status_t const status = sequence.samples_.resize((count + select_stride_k - 1) / select_stride_k);
             failed(status))
             return status;
         sequence.size_ = count;
-        sequence.low_bits_ = low_bits;
 
+        std::uint64_t const low_mask = (std::uint64_t {1} << low_bits) - 1;
         value_t previous = 0;
         for (std::size_t position = 0; position < count;) {
             expected<std::span<value_t const>> pulled = fill(position);
@@ -125,8 +125,10 @@ class immutable_elias_fano {
             if (values.empty() || values.size() > count - position) return invalid_argument_k;
             for (value_t const value : values) {
                 if (value < previous || value > universe) return invalid_argument_k;
-                sequence.append_(position++, value);
+                sequence.lows_.pack_(position, std::uint64_t(value) & low_mask);
+                sequence.append_high_(position, value, low_bits);
                 previous = value;
+                ++position;
             }
         }
         return expected<immutable_elias_fano>(std::move(sequence), success_k);
@@ -148,36 +150,20 @@ class immutable_elias_fano {
 
     /** The bytes this sequence stores: the low parts, the high parts and the select samples. */
     [[nodiscard]] std::size_t size_bytes() const noexcept {
-        return (lows_.size() + highs_.size() + samples_.size()) * sizeof(std::uint64_t);
+        return lows_.size_bytes() + (highs_.size() + samples_.size()) * sizeof(std::uint64_t);
     }
 
     /** The value at @p position. */
     [[nodiscard]] value_t select(std::size_t position) const noexcept {
         assert(position < size_ && "select takes a position below size");
         std::uint64_t const high = select_high_bit_(position) - position;
-        if (!low_bits_) return static_cast<value_t>(high);
-        std::uint64_t const bit = std::uint64_t(position) * low_bits_;
-        std::uint64_t low = lows_[bit / 64] >> (bit % 64);
-        if (bit % 64 + low_bits_ > 64) low |= lows_[bit / 64 + 1] << (64 - bit % 64);
-        return static_cast<value_t>((high << low_bits_) | (low & low_mask_()));
+        return static_cast<value_t>((high << lows_.bits()) | lows_[position]);
     }
 
   private:
-    static constexpr std::size_t words_for_(std::uint64_t bits) noexcept {
-        return static_cast<std::size_t>((bits + 63) / 64);
-    }
-
-    std::uint64_t low_mask_() const noexcept { return (std::uint64_t(1) << low_bits_) - 1; }
-
-    void append_(std::size_t position, value_t value) noexcept {
-        std::uint64_t const widened = value;
-        if (low_bits_) {
-            std::uint64_t const low = widened & low_mask_();
-            std::uint64_t const bit = std::uint64_t(position) * low_bits_;
-            lows_[bit / 64] |= low << (bit % 64);
-            if (bit % 64 + low_bits_ > 64) lows_[bit / 64 + 1] |= low >> (64 - bit % 64);
-        }
-        std::uint64_t const high_bit = (widened >> low_bits_) + position;
+    /** Sets the unary bit of @p value at @p position, and samples it every @c select_stride_k. */
+    void append_high_(std::size_t position, value_t value, unsigned low_bits) noexcept {
+        std::uint64_t const high_bit = (std::uint64_t(value) >> low_bits) + position;
         highs_[high_bit / 64] |= std::uint64_t(1) << (high_bit % 64);
         if (position % select_stride_k == 0) samples_[position / select_stride_k] = high_bit;
     }

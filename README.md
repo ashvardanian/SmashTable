@@ -14,7 +14,7 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 
 ```bash
   basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring
-  immutable_*        → built once from sorted keys   B-tree · S+ tree · Elias-Fano
+  immutable_*        → built once, read forever     B-tree · S+ tree · Elias-Fano · packed array
   atomic_*           → pinned, GPU-capable        hash
        ↑ ::adopt() moves one allocation between the two, no rehash, no copy
 
@@ -43,6 +43,7 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
 | `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
 | `immutable_elias_fano`      | …                       |    none ¹⁰    |      …       |     `select`      |
+| `immutable_packed_array`    | …                       |    none ¹⁰    |      …       |         …         |
 | `atomic_hash_table`         | … ⁴                     |  per slot ⁴   |      …       |         …         |
 | `monotonic_store`           | Monotonic Atomic View ⁶ |  one thread   |      ✔       |     inherits      |
 | `snapshot_store`            | Snapshot ⁷              |  one thread   |      ✔       |    inherits ²     |
@@ -63,7 +64,7 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 > ⁷ Refuses both; permits [write skew](https://jepsen.io/consistency/phenomena/a5b), since a read you did not `watch` is not validated.
 > ⁸ Refuses write skew and phantoms too: every key and window read is re-checked at commit.
 > ⁹ Same refusals as ⁸; [strict](https://jepsen.io/consistency/models/strict-serializable) also waits for its own publication, so a transaction opening after a commit cannot precede it — which changes only sharded commits and writes outside a transaction.
-> ¹⁰ Built once from a span of sorted keys and never written again, so there is nothing to synchronize and any number of threads may read one at once.
+> ¹⁰ Built once and never written again, so there is nothing to synchronize and any number of threads may read one at once.
 
 The ladder runs from [Read Committed](https://jepsen.io/consistency/models/read-committed) through [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) and [Snapshot Isolation](https://jepsen.io/consistency/models/snapshot-isolation) to the two serializable rungs, and every level from Monotonic Atomic View upward is delivered by [multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control): a key keeps one version per commit that touched it, a reader is answered from the newest version its own snapshot can name, and versions below the oldest live reader are reclaimed.
 
@@ -468,10 +469,11 @@ Headers group as:
     ├─ basic_flat_set<T, Comparator, Kit, Alloc>    # sorted, one allocation, searched a row at a time
     └─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
 
-  Immutable, built once from a sorted span
+  Immutable, built once and never written
     ├─ immutable_b_tree<T, KeysPerRow, Kit, Alloc>     # keys on every level
     ├─ immutable_splus_tree<T, KeysPerRow, Kit, Alloc> # every key in the leaves, separators above
-    └─ immutable_elias_fano<T, Alloc>                  # non-decreasing integers in a few bits apiece
+    ├─ immutable_elias_fano<T, Alloc>                  # non-decreasing integers in a few bits apiece
+    └─ immutable_packed_array<T, Alloc>                # integers as distances from a base, one width each
 
   atomic_*              → Pinned core. Fixed capacity, atomic per slot, callback reads.
     └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
@@ -503,6 +505,7 @@ A core that can grow repoints the regions every live slot reference and every no
 | The same, and keyed                         | `basic_hash_table`                                       | …                                    |
 | Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`              | …                                    |
 | Built once from sorted integers, compressed | `immutable_elias_fano`                                   | …                                    |
+| Built once from integers in a narrow band   | `immutable_packed_array`                                 | …                                    |
 | Many threads, capacity fixed up front       | `atomic_hash_table`                                      | …                                    |
 | Many threads, and the container still grows | any core above                                           | `locked_store` · `partitioned_store` |
 | Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store` | either wrapper                       |
@@ -613,6 +616,24 @@ The low bits of every value are packed side by side and the high bits are stored
 std::uint64_t const offsets[] = {0, 3, 3, 10, 42};
 auto sequence = immutable_elias_fano<>::make(std::span<std::uint64_t const>(offsets));
 std::uint64_t const row_bytes = sequence->select(3) - sequence->select(2); // 7
+```
+
+### Packed Arrays
+
+> `smashtable/immutable_packed_array.hpp`
+
+`immutable_packed_array` keeps unsigned integers between a base and a maximum as their distance from the base, in `bit_width(maximum - base)` bits apiece, and `array[i]` reads the `i`-th one back in constant time.
+Values that all equal the base cost no words at all, so a column of commit stamps coded against the oldest live snapshot is free once nobody reads below it.
+`immutable_elias_fano` keeps its low parts in one, based at zero.
+`save` writes a three-word header and the packed words, and `immutable_packed_array_view` reads them in place from borrowed bytes at any alignment, so a memory-mapped file is read without a copy.
+
+```cpp
+std::uint64_t const stamps[] = {1000, 1003, 1001, 1007};
+auto packed = immutable_packed_array<>::make(std::span<std::uint64_t const>(stamps)); // base 1000, 3 bits apiece
+std::vector<std::byte> bytes(packed->saved_bytes());
+_ = packed->save(bytes);
+auto view = immutable_packed_array_view<>::make(bytes);
+std::uint64_t const third = (*view)[2]; // 1001
 ```
 
 ### Transactional Stores

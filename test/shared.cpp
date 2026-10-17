@@ -1179,6 +1179,102 @@ static void dynamic_transaction_group_empties_on_commit_and_reset() {
 
 #pragma endregion Transaction Group Tests
 
+#pragma region Commit Order Tests
+
+/** A resumed order answers its next reader at the resumed stamp and draws the stamp above it, and
+ *  the mark rises past it once that reader leaves. */
+template <typename order_type_>
+static void verify_resume_continues_stamps() {
+    generation_t const durable = 1000;
+    order_type_ order;
+    st_verify_eq_(order.resume(durable), success_k);
+    st_verify_eq_(order.published_stamp(), durable);
+    st_verify_eq_(order.drawn_stamp(), durable);
+    st_verify_eq_(order.low_water_mark(), durable, "a run built right after a restart packs its stamps from here");
+
+    typename order_type_::snapshot_claim_t claim;
+    st_verify_eq_(order.take_snapshot(claim), durable);
+    st_verify_gt_(order.next_generation(), durable);
+    typename order_type_::commit_in_flight_t landing;
+    order.begin_commit(landing);
+    st_verify_eq_(static_cast<generation_t>(landing.stamp()), durable + 1);
+    order.end_commit(landing);
+    st_verify_eq_(order.published_stamp(), durable + 1);
+    st_verify_eq_(order.low_water_mark(), durable, "the open claim still pins its snapshot");
+
+    claim.retire();
+    st_verify_eq_(order.low_water_mark(), durable + 1);
+}
+
+static void commit_order_resume_continues_stamps() {
+    verify_resume_continues_stamps<commit_order_t>();
+    verify_resume_continues_stamps<solitary_commit_order_t>();
+}
+
+/** Stores built into an order before it resumes commit above the resumed stamp, and a reader at
+ *  that stamp sees none of it. */
+static void commit_order_resume_reaches_its_stores() {
+    generation_t const durable = 1 << 20;
+    grouped_order_t order;
+    grouped_map_t values {order};
+    grouped_set_t edges {order};
+    st_verify_eq_(order.resume(durable), success_k, "building a store into an order draws nothing from it");
+
+    auto group = dynamic_group_t::make(order);
+    st_verify_(group);
+    st_verify_eq_(group->snapshot(), durable);
+    auto values_joined = group->join(values);
+    auto edges_joined = group->join(edges);
+    st_verify_(values_joined && edges_joined);
+    st_verify_eq_((*values_joined)->upsert(grouped_member_t {1u, 100}), success_k);
+    st_verify_eq_((*edges_joined)->upsert(std::uint64_t {7}), success_k);
+    st_verify_eq_(group->stage(), success_k);
+    st_verify_eq_(group->commit(), success_k);
+
+    st_verify_eq_(group->commit_stamp(), durable + 1);
+    st_verify_(!holds_at(values, durable, 1) && !holds_at(edges, durable, 7));
+    st_verify_(holds_at(values, durable + 1, 1) && holds_at(edges, durable + 1, 7));
+}
+
+/** An argument leaving no stamp to draw is refused, and so is an order something has already drawn
+ *  from or reads at, with nothing changed either way. */
+static void commit_order_resume_refusals() {
+    {
+        commit_order_t order;
+        st_verify_eq_(order.resume(-1), invalid_argument_k);
+        st_verify_eq_(order.resume(latest_snapshot_k), invalid_argument_k, "the next stamp would read uncommitted");
+        st_verify_eq_(order.published_stamp(), generation_t {0});
+        st_verify_eq_(order.resume(latest_snapshot_k - 1), success_k, "one stamp is still left to draw");
+        st_verify_eq_(order.resume(7), operation_not_permitted_k, "an order resumes once");
+        st_verify_eq_(order.published_stamp(), latest_snapshot_k - 1);
+    }
+    {
+        commit_order_t order;
+        st_verify_eq_(order.next_generation(), generation_t {1});
+        st_verify_eq_(order.resume(7), operation_not_permitted_k);
+        st_verify_eq_(order.next_generation(), generation_t {2});
+    }
+    {
+        solitary_commit_order_t order;
+        solitary_commit_order_t::commit_in_flight_t landing;
+        order.begin_commit(landing);
+        order.end_commit(landing);
+        st_verify_eq_(order.resume(7), operation_not_permitted_k);
+        st_verify_eq_(order.published_stamp(), generation_t {1});
+    }
+    {
+        commit_order_t order;
+        commit_order_t::snapshot_claim_t claim;
+        st_verify_eq_(order.take_snapshot(claim), generation_t {0});
+        st_verify_eq_(order.resume(7), operation_not_permitted_k, "an open claim reads at the stamp it would move");
+        claim.retire();
+        st_verify_eq_(order.resume(7), success_k, "a retired claim drew nothing");
+        st_verify_eq_(order.published_stamp(), generation_t {7});
+    }
+}
+
+#pragma endregion Commit Order Tests
+
 #pragma region Ordering Tests
 
 using versioning_t = versioning_for<std::size_t, less_t>;
@@ -1564,6 +1660,10 @@ int main(int, char **arguments) {
                       dynamic_transaction_group_joins_each_store_once);
     tally += run_test(settings, "dynamic_transaction_group.empties_on_commit_and_reset",
                       dynamic_transaction_group_empties_on_commit_and_reset);
+
+    tally += run_test(settings, "commit_order.resume_continues_stamps", commit_order_resume_continues_stamps);
+    tally += run_test(settings, "commit_order.resume_reaches_its_stores", commit_order_resume_reaches_its_stores);
+    tally += run_test(settings, "commit_order.resume_refusals", commit_order_resume_refusals);
 
     tally += run_test(settings, "ordering.key_then_generation", versioned_comparator_orders_by_key_then_generation);
 

@@ -4682,6 +4682,31 @@ class basic_commit_order {
         return counted;
     }
 
+    /**
+     *  @brief Restarts an order nothing has drawn from yet at @p published, so the stamps this
+     *      process draws continue above every stamp an earlier one made durable.
+     *  @return @c success_k; @c invalid_argument_k for a negative @p published or one that
+     *      leaves no stamp to draw; or @c operation_not_permitted_k once a generation or a stamp
+     *      has been drawn here, or while a snapshot is open. A refusal changes nothing.
+     *
+     *  Both counters, the watermark, the low-water mark and every bucket's floor start at
+     *  @p published, so the next reader is answered there and the next commit draws above it.
+     *
+     *  @warning Ordered against no other call, so it runs before a second thread can reach this
+     *      order at all.
+     */
+    status_t resume(generation_t published) noexcept {
+        if (published < 0 || published >= latest_snapshot_k) return invalid_argument_k;
+        if (read_(generation_) != 0 || read_(commits_) != 0 || read_(published_stamp_) != 0 || open_snapshots() != 0)
+            return operation_not_permitted_k;
+        write_(generation_, published);
+        write_(commits_, published);
+        write_(published_stamp_, published);
+        write_(low_water_mark_, published);
+        for (generation_t &floor : floors_) write_(floor, published);
+        return success_k;
+    }
+
     /** Takes over @p other's stamps, for a store that is being moved and has nothing open or in
      *  flight. */
     void adopt(basic_commit_order const &other) noexcept {
