@@ -249,6 +249,11 @@ void packed_array_edges() {
     st_verify_eq_(constant->saved_bytes(), sizeof(packed_array_header_t));
     for (std::size_t position = 0; position != flat.size(); ++position) st_verify_eq_((*constant)[position], 42u);
     verify_saved_view(*constant, 3);
+    auto const filled = packed_t::make(flat.size(), std::uint64_t {42});
+    st_verify_(filled);
+    st_verify_eq_(filled->size(), flat.size());
+    st_verify_eq_(filled->size_bytes(), 0u, "copies of one value store no words, with no pass over them");
+    st_verify_eq_((*filled)[flat.size() - 1], 42u);
 
     // Both ends of the 64-bit range, alternating, so every field is all ones or all zeros.
     std::vector<std::uint64_t> extremes(129);

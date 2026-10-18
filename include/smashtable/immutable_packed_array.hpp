@@ -221,6 +221,15 @@ class immutable_packed_array {
         return expected<immutable_packed_array>(std::move(array), success_k);
     }
 
+    /** Builds the array of @p count copies of @p value, which takes no bits and no words. */
+    static expected<immutable_packed_array> make(std::size_t count, value_t value,
+                                                 allocator_t allocator = {}) noexcept {
+        if (count > size_max_k / 64) return out_of_memory_heap_k;
+        immutable_packed_array array(std::move(allocator));
+        if (status_t const status = array.reset_(count, value, 0); failed(status)) return status;
+        return expected<immutable_packed_array>(std::move(array), success_k);
+    }
+
     /** Builds the array of @p values, held whole, based at the least of them and as wide as the
      *  greatest needs. */
     static expected<immutable_packed_array> make(std::span<value_t const> values, allocator_t allocator = {}) noexcept {

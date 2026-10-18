@@ -1835,6 +1835,8 @@ using std::popcount;
 template <typename scalar_type_>
 using atomic_ref = ::cuda::atomic_ref<scalar_type_, ::cuda::thread_scope_device>;
 
+using memory_order_t = ::cuda::std::memory_order;
+
 inline constexpr auto memory_order_relaxed_k = ::cuda::std::memory_order_relaxed;
 inline constexpr auto memory_order_acquire_k = ::cuda::std::memory_order_acquire;
 inline constexpr auto memory_order_release_k = ::cuda::std::memory_order_release;
@@ -1844,6 +1846,8 @@ inline constexpr auto memory_order_acq_rel_k = ::cuda::std::memory_order_acq_rel
 
 template <typename scalar_type_>
 using atomic_ref = std::atomic_ref<scalar_type_>;
+
+using memory_order_t = std::memory_order;
 
 inline constexpr auto memory_order_relaxed_k = std::memory_order_relaxed;
 inline constexpr auto memory_order_acquire_k = std::memory_order_acquire;
@@ -1875,15 +1879,16 @@ constexpr integral_type_ atomic_add_fetch(integral_type_ &counter, integral_type
 }
 
 /**
- *  @brief Relaxed atomic read of a counter other threads may be incrementing. Needed wherever a
- *      plain read would race an @c atomic_add_fetch on the same field.
+ *  @brief Atomic read of a counter other threads may be incrementing, relaxed unless @p order asks
+ *      for more. Needed wherever a plain read would race an @c atomic_add_fetch on the same field.
  *  @warning The counter is read through a @c const path but must not be a @c const @b object - an
  *      @c atomic_ref over one is undefined. Every caller reaches a mutable member of a mutable
  *      container through a @c const member function, which is what makes the cast below sound.
  */
 template <std::integral integral_type_>
-constexpr integral_type_ atomic_load(integral_type_ const &counter) noexcept {
-    return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(memory_order_relaxed_k);
+constexpr integral_type_ atomic_load(integral_type_ const &counter,
+                                     memory_order_t order = memory_order_relaxed_k) noexcept {
+    return atomic_ref<integral_type_>(const_cast<integral_type_ &>(counter)).load(order);
 }
 
 /** Relaxed atomic write of a counter other threads may be reading. The mirror of @c atomic_load,
@@ -4551,8 +4556,13 @@ class basic_commit_order {
         else return atomic_add_fetch<generation_t>(generation_, 1);
     }
 
-    /** The newest stamp every part of which is written, which is what a fresh read answers at. */
-    [[nodiscard]] generation_t published_stamp() const noexcept { return read_(published_stamp_); }
+    /** The newest stamp every part of which is written, which is what a fresh read answers at;
+     *  acquired, so the versions it covers are visible to a reader that takes no lock. */
+    [[nodiscard]] generation_t published_stamp() const noexcept {
+        if constexpr (sharing_ == order_sharing_t::shared_k)
+            return atomic_load(published_stamp_, memory_order_acquire_k);
+        else return published_stamp_;
+    }
 
     /**
      *  @brief The newest stamp any commit has drawn, landed or not, which is what a reader must
