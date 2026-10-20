@@ -381,9 +381,11 @@ static void shared_mutex_admits_every_writer() {
  *  @brief A waiting policy handing the core back to the scheduler, tallying what it was asked for.
  *
  *  Names nothing but the one pause every spin path needs, which is the shape a hardware hint takes:
- *  the parking a mutex also wants comes from @c standard_waiting_policy wrapped around this. The
- *  tally is static because a policy is default-constructed inside whatever spins on it, so there is
- *  nowhere to hand a counter in, and one test runs at a time.
+ *  the parking a mutex also wants comes from @c standard_waiting_policy wrapped around this. Takes
+ *  the watched word only by address, as a monitored wait arming its line must, so a spin path
+ *  handing over a reference fails to compile here. The tally is static because a policy is
+ *  default-constructed inside whatever spins on it, so there is nowhere to hand a counter in, and
+ *  one test runs at a time.
  */
 struct yielding_waiting_policy_t {
 
@@ -391,8 +393,8 @@ struct yielding_waiting_policy_t {
     static inline std::atomic<std::size_t> pauses {0};
 
     /** Gives the core up for a scheduling quantum rather than burning it on a retry. */
-    template <typename watched_type_, typename value_type_, typename attempts_type_>
-    void operator()(watched_type_ const &, value_type_, attempts_type_) const noexcept {
+    template <typename value_type_, typename attempts_type_>
+    void operator()(value_type_ const *, value_type_, attempts_type_) const noexcept {
         pauses.fetch_add(1, std::memory_order_relaxed);
         std::this_thread::yield();
     }
@@ -405,12 +407,12 @@ using yielding_mutex_t = spin_shared_mutex<standard_waiting_policy<yielding_wait
 using yielding_table_t =
     atomic_hash_set<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t, yielding_waiting_policy_t>;
 
-static_assert(parking_waiting_policy<standard_waiting_policy_t, std::uint32_t, std::uint32_t>,
+static_assert(parking_waiting_policy<standard_waiting_policy_t, std::uint32_t *, std::uint32_t>,
               "the default must satisfy the concept the mutex constrains its parameter on");
 static_assert(waiting_policy<yielding_waiting_policy_t, std::uint64_t const *, std::uint64_t>,
               "the slot lock watches a word owned through atomic_ref rather than an atomic object");
-static_assert(waiting_policy<yielding_waiting_policy_t, std::uint32_t, std::uint32_t>,
-              "one pause-only policy serves both watched shapes without knowing either");
+static_assert(waiting_policy<yielding_waiting_policy_t, std::uint32_t *, std::uint32_t>,
+              "the mutex hands a waiter the address of its word, as it does the slot lock's");
 static_assert(sizeof(yielding_mutex_t) == sizeof(spin_shared_mutex_t), "a stateless policy costs the mutex no storage");
 static_assert(sizeof(yielding_table_t) == sizeof(atomic_hash_set<std::uint64_t>),
               "a stateless policy costs the pinned table no storage");

@@ -3866,11 +3866,11 @@ class dynamic_transaction_group {
  *  @brief What a spin loop asks of the policy deciding what its core does between attempts.
  *
  *  @tparam policy_type_ The policy being checked.
- *  @tparam watched_type_ The word the loop retries over, as the policy sees it - an atomic object,
- *      or a pointer to a word owned through @c atomic_ref.
+ *  @tparam watched_type_ The address of the word the loop retries over, owned through
+ *      @c atomic_ref rather than as an atomic object. A monitored wait arms its line from it.
  *  @tparam value_type_ The bit pattern the loop last read out of that word.
  *
- *  One call takes the watched word, the value that was there, and how many attempts the loop has
+ *  One call takes the watched address, the value that was there, and how many attempts the loop has
  *  already spent, and it must come back on its own: a wait ending only on someone else's action
  *  deadlocks wherever the spinner is the thread that action waits for. Every architectural hint
  *  fits - a stall of a few tens of cycles, a hint handing the pipeline to a sibling thread, or a
@@ -3887,7 +3887,8 @@ concept waiting_policy = requires(policy_type_ const &policy, watched_type_ &wat
  *  @brief A waiting policy that can also take a thread off its core until the watched word moves.
  *
  *  @tparam policy_type_ The policy being checked.
- *  @tparam watched_type_ The word a parked thread blocks on.
+ *  @tparam watched_type_ The address of the word a parked thread blocks on, writable since the
+ *      thread waking it is the one that stored to it.
  *  @tparam value_type_ The bit pattern that has to change before a parked thread is owed a wake.
  *
  *  Asked only where a loop gives up on spinning, which is where a lock is held across user code and
@@ -3943,14 +3944,14 @@ struct standard_waiting_policy {
 
     /** Parks until @p watched stops reading @p observed, or until the wait returns spuriously. */
     template <typename value_type_>
-    void wait_until_changed(value_type_ &watched, value_type_ const observed) const noexcept {
-        atomic_wait(watched, observed);
+    void wait_until_changed(value_type_ const *watched, value_type_ const observed) const noexcept {
+        atomic_wait(*watched, observed);
     }
 
     /** Wakes every thread parked on @p watched. */
     template <typename value_type_>
-    void notify_waiters(value_type_ &watched) const noexcept {
-        atomic_notify_all(watched);
+    void notify_waiters(value_type_ *watched) const noexcept {
+        atomic_notify_all(*watched);
     }
 };
 
@@ -3984,7 +3985,7 @@ using standard_waiting_policy_t = standard_waiting_policy<>;
  *  Offers exactly what @c std::shared_mutex is used for here, and nothing else: no recursion, no
  *  timed acquisition, no upgrading.
  */
-template <parking_waiting_policy<std::uint32_t, std::uint32_t> waiting_policy_type_ = standard_waiting_policy_t,
+template <parking_waiting_policy<std::uint32_t *, std::uint32_t> waiting_policy_type_ = standard_waiting_policy_t,
           template <typename> class atomic_reference_ = atomic_ref>
 class spin_shared_mutex {
 
@@ -4044,7 +4045,7 @@ class spin_shared_mutex {
         for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
             std::uint32_t const observed = take_as_writer_();
             if (observed == 0) return;
-            waiting_(state_, observed, attempts_spent);
+            waiting_(&state_, observed, attempts_spent);
         }
 
         // Joining the tally is what stops a stream of readers from renewing the lock forever. A tally
@@ -4061,7 +4062,7 @@ class spin_shared_mutex {
                     return;
                 continue; // ? The exchange refreshed `observed`
             }
-            waiting_.wait_until_changed(state_, observed);
+            waiting_.wait_until_changed(&state_, observed);
             observed = state_ref.load(memory_order_relaxed_k);
         }
     }
@@ -4070,20 +4071,20 @@ class spin_shared_mutex {
         // Only the held bit is ours to drop: the writers queued behind us keep their places, and
         // keep new readers out while they wait. Nothing reads what the word held, so nothing waits.
         atomic_post_clear_bits<atomic_reference_>(state_, writer_held_k, memory_order_release_k);
-        waiting_.notify_waiters(state_);
+        waiting_.notify_waiters(&state_);
     }
 
     void lock_shared() noexcept {
         for (std::size_t attempts_spent = 0; attempts_spent != spins_before_parking_k; ++attempts_spent) {
             std::uint32_t const observed = take_as_reader_();
             if (observed < readers_mask_k) return;
-            waiting_(state_, observed, attempts_spent);
+            waiting_(&state_, observed, attempts_spent);
         }
 
         while (true) {
             std::uint32_t const observed = take_as_reader_();
             if (observed < readers_mask_k) return;
-            waiting_.wait_until_changed(state_, observed);
+            waiting_.wait_until_changed(&state_, observed);
         }
     }
 
@@ -4092,7 +4093,7 @@ class spin_shared_mutex {
         // a waiting writer is still blocked on.
         std::uint32_t const previous = word_ref_t(state_).fetch_sub(1, memory_order_release_k);
         assert((previous & readers_mask_k) != 0 && "an extra unlock would borrow from the waiting-writer tally");
-        if ((previous & readers_mask_k) == 1) waiting_.notify_waiters(state_);
+        if ((previous & readers_mask_k) == 1) waiting_.notify_waiters(&state_);
     }
 };
 
@@ -4234,7 +4235,7 @@ enum class order_sharing_t : bool {
  */
 template <std::size_t commits_in_flight_ = 16, std::size_t reader_buckets_ = 4,
           order_sharing_t sharing_ = order_sharing_t::shared_k,
-          parking_waiting_policy<generation_t, generation_t> waiting_policy_type_ = standard_waiting_policy_t>
+          parking_waiting_policy<generation_t *, generation_t> waiting_policy_type_ = standard_waiting_policy_t>
 class basic_commit_order {
 
   public:
@@ -4640,7 +4641,7 @@ class basic_commit_order {
             // happened during the overlap rather than after it.
             for (generation_t seen = published.load(memory_order_acquire_k);
                  stamp - seen > static_cast<generation_t>(ring_k); seen = published.load(memory_order_acquire_k))
-                waiting_.wait_until_changed(published_stamp_, seen);
+                waiting_.wait_until_changed(&published_stamp_, seen);
 
             atomic_ref<generation_t>(landed_[ring_slot_(stamp)]).store(stamp, memory_order_release_k);
 
@@ -4657,7 +4658,7 @@ class basic_commit_order {
             if (!moved) return;
             // A store wakes nobody, so anyone parked in `await_published` or in the wait above sleeps through
             // the very publication it waits for unless the wake goes out here.
-            waiting_.notify_waiters(published_stamp_);
+            waiting_.notify_waiters(&published_stamp_);
             republish_mark_();
         }
     }
@@ -4676,7 +4677,7 @@ class basic_commit_order {
             atomic_ref<generation_t> published(published_stamp_);
             for (generation_t seen = published.load(memory_order_acquire_k); seen < wanted;
                  seen = published.load(memory_order_acquire_k))
-                waiting_.wait_until_changed(published_stamp_, seen);
+                waiting_.wait_until_changed(&published_stamp_, seen);
         }
     }
 
