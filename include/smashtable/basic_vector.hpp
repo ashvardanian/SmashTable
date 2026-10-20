@@ -33,10 +33,12 @@
  */
 #pragma once
 #include <cassert> // `assert`
+#include <cstring> // `std::memmove`
 
-#include <concepts> // `std::invocable`, `std::predicate`
-#include <memory>   // `std::allocator_traits`
-#include <utility>  // `std::exchange`, `std::forward`
+#include <concepts>    // `std::invocable`, `std::predicate`
+#include <memory>      // `std::allocator_traits`
+#include <type_traits> // `std::is_trivially_copyable_v`
+#include <utility>     // `std::exchange`, `std::forward`
 
 #include "shared.hpp"
 
@@ -299,9 +301,16 @@ class basic_vector {
     void erase(std::size_t position, std::size_t count, callback_type_ &&callback = {}) noexcept {
         assert(position <= size_ && count <= size_ - position && "erase requires a range inside the vector");
         for (std::size_t index = position; index != position + count; ++index) callback(data_[index]);
-        for (std::size_t index = position; index + count != size_; ++index)
-            data_[index] = std::move(data_[index + count]);
-        for (std::size_t removed = 0; removed != count; ++removed) pop_back();
+        if constexpr (std::is_trivially_copyable_v<value_t>) {
+            if (!count) return;
+            std::memmove(data_ + position, data_ + position + count, (size_ - position - count) * sizeof(value_t));
+            size_ -= count;
+        }
+        else {
+            for (std::size_t index = position; index + count != size_; ++index)
+                data_[index] = std::move(data_[index + count]);
+            for (std::size_t removed = 0; removed != count; ++removed) pop_back();
+        }
     }
 
     /**
