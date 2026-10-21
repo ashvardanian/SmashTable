@@ -11,7 +11,8 @@
 #include <cstdint> // `SIZE_MAX`
 
 #include <new>         // `::operator new`, `std::nothrow`
-#include <type_traits> // `std::true_type`
+#include <span>        // `std::span`
+#include <type_traits> // `std::true_type`, `std::is_convertible_v`, `std::is_trivially_copyable_v`
 #include <utility>     // `std::move`
 
 #include <smashtable/basic_vector.hpp>
@@ -72,6 +73,16 @@ struct budgeted_element_t {
         made.value = value;
         return expected<budgeted_element_t>(std::move(made), success_k);
     }
+};
+
+/** A trivially copyable element whose default constructor counts its calls, so a resize meant to
+ *  construct nothing can be seen constructing nothing. */
+struct construction_counted_element_t {
+    static inline std::size_t constructions = 0;
+
+    int value {0};
+
+    construction_counted_element_t() noexcept { ++constructions; }
 };
 
 /** An allocator that refuses every request and remembers the largest one it was asked for. A
@@ -211,6 +222,89 @@ static void vector_resize_rolls_back_elements() {
 
     st_verify_(vector.resize(2));
     st_verify_eq_(vector.size(), 2u);
+}
+
+/** The uninitialized @c resize moves the size around the elements it keeps and constructs none. */
+static void vector_resizes_without_constructing() {
+    static_assert(std::is_trivially_copyable_v<construction_counted_element_t>,
+                  "the test element must qualify for the uninitialized resize");
+
+    basic_vector<construction_counted_element_t> vector;
+    st_verify_(vector.resize(3));
+    for (std::size_t index = 0; index < 3; ++index) vector[index].value = static_cast<int>(index) + 7;
+    construction_counted_element_t::constructions = 0;
+
+    st_verify_(vector.resize(assume_uninitialized, 40));
+    st_verify_eq_(vector.size(), 40u);
+    st_verify_ge_(vector.capacity(), 40u);
+    st_verify_eq_(construction_counted_element_t::constructions, 0u);
+    for (std::size_t index = 0; index < 3; ++index) st_verify_eq_(vector[index].value, static_cast<int>(index) + 7);
+
+    std::size_t const capacity_before = vector.capacity();
+    st_verify_(vector.resize(assume_uninitialized, 2));
+    st_verify_eq_(vector.size(), 2u);
+    st_verify_eq_(vector.capacity(), capacity_before);
+    st_verify_eq_(vector[1].value, 8);
+}
+
+/** @c assign replaces shorter and longer contents alike, and takes a vector through its span. */
+static void vector_assign_replaces_contents() {
+    static_assert(std::is_convertible_v<basic_vector<int> &, std::span<int>>, "a vector lends itself as a span");
+
+    basic_vector<int> source;
+    for (int value = 0; value < 6; ++value) st_verify_(source.push_back(int {value}));
+
+    basic_vector<int> vector;
+    st_verify_(vector.push_back(42));
+    st_verify_(vector.assign(source));
+    st_verify_eq_(vector.size(), 6u);
+    for (std::size_t index = 0; index < 6; ++index) st_verify_eq_(vector[index], source[index]);
+
+    int const shorter[2] = {7, 8};
+    st_verify_(vector.assign(shorter));
+    st_verify_eq_(vector.size(), 2u);
+    st_verify_eq_(vector[0], 7);
+    st_verify_eq_(vector[1], 8);
+}
+
+/** A refused allocation or element copy leaves the elements and the storage as they were. */
+static void vector_refused_growth_changes_nothing() {
+    allocation_ledger_t ledger;
+    {
+        basic_vector<int, stateful_allocator<int>> vector {stateful_allocator<int>(ledger)};
+        for (int value = 0; value < 3; ++value) st_verify_(vector.push_back(int {value}));
+        std::size_t const capacity_before = vector.capacity();
+        int const longer[8] = {10, 11, 12, 13, 14, 15, 16, 17};
+
+        ledger.refuse_everything();
+        st_verify_eq_(vector.resize(assume_uninitialized, 64), status_t::out_of_memory_heap_k);
+        st_verify_eq_(vector.assign(longer), status_t::out_of_memory_heap_k);
+        ledger.allow(unlimited_budget_k);
+        st_verify_eq_(vector.size(), 3u);
+        st_verify_eq_(vector.capacity(), capacity_before);
+        for (std::size_t index = 0; index < 3; ++index) st_verify_eq_(vector[index], static_cast<int>(index));
+    }
+    ledger.verify_balanced();
+
+    // Trivially copyable with a deleted copy constructor, so `assign` copies through `.copy()`.
+    basic_vector<budgeted_element_t> source;
+    for (int value = 0; value < 5; ++value) {
+        st_verify_(source.push_back(budgeted_element_t {}));
+        source.back().value = value;
+    }
+    basic_vector<budgeted_element_t> vector;
+    st_verify_(vector.push_back(budgeted_element_t {}));
+    vector[0].value = 3;
+
+    budgeted_element_t::copies_left = 2;
+    st_verify_eq_(vector.assign(source), status_t::out_of_memory_heap_k);
+    st_verify_eq_(vector.size(), 1u);
+    st_verify_eq_(vector[0].value, 3);
+
+    budgeted_element_t::copies_left = 16;
+    st_verify_(vector.assign(source));
+    st_verify_eq_(vector.size(), 5u);
+    st_verify_eq_(vector[4].value, 4);
 }
 
 /** @c copy is all-or-nothing, and @c swap moves the storage across. */
@@ -458,6 +552,9 @@ int main(int, char **arguments) {
     tally += run_test(settings, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
     tally += run_test(settings, "vector.growth_is_amortized", vector_growth_is_amortized);
     tally += run_test(settings, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
+    tally += run_test(settings, "vector.resizes_without_constructing", vector_resizes_without_constructing);
+    tally += run_test(settings, "vector.assign_replaces_contents", vector_assign_replaces_contents);
+    tally += run_test(settings, "vector.refused_growth_changes_nothing", vector_refused_growth_changes_nothing);
     tally += run_test(settings, "vector.copy_and_swap", vector_copy_and_swap);
     tally += run_test(settings, "vector.move_semantics", vector_move_semantics);
     tally += run_test(settings, "vector.inserts_at_a_position", vector_inserts_at_a_position);

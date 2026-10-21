@@ -770,6 +770,12 @@ struct assume_reserved_t {
 };
 inline constexpr assume_reserved_t assume_reserved {};
 
+/** Tag to leave new elements unconstructed, for storage a kernel or a byte copy writes first. */
+struct assume_uninitialized_t {
+    explicit assume_uninitialized_t() = default;
+};
+inline constexpr assume_uninitialized_t assume_uninitialized {};
+
 /** Tag to assume elements are unique, skip equality comparisons. Similar to Boost.Container's
  *  @c ordered_unique_range_t. */
 struct assume_unique_t {

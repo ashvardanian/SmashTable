@@ -33,11 +33,12 @@
  */
 #pragma once
 #include <cassert> // `assert`
-#include <cstring> // `std::memmove`
+#include <cstring> // `std::memcpy`, `std::memmove`
 
 #include <concepts>    // `std::invocable`, `std::predicate`
 #include <memory>      // `std::allocator_traits`
-#include <type_traits> // `std::is_trivially_copyable_v`
+#include <span>        // `std::span`
+#include <type_traits> // `std::is_trivially_copyable_v`, `std::is_trivially_copy_constructible_v`
 #include <utility>     // `std::exchange`, `std::forward`
 
 #include "shared.hpp"
@@ -428,6 +429,20 @@ class basic_vector {
     }
 
     /**
+     *  @brief Resizes the vector to @p new_size without constructing the new elements, so their
+     *      first writer can be a kernel or a byte copy rather than the host.
+     *  @param[in] new_size The new size.
+     *  @return Success, or @c out_of_memory_heap_k if reallocation fails, which changes nothing.
+     */
+    status_t resize(assume_uninitialized_t, std::size_t new_size) noexcept
+        requires std::is_trivially_copyable_v<value_t>
+    {
+        if (status_t const grown = reserve(new_size); failed(grown)) return grown;
+        size_ = new_size;
+        return success_k;
+    }
+
+    /**
      *  @brief Resizes the vector and initializes new elements with @p value. If @p new_size >
      *      @p size(), new elements are copy-constructed from @p value.
      *
@@ -461,6 +476,33 @@ class basic_vector {
                 new (&data_[index]) value_t(std::move(*copy_result));
             }
             size_ = new_size;
+        }
+        return success_k;
+    }
+
+    /**
+     *  @brief Replaces the contents with a copy of @p values, all or nothing.
+     *  @param[in] values Elements to copy, never ones of this vector's own.
+     *  @return Success, or why the room or a copy could not be made, which changes nothing.
+     */
+    status_t assign(std::span<value_t const> values) noexcept {
+        assert((values.data() + values.size() <= data_ || values.data() >= data_ + size_) &&
+               "assign cannot take elements of this very vector");
+        // Bytes stand in for a copy only through a trivial copy constructor, never a deleted one.
+        if constexpr (std::is_trivially_copyable_v<value_t> && std::is_trivially_copy_constructible_v<value_t>) {
+            if (status_t const grown = reserve(values.size()); failed(grown)) return grown;
+            if (!values.empty()) std::memcpy(data_, values.data(), values.size() * sizeof(value_t));
+            size_ = values.size();
+        }
+        else {
+            basic_vector replacement(allocator_);
+            if (status_t const reserved = replacement.reserve(values.size()); failed(reserved)) return reserved;
+            for (value_t const &value : values) {
+                expected<value_t> copied = copy_safely(value);
+                if (!copied) return copied.status();
+                new (&replacement.data_[replacement.size_++]) value_t(std::move(*copied));
+            }
+            *this = std::move(replacement);
         }
         return success_k;
     }
