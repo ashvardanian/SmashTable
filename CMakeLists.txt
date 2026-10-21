@@ -53,11 +53,11 @@ endif ()
 
 # Leverage `ccache` where it is installed, which turns a rebuild of an unchanged translation unit into a
 # lookup. This tree compiles 16 of them, several taking tens of seconds, so the cache earns its keep.
-find_program(CCACHE_PROGRAM ccache)
-if (CCACHE_PROGRAM)
-    set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_PROGRAM}")
-    message(STATUS "Using ccache: ${CCACHE_PROGRAM}")
+find_program(SMASHTABLE_CCACHE_PROGRAM ccache)
+if (SMASHTABLE_CCACHE_PROGRAM)
+    set(CMAKE_C_COMPILER_LAUNCHER "${SMASHTABLE_CCACHE_PROGRAM}")
+    set(CMAKE_CXX_COMPILER_LAUNCHER "${SMASHTABLE_CCACHE_PROGRAM}")
+    message(STATUS "Using ccache: ${SMASHTABLE_CCACHE_PROGRAM}")
 endif ()
 project(
     smashtable
@@ -79,10 +79,7 @@ if (SMASHTABLE_IS_MAIN_PROJECT)
     # An unset build type means no optimization flags at all on single-config generators, which is a surprising default
     # for a header-only library whose tests spend their time inside inlined templates.
     if (NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-        set(CMAKE_BUILD_TYPE
-            Release
-            CACHE STRING "Build type" FORCE
-        )
+        set(CMAKE_BUILD_TYPE Release)
     endif ()
 endif ()
 
@@ -95,10 +92,10 @@ if (SMASHTABLE_IS_MAIN_PROJECT AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
     execute_process(
         COMMAND git config core.hooksPath .githooks
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        RESULT_VARIABLE _smashtable_hooks_status
+        RESULT_VARIABLE smashtable_hooks_status_
         OUTPUT_QUIET ERROR_QUIET
     )
-    if (_smashtable_hooks_status EQUAL 0)
+    if (smashtable_hooks_status_ EQUAL 0)
         message(STATUS "smashtable: Git hooks enabled (core.hooksPath -> .githooks)")
     endif ()
 endif ()
@@ -162,7 +159,7 @@ if (SMASHTABLE_BUILD_TEST)
 
     # One target per entry point, each its own translation unit so an incremental build stays small.
     foreach (
-        subject IN
+        subject_ IN
         ITEMS std_set
               avl_tree
               wb_tree
@@ -177,18 +174,18 @@ if (SMASHTABLE_BUILD_TEST)
               ring
               elias_fano
     )
-        add_executable(smashtable_test_${subject} test/${subject}.cpp)
-        target_include_directories(smashtable_test_${subject} PRIVATE test/)
-        target_link_libraries(smashtable_test_${subject} PRIVATE smashtable::header smashtable_warnings)
-        add_test(NAME test_${subject} COMMAND smashtable_test_${subject})
+        add_executable(smashtable_test_${subject_} test/${subject_}.cpp)
+        target_include_directories(smashtable_test_${subject_} PRIVATE test/)
+        target_link_libraries(smashtable_test_${subject_} PRIVATE smashtable::header smashtable_warnings)
+        add_test(NAME test_${subject_} COMMAND smashtable_test_${subject_})
     endforeach ()
 
     # No benchmark is registered with CTest, so no suite pays for one.
     if (SMASHTABLE_BUILD_BENCH)
-        foreach (subject IN ITEMS row_search)
-            add_executable(smashtable_bench_${subject} bench/${subject}.cpp)
-            target_include_directories(smashtable_bench_${subject} PRIVATE bench/)
-            target_link_libraries(smashtable_bench_${subject} PRIVATE smashtable::header smashtable_warnings)
+        foreach (subject_ IN ITEMS row_search)
+            add_executable(smashtable_bench_${subject_} bench/${subject_}.cpp)
+            target_include_directories(smashtable_bench_${subject_} PRIVATE bench/)
+            target_link_libraries(smashtable_bench_${subject_} PRIVATE smashtable::header smashtable_warnings)
         endforeach ()
     endif ()
 

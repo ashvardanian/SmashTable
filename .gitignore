@@ -30,6 +30,8 @@ wheelhouse/
 # Resolver output, not an input. A library declares its ranges in `pyproject.toml` and every consumer
 # resolves its own, so a committed lock would pin nothing but this checkout's dev environment.
 uv.lock
+# The same for the crate: it ships no binaries and CI never builds `--locked`.
+Cargo.lock
 
 # Interpreter and tooling caches
 __pycache__/
