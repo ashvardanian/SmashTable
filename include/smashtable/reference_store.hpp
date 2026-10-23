@@ -19,7 +19,7 @@
 #include <utility>     // `std::as_const`
 #include <vector>      // `std::vector` for watches
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

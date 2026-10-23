@@ -81,7 +81,7 @@
 #include <memory>  // `std::allocator`
 #include <utility> // `std::exchange`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

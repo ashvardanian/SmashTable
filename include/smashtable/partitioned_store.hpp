@@ -15,7 +15,7 @@
 #include <type_traits> // `std::is_same`
 #include <utility>     // `std::declval`, `std::exchange`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -338,8 +338,15 @@ class partitioned_store {
     std::size_t bucket_(comparable_type_ const &comparable) const noexcept {
         auto const &key = mapping_key_or_itself(comparable);
         using key_t = std::remove_cvref_t<decltype(key)>;
-        if constexpr (std::is_same_v<key_t, identifier_t>) return hasher_(key) % partitions_k;
-        else return hasher_(identifier_t(key)) % partitions_k;
+        if constexpr (std::is_same_v<key_t, identifier_t>) return partition_of_(hasher_(key));
+        else return partition_of_(hasher_(identifier_t(key)));
+    }
+
+    /** Picks a partition from the top hash bits, as a table inside one slots by the low bits. */
+    template <typename hashed_type_>
+    static constexpr std::size_t partition_of_(hashed_type_ const hashed) noexcept {
+        if constexpr (partitions_k == 1) return 0;
+        else return static_cast<std::size_t>(hashed / (std::numeric_limits<hashed_type_>::max() / partitions_k + 1));
     }
 
     /**

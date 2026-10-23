@@ -30,8 +30,8 @@
 #include <type_traits> // `std::bool_constant`, `std::conditional_t`
 #include <utility>     // `std::exchange`, `std::move`
 
-#include "basic_vector.hpp"
-#include "row_search.hpp"
+#include "smashtable/basic_vector.hpp"
+#include "smashtable/row_search.hpp"
 
 namespace ashvardanian::smashtable {
 

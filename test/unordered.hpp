@@ -56,6 +56,8 @@ inline constexpr bool unordered_has_values = !std::is_void_v<typename container_
 template <typename key_type_>
 key_type_ unordered_key_from(std::size_t identifier) noexcept {
     if constexpr (std::is_same_v<key_type_, std::string>) return std::string("key-") + std::to_string(identifier);
+    // Four keys share each high word and every low word repeats, so a half-compared key collides.
+    else if constexpr (std::is_same_v<key_type_, key128_t>) return key128_t {identifier >> 2, identifier & 3};
     else return key_type_(identifier);
 }
 

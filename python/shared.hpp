@@ -415,7 +415,7 @@ struct key_variant_hash_t {
                 using held_t = std::decay_t<decltype(held)>;
                 if constexpr (std::is_same_v<held_t, utf8_t>) return std::hash<std::string> {}(held.text);
                 else if constexpr (std::is_same_v<held_t, bytes_t>) return std::hash<std::string> {}(held.data);
-                else return std::hash<held_t> {}(held);
+                else return hash<held_t> {}(held);
             },
             key.value);
     }

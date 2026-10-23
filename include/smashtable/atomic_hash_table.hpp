@@ -63,7 +63,7 @@
 #include <type_traits> // `std::is_trivially_destructible`
 #include <utility>     // `std::move`, `std::forward`
 
-#include "hash_layout.hpp"
+#include "smashtable/hash_layout.hpp"
 
 namespace ashvardanian::smashtable {
 

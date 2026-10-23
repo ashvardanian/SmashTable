@@ -276,17 +276,83 @@ static void unordered_ops_move_into_too_few_slots() {
 
 #pragma region Kit Window Tests
 
-/** Window lookups over 4- and 8-byte keys through growth, tombstones and full tables. */
+/** Both ends of each word and the sign boundaries, as keys of @p key_type_, deduplicated. */
+template <typename key_type_>
+std::vector<key_type_> extreme_keys() {
+    std::uint64_t const words[] = {0,          1,    0x7FFFFFFFull, 0x80000000ull, 0xFFFFFFFFull, 0x7FFFFFFFFFFFFFFFull,
+                                   1ull << 63, ~0ull};
+    std::vector<key_type_> keys;
+    for (std::uint64_t const high : words) {
+        if constexpr (std::is_same_v<key_type_, key128_t>)
+            for (std::uint64_t const low : words) keys.push_back(key128_t {high, low});
+        else keys.push_back(static_cast<key_type_>(high));
+    }
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    return keys;
+}
+
+/** Keys at both ends of the range survive a find, an erase, an upsert into the tombstone it left,
+ *  and a @c clear that leaves their bytes behind in the key region. */
+template <typename map_type_>
+void verify_extreme_keys() {
+    using key_t = typename map_type_::key_type;
+    using owned_t = typename map_type_::owned_value_type;
+    std::vector<key_t> const keys = extreme_keys<key_t>();
+    auto const verify_values = [&](map_type_ const &map, std::size_t offset, std::size_t erased_parity) {
+        for (std::size_t index = 0; index != keys.size(); ++index) {
+            bool const erased = index % 2 == erased_parity;
+            st_verify_eq_(map.contains(keys[index]), !erased);
+            if (!erased) st_verify_eq_(map.at(keys[index]), index + offset);
+        }
+    };
+
+    map_type_ map;
+    // Reserved up front, so no rehash sweeps the tombstones away before the upserts can reuse them.
+    st_verify_(map.reserve(keys.size() * 2) != map_type_::reserve_result_t::failed_k);
+    for (std::size_t index = 0; index != keys.size(); ++index) st_verify_(map.upsert(owned_t {keys[index], index}));
+    verify_values(map, 0, 2);
+
+    for (std::size_t index = 0; index < keys.size(); index += 2) st_verify_(map.erase(keys[index]));
+    st_verify_eq_(map.deleted_count(), (keys.size() + 1) / 2);
+    verify_values(map, 0, 0);
+
+    for (std::size_t index = 0; index != keys.size(); ++index)
+        st_verify_(map.upsert(owned_t {keys[index], index + keys.size()}));
+    st_verify_eq_(map.deleted_count(), 0u, "every re-inserted key must land in a tombstone of its run");
+    st_verify_eq_(map.size(), keys.size());
+    verify_values(map, keys.size(), 2);
+
+    map.clear();
+    st_verify_eq_(map.size(), 0u);
+    for (key_t const &key : keys) st_verify_eq_(map.contains(key), false, "a cleared slot must not match its old key");
+    for (std::size_t index = 1; index < keys.size(); index += 2) st_verify_(map.upsert(owned_t {keys[index], index}));
+    verify_values(map, 0, 0);
+}
+
+/** Window lookups over 4-, 8- and 16-byte keys through growth, tombstones and full tables. */
 template <typename kit_type_>
 void verify_kit(kit_type_) {
     using narrow_set_t = basic_hash_table<std::uint32_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
     using wide_set_t = basic_hash_table<std::uint64_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
+    using key128_set_t = basic_hash_table<key128_t, default_hash_t, equal_to_t, default_allocator_t, kit_type_>;
     test_unordered_growth_through_rehashes<narrow_set_t>();
     test_unordered_growth_through_rehashes<wide_set_t>();
+    test_unordered_growth_through_rehashes<key128_set_t>();
     test_unordered_tombstone_reuse<narrow_set_t>();
     test_unordered_tombstone_reuse<wide_set_t>();
+    test_unordered_tombstone_reuse<key128_set_t>();
     test_unordered_full_table_refusals<narrow_set_t>();
     test_unordered_full_table_refusals<wide_set_t>();
+    test_unordered_full_table_refusals<key128_set_t>();
+    test_unordered_capacity_management<key128_set_t>();
+
+    verify_extreme_keys<basic_hash_table<mapping<std::uint32_t, std::size_t>, default_hash_t, equal_to_t,
+                                         default_allocator_t, kit_type_>>();
+    verify_extreme_keys<basic_hash_table<mapping<std::uint64_t, std::size_t>, default_hash_t, equal_to_t,
+                                         default_allocator_t, kit_type_>>();
+    verify_extreme_keys<
+        basic_hash_table<mapping<key128_t, std::size_t>, default_hash_t, equal_to_t, default_allocator_t, kit_type_>>();
 }
 
 void verify_through(row_kit_t kit) {

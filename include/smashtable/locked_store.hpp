@@ -8,7 +8,7 @@
 #pragma once
 #include <cassert> // `assert`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

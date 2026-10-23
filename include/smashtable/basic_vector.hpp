@@ -41,7 +41,7 @@
 #include <type_traits> // `std::is_trivially_copyable_v`, `std::is_trivially_copy_constructible_v`
 #include <utility>     // `std::exchange`, `std::forward`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

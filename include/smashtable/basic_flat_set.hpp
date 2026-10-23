@@ -19,8 +19,8 @@
 #include <type_traits> // `std::false_type`, `std::is_nothrow_move_assignable_v`
 #include <utility>     // `std::forward`, `std::move`
 
-#include "basic_vector.hpp"
-#include "row_search.hpp"
+#include "smashtable/basic_vector.hpp"
+#include "smashtable/row_search.hpp"
 
 namespace ashvardanian::smashtable {
 

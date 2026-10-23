@@ -40,7 +40,7 @@
 #include <type_traits> // `std::conditional_t`, `std::is_same_v`
 #include <utility>     // `std::exchange`, `std::move`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

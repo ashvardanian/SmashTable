@@ -17,7 +17,7 @@
 #include <bit>  // `std::popcount`
 #include <span> // `std::span`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -53,6 +53,14 @@ struct key128_t {
 
 static_assert(sizeof(key128_t) == 16 && offsetof(key128_t, low) == 8 && std::is_trivially_copyable_v<key128_t>,
               "interleaved kits load a key128_t row as a run of 64-bit words");
+
+/** A 16-byte key, its high word finalized into the low one and the result finalized again. */
+template <>
+struct hash<key128_t> {
+    constexpr std::size_t operator()(key128_t const &key) const noexcept {
+        return hash<std::uint64_t> {}(key.low ^ hash<std::uint64_t> {}(key.high));
+    }
+};
 
 /** The key types every kit searches. */
 template <typename key_type_>

@@ -48,7 +48,8 @@
 #include <type_traits> // `std::is_same`, `std::conditional_t`
 #include <utility>     // `std::declval`, `std::move`
 
-#include "shared.hpp"
+#include "smashtable/row_layout.hpp" // `key128_t`
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 
@@ -88,11 +89,13 @@ static_assert(sizeof(hash_bucket_head_t) == sizeof(std::uint64_t));
 /** Bitmask selecting one slot within a bucket header lane. */
 using hash_bucket_mask_t = std::uint32_t;
 
-/** A key a lookup compares a window at a time: a 4- or 8-byte integer, read as unsigned. */
+/** A key a lookup compares a window at a time: a 4- or 8-byte integer, read as unsigned, or a
+ *  @c key128_t. */
 template <typename key_type_>
-concept window_key = std::is_integral_v<key_type_> && !std::is_same_v<key_type_, bool> &&
-                     (std::is_same_v<std::make_unsigned_t<key_type_>, std::uint32_t> ||
-                      std::is_same_v<std::make_unsigned_t<key_type_>, std::uint64_t>);
+concept window_key = (std::is_integral_v<key_type_> && !std::is_same_v<key_type_, bool> &&
+                      (std::is_same_v<std::make_unsigned_t<key_type_>, std::uint32_t> ||
+                       std::is_same_v<std::make_unsigned_t<key_type_>, std::uint64_t>)) ||
+                     std::is_same_v<key_type_, key128_t>;
 
 /** The four states a slot can be in, spelled out by the two header lanes. */
 enum class hash_slot_state_t : std::uint8_t {
@@ -743,11 +746,12 @@ struct hash_storage {
         }
     }
 
-    /** Destroys every element and zeroes the headers, keeping the buffer. */
+    /** Destroys every element and zeroes the headers, keeping the buffer: a slot's state lives in
+     *  its header alone, so the keys and values left behind are never taken for elements. */
     void clear() noexcept {
         if (!memory) return;
         destroy_elements();
-        std::memset(memory, 0, size_bytes());
+        std::memset(headers, 0, static_cast<std::size_t>(bucket_count()) * sizeof(hash_bucket_head_t));
         populated_count = 0;
         deleted_count = 0;
     }

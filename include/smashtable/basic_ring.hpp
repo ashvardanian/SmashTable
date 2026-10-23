@@ -19,7 +19,7 @@
 #include <type_traits> // `std::is_nothrow_move_constructible_v`
 #include <utility>     // `std::exchange`, `std::move`
 
-#include "shared.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

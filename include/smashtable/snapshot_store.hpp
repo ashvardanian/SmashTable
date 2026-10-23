@@ -17,11 +17,11 @@
 #include <type_traits> // `std::conditional_t`
 #include <utility>     // `std::exchange`, `std::move`
 
-#include "basic_avl_tree.hpp"
-#include "basic_hash_table.hpp"
-#include "basic_vector.hpp"
-#include "basic_wb_tree.hpp"
-#include "shared.hpp"
+#include "smashtable/basic_avl_tree.hpp"
+#include "smashtable/basic_hash_table.hpp"
+#include "smashtable/basic_vector.hpp"
+#include "smashtable/basic_wb_tree.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

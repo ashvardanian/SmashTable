@@ -14,11 +14,11 @@
 #include <memory>  // `std::allocator`, `std::construct_at`, `std::destroy_at`
 #include <utility> // `std::exchange`
 
-#include "basic_avl_tree.hpp"
-#include "basic_hash_table.hpp"
-#include "basic_vector.hpp"
-#include "basic_wb_tree.hpp"
-#include "shared.hpp"
+#include "smashtable/basic_avl_tree.hpp"
+#include "smashtable/basic_hash_table.hpp"
+#include "smashtable/basic_vector.hpp"
+#include "smashtable/basic_wb_tree.hpp"
+#include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
 

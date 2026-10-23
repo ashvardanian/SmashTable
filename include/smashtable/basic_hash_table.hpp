@@ -154,8 +154,8 @@ struct hash_table_iterator : public hash_slot_ref<value_type_, hasher_type_> {
  *      copy-constructible. Defaults to a transparent @c std::equal_to.
  *  @tparam allocator_type_ Allocator for internal memory management. Defaults to
  *      @c default_allocator_t.
- *  @tparam row_kit_type_ The kit comparing a window of its @c mask_equal_width_k integer keys at
- *      once in @c find and @c contains, the newest one the compiler's flags promise by default.
+ *  @tparam row_kit_type_ The kit comparing a window of its @c mask_equal_width_k fixed-width keys
+ *      at once in @c find and @c contains, the newest one the compiler's flags promise by default.
  *
  *  @see https://en.cppreference.com/w/cpp/container/unordered_set
  *  @see https://en.cppreference.com/w/cpp/container/unordered_map
@@ -345,7 +345,9 @@ class basic_hash_table {
         slot_t slot;
 
         if constexpr (probes_windows_<comparable_key_type_>()) {
-            using word_t = std::make_unsigned_t<std::remove_cv_t<key_t>>;
+            using word_t =
+                typename std::conditional_t<std::is_integral_v<key_t>, std::make_unsigned<std::remove_cv_t<key_t>>,
+                                            std::type_identity<std::remove_cv_t<key_t>>>::type;
             constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
             offset_t const windows_count = slots_count / mask_equal_width_k;
             offset_t const entry = offset;
@@ -609,29 +611,30 @@ class basic_hash_table {
         requires(promises_something<tags_types_> && ...)
     {
 
-        offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t offset = hasher_(wanted) & offset_mask;
-        slot_ref_t slot;
+        offset_t const buckets = storage_.bucket_count();
+        if (!buckets) return upsert_result_t::no_slot_k;
+        offset_t const start = hasher_(wanted) & (storage_.slots_count - 1);
+        offset_t const start_bucket = start / hash_bucket_capacity_k;
+        hash_bucket_mask_t from_start = ~hash_bucket_mask_t {0} << (start % hash_bucket_capacity_k);
 
         // Bounded by the table itself. A caller promising @c assume_reserved_t promises a free slot
         // exists, and probing forever is the wrong way to discover the promise was false - it hangs
-        // with nothing to show, in a build where an assertion would be gone.
-        for (offset_t probes = 0; probes != storage_.slots_count; ++probes) {
-            unsafe_retarget(slot, offset);
-
-            if (slot.is_free() || slot.is_deleted()) {
-                bool const reused_tombstone = slot.is_deleted();
-                call(slot);
-                slot.mark_populated();
-                ++storage_.populated_count;
-                if (reused_tombstone) --storage_.deleted_count;
-                return upsert_result_t::inserted_k;
-            }
-
-            // A slot is "populated", definitely with a different key!
-            offset = (offset + 1) & offset_mask;
+        // with nothing to show, in a build where an assertion would be gone. The start bucket comes
+        // up twice, from the start onward first and below it once the scan wraps.
+        for (offset_t step = 0; step <= buckets; ++step, from_start = ~hash_bucket_mask_t {0}) {
+            offset_t const bucket = (start_bucket + step) & (buckets - 1);
+            // Free and deleted slots both lack the population bit, which a locked one carries.
+            hash_bucket_mask_t const open = ~storage_.headers[bucket].lanes.populations & from_start;
+            if (!open) continue;
+            slot_ref_t slot;
+            unsafe_retarget(slot, static_cast<offset_t>(bucket * hash_bucket_capacity_k + countr_zero(open)));
+            bool const reused_tombstone = slot.is_deleted();
+            call(slot);
+            slot.mark_populated();
+            ++storage_.populated_count;
+            if (reused_tombstone) --storage_.deleted_count;
+            return upsert_result_t::inserted_k;
         }
-
         return upsert_result_t::no_slot_k;
     }
 
@@ -652,60 +655,15 @@ class basic_hash_table {
         requires(promises_something<tags_types_> && ...)
     {
 
-        offset_t const offset_mask = storage_.slots_count - 1;
-        offset_t offset = hasher_(wanted) & offset_mask;
-
-        // The slot currently under inspection, and the first observed "deleted" slot.
-        slot_ref_t current, reusable;
-        bool did_find_deleted = false;
-
-        // Bounded by the table itself: a table with no free slot left has nothing to end the probe
-        // sequence on, and spinning is the wrong way to discover that - it hangs with nothing to
-        // show, in a build where an assertion would be gone.
-        for (offset_t probes = 0; probes != storage_.slots_count; ++probes) {
-            unsafe_retarget(current, offset);
-
-            if (current.is_populated()) {
-                // We have found a filled slot and must check for match.
-                if (equals_(current.key(), wanted)) {
-                    call_equal(current);
-                    return upsert_result_t::updated_k;
-                }
-                offset = (offset + 1) & offset_mask;
-                continue;
-            }
-
-            if (current.is_deleted()) {
-                // The first deleted slot is remembered, in case the probe never finds the key.
-                if (!did_find_deleted) {
-                    reusable = current;
-                    did_find_deleted = true;
-                }
-                offset = (offset + 1) & offset_mask;
-                continue;
-            }
-
-            // In case of a "free" slot:
-            // > If a deleted slot was seen earlier in this probe: reuse it, drop the free one.
-            // > Otherwise: take the free slot itself.
-            assert(current.is_free() && "A growable table is single-threaded, so no slot can be locked");
-            slot_ref_t &chosen = did_find_deleted ? reusable : current;
-            call_unused(chosen);
-            chosen.mark_populated();
-
-            ++storage_.populated_count;
-            if (did_find_deleted) --storage_.deleted_count;
-            return upsert_result_t::inserted_k;
-        }
-
-        // The walk came back to where it started without meeting a free slot. A tombstone seen along
-        // the way is still ours to take; without one there is nowhere left to store.
-        if (!did_find_deleted) return upsert_result_t::no_slot_k;
-        call_unused(reusable);
-        reusable.mark_populated();
-        ++storage_.populated_count;
-        --storage_.deleted_count;
-        return upsert_result_t::inserted_k;
+        bool found = false;
+        walk_probe_run_(*this, wanted, [&](slot_ref_t &equal_slot) noexcept {
+            call_equal(equal_slot);
+            found = true;
+            return walk_control_t::halt_k;
+        });
+        if (found) return upsert_result_t::updated_k;
+        // The first open slot is the run's first tombstone, or the free slot ending the run.
+        return probe_to_insert(wanted, call_unused);
     }
 
     /**
