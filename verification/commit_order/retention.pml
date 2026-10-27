@@ -5,28 +5,23 @@
  *  @brief The handover: a successor takes its own snapshot while the first reader still holds one,
  *      and the mark recomputed once the first retires stands at the successor's.
  *
- *  The successor joins once the commit landed, the first reader retires, and the pruner recomputes
- *  the mark with only the successor left. The head rotates out of a bucket whose floor has fallen
- *  behind the watermark, so a successor that joins after a commit lands pins that commit rather
- *  than the floor the claim it took over from was admitted at.
- *
- *  Sequential memory only: what it asserts is which bucket the head names, and under weaker memory
- *  a stale head read legitimately shares an older bucket, a conservative census that retains more
- *  than it must and never less.
+ *  The successor joins once the commit landed, the first reader retires, and the pruner
+ *  recomputes the mark with only the successor left. The head rotates out of a bucket whose
+ *  floor has fallen behind the watermark, so a successor that joins after a commit lands pins
+ *  that commit. Sequential memory only: under weaker memory a stale head read legitimately
+ *  shares an older bucket.
  *
  *  @verify pass sc
- *  @verify fail sc head_watermark=false: @c republish_mark_ seals the head bucket against the
- *      watermark; sealed against the computed mark, which equals that bucket's floor by
- *      construction wherever it holds the least one, the head never moves and the successor
- *      over-retains on the floor the first claim was admitted at
- *  @verify fail sc buckets=1: the head needs a second bucket to rotate into; with one, a reader
- *      handing over to the next pins the first one's floor for good, which is the configuration
- *      the `buckets_k >= 2` static assert refuses outright
+ *  @verify fail sc head_watermark=false: sealed against the computed mark, the head never moves and
+ *      the successor over-retains on the floor the first claim was admitted at
+ *  @verify fail sc buckets=1: with one, a reader handing over to the next pins the first
+ *      one's floor for good, which is the configuration the <tt>buckets_k >= 2</tt> static
+ *      assert refuses outright
  */
 #define thread_count 4
 #define location_count 9
 #define history_depth 8
-#include "protocol.pml"
+#include <commit_order/protocol.pml>
 
 proctype committer(byte t) {
     byte scanned;

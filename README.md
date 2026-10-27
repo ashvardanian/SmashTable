@@ -200,7 +200,7 @@ list(cache)                               # TypeError — not iterable
 The absent methods are absent from the type rather than refused at the call, so reaching for one fails the way a typo fails.
 Everything else is shared — the same key layouts, the same isolation and sharing choices, the same transactions — so one `st.transaction()` may span ordered and unordered stores together.
 
-### Choosing an Isolation Level
+### Isolation
 
 A container names what it promises a reader, and reports back what it actually delivers:
 
@@ -449,7 +449,7 @@ The one way out of the promise is `assume_reserved_t`, which writes in place aga
 
 Where this matters is secondary-index consistency inside a storage engine — an `id → slot` map, a `slot → vector` map and a deleted set that have to move together, and where "the crash left index B disagreeing with index A" is a corruption bug someone has already debugged.
 
-## Stores
+## Containers
 
 Terminology first, since both words are overloaded:
 
@@ -752,7 +752,7 @@ Order-dependent operations are absent by construction: there is no `range`, `era
 ## Testing
 
 ```bash
-cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSMASHTABLE_WERROR=ON
+cmake -B build -DCMAKE_BUILD_TYPE=Debug -DSMASHTABLE_BUILD_TEST=ON -DSMASHTABLE_WERROR=ON
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
@@ -778,7 +778,7 @@ SMASHTABLE_FILTER=transactional_consistency ./build/smashtable_test_avl_tree
 The benchmark is built on request and never run by CTest:
 
 ```bash
-cmake -B build_release -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_BUILD_BENCH=ON
+cmake -B build_release -DCMAKE_BUILD_TYPE=Release -DSMASHTABLE_BUILD_TEST=ON -DSMASHTABLE_BUILD_BENCH=ON
 cmake --build build_release
 SMASHTABLE_FILTER=layouts/u64 SMASHTABLE_TIME_LIMIT=200ms ./build_release/smashtable_bench_row_search
 ```

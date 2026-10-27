@@ -6,6 +6,7 @@ edition = "2021"
 authors = ["Ash Vardanian"]
 license = "Apache-2.0"
 repository = "https://github.com/ashvardanian/SmashTable"
+documentation = "https://docs.rs/smashtable"
 include = ["/Cargo.toml", "/build.rs", "/rust/**", "/CMakeLists.txt", "/VERSION", "/cmake/**", "/include/**"]
 # Cargo hands `DEP_SMASHTABLE_SOURCE` to dependents only from a package with a `links` key.
 links = "smashtable"

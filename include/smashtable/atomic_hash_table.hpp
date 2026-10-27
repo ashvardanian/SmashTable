@@ -247,8 +247,10 @@ class atomic_hash_table {
 
     /**
      *  @brief Inserts, or overwrites the value when the key is already present.
-     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the probe sequence was
-     *      free. A pinned table can genuinely fill up, so this reports rather than asserts.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k No slot along the probe sequence was free. A pinned table can
+     *    genuinely fill up, so this reports rather than asserts.
      */
     template <typename convertible_key_type_, typename convertible_mapped_type_>
     constexpr status_t emplace(convertible_key_type_ &&key, convertible_mapped_type_ &&value) noexcept {
@@ -266,7 +268,9 @@ class atomic_hash_table {
 
     /**
      *  @brief Inserts the key, doing nothing when an equal one is already present.
-     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the sequence was free.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k No slot along the sequence was free.
      */
     template <typename convertible_key_type_>
     constexpr status_t emplace(convertible_key_type_ &&key) noexcept {
@@ -281,8 +285,10 @@ class atomic_hash_table {
 
     /**
      *  @brief Overwrites the value of an existing key, doing nothing when it is absent.
-     *  @return @c success_k, or @c key_not_found_k when no equal key was there.
      *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No equal key was there.
      */
     template <typename comparable_key_type_, typename convertible_mapped_type_>
     constexpr status_t update(comparable_key_type_ &&key, convertible_mapped_type_ &&new_value) noexcept {
@@ -296,8 +302,10 @@ class atomic_hash_table {
 
     /**
      *  @brief Leaves a tombstone rather than freeing the slot, so probe sequences stay intact.
-     *  @return @c success_k, or @c key_not_found_k when no equal key was there.
      *  @note Contention has no status of its own: a taken slot is waited on rather than refused.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No equal key was there.
      */
     template <typename comparable_key_type_>
     constexpr status_t erase(comparable_key_type_ &&key) noexcept {
@@ -346,7 +354,6 @@ class atomic_hash_table {
 
     /**
      *  @brief Walks the probe sequence of @p wanted, building or overwriting the equal one.
-     *  @return @c success_k, or @c capacity_exhausted_k when no slot along the sequence was free.
      *
      *  The heap is never touched here, so the refusal names the exhausted probe rather than an
      *  allocation: a table saturated with tombstones needs a rehash, and no amount of free memory
@@ -357,6 +364,9 @@ class atomic_hash_table {
      *  would meet its own bit and spin on itself, and two writers holding one tombstone each would
      *  deadlock on the other's. Tombstones are therefore reclaimed only by a rehash, which is what
      *  pinning already asks a caller to hand the storage back for.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k No slot along the sequence was free.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_>
     constexpr status_t probe_to_upsert_(comparable_key_type_ &&wanted, callback_unused_type_ &&call_unused,

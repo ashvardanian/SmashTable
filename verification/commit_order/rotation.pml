@@ -6,23 +6,18 @@
  *      recycled under a pruner.
  *
  *  The roles of `census.pml` over two landed stamps, with the reader held back until the first
- *  rotation happened, since a reader racing that first rotation is what `census.pml` already
- *  explores and two commits raced from the start do not finish. It is the only scenario that
- *  reaches a recycled bucket, so it is where the join ceiling refuses a tag above the head just
- *  read and where a second opener from the same head value finds its bucket already tagged.
+ *  rotation happened. It is the only scenario that reaches a recycled bucket, so it is where the
+ *  join ceiling refuses a tag above the head just read and where a second opener from the same head
+ *  value finds its bucket already tagged.
  *
  *  @verify pass sc,rc11
- *  @verify pass sc,rc11 bucket_retag=false: @c open_next_bucket_ shuts a bucket to arrivals before
- *      it stores the floor; stored first, a joiner may be counted in a bucket whose floor is being
- *      replaced, yet no mark passes its snapshot, since it reads its stamp after joining while the
- *      opener's floor was read before that, and the release sequence over the watermark keeps the
- *      floor at or below the snapshot either way. What the retag buys is a floor that never moves
- *      under a member, a shape rather than a value, which no assertion here names
+ *  @verify pass sc,rc11 bucket_retag=false: what the retag buys is a floor that never moves under a
+ *      member, a shape rather than a value, which no assertion here names
  */
 #define thread_count 3
 #define location_count 9
 #define history_depth 9
-#include "protocol.pml"
+#include <commit_order/protocol.pml>
 
 /** The first commit rotates the head out of the bucket it opened at, the second recycles the bucket
  *  the reader may have joined. */

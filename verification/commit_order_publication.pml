@@ -6,51 +6,37 @@
  *      committer for a reader to resolve at its snapshot.
  *
  *  The stamps @c begin_commit draws from @c commits_ and the ring of marks @c end_commit lands
- *  into and walks the watermark through, from `include/smashtable/shared.hpp` under the steps of
- *  `commit_order_steps.pml`, with no census at all: the buckets, the floors and the mark are
- *  `commit_order/`'s, whose words leave no room for a version per committer.
+ *  into and walks the watermark through, with no census at all. Two committers, a reader and the
+ *  auditor. A committer draws a stamp, writes its version, and lands the stamp. Two committers are
+ *  the least that let one land before the other, which is what the ring asks for, and three are
+ *  what overflow a ring of two; @c committers is that count.
  *
- *  Two committers, a reader and the auditor. A committer draws a stamp, writes its version, and
- *  lands the stamp. The reader takes its snapshot as the watermark's read-modify-write, which with
- *  no census is the whole of @c take_snapshot. The auditor reads no word and plays no thread: it
- *  waits for every commit to finish and reads the two counters' newest writes.
- *
- *  The watermark is monotone and never covers a stamp whose mark is absent, so every version a
- *  snapshot covers is there to be read, which the reader asserts per committer. Once every commit
- *  finished the watermark names every stamp drawn, so a walk that stopped with a mark behind it is
- *  a lost mark, which the auditor catches.
- *
- *  Two committers are the least that let one land before the other, which is what the ring asks
- *  for, and three are what overflow a ring of two; @c committers is that count.
+ *  - The watermark is monotone and never covers a stamp whose mark is absent.
+ *  - Every version a snapshot covers is there to be read.
+ *  - Once every commit finished the watermark names every stamp drawn.
  *
  *  @verify pass sc,rc11
  *  @verify pass sc committers=3
- *  @verify fail rc11 done_order=order_relaxed: @c end_commit stores the landed mark with release;
- *      relaxed, the committer that walks past another's mark carries none of that committer's
- *      version to the reader, which reads a version its snapshot covers unwritten
+ *  @verify fail rc11 done_order=order_relaxed: relaxed, the committer that walks past another's
+ *      mark carries none of that committer's version to the reader, which reads a version its
+ *      snapshot covers unwritten
  *  @verify pass sc done_order=order_relaxed: sequential consistency carries every write without
  *      an order, so only weak memory shows the missing release
- *  @verify fail rc11 advance_read_modify_write=false: @c end_commit reads the watermark through a
- *      read-modify-write before the walk; with a plain acquire load, two finishers pass each
- *      other's marks, and the watermark stops short of a stamp drawn
+ *  @verify fail rc11 advance_read_modify_write=false: with a plain acquire load, two finishers
+ *      pass each other's marks, and the watermark stops short of a stamp drawn
  *  @verify pass sc advance_read_modify_write=false: sequential consistency hides the store
  *      buffering the plain load lets through
- *  @verify fail sc committers=3 ring_check=false: @c end_commit waits until the watermark passed
- *      the stamp a ring slot holds before reusing it; without the wait, a third committer
- *      overwrites the mark of a stamp the watermark has not consumed, which @c land_stamp asserts
- *      against as it stores. The shape is an interleaving rather than a reordering, so sequential
- *      consistency is where it is cheapest, and three committers under the views do not finish
- *      inside the memory this suite gives a model
- *  @verify fail rc11 walk_order=order_relaxed: the walk loads each next slot's mark with acquire;
- *      relaxed, the committer that walks past another's mark carries none of that committer's
- *      version to the reader, which reads a version its snapshot covers unwritten
- *  @verify stuck sc committers=3 recheck=false: the third committer parks on the watermark until
- *      the ring has room for it, re-reading the watermark after arming; without the re-check, the
- *      walks that make the room land and wake between its load and its arming, and it sleeps on a
- *      ring that already has room
- *  @verify stuck sc committers=3 watermark_notify=false: @c end_commit wakes the parked
- *      committers once its walk moved the watermark, since a store wakes nobody; without the
- *      wake, the third committer parked for ring room sleeps through the walks that made it
+ *  @verify fail sc committers=3 ring_check=false: without the wait, a third committer overwrites
+ *      the mark of a stamp the watermark has not consumed. The shape is an interleaving rather than
+ *      a reordering, so sequential consistency is where it is cheapest, and three committers under
+ *      the views do not finish inside the memory this suite gives a model
+ *  @verify fail rc11 walk_order=order_relaxed: relaxed, the committer that walks past another's
+ *      mark carries none of that committer's version to the reader, which reads a version its
+ *      snapshot covers unwritten
+ *  @verify stuck sc committers=3 recheck=false: without the re-check, the walks that make the room
+ *      land and wake between its load and its arming, and it sleeps on a ring that already has room
+ *  @verify stuck sc committers=3 watermark_notify=false: without the wake, the third committer
+ *      parked for ring room sleeps through the walks that made it
  */
 #ifndef committers
 #define committers 2
@@ -62,8 +48,8 @@
 #define thread_count (committers + 1)
 #define location_count (2 + ring + committers)
 #define history_depth (2 * committers + 2)
-#include "weak_memory.pml"
-#include "monitor_wait.pml"
+#include <weak_memory.pml>
+#include <monitor_wait.pml>
 
 /** The words: the stamp counter, the watermark, the ring of marks, and a version per committer. */
 #define commits 0
@@ -71,7 +57,7 @@
 #define landed_at(slot) (2 + (slot))
 #define version(committer) (2 + ring + (committer))
 
-#include "commit_order_steps.pml"
+#include <commit_order_steps.pml>
 
 byte finished;            // the committers that landed their stamp
 int stamp_of[committers]; // each committer's stamp, once drawn

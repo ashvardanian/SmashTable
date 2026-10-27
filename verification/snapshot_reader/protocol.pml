@@ -7,37 +7,16 @@
  *
  *  The claim @c take_snapshot joins the census with, the reads it answers at that stamp under the
  *  partition's shared lock, the mark @c republish_mark_ computes from the watermark and the
- *  occupied buckets, and the prune that frees everything that mark covers. Readers are counted
- *  per bucket here, never listed one by one, and a claim is a bucket index and a stamp rather
- *  than a pointer.
+ *  occupied buckets, and the prune that frees everything that mark covers. A commit prunes the run
+ *  under the lock down to the mark its own landing computed. That mark is the freshest such a read
+ *  can be, which is why the cached @c low_water_mark_ word is left out.
  *
- *  A commit draws its stamp and lands it with no partition lock held, which admits every
- *  interleaving the header's callers do, joins its version to the key's run under the lock, lands
- *  the stamp and walks the watermark, then prunes the run under the lock down to the mark its own
- *  landing computed. That mark is the freshest such a read can be, which is why the cached
- *  @c low_water_mark_ word is left out; a commit whose walk moved nothing prunes at zero
- *  and frees nothing, which is what a stale read of that word would give.
- *
- *  Every read resolves the key to the version its stamp names, and that version is still there,
- *  because the bucket the claim joined carries a floor at or below that stamp and no mark passes
- *  an occupied bucket's floor. A claim retires from a bucket that still counts it, which
- *  @c retire_snapshot asserts on the count its own decrement reads back, so a bucket's live count
- *  never borrows from its tag.
- *
- *  The words, all nine of them: @c partition_mutex 0, @c commits 1, @c published_stamp 2,
- *  `landed_at(0)` 3, @c head 4, `members(0..1)` 5 and 6, and `floors(0..1)` 7 and 8. One ring slot
- *  is what two buckets leave room for, so commits publish in stamp order here and
- *  `commit_order_publication.pml` is where a deeper ring is walked. Left out: the
- *  @c low_water_mark_ word, as above; @c generation_, which dates transactions rather than their
- *  visibility; and the key's version run, which the partition's lock orders by itself and which
- *  is ghost state rather than a word.
- *
- *  Every scenario beside this file defines its shape and @c committers, the number of commits that
- *  write the key behind the reader.
+ *  - Every read resolves the key to the version its stamp names, and that version is still there.
+ *  - A claim retires from a bucket that still counts it, which @c retire_snapshot asserts.
  */
-#include "../weak_memory.pml"
-#include "../monitor_wait.pml"
-#include "../spin_shared_mutex.pml"
+#include <weak_memory.pml>
+#include <monitor_wait.pml>
+#include <spin_shared_mutex.pml>
 
 #if committers < 1 || committers > 2
 #error "committers is 1 or 2"
@@ -67,7 +46,7 @@
 #define shared_claim true
 #endif
 
-#include "../commit_order_steps.pml"
+#include <commit_order_steps.pml>
 
 /** The key's version run is ordered by the partition's lock alone, so it is ghost state rather
  *  than words: one version per committer beside the one every snapshot starts on. */

@@ -220,7 +220,7 @@ struct serial_row_kit_t {
      *      counting @p sampled as the zeroth: the scan an Elias-Fano select runs from its sample.
      *
      *  @p remaining must be positive. A bit @p words does not hold, which only a corrupted sequence
-     *  asks for, answers `words.size() * 64`, past every real bit, rather than reading past the
+     *  asks for, answers <tt>words.size() * 64</tt>, past every real bit, rather than reading past the
      *  span. Kits scanning several words per instruction finish the span's last few here.
      */
     [[nodiscard]] static std::uint64_t select_set_bit(std::span<std::uint64_t const> words, std::uint64_t sampled,

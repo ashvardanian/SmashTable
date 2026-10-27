@@ -9,8 +9,8 @@
  *
  *  Every value splits at @c low_bits, the floor of log2(universe / count). The low parts sit in an
  *  @c immutable_packed_array based at zero, @c low_bits each. The high parts are stored in unary:
- *  value @c i sets bit `(value >> low_bits) + i` of a vector that never exceeds
- *  `count + (universe >> low_bits) + 1` bits, so the position of the @c i -th set bit, less @c i,
+ *  value @c i sets bit <tt>(value >> low_bits) + i</tt> of a vector that never exceeds
+ *  <tt>count + (universe >> low_bits) + 1</tt> bits, so the position of the @c i -th set bit, less @c i,
  *  is the high part of value @c i.
  *
  *  @section immutable_elias_fano_select Select
@@ -94,10 +94,16 @@ class immutable_elias_fano {
      *  @brief Builds the sequence of @p count values, none above @p universe, pulled in order
      *      through @p fill, so no caller ever holds them all at once.
      *
-     *  @param[in] fill Answers `expected<std::span<value_t const>>` for a position, holding the
+     *  @param[in] count Number of values in the sequence.
+     *  @param[in] universe Largest value any of them may take.
+     *  @param[in] fill Answers <tt>expected<std::span<value_t const>></tt> for a position, holding the
      *      values from that position on - at least one while any remain, possibly all of them.
-     *  @return The sequence, the first failure @p fill reports, @c invalid_argument_k when the
-     *      values decrease, pass @p universe or fall short of @p count, or @c out_of_memory_heap_k.
+     *  @param[in] allocator The allocator instance to use.
+     *  @return The sequence.
+     *
+     *  @par Statuses:
+     *  - The first failure @p fill reports.
+     *  - @c invalid_argument_k The values decrease, pass @p universe or fall short of @p count.
      */
     template <typename fill_type_>
     static expected<immutable_elias_fano> make(std::size_t count, value_t universe, fill_type_ &&fill,

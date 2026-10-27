@@ -6,13 +6,13 @@
  *      and publishes on its own, one store at a time.
  *
  *  The in-turn branch validates and publishes under a lock it never drops, so there is no window
- *  for a lost update here. What it does promise is that a group whose commit tore ends pending, so
- *  a second commit is refused as not permitted, which the auditor asserts.
+ *  for a lost update here.
+ *
+ *  - A group whose commit tore ends pending, so a second commit is refused as not permitted.
  *
  *  @verify pass sc,rc11
  *  @verify fail sc whole_across_stores=true: a later participant's refusal tears a group that
- *      commits in turn, the tear the docs admit; asserting all or none here as well finds a group
- *      that published one store and not the other
+ *      commits in turn, the tear the docs admit
  */
 #define thread_count 3
 #define location_count 4
@@ -20,7 +20,7 @@
 #define split_commit false
 #define shared_clock false
 #define groups_write false
-#include "protocol.pml"
+#include <transaction_group/protocol.pml>
 
 proctype group(byte t) { stage_and_commit(t) }
 

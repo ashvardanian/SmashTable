@@ -399,8 +399,11 @@ class basic_hash_table {
      *
      *  @tparam tags_types_ Markers for special acceleration: @c assume_unique_t skips the presence
      *      probe, so growth is decided without one.
-     *  @return @c unchanged_k when nothing had to move, @c reallocated_k after a growth, and
-     *      @c failed_k when a growth the table genuinely needed was refused.
+     *
+     *  @par Statuses:
+     *  - @c unchanged_k Nothing had to move.
+     *  - @c reallocated_k After a growth.
+     *  - @c failed_k A growth the table genuinely needed was refused.
      */
     template <typename comparable_key_type_, typename... tags_types_>
     reserve_result_t reserve_for_absent_key_(comparable_key_type_ const &wanted, tags_types_...) noexcept {
@@ -433,19 +436,13 @@ class basic_hash_table {
     basic_hash_table &operator=(basic_hash_table const &) noexcept = delete;
     basic_hash_table(offset_t, hasher_t = {}, equals_t = {}, allocator_t = {}) noexcept = delete;
 
-    /**
-     *  @brief Most commonly used @b constructor-like interface, sized by the planned element count.
-     *  @return An empty-status @c expected if the allocation has failed.
-     */
+    /** Most commonly used @b constructor-like interface, sized by the planned element count. */
     static expected<basic_hash_table> make(offset_t planned_elements, hasher_t hasher = {}, equals_t equals = {},
                                            allocator_t allocator = {}) noexcept {
         return make(hash_slots_count_t {planned_elements}, std::move(hasher), std::move(equals), std::move(allocator));
     }
 
-    /**
-     *  @brief Most commonly used @b constructor-like interface, sized by the exact slot count.
-     *  @return An empty-status @c expected if the allocation has failed.
-     */
+    /** Most commonly used @b constructor-like interface, sized by the exact slot count. */
     static expected<basic_hash_table> make(hash_slots_count_t slots, hasher_t hasher = {}, equals_t equals = {},
                                            allocator_t allocator = {}) noexcept {
         basic_hash_table table(slots, std::move(hasher), std::move(equals), std::move(allocator));
@@ -455,10 +452,13 @@ class basic_hash_table {
 
     /**
      *  @brief Builds a table pre-sized for [ @p begin, @p end ) and fills it.
-     *  @return A table holding the whole range, or the reason it could not be built.
+     *  @return A table holding the whole range.
      *
      *  A refusal leaves nothing allocated: the table is new and empty, so there is no earlier state
      *  for a half-filled one to be told apart from.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k The bounded probe found no slot for an element.
      */
     template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_>
     static expected<basic_hash_table> make(begin_iterator_type_ begin, end_iterator_type_ end, hasher_t hasher = {},
@@ -646,7 +646,10 @@ class basic_hash_table {
      *  @param[in] call_unused A callback receiving a @c slot_ref_t to UN-initialized memory, where
      *      an element should be built.
      *  @param[in] call_equal A callback receiving a @c slot_ref_t to the matching slot's object.
-     *  @return What the probe managed to do; @c no_slot_k when every slot holds a different key.
+     *  @return What the probe managed to do.
+     *
+     *  @par Statuses:
+     *  - @c no_slot_k Every slot holds a different key.
      */
     template <typename comparable_key_type_, typename callback_unused_type_, typename callback_equal_type_,
               typename... tags_types_>
@@ -890,6 +893,8 @@ class basic_hash_table {
      *      performant than @c insert, as it avoids temporary object construction.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/emplace
      *
+     *  @param[in] key The key to insert.
+     *  @param[in] value The mapped value to store under @p key.
      *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids reserving more
      *      memory, @c assume_unique_t skips equality comparisons.
      */
@@ -951,6 +956,7 @@ class basic_hash_table {
      *      performant than @c insert, as it avoids temporary object construction.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_set/emplace
      *
+     *  @param[in] key The key to insert.
      *  @param[in] tags Markers for special acceleration: @c assume_reserved_t avoids reserving more
      *      memory, @c assume_unique_t skips equality comparisons.
      */
@@ -1027,13 +1033,17 @@ class basic_hash_table {
      *
      *  @tparam tags_types_ @c assume_reserved_t asserts the room is already secured, which a caller
      *      who has reserved for the range may pass to skip both the reservation and the staging.
-     *  @return The first refusal, or @c success_k for the whole range.
      *
      *  All-or-nothing over this table from the first element on. Growth is secured before any slot
      *  is written, and after it a bounded probe cannot run out: @c reserve_more leaves at least a
      *  quarter of the slots free, and both probes walk every slot before giving up. An element that
      *  can refuse its own copy is duplicated in full before the first of them lands, because a slot
      *  once written cannot be un-written without leaving a tombstone that moves later probes.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k No slot was free, which only a false @c assume_reserved_t promise
+     *    provokes.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_,
               typename... tags_types_>
@@ -1046,9 +1056,13 @@ class basic_hash_table {
     /**
      *  @brief Inserts every element of [ @p begin, @p end ) whose key is free, leaving each
      *      incumbent key alone.
-     *  @return @c success_k however many keys were already here, or the first refusal.
      *
      *  All-or-nothing over this table from the first element on, on the same terms as @c upsert.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k No slot was free, which only a false @c assume_reserved_t promise
+     *    provokes.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_,
               typename... tags_types_>
@@ -1061,10 +1075,15 @@ class basic_hash_table {
     /**
      *  @brief Inserts every element of [ @p begin, @p end ), refusing the batch when a key is
      *      already present here.
-     *  @return @c key_already_exists_k when any key is taken, or the first refusal while staging.
      *
      *  All-or-nothing over this table from the first element on, a taken key included: every key is
      *  checked against the table before the first of them is written.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key is already here or repeats inside the range.
+     *  - @c capacity_exhausted_k No slot was free, which only a false @c assume_reserved_t promise
+     *    provokes.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <multipass_iterator begin_iterator_type_, iterator_sentinel<begin_iterator_type_> end_iterator_type_,
               typename... tags_types_>
@@ -1090,11 +1109,11 @@ class basic_hash_table {
      *      place, which is what a store layering its own versioning on top of the table needs.
      *
      *  @param[in] element Element to file, moved into the table.
-     *  @return @c out_of_memory_heap_k when a @b new key needed a larger table and the allocator
-     *      refused, @c capacity_exhausted_k when the bounded probe found no slot for it and only a
-     *      rehash can make one, and @c success_k otherwise.
      *
      *  Overwriting a key already stored needs no room, so it never asks the allocator for any.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k The bounded probe found no slot, and only a rehash can make one.
      */
     template <typename convertible_element_type_>
     status_t upsert(convertible_element_type_ &&element) noexcept {
@@ -1126,7 +1145,7 @@ class basic_hash_table {
 
     /**
      *  @brief An interface similar to @c std::unordered_map::merge, banned in favor of a manual
-     *      `insert(begin, end)`.
+     *      <tt>insert(begin, end)</tt>.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/merge
      */
     template <typename other_type_>
@@ -1134,7 +1153,12 @@ class basic_hash_table {
 
     /**
      *  @brief Writes every element of [ @p begin, @p end ) into room this table already holds.
-     *  @return The first refusal, which only a caller that did not secure the room can provoke.
+     *
+     *  @par Statuses:
+     *  - @c out_of_memory_heap_k The table could not grow, which only a caller that did not secure
+     *    the room and passed no @c assume_reserved_t can provoke.
+     *  - @c capacity_exhausted_k The bounded probe found no slot, which only a caller that did not
+     *    secure the room can provoke.
      */
     template <incumbent_policy_t policy_, readable_iterator begin_iterator_type_,
               iterator_sentinel<begin_iterator_type_> end_iterator_type_, typename... tags_types_>
@@ -1155,7 +1179,11 @@ class basic_hash_table {
      *  @brief Stages [ @p begin, @p end ) where an element's duplication can refuse, then writes
      *      each one in.
      *  @tparam policy_ What a key already here does to the element arriving over it.
-     *  @return The first refusal, or @c success_k for the whole range.
+     *
+     *  @par Statuses:
+     *  - @c capacity_exhausted_k No slot was free, which only a false @c assume_reserved_t promise
+     *    provokes.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <incumbent_policy_t policy_, multipass_iterator begin_iterator_type_,
               iterator_sentinel<begin_iterator_type_> end_iterator_type_, typename... tags_types_>
@@ -1213,6 +1241,7 @@ class basic_hash_table {
      *      iterator, use the faster overload that avoids the search entirely.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/erase
      *
+     *  @param[in] key The key to remove.
      *  @param[in] tags Markers for special acceleration: @c assume_reserved_t assumes non-empty.
      *  @return True if the wanted key was found.
      *
@@ -1255,7 +1284,10 @@ class basic_hash_table {
     /**
      *  @brief Grows the table to fit that many elements, if the current capacity is short.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/reserve
-     *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
+     *  @return Whether the layout moved, invalidating older iterators.
+     *
+     *  @par Statuses:
+     *  - @c failed_k The larger buffer could not be allocated, leaving this table untouched.
      */
     reserve_result_t reserve(offset_t planned_elements) noexcept {
         if (planned_elements <= storage_.growth_threshold) return reserve_result_t::unchanged_k;
@@ -1264,7 +1296,10 @@ class basic_hash_table {
 
     /**
      *  @brief The recommended entry point for bulk insertions, sized for what is present already.
-     *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
+     *  @return Whether the layout moved, invalidating older iterators.
+     *
+     *  @par Statuses:
+     *  - @c failed_k The larger buffer could not be allocated, leaving this table untouched.
      */
     reserve_result_t reserve_more(offset_t new_elements) noexcept {
         return reserve(new_elements + storage_.populated_count + storage_.deleted_count);
@@ -1273,8 +1308,10 @@ class basic_hash_table {
     /**
      *  @brief Exports the data into a fresh table of the requested size and swaps the contents.
      *      Also used to clean the tombstones left behind by deletions.
-     *  @return @c failed_k when the request cannot hold what is stored, or the new buffer could not
-     *      be allocated, leaving this table untouched either way.
+     *
+     *  @par Statuses:
+     *  - @c failed_k The request cannot hold what is stored, or the new buffer could not be
+     *    allocated, leaving this table untouched either way.
      */
     reserve_result_t force_resize(hash_slots_count_t slots_count) noexcept {
         if (slots_count.raw < size()) return reserve_result_t::failed_k;
@@ -1323,9 +1360,12 @@ class basic_hash_table {
     /**
      *  @brief Sets the number of buckets to the desired value, rehashing in the process.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/rehash
-     *  @return Whether the layout moved, invalidating older iterators, or the allocation failed.
+     *  @return Whether the layout moved, invalidating older iterators.
      *  @note A request too small for what is stored is raised to what the current size needs, so
      *      @c rehash(0) compacts rather than emptying the table into a layout with no slots at all.
+     *
+     *  @par Statuses:
+     *  - @c failed_k The new buffer could not be allocated, leaving this table untouched.
      */
     reserve_result_t rehash(offset_t count_buckets) noexcept {
         hash_slots_count_t const wanted = hash_slots_count_t::from_slots(count_buckets * hash_bucket_capacity_k);

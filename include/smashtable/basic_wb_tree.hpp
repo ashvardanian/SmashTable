@@ -73,7 +73,7 @@ struct no_augmented_count_t {};
  *
  *  @tparam value_type_ Type of elements stored in nodes.
  *  @tparam comparator_type_ Comparator defining ordering. For heterogeneous lookups, define:
- *      `using is_transparent = void;` inside the comparator.
+ *      <tt>using is_transparent = void;</tt> inside the comparator.
  *
  *  @section basic_wb_tree_rebalancing_parameters Rebalancing Parameters
  *
@@ -440,9 +440,14 @@ class basic_wb_node
 
     /**
      *  @brief Builds a balanced tree from sorted range [ @p first, @p first + @p count ) in O(n).
-     *  @param[inout] allocator Hands back a raw node, or @c nullptr when it cannot.
-     *  @return What was built and why the build stopped.
+     *  @param[in] first Beginning of the sorted range.
+     *  @param[in] count Number of elements in the range.
+     *  @param[in,out] allocator Hands back a raw node, or @c nullptr when it cannot.
+     *  @return What was built.
      *  @warning An unsorted range builds a tree whose structure is undefined.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <multipass_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
@@ -484,13 +489,13 @@ class basic_wb_node
     /**
      *  @brief Single right rotation.
      *
-     *  @code{.cpp}
+     *  @verbatim
      *      y              x
      *     / \            / \
      *    x   C    =>    A   y
      *   / \                / \
      *  A   B              B   C
-     *  @endcode
+     *  @endverbatim
      */
     static node_t *rotate_right(node_t *y) noexcept {
         node_t *x = y->left;
@@ -508,13 +513,13 @@ class basic_wb_node
     /**
      *  @brief Single left rotation.
      *
-     *  @code{.cpp}
+     *  @verbatim
      *    x                y
      *   / \              / \
      *  A   y      =>    x   C
      *     / \          / \
      *    B   C        A   B
-     *  @endcode
+     *  @endverbatim
      */
     static node_t *rotate_left(node_t *x) noexcept {
         node_t *y = x->right;
@@ -646,7 +651,9 @@ class basic_wb_node
 
     /**
      *  @brief Searches for a matching ancestor and extracts it out.
+     *  @param[in] node Root of subtree.
      *  @param[in] comparable Any key comparable with stored entries.
+     *  @param[in] comparator Comparator for element comparison.
      */
     template <typename comparable_type_>
     static extract_result_t extract(node_t *node, comparable_type_ &&comparable,
@@ -749,7 +756,7 @@ class basic_wb_node
      *  @param[in] node Root of subtree.
      *  @param[in] payload Entry to insert or assign (moved).
      *  @param[in] comparator Comparator for element comparison.
-     *  @param[inout] allocator Hands back a raw node, or @c nullptr when it cannot.
+     *  @param[in,out] allocator Hands back a raw node, or @c nullptr when it cannot.
      *  @return The new root, the node the key lives in, and whether it was made or matched.
      */
     template <allocator_of<node_t> node_allocator_type_>
@@ -1091,7 +1098,10 @@ class basic_wb_tree {
     /**
      *  @brief Inserts an element only when its key is absent, leaving any incumbent alone.
      *  @param[in] payload Entry to insert, moved into the tree only when a node is made for it.
-     *  @return The node the key lives in, and whether it was made, matched, or refused.
+     *  @return The node the key lives in, and whether it was made or matched.
+     *
+     *  @par Statuses:
+     *  - @c refused_k The allocator refused the node, so nothing was stored.
      */
     upserted_node_t insert(value_t &&payload) noexcept {
         // Probing first keeps @p payload intact when the key is already present - the rebalancing
@@ -1105,11 +1115,14 @@ class basic_wb_tree {
     }
 
     /**
-     *  @brief Atomically inserts or updates an element. Always succeeds (unless OOM). Overwrites
-     *      the existing element if key exists. Matches @c std::map::insert_or_assign() semantics.
+     *  @brief Atomically inserts or updates an element. Overwrites the existing element if key
+     *      exists. Matches @c std::map::insert_or_assign() semantics.
      *
      *  @param[in] comparable Entry to insert or assign (moved into the tree).
      *  @return The node the entry now lives in, and whether it was made or matched.
+     *
+     *  @par Statuses:
+     *  - @c refused_k The key is absent and the allocator refused its node, so nothing was stored.
      */
     template <typename comparable_type_>
     upserted_node_t insert_or_assign(comparable_type_ &&comparable) noexcept {
@@ -1123,6 +1136,9 @@ class basic_wb_tree {
      *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an element.
      *  @param[in] comparable Entry to insert or assign (moved into the tree).
      *  @return The node the entry now lives in, and whether it was made or matched.
+     *
+     *  @par Statuses:
+     *  - @c refused_k The key is absent and the allocator refused its node, so nothing was stored.
      */
     template <typename comparable_type_>
     upserted_node_t upsert(comparable_type_ &&comparable) noexcept {
@@ -1399,7 +1415,7 @@ class basic_wb_tree {
      *  Every node travels across by relinking, so nothing is allocated and nothing can be refused,
      *  which is what lets a batch modifier promise all-or-nothing once its staging tree is built.
      *
-     *  @param[inout] other Tree to merge from, left empty.
+     *  @param[in,out] other Tree to merge from, left empty.
      *  @note Complexity: O(m log n) where m is @p other 's size and n is this tree's.
      */
     void merge_with_upsert(wb_tree_t &other) noexcept {
@@ -1528,7 +1544,13 @@ class basic_wb_tree {
         return success_k;
     }
 
-    /** Copies out the element equal to @p comparable, or reports @c key_not_found_k. */
+    /**
+     *  @brief Copies out the element equal to @p comparable.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is equal to @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_>
     expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = find(std::forward<comparable_type_>(comparable));
@@ -1536,7 +1558,13 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
-    /** Copies out the first element not less than @p comparable. */
+    /**
+     *  @brief Copies out the first element not less than @p comparable.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k Every element is less than @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_>
     expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = lower_bound(std::forward<comparable_type_>(comparable));
@@ -1544,7 +1572,13 @@ class basic_wb_tree {
         return copy_safely(*iterator);
     }
 
-    /** Copies out the first element greater than @p comparable. */
+    /**
+     *  @brief Copies out the first element greater than @p comparable.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is greater than @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_>
     expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         auto iterator = upper_bound(std::forward<comparable_type_>(comparable));
@@ -1590,7 +1624,11 @@ class basic_wb_tree {
     /**
      *  @brief Fills @p staged with [ @p first, @p last ), duplicating elements outside the tree.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
-     *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key repeats inside an unsorted range under @p policy_ refusing
+     *    the newcomer.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <incumbent_policy_t policy_, readable_iterator input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(wb_tree_t &staged, input_iterator_type_ first, input_iterator_type_ last,
@@ -1627,11 +1665,13 @@ class basic_wb_tree {
     /**
      *  @brief Inserts [ @p first, @p last ) where the key is free, leaving incumbents alone.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
-     *  @return @c success_k however many keys were already here, or the first refusal.
      *
      *  All-or-nothing over this tree from the first element on: a node the allocator refuses and an
      *  element refusing its own copy are both met while the staging tree is built, and the merge
      *  absorbing it only relinks nodes.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -1652,10 +1692,13 @@ class basic_wb_tree {
     /**
      *  @brief Inserts [ @p first, @p last ), refusing the batch on any key already here.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
-     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
      *
      *  All-or-nothing over this tree from the first element on, a taken key included: the whole
      *  range is staged and checked before the merge absorbing it relinks a single node.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key repeats inside an unsorted range or is already in this tree.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -1678,10 +1721,12 @@ class basic_wb_tree {
     /**
      *  @brief Writes every element of [ @p first, @p last ), overwriting the keys already here.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
-     *  @return The first refusal from the build, or @c success_k for the whole range.
      *
      *  All-or-nothing over this tree from the first element on; a key already here takes the
      *  newcomer's entry during the merge, which moves it rather than copying it.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -1911,10 +1956,9 @@ class basic_wb_tree {
      *      next iterator and a status code for error reporting.
      *
      *  @param[in] position Iterator to element to erase. Must be valid and dereferenceable.
-     *  @return Contains iterator to element following the erased element and operation status.
+     *  @return Contains iterator to element following the erased element.
      *
-     *  @note If @p position is end(), returns {end(), success} without modifying the tree. If erase
-     *      fails (e.g., tree corruption), returns {end(), error}.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      */
     erase_result_t erase(iterator position) noexcept {
         if (position == end()) return {end(), {success_k}};
@@ -1929,10 +1973,9 @@ class basic_wb_tree {
      *      the next iterator and a status code for error reporting.
      *
      *  @param[in] position Const iterator to element to erase. Must be valid and dereferenceable.
-     *  @return Contains iterator to element following the erased element and operation status.
+     *  @return Contains iterator to element following the erased element.
      *
-     *  @note If @p position is end(), returns {end(), success} without modifying the tree. If erase
-     *      fails (e.g., tree corruption), returns {end(), error}.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      */
     erase_result_t erase(const_iterator position) noexcept {
         return erase(iterator(const_cast<basic_wb_tree *>(this), const_cast<node_t *>(position.node_)));
@@ -1945,7 +1988,7 @@ class basic_wb_tree {
      *
      *  @param[in] first Iterator to first element in range.
      *  @param[in] last Iterator to past-the-end of range.
-     *  @return Contains iterator following the last erased element and operation status.
+     *  @return Contains iterator following the last erased element.
      *
      *  @note If first == last, no elements are erased and returns {last, success}.
      */

@@ -72,7 +72,7 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  @section reference_store_api_overview API Overview
  *
  *  - All lookups are heterogeneous: you can provide any type comparable to @p value_type_. Your
- *    comparator must define `using is_transparent = void;` to enable it, as @c std::map and
+ *    comparator must define <tt>using is_transparent = void;</tt> to enable it, as @c std::map and
  *    @c std::set both do.
  *  - No iterators are provided to keep the implementation simple and avoid the complexity of
  *    maintaining persistent iterator validity across transactions and modifications.
@@ -98,13 +98,13 @@ status_t invoke_safely(callable_type_ &&callable) noexcept {
  *  @section reference_store_element_type Element Type
  *
  *  - Nothrow default-constructible and nothrow move constructible/assignable, required
- *  - For watch operations: Nothrow copy-constructible OR provides `.copy() const->expected<T>` for
+ *  - For watch operations: Nothrow copy-constructible OR provides <tt>.copy() const->expected<T></tt> for
  *    safe copying of identifiers.
  *
  *  @section reference_store_comparator_type Comparator Type
  *
- *  - Must define `bool operator()(value_type const &, value_type const &) const`
- *  - For heterogeneous lookups: add `using is_transparent = void;` and `using value_type = ...;`,
+ *  - Must define <tt>bool operator()(value_type const &, value_type const &) const</tt>
+ *  - For heterogeneous lookups: add <tt>using is_transparent = void;</tt> and <tt>using value_type = ...;</tt>,
  *    optional but recommended.
  *
  *  @section reference_store_allocator_type Allocator Type
@@ -249,7 +249,7 @@ class reference_store {
          *  @brief Reports the first element of the merged order, staged writes taking precedence.
          *
          *  @param[in] internal_iterator Where this transaction's bound landed in the change set.
-         *  @param[in] probe_store Invoked as `probe_store(previous, on_found, on_missing)`, with a
+         *  @param[in] probe_store Invoked as <tt>probe_store(previous, on_found, on_missing)</tt>, with a
          *      null @p previous asking for the caller's own bound in the store and a non-null one
          *      asking for the first element strictly after it. Must be @c noexcept.
          *  @note A store element this transaction erased is not skipped by re-asking for the same
@@ -417,7 +417,11 @@ class reference_store {
          *  @param[in] callback_inserted Invoked with the staged element. Must be @c noexcept.
          *  @param[in] callback_existing Invoked with the element already under the key, which keeps
          *      its value. Must be @c noexcept.
-         *  @return Success, @c key_already_exists_k for a taken key, or an allocation failure.
+         *
+         *  @par Statuses:
+         *  - @c key_already_exists_k This transaction already sees the key.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
         status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -441,7 +445,10 @@ class reference_store {
          *  @param[in] callback_inserted Invoked with the staged element. Must be @c noexcept.
          *  @param[in] callback_existing Invoked with the element already under the key, which keeps
          *      its value. Must be @c noexcept.
-         *  @return Success even when nothing was staged, or an allocation failure.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The key is free and the transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
         status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -466,7 +473,10 @@ class reference_store {
          *      be @c noexcept.
          *  @param[in] callback_existing Invoked with the element about to be replaced. Must be
          *      @c noexcept.
-         *  @return Success or an allocation failure.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
         status_t insert_or_assign_(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -491,7 +501,10 @@ class reference_store {
         /**
          *  @brief Alias for @c insert_or_assign(). Stages an insert or assign operation.
          *  @param[in] element Element to insert or assign (moved into the transaction).
-         *  @return Success or error code (e.g., out of memory).
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t upsert(value_t &&element) noexcept { return insert_or_assign_(std::move(element)); }
 
@@ -500,7 +513,11 @@ class reference_store {
          *      counterpart to @c upsert(), which takes the key either way.
          *
          *  @param[in] element Element to write (moved into the transaction when the key is there).
-         *  @return Success, @c key_not_found_k when the key is absent, or an allocation failure.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k This transaction does not see the key.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t update(value_t &&element) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself(element));
@@ -518,7 +535,11 @@ class reference_store {
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when no such member is read. Must be
          *      @c noexcept.
-         *  @return Success, or @c key_not_found_k when this transaction reads no such key.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k This transaction reads no such key.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
@@ -550,7 +571,6 @@ class reference_store {
          *  @brief Pre-allocates memory for watches, reducing allocation failures mid-transaction.
          *
          *  @param[in] size Expected number of watches.
-         *  @return Success or error code (e.g., out of memory).
          */
         status_t reserve(std::size_t size) noexcept {
             return invoke_safely([&]() { watches_.reserve(size); });
@@ -561,7 +581,9 @@ class reference_store {
          *      fails if the watched element changes.
          *
          *  @param[in] identifier Identifier of the element to watch.
-         *  @return Success or error code (e.g., out of memory).
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t watch(identifier_t const &identifier) noexcept {
             status_t status = success_k;
@@ -591,7 +613,9 @@ class reference_store {
          *      The transaction will fail at @c stage() if the watched element changes.
          *
          *  @param[in] entry Entry to watch (typically from a previous find/lookup).
-         *  @return Success or error code (e.g., out of memory).
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t watch(versioned_entry_t const &entry) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself(entry.payload));
@@ -631,8 +655,14 @@ class reference_store {
             return success_k;
         }
 
-        /** Finds a member equal to @p comparable and records what it saw into the read set. The
-         *  watching counterpart to @c find: this one can fail, because a read set is memory. */
+        /**
+         *  @brief Finds a member equal to @p comparable and records what it saw into the read set.
+         *
+         *  The watching counterpart to @c find: this one can fail, because a read set is memory.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -650,7 +680,11 @@ class reference_store {
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @return The copied element, or @c key_not_found_k when absent.
+         *  @return The copied element.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k This transaction reads no member equal to @p comparable.
+         *  - Any status the element's @c copy returns passes through unchanged.
          */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
@@ -798,7 +832,7 @@ class reference_store {
          *      to be: this is the oracle the ranked engines are checked against.
          *
          *  @param[in] ordinal Zero-based position among the elements this transaction can see.
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be
          *      @c noexcept.
@@ -929,8 +963,14 @@ class reference_store {
             return *present ? std::size_t {1} : std::size_t {0};
         }
 
-        /** Copies out the first member at or after @p comparable, this transaction's writes
-         *  included. */
+        /**
+         *  @brief Copies out the first member at or after @p comparable, this
+         *      transaction's writes included.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k No member this transaction reads orders at or after @p comparable.
+         *  - Any status the element's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
@@ -942,7 +982,14 @@ class reference_store {
             return result;
         }
 
-        /** Copies out the first member after @p comparable, this transaction's writes included. */
+        /**
+         *  @brief Copies out the first member after @p comparable, this
+         *      transaction's writes included.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k No member this transaction reads orders after @p comparable.
+         *  - Any status the element's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
@@ -959,6 +1006,10 @@ class reference_store {
          *
          *  The window is walked first and staged afterwards, because a staged tombstone changes
          *  what the merged walk answers, and a walk revising itself would skip its own neighbours.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -971,27 +1022,54 @@ class reference_store {
                 std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member at or after @p lower, @p lower included. */
+        /**
+         *  @brief Stages a tombstone for every member at or after @p lower, @p lower included.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept {
             return erase_accepted_([&](value_t const &member) noexcept { return !changes_.key_comp()(member, lower); },
                                    std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member before @p upper, @p upper excluded. */
+        /**
+         *  @brief Stages a tombstone for every member before @p upper, @p upper excluded.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept {
             return erase_accepted_([&](value_t const &member) noexcept { return changes_.key_comp()(member, upper); },
                                    std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member this transaction reads, so a commit empties the
-         *  store. Unlike the bounded erases it names no key, so it serves an unordered core too. */
+        /**
+         *  @brief Stages a tombstone for every member this transaction reads,
+         *      so a commit empties the store.
+         *
+         *  Unlike the bounded erases it names no key, so it serves an unordered core too.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         status_t clear() noexcept {
             return erase_accepted_([](value_t const &) noexcept { return true; }, no_op_t {});
         }
 
-        /** Hands @p callback each member in [ @p lower, @p upper ) to revise, then stages it. */
+        /**
+         *  @brief Hands @p callback each member in [ @p lower, @p upper ) to revise,
+         *      then stages it.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
         status_t update_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback) noexcept
@@ -1062,8 +1140,10 @@ class reference_store {
 
         /**
          *  @brief Validates every watch and moves all changes, uncommitted, into the main store.
-         *  @return Success, @c operation_not_permitted_k when already staged, or @c read_conflict_k
-         *      when a watched key moved under this transaction.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - @c read_conflict_k A watched key moved under this transaction.
          */
         status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1106,8 +1186,8 @@ class reference_store {
          *
          *  New generation is assigned.
          *
-         *  @return Success, @c operation_not_permitted_k if transaction is not staged, or
-         *      @c consistency_k if a staged version was destroyed before the rollback reached it.
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is not staged.
          */
         status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1153,8 +1233,9 @@ class reference_store {
          *  answers, so a refusal leaves the transaction staged and retryable - and a caller
          *  spreading one commit across several stores asks every one before any of them writes.
          *
-         *  @return Success, @c read_conflict_k when a watched key moved under this transaction, or
-         *      @c operation_not_permitted_k when nothing was staged.
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k Nothing was staged.
+         *  - @c read_conflict_k A watched key moved under this transaction.
          */
         status_t validate_for_commit() const noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1197,7 +1278,13 @@ class reference_store {
             staging_ = staging_t::pending_k;
         }
 
-        /** Validates then publishes: the whole commit for a caller spanning one store. */
+        /**
+         *  @brief Validates then publishes: the whole commit for a caller spanning one store.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k Nothing was staged.
+         *  - @c read_conflict_k A watched key moved under this transaction.
+         */
         status_t commit() noexcept {
             if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
             publish_under();
@@ -1395,7 +1482,6 @@ class reference_store {
      *      @c noexcept.
      *  @param[in] callback_replaced Invoked with the element it displaced, if a reader could see
      *      one. Must be @c noexcept.
-     *  @return Success, or an allocation failure that left the store untouched.
      */
     template <typename callback_stored_type_ = no_op_t, typename callback_replaced_type_ = no_op_t>
     status_t publish_alone_(value_t &&element, callback_stored_type_ &&callback_stored = {},
@@ -1430,7 +1516,7 @@ class reference_store {
      *  splicing it across only relinks pointers. Whatever can run out of memory has done so by now,
      *  which is what makes the all-or-nothing claim above hold.
      *
-     *  @param[inout] sources Collection of entries to import, left empty.
+     *  @param[in,out] sources Collection of entries to import, left empty.
      */
     void insert_or_assign_(entry_set_t &sources) noexcept {
         for (auto source = sources.begin(); source != sources.end();) {
@@ -1502,7 +1588,7 @@ class reference_store {
      *  @brief Factory method to create a new transactional set without throwing exceptions. Returns
      *      error status on allocation failure.
      *
-     *  @return Container instance, or empty on allocation failure.
+     *  @return Container instance.
      */
     static expected<store_t> make() noexcept {
         expected<store_t> opt_store;
@@ -1519,7 +1605,7 @@ class reference_store {
      *  @brief Creates a new transaction with a fresh generation number, resettable and reusable
      *      after commit or rollback to avoid reallocations. Returns an error on allocation failure.
      *
-     *  @return Transaction instance, or empty on allocation failure.
+     *  @return Transaction instance.
      */
     expected<transaction_t> transaction() noexcept {
         expected<transaction_t> opt_txn;
@@ -1540,7 +1626,9 @@ class reference_store {
      *  @param[in] callback_inserted Invoked with the stored element. Must be @c noexcept.
      *  @param[in] callback_existing Invoked with the element already under the key, which keeps its
      *      value. Must be @c noexcept.
-     *  @return Success, @c key_already_exists_k when the key is taken, or an allocation failure.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k The key is taken.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
     status_t insert(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -1565,7 +1653,6 @@ class reference_store {
      *  @param[in] callback_inserted Invoked with the stored element. Must be @c noexcept.
      *  @param[in] callback_existing Invoked with the element already under the key, which keeps its
      *      value. Must be @c noexcept.
-     *  @return Success even when nothing was stored, or an allocation failure.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
     status_t insert_if_missing(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -1591,7 +1678,6 @@ class reference_store {
      *      @c noexcept.
      *  @param[in] callback_existing Invoked with the element that was replaced. Must be
      *      @c noexcept.
-     *  @return Success or an allocation failure.
      */
     template <typename callback_inserted_type_ = no_op_t, typename callback_existing_type_ = no_op_t>
     status_t insert_or_assign(value_t &&element, callback_inserted_type_ &&callback_inserted = {},
@@ -1619,7 +1705,6 @@ class reference_store {
     /**
      *  @brief Alias for @c insert_or_assign(). Atomically inserts or updates an element.
      *  @param[in] element Element to insert or assign (moved into the container).
-     *  @return Success or error code (e.g., out of memory).
      */
     status_t upsert(value_t &&element) noexcept { return insert_or_assign(std::move(element)); }
 
@@ -1628,7 +1713,9 @@ class reference_store {
      *      counterpart to @c insert_or_assign(), which takes the key either way.
      *
      *  @param[in] element Element to write (moved into the container when the key is present).
-     *  @return Success, @c key_not_found_k for a missing key, or an allocation failure.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k The key is missing.
      */
     status_t update(value_t &&element) noexcept {
         if (find_visible_present_(mapping_key_or_itself(element)) == entries_.end()) return key_not_found_k;
@@ -1648,7 +1735,6 @@ class reference_store {
      *
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
-     *  @return Success or error code (e.g., out of memory).
      */
     template <readable_iterator elements_begin_type_,
               iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
@@ -1675,7 +1761,6 @@ class reference_store {
      *  @brief Alias for batch @c insert_or_assign(), atomically inserting or assigning a batch.
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
-     *  @return Success or error code (e.g., out of memory).
      */
     template <readable_iterator elements_begin_type_,
               iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
@@ -1687,7 +1772,9 @@ class reference_store {
      *  @brief Atomically inserts a batch, leaving already-present keys untouched.
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
-     *  @return Success or error code (e.g., out of memory).
+     *
+     *  @par Statuses:
+     *  - Any status the element's or the key's @c copy returns passes through unchanged.
      */
     template <readable_iterator elements_begin_type_,
               iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
@@ -1705,10 +1792,15 @@ class reference_store {
 
     /**
      *  @brief Atomically writes a batch, refusing the group if any key is absent.
+     *
+     *  Nothing is written unless all of it is.
+     *
      *  @param[in] begin Iterator to the first element.
      *  @param[in] end Iterator past the last element.
-     *  @return Success, @c key_not_found_k if any key is absent, or an allocation failure. Nothing
-     *      is written unless all of it is.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k Any key is absent.
+     *  - Any status the key's @c copy returns passes through unchanged.
      */
     template <readable_iterator elements_begin_type_,
               iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
@@ -1756,7 +1848,11 @@ class reference_store {
      *  @brief Copies out the member equal to @p comparable, for callers that cannot use a callback.
      *
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
-     *  @return The copied element, or @c key_not_found_k when absent.
+     *  @return The copied element.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No visible member equals @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
      */
     template <typename comparable_type_ = identifier_t>
     expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
@@ -1838,7 +1934,13 @@ class reference_store {
         return success_k;
     }
 
-    /** Copies out the first visible element ordered at or after @p comparable. */
+    /**
+     *  @brief Copies out the first visible element ordered at or after @p comparable.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No visible element orders at or after @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_ = identifier_t>
     expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
@@ -1849,7 +1951,13 @@ class reference_store {
         return result;
     }
 
-    /** Copies out the first visible element ordered strictly after @p comparable. */
+    /**
+     *  @brief Copies out the first visible element ordered strictly after @p comparable.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No visible element orders after @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_ = identifier_t>
     expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
         expected<value_t> result {status_t::key_not_found_k};
@@ -1892,7 +2000,7 @@ class reference_store {
      *  is augmented, and an ordinal read from a plain ordered walk cannot disagree with the walk.
      *
      *  @param[in] ordinal Zero-based position among the visible elements.
-     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+     *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when fewer elements are visible. Must be
      *      @c noexcept.
@@ -2009,7 +2117,7 @@ class reference_store {
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[in] callback Invoked with `identifier_t const &` and `mapped_t &`. Must
+     *  @param[in] callback Invoked with <tt>identifier_t const &</tt> and <tt>mapped_t &</tt>. Must
      *      be @c noexcept.
      *  @return Always success here; the status is reported so a mutator that can fail on a sibling
      *      engine has the same channel on all three.
@@ -2049,9 +2157,11 @@ class reference_store {
      *  @param[in] callback_found Callback to receive the erased @c value_t const &. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return @c key_not_found_k if no visible entry matched, otherwise success.
      *  @note A committed tombstone is not a match, but it is still reclaimed here - nothing else
      *      would reach it, and leaving it behind lets a key erased twice keep its memory forever.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No visible entry matched.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -2141,9 +2251,11 @@ class reference_store {
     /**
      *  @brief Removes every element, refusing while any transaction has something staged.
      *
-     *  @return Success, or @c operation_not_permitted_k while a staged version would be dropped.
      *  @note The generation and stamp counters keep running. Rewinding either would hand a future
      *      transaction a number an open one already carries, and both are compared by value.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k A staged version would be dropped.
      */
     status_t clear() noexcept {
         // Refused while anything is staged, because dropping a version an open transaction is about to
@@ -2199,7 +2311,7 @@ class reference_store {
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[in,out] generator Random number generator (e.g., @c std::mt19937).
      *  @param[in] callback Callback to receive the sampled element. Must be @c noexcept. Invoked at
      *      most once, and never when the window shows nothing.
      */
@@ -2233,8 +2345,8 @@ class reference_store {
      *
      *  @param[in] lower Lower bound (inclusive).
      *  @param[in] upper Upper bound (exclusive).
-     *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
-     *  @param[inout] seen Count of entries processed (can span multiple calls).
+     *  @param[in,out] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[in,out] seen Count of entries processed (can span multiple calls).
      *  @param[in] reservoir_capacity Maximum number of samples to collect.
      *  @param[out] reservoir Buffer the samples land in, written by index.
      */

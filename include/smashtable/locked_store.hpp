@@ -150,6 +150,7 @@ class locked_store {
 
         /**
          *  @brief Stages @p element only if its key is free, and says which branch was taken.
+         *  @param[in] element The element to insert.
          *  @param[in] callback_inserted Receives the element once staged.
          *  @param[in] callback_existing Receives the element present, which refused the insert.
          */
@@ -258,6 +259,8 @@ class locked_store {
         /**
          *  @brief Hands @p callback_found the member this transaction reads at zero-based
          *      @p ordinal.
+         *  @param[in] ordinal Zero-based position among the visible members.
+         *  @param[in] callback_found Callback to receive a @c value_t const &. Must be @c noexcept.
          *  @param[in] callback_missing Fires when fewer members are there. Must be @c noexcept.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
@@ -273,6 +276,8 @@ class locked_store {
         /**
          *  @brief Hands @p callback_found how many members this transaction orders before
          *      @p comparable.
+         *  @param[in] comparable Any key comparable with stored entries.
+         *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
          *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be
          *      @c noexcept.
          */
@@ -697,6 +702,7 @@ class locked_store {
 
     /**
      *  @brief Inserts @p element only if its key is absent, and says which branch was taken.
+     *  @param[in] element The element to insert.
      *  @param[in] callback_inserted Receives the element once stored.
      *  @param[in] callback_existing Receives the element present, which declined the insert.
      */
@@ -719,6 +725,7 @@ class locked_store {
 
     /**
      *  @brief Inserts @p element only if its key is free, and says which branch was taken.
+     *  @param[in] element The element to insert.
      *  @param[in] callback_inserted Receives the element once stored.
      *  @param[in] callback_existing Receives the already-present element that refused the insert.
      */
@@ -1036,6 +1043,8 @@ class locked_store {
 
     /**
      *  @brief Rewrites the mapped side of every element in [ @p lower, @p upper ).
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
      *  @param[in] callback Invoked with (key const &, mapped &) per element. Must be @c noexcept.
      *  @return Success, or an allocation failure. A store whose walk cannot fail always succeeds.
      */
@@ -1095,6 +1104,8 @@ class locked_store {
 
     /**
      *  @brief Hands @p callback_found the element at zero-based position @p ordinal.
+     *  @param[in] ordinal Zero-based position among the visible elements.
+     *  @param[in] callback_found Callback to receive a @c value_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
@@ -1109,6 +1120,8 @@ class locked_store {
 
     /**
      *  @brief Hands @p callback_found how many elements the store orders before @p comparable.
+     *  @param[in] comparable Any key comparable with stored entries.
+     *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
      *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be
      *      @c noexcept.
      */

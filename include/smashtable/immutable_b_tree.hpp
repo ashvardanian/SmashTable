@@ -167,8 +167,10 @@ class immutable_b_tree {
      *  @brief Builds the tree over @p sorted, which may repeat keys. A map keeps the mapped values
      *      in the order they arrive, so a repeated key reads back the value that came first.
      *
-     *  @return The tree, @c invalid_argument_k when @p sorted is out of order, or
-     *      @c out_of_memory_heap_k.
+     *  @return The tree.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k @p sorted is out of order.
      */
     static expected<immutable_b_tree> make(std::span<value_t const> sorted, allocator_t allocator = {}) noexcept {
         for (std::size_t index = 1; index < sorted.size(); ++index)

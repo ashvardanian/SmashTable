@@ -1,6 +1,6 @@
 {
   "version": 6,
-  "cmakeMinimumRequired": { "major": 3, "minor": 25, "patch": 0 },
+  "cmakeMinimumRequired": { "major": 3, "minor": 28, "patch": 0 },
   "configurePresets": [
     {
       "name": "base",
@@ -34,6 +34,12 @@
       "displayName": "Debug"
     },
     {
+      "name": "check",
+      "inherits": ["base", "clang"],
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "SMASHTABLE_WERROR": "ON" },
+      "displayName": "Clang with warnings as errors"
+    },
+    {
       "name": "release",
       "inherits": ["base", "clang"],
       "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" },
@@ -42,22 +48,14 @@
     {
       "name": "asan",
       "inherits": ["base", "gcc"],
-      "description": "Address and behaviour sanitizers. The flags go through CMAKE_CXX_FLAGS because there is no sanitizer option to set - a `-D SMASHTABLE_SANITIZE=ON` is silently ignored and builds an uninstrumented tree that reports green. Built with GCC, which is what the pre-release workflow runs both sanitizer legs under.",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer"
-      }
+      "description": "Address and behaviour sanitizers. Built with GCC, which is what the pre-release workflow runs both sanitizer legs under.",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "SMASHTABLE_BUILD_SANITIZERS": "address" }
     },
     {
       "name": "tsan",
       "inherits": ["base", "gcc"],
       "description": "The hash table's lock-free slot protocol is the only concurrent code here, and a race in it is invisible to the address sanitizer. Built with GCC, which is what the pre-release workflow runs both sanitizer legs under.",
-      "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
-        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer"
-      }
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Debug", "SMASHTABLE_BUILD_SANITIZERS": "thread" }
     },
     {
       "name": "linux_i386",
@@ -97,6 +95,7 @@
   ],
   "buildPresets": [
     { "name": "debug", "configurePreset": "debug" },
+    { "name": "check", "configurePreset": "check" },
     { "name": "release", "configurePreset": "release" },
     { "name": "asan", "configurePreset": "asan" },
     { "name": "tsan", "configurePreset": "tsan" },

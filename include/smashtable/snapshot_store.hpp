@@ -316,7 +316,7 @@ class snapshot_store {
 
         /**
          *  @brief Hands @p callback_found the key the cursor stands on, or says the walk is over.
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered once nothing is left. Must be
          *      @c noexcept.
@@ -411,7 +411,8 @@ class snapshot_store {
 
         /**
          *  @brief Finds a member @b equal to @p comparable at this reader's stamp.
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] comparable Any key comparable with stored entries.
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
@@ -574,7 +575,8 @@ class snapshot_store {
          *  on every key before the one it lands on, and there is no smallest key to name - in which
          *  case the identifier stored on that side is kept only so the pair stays a pair.
          *
-         *  @return Success, or the reason the window could not be written down, which latches too.
+         *  @par Statuses:
+         *  - Any status a bound's @c copy returns passes through unchanged and latches too.
          */
         template <typename lower_type_, typename upper_type_>
         status_t record_window_read_(lower_type_ const &lower, upper_type_ const &upper, access_t ends) const noexcept {
@@ -771,7 +773,12 @@ class snapshot_store {
         /**
          *  @brief Stages an insert, failing when the key is already there for this transaction.
          *  @param[in] value Element to insert, moved into the transaction.
-         *  @return Success, @c key_already_exists_k, or an allocation failure.
+         *
+         *  @par Statuses:
+         *  - @c key_already_exists_k This transaction already reads the key.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         status_t insert(value_t &&value) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
@@ -783,7 +790,11 @@ class snapshot_store {
         /**
          *  @brief Stages an insert when the key is absent, treating an existing key as a no-op.
          *  @param[in] value Element to insert, moved into the transaction.
-         *  @return Success unless an allocation failed.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The key is absent and the transaction is already staged.
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         status_t insert_if_missing(value_t &&value) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
@@ -795,7 +806,9 @@ class snapshot_store {
         /**
          *  @brief Stages a write of @p value, whether or not the key is there.
          *  @param[in] value Element to write, moved into the transaction.
-         *  @return Success unless an allocation failed.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
          */
         status_t upsert(value_t &&value) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
@@ -808,7 +821,12 @@ class snapshot_store {
         /**
          *  @brief Stages a write of @p value, failing when the key is absent for this transaction.
          *  @param[in] value Element to write, moved into the transaction.
-         *  @return Success, @c key_not_found_k, or an allocation failure.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k This transaction does not read the key.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         status_t update(value_t &&value) noexcept {
             expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
@@ -819,10 +837,15 @@ class snapshot_store {
 
         /**
          *  @brief Stages an erase of @p identifier as a tombstone that a commit makes an absence.
-         *  @return @c key_not_found_k when no such key is read, so a caller need not look first.
          *
          *  The look happens whether or not callbacks were passed, so the answer never depends on
          *  how the call was spelled. At @c serializable_k it records a read, unlike a blind delete.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k No such key is read, so a caller need not look first.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t erase(identifier_t const &identifier, callback_found_type_ &&callback_found = {},
@@ -954,7 +977,7 @@ class snapshot_store {
 
             /**
              *  @brief Hands @p callback_found the cursor's member, or reports an exhausted walk.
-             *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+             *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
              *      @c noexcept.
              *  @param[in] callback_missing Callback triggered once nothing is left. Must be
              *      @c noexcept.
@@ -996,10 +1019,13 @@ class snapshot_store {
         /**
          *  @brief Records that this transaction depends on [ @p lower, @p upper ), so a commit
          *      publishing a version into the window refuses it with @c phantom_conflict_k.
-         *  @return Success unless the read set could not grow, which latches a refusal as well.
          *
          *  Recorded at every level, as @c watch is: from @c serializable_k up an ordered read
          *  records its own window already, and at @c snapshot_k this is how a walk asks for one.
+         *
+         *  @par Statuses:
+         *  - Any status a bound's @c copy returns passes through unchanged and latches
+         *    the same refusal.
          */
         template <typename lower_type_, typename upper_type_>
         status_t watch_range(lower_type_ const &lower, upper_type_ const &upper) const noexcept
@@ -1008,7 +1034,13 @@ class snapshot_store {
             return record_window_(lower, upper, access_t::none_k);
         }
 
-        /** Records that this transaction depends on every key at or after @p lower. */
+        /**
+         *  @brief Records that this transaction depends on every key at or after @p lower.
+         *
+         *  @par Statuses:
+         *  - Any status the bound's @c copy returns passes through unchanged and latches
+         *    the same refusal.
+         */
         template <typename lower_type_>
         status_t watch_range_from(lower_type_ const &lower) const noexcept
             requires ordered_core_k
@@ -1016,7 +1048,13 @@ class snapshot_store {
             return record_window_(lower, lower, access_t::to_the_highest_k);
         }
 
-        /** Records that this transaction depends on every key before @p upper. */
+        /**
+         *  @brief Records that this transaction depends on every key before @p upper.
+         *
+         *  @par Statuses:
+         *  - Any status the bound's @c copy returns passes through unchanged and latches
+         *    the same refusal.
+         */
         template <typename upper_type_>
         status_t watch_range_up_to(upper_type_ const &upper) const noexcept
             requires ordered_core_k
@@ -1029,12 +1067,14 @@ class snapshot_store {
          *      commit can refuse if anything published over it in the meantime.
          *  @param[in] identifier Identifier to watch, borrowed and copied into the read set - the
          *      read set outlives the call, and a caller's identifier is never consumed by a read.
-         *  @return Success unless the read set could not grow, or the identifier could not copy.
          *
          *  Latches as well as answering, for the reason @c record_read_ gives: a caller may fold
          *  the status into a first-failure and carry on, and the commit still has to refuse rather
          *  than pass a validation it could not perform. At @c snapshot_k this is the only read
          *  validation there is.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns passes through unchanged.
          */
         status_t watch(identifier_t const &identifier) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
@@ -1047,7 +1087,12 @@ class snapshot_store {
             return recorded;
         }
 
-        /** Records @p versioned as the version this transaction read of its own key. */
+        /**
+         *  @brief Records @p versioned as the version this transaction read of its own key.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         status_t watch(versioned_t const &versioned) noexcept {
             // Through `copy_safely` rather than a braced `identifier_t`, so a move-only identifier
             // compiles here and an identifier that allocates reports instead of throwing.
@@ -1061,9 +1106,15 @@ class snapshot_store {
             return recorded;
         }
 
-        /** Finds a member equal to @p comparable and records the read at every level. What @c find
-         *  does on its own only from @c serializable_k up, so this is the call a @c snapshot_k
-         *  transaction needs; it can fail, because a read set is memory. */
+        /**
+         *  @brief Finds a member equal to @p comparable and records the read at every level.
+         *
+         *  What @c find does on its own only from @c serializable_k up, so this is the call
+         *  a @c snapshot_k transaction needs; it can fail, because a read set is memory.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find_and_watch(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1083,10 +1134,14 @@ class snapshot_store {
          *
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -1104,7 +1159,14 @@ class snapshot_store {
             return recorded;
         }
 
-        /** Copies out the member equal to @p comparable, this transaction's own writes included. */
+        /**
+         *  @brief Copies out the member equal to @p comparable, this
+         *      transaction's own writes included.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k This transaction reads no member equal to @p comparable.
+         *  - Any status the key's or the element's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
             expected<value_t> result {status_t::key_not_found_k};
@@ -1115,7 +1177,14 @@ class snapshot_store {
             return result;
         }
 
-        /** Whether a member equal to @p comparable exists, this transaction's writes included. */
+        /**
+         *  @brief Whether a member equal to @p comparable exists, this
+         *      transaction's writes included.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<bool> contains(comparable_type_ &&comparable) const noexcept {
             bool present = false;
@@ -1130,10 +1199,14 @@ class snapshot_store {
          *  @brief Finds the first member @b greater or equal to @p comparable at this snapshot.
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered if nothing was found. Must be
          *      @c noexcept.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -1165,10 +1238,14 @@ class snapshot_store {
          *  needs to open with: it asks for a first key rather than an ordinal, so a core keeping no
          *  subtree counts can answer it.
          *
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when nothing is readable. Must be
          *      @c noexcept.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t smallest(callback_found_type_ &&callback_found,
@@ -1191,7 +1268,13 @@ class snapshot_store {
             return recorded;
         }
 
-        /** Finds the first member @b strictly greater than @p comparable at this snapshot. */
+        /**
+         *  @brief Finds the first member @b strictly greater than @p comparable at this snapshot.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1226,6 +1309,10 @@ class snapshot_store {
          *  @note A @c walk_control_t callback stops the walk where it says to. From
          *      @c serializable_k up, the walk records only what it handed over: the window from
          *      @p lower to the stopping key, and that key, so a commit past it refuses nothing.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1247,6 +1334,10 @@ class snapshot_store {
          *      window running to the highest key, so a commit into it is a phantom.
          *  @note A callback answering @c walk_control_t stops the walk where it says to, and from
          *      @c serializable_k up the window recorded then ends at the key it stopped on.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t range_from(lower_type_ &&lower, callback_type_ &&callback) const noexcept
@@ -1266,6 +1357,10 @@ class snapshot_store {
          *      layout's floor to say "everything below this".
          *  @note A callback answering @c walk_control_t stops the walk where it says to, and from
          *      @c serializable_k up the window recorded then ends at the key it stopped on.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t range_up_to(upper_type_ &&upper, callback_type_ &&callback) const noexcept
@@ -1290,7 +1385,7 @@ class snapshot_store {
          *  and every version its snapshot cannot read excluded. Nothing may write to the
          *  transaction or its store while the walk runs.
          *
-         *  @param[in] callback Callback to receive a `value_t const &`. Must be @c noexcept.
+         *  @param[in] callback Callback to receive a <tt>value_t const &</tt>. Must be @c noexcept.
          */
         template <typename callback_type_ = no_op_t>
         status_t for_each(callback_type_ &&callback) const noexcept {
@@ -1326,6 +1421,10 @@ class snapshot_store {
          *  @param[in] comparable Object comparable to @c value_t and convertible to
          *      @c identifier_t.
          *  @param[in] callback Callback receiving each match. Must be @c noexcept.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename comparable_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t equal_range(comparable_type_ &&comparable, callback_type_ &&callback) const noexcept {
@@ -1338,10 +1437,14 @@ class snapshot_store {
          *      committed ones rather than counted anywhere.
          *
          *  @param[in] ordinal Zero-based position among the keys this transaction reads.
-         *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+         *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
          *      @c noexcept.
          *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be
          *      @c noexcept.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
         status_t select(std::size_t ordinal, callback_found_type_ &&callback_found,
@@ -1384,6 +1487,10 @@ class snapshot_store {
          *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
          *  @param[in] callback_missing Callback triggered if the key is not readable. Must be
          *      @c noexcept.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
          */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
@@ -1415,7 +1522,13 @@ class snapshot_store {
 
 #pragma region Transaction Range Operations
 
-        /** How many members equal @p comparable, which for a unique key is nought or one. */
+        /**
+         *  @brief How many members equal @p comparable, which for a unique key is nought or one.
+         *
+         *  @par Statuses:
+         *  - Any status the key's @c copy returns while the read is recorded
+         *    passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<std::size_t> count(comparable_type_ &&comparable) const noexcept {
             expected<bool> const present = contains(std::forward<comparable_type_>(comparable));
@@ -1423,8 +1536,14 @@ class snapshot_store {
             return *present ? std::size_t {1} : std::size_t {0};
         }
 
-        /** Copies out the first member at or after @p comparable, this transaction's writes
-         *  included. */
+        /**
+         *  @brief Copies out the first member at or after @p comparable, this
+         *      transaction's writes included.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k No member this transaction reads orders at or after @p comparable.
+         *  - Any status a key's or the element's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept
             requires ordered_core_k
@@ -1437,7 +1556,14 @@ class snapshot_store {
             return result;
         }
 
-        /** Copies out the first member after @p comparable, this transaction's writes included. */
+        /**
+         *  @brief Copies out the first member after @p comparable, this
+         *      transaction's writes included.
+         *
+         *  @par Statuses:
+         *  - @c key_not_found_k No member this transaction reads orders after @p comparable.
+         *  - Any status a key's or the element's @c copy returns passes through unchanged.
+         */
         template <typename comparable_type_ = identifier_t>
         expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept
             requires ordered_core_k
@@ -1456,6 +1582,10 @@ class snapshot_store {
          *
          *  The window is walked first and staged afterwards, because staging a tombstone changes
          *  what the merged walk answers and a walk revising itself would skip its own neighbours.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status a key's @c copy returns passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1469,7 +1599,13 @@ class snapshot_store {
                 std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member at or after @p lower, @p lower included. */
+        /**
+         *  @brief Stages a tombstone for every member at or after @p lower, @p lower included.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status a key's @c copy returns passes through unchanged.
+         */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires ordered_core_k
@@ -1478,7 +1614,13 @@ class snapshot_store {
                                  std::forward<callback_type_>(callback));
         }
 
-        /** Stages a tombstone for every member before @p upper, @p upper excluded. */
+        /**
+         *  @brief Stages a tombstone for every member before @p upper, @p upper excluded.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status a key's @c copy returns passes through unchanged.
+         */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires ordered_core_k
@@ -1494,6 +1636,10 @@ class snapshot_store {
          *  bounds can spell, so any commit published since the snapshot turns this transaction away
          *  - where a bounded erase is turned away only by a commit inside its own window. Below
          *    that level nothing is recorded and the walk is the only cost.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status a key's @c copy returns passes through unchanged.
          */
         status_t clear() noexcept {
             return erase_walked_([&](auto &&step) noexcept { return for_each(step); }, no_op_t {});
@@ -1504,6 +1650,10 @@ class snapshot_store {
          *
          *  Collected before revising for the same reason the erasing walks collect: a staged write
          *  moves what the merged walk answers underneath itself.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status the element's @c copy returns passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1532,8 +1682,14 @@ class snapshot_store {
             return success_k;
         }
 
-        /** Draws one member uniformly from [ @p lower, @p upper ), this transaction's writes
-         *  included. */
+        /**
+         *  @brief Draws one member uniformly from [ @p lower, @p upper ), this
+         *      transaction's writes included.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
+         */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t, typename callback_type_ = no_op_t>
         status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
@@ -1558,7 +1714,14 @@ class snapshot_store {
             });
         }
 
-        /** Fills @p reservoir with up to @p capacity members drawn from [ @p lower, @p upper ). */
+        /**
+         *  @brief Fills @p reservoir with up to @p capacity members drawn
+         *      from [ @p lower, @p upper ).
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
+         */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename generator_type_ = no_op_t,
                   indexed_writable_iterator<value_t> output_iterator_type_ = value_t *>
@@ -1650,9 +1813,14 @@ class snapshot_store {
         /**
          *  @brief Moves every pending write into the store, invisible, and reserves everything a
          *      commit would otherwise have to allocate.
-         *  @return Success; @c write_conflict_k, @c read_conflict_k or @c phantom_conflict_k naming
-         *      the check that refused this transaction; or an allocation failure that leaves the
-         *      store as it was.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - @c phantom_conflict_k A recorded window gained or lost a member since the snapshot,
+         *    which any commit does to a recorded walk of the whole keyspace.
+         *  - @c read_conflict_k A recorded key changed since the snapshot, which any commit does to
+         *    a read that could not be recorded.
+         *  - @c write_conflict_k A later commit wrote a key this transaction writes.
          */
         status_t stage() noexcept {
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1697,6 +1865,14 @@ class snapshot_store {
          *  The second phase allocates nothing and cannot fail, and atomicity is the ordering of the
          *  two steps below: nothing stamped is reachable until the published stamp advances,
          *  because no snapshot handed out so far can name the new stamp.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k Nothing was staged.
+         *  - @c phantom_conflict_k A recorded window gained or lost a member since the snapshot,
+         *    which any commit does to a recorded walk of the whole keyspace.
+         *  - @c read_conflict_k A recorded key changed since the snapshot, which any commit does to
+         *    a read that could not be recorded.
+         *  - @c write_conflict_k A later commit wrote a key this transaction writes.
          */
         status_t commit() noexcept {
             if (status_t const permitted = validate_for_commit(); failed(permitted)) return permitted;
@@ -1739,9 +1915,13 @@ class snapshot_store {
          *  written until it answers, so a refusal leaves the transaction staged and retryable, and
          *  a caller spreading one commit across several stores asks every store before any writes.
          *
-         *  @return Success; @c write_conflict_k, @c read_conflict_k or @c phantom_conflict_k naming
-         *      which check turned this transaction away; or @c operation_not_permitted_k when
-         *      nothing was staged.
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k Nothing was staged.
+         *  - @c phantom_conflict_k A recorded window gained or lost a member since the snapshot,
+         *    which any commit does to a recorded walk of the whole keyspace.
+         *  - @c read_conflict_k A recorded key changed since the snapshot, which any commit does to
+         *    a read that could not be recorded.
+         *  - @c write_conflict_k A later commit wrote a key this transaction writes.
          */
         status_t validate_for_commit() const noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1783,9 +1963,9 @@ class snapshot_store {
         /**
          *  @brief Pulls every staged version back into the transaction, leaving it retryable. The
          *      watches are kept, since a read concern outlives the write that failed on it.
-         *  @return Success, @c operation_not_permitted_k when nothing was staged, @c consistency_k
-         *      when a staged version vanished before the rollback reached it, or an allocation
-         *      failure it hit.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k Nothing was staged.
          */
         status_t rollback() noexcept {
             if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -1940,7 +2120,12 @@ class snapshot_store {
         /** How many keys are staged and waiting for a stamp. */
         [[nodiscard]] std::size_t staged_count() const noexcept { return staged_identifiers_.size(); }
 
-        /** Sizes the group up front, so a later @c upsert cannot run out of memory. */
+        /**
+         *  @brief Sizes the group up front, so a later @c upsert cannot run out of memory.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         */
         status_t reserve(std::size_t count) noexcept {
             if (!store_) return operation_not_permitted_k;
             if (status_t const reserved = staged_identifiers_.reserve(count); failed(reserved)) return reserved;
@@ -1950,7 +2135,9 @@ class snapshot_store {
         /**
          *  @brief Files a write of @p value, invisible until @c publish stamps the group.
          *  @param[in] value Element to write, moved into the store.
-         *  @return Success or an allocation failure that leaves the group as it was.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
          */
         status_t upsert(value_t &&value) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
@@ -1960,9 +2147,16 @@ class snapshot_store {
             return stage_(std::move(*maybe_identifier), std::move(versioned));
         }
 
-        /** Files a tombstone over @p identifier, invisible until @c publish stamps the group. A
-         *  tombstone rather than a detached entry, so a snapshot older than the group keeps reading
-         *  the version it opened on. */
+        /**
+         *  @brief Files a tombstone over @p identifier, invisible until @c publish
+         *      stamps the group.
+         *
+         *  A tombstone rather than a detached entry, so a snapshot older than the group keeps
+         *  reading the version it opened on.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         */
         status_t erase(identifier_t const &identifier) noexcept {
             auto maybe_identifier = copy_safely<identifier_t>(identifier);
             if (!maybe_identifier) return out_of_memory_heap_k;
@@ -1977,9 +2171,14 @@ class snapshot_store {
         /**
          *  @brief Files a tombstone over every key the newest published commit shows in [ @p lower,
          *      @p upper ).
+         *  @param[in] lower Lower bound (inclusive).
+         *  @param[in] upper Upper bound (exclusive).
          *  @param[in] callback Callback handed each element about to be tombstoned. Must be
          *      @c noexcept.
-         *  @return Success, or an allocation failure whose partial filing @c rollback drops.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         *  - Any status a key's @c copy returns passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -1994,7 +2193,14 @@ class snapshot_store {
                 std::forward<callback_type_>(callback));
         }
 
-        /** Files a tombstone over every key the newest published commit shows from @p lower on. */
+        /**
+         *  @brief Files a tombstone over every key the newest published commit shows
+         *      from @p lower on.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         *  - Any status a key's @c copy returns passes through unchanged.
+         */
         template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_from(lower_type_ &&lower, callback_type_ &&callback) noexcept
             requires ordered_core_k
@@ -2006,7 +2212,14 @@ class snapshot_store {
                 std::forward<callback_type_>(callback));
         }
 
-        /** Files a tombstone over every key the newest published commit shows before @p upper. */
+        /**
+         *  @brief Files a tombstone over every key the newest published commit
+         *      shows before @p upper.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         *  - Any status a key's @c copy returns passes through unchanged.
+         */
         template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
         status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback) noexcept
             requires ordered_core_k
@@ -2021,9 +2234,14 @@ class snapshot_store {
         /**
          *  @brief Files a revised copy of every value the newest published commit shows in [
          *      @p lower, @p upper ).
+         *  @param[in] lower Lower bound (inclusive).
+         *  @param[in] upper Upper bound (exclusive).
          *  @param[in] callback Callback invoked with (key const &, mapped &) per element. Must be
          *      @c noexcept.
-         *  @return Success, or an allocation failure whose partial filing @c rollback drops.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         *  - Any status the element's @c copy returns passes through unchanged.
          */
         template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
                   typename callback_type_ = no_op_t>
@@ -2048,8 +2266,15 @@ class snapshot_store {
             return success_k;
         }
 
-        /** Makes every staged version visible under one stamp, then prunes what the group masked.
-         *  The publication stays usable afterwards and starts a fresh group on the next write. */
+        /**
+         *  @brief Makes every staged version visible under one stamp, then prunes
+         *      what the group masked.
+         *
+         *  The publication stays usable afterwards and starts a fresh group on the next write.
+         *
+         *  @par Statuses:
+         *  - @c operation_not_permitted_k The publication was moved from.
+         */
         status_t publish() noexcept {
             if (!store_) return operation_not_permitted_k;
             if (staged_identifiers_.size() == 0) return success_k;
@@ -2605,8 +2830,10 @@ class snapshot_store {
 
     /**
      *  @brief Stages @p stage into a publication of its own and publishes it under one stamp.
-     *  @return Success, or the refusal @p stage met, after which the publication drops everything
-     *      it filed and the store is exactly as it was.
+     *
+     *  @par Statuses:
+     *  - Any status @p stage returns passes through unchanged, after which the publication drops
+     *    everything it filed and the store is exactly as it was.
      */
     template <typename stage_type_>
     status_t publish_group_(stage_type_ &&stage) noexcept {
@@ -2781,7 +3008,7 @@ class snapshot_store {
     /**
      *  @brief Finds a member @b equal to @p comparable as of the newest published commit.
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
-     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+     *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
      */
@@ -2821,7 +3048,7 @@ class snapshot_store {
      *  with. It asks for a first key rather than an ordinal, so a core without subtree counts
      *  answers it too.
      *
-     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+     *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when nothing is readable. Must be
      *      @c noexcept.
@@ -2841,10 +3068,12 @@ class snapshot_store {
 
     /**
      *  @brief Removes the smallest member and hands it over, or reports the store is empty.
-     *  @return @c key_not_found_k when nothing was there, so emptiness needs no second probe.
      *
      *  The removal publishes a tombstone rather than dropping the version, so a store drained by
      *  popping keeps its versions until a @c vacuum reclaims them.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k Nothing was there, so emptiness needs no second probe.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
     status_t pop_smallest(callback_found_type_ &&callback_found = {},
@@ -2984,7 +3213,7 @@ class snapshot_store {
      *  an older snapshot. A transaction that needs its own snapshot's ordinal walks instead.
      *
      *  @param[in] ordinal Zero-based position among the keys the store currently shows.
-     *  @param[in] callback_found Callback to receive a `value_t const &`. Must be
+     *  @param[in] callback_found Callback to receive a <tt>value_t const &</tt>. Must be
      *      @c noexcept.
      *  @param[in] callback_missing Callback triggered when fewer keys are readable. Must be
      *      @c noexcept.
@@ -3048,7 +3277,6 @@ class snapshot_store {
     /**
      *  @brief Publishes @p value under a stamp of its own, then prunes what that hid.
      *  @param[in] value Element to write, moved into the store.
-     *  @return Success or an allocation failure that leaves the store untouched.
      */
     status_t upsert(value_t &&value) noexcept {
         auto maybe_identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(value));
@@ -3058,7 +3286,13 @@ class snapshot_store {
         return publish_directly_(*maybe_identifier, std::move(versioned));
     }
 
-    /** Publishes @p value only if the key is absent, reporting a clash rather than hiding it. */
+    /**
+     *  @brief Publishes @p value only if the key is absent, reporting a clash
+     *      rather than hiding it.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k The key is readable now.
+     */
     status_t insert(value_t &&value) noexcept {
         expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
         if (!key_is_present) return key_is_present.status();
@@ -3077,7 +3311,6 @@ class snapshot_store {
      *      be @c noexcept.
      *  @param[in] callback_existing Invoked with the element already published, which keeps its
      *      value. Must be @c noexcept.
-     *  @return Success, or an allocation failure that leaves the store untouched.
      *  @note Probe and report are both answered at the newest published stamp, so an element a
      *      still-open transaction staged is neither a clash nor handed to @p callback_inserted.
      */
@@ -3110,7 +3343,12 @@ class snapshot_store {
         return success_k;
     }
 
-    /** Publishes @p value only if the key is already there. */
+    /**
+     *  @brief Publishes @p value only if the key is already there.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k The key is not readable now.
+     */
     status_t update(value_t &&value) noexcept {
         expected<bool> const key_is_present = contains(mapping_key_or_itself<value_t>(value));
         if (!key_is_present) return key_is_present.status();
@@ -3121,14 +3359,20 @@ class snapshot_store {
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, refusing it if any key exists.
      *
-     *  @return Success, @c key_already_exists_k, @c write_conflict_k or @c read_conflict_k when
-     *      another writer took one of these keys while the group was being staged, or an allocation
-     *      failure. Nothing is published unless all of it is.
+     *  Nothing is published unless all of it is.
      *
      *  @note The clash is probed at the newest published stamp while the group is staged against
      *      the snapshot the call opened on, so a key this very range inserted earlier is no clash.
      *
      *  Duplicates inside the range therefore collapse onto one version rather than being refused.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key of the range is readable now.
+     *  - @c write_conflict_k Another writer took one of these keys while the group was being
+     *    staged.
+     *  - @c read_conflict_k From @c serializable_k up, another writer changed a key the group read
+     *    while it was being staged.
+     *  - Any status the element's or a key's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -3142,8 +3386,13 @@ class snapshot_store {
 
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, skipping the keys already there.
-     *  @return Success, @c write_conflict_k or @c read_conflict_k when another writer took one of
-     *      these keys, or an allocation failure. Nothing is published unless all of it is.
+     *
+     *  Nothing is published unless all of it is.
+     *
+     *  @par Statuses:
+     *  - @c write_conflict_k Another writer took one of these keys.
+     *  - @c read_conflict_k From @c serializable_k up, another writer changed a key the group read.
+     *  - Any status the element's or a key's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -3154,8 +3403,12 @@ class snapshot_store {
 
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, whether or not the keys are there.
-     *  @return Success, @c write_conflict_k when another writer took one of these keys - this path
-     *      reads none of them - or an allocation failure. Nothing is published unless all of it is.
+     *
+     *  Nothing is published unless all of it is.
+     *
+     *  @par Statuses:
+     *  - @c write_conflict_k Another writer took one of these keys - this path reads none of them.
+     *  - Any status the element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -3166,9 +3419,14 @@ class snapshot_store {
 
     /**
      *  @brief Publishes [ @p first, @p last ) under one stamp, refusing it if any key is absent.
-     *  @return Success, @c key_not_found_k, @c write_conflict_k or @c read_conflict_k when another
-     *      writer took one of these keys, or an allocation failure. Nothing is published unless all
-     *      of it is.
+     *
+     *  Nothing is published unless all of it is.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k A key of the range is absent at the group's snapshot.
+     *  - @c write_conflict_k Another writer took one of these keys.
+     *  - @c read_conflict_k From @c serializable_k up, another writer changed a key the group read.
+     *  - Any status the element's or a key's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -3182,7 +3440,9 @@ class snapshot_store {
      *  @param[in] comparable Object comparable to @c value_t and convertible to @c identifier_t.
      *  @param[in] callback_found Callback receiving the erased element. Must be @c noexcept.
      *  @param[in] callback_missing Callback triggered if nothing was found. Must be @c noexcept.
-     *  @return @c key_not_found_k if nothing was readable, otherwise success.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k Nothing was readable.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -3215,8 +3475,6 @@ class snapshot_store {
     /**
      *  @brief Drops every version of every key, published, staged and historical alike.
      *
-     *  @return @c operation_not_permitted_k while any transaction still holds a snapshot.
-     *
      *  Refused rather than documented as a hole: a reader that opened before the call would
      *  otherwise watch its own versions vanish, which is the single promise this store exists to
      *  make, and @c live_count_ would be reset while an open transaction can still publish over it.
@@ -3225,6 +3483,9 @@ class snapshot_store {
      *
      *  @note The generation and stamp counters keep running. Rewinding either would hand a future
      *      transaction a number an open one already carries, and both are compared by value.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k Any transaction still holds a snapshot.
      */
     status_t clear() noexcept {
         if (order_().open_snapshots() != 0) return operation_not_permitted_k;
@@ -3245,7 +3506,7 @@ class snapshot_store {
      *  @b once - a committed tombstone and every version no commit has published yet are both left
      *  out. Nothing may write to the store while the walk runs.
      *
-     *  @param[in] callback Callback to receive a `value_t const &`. Must be @c noexcept.
+     *  @param[in] callback Callback to receive a <tt>value_t const &</tt>. Must be @c noexcept.
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
     template <typename callback_type_ = no_op_t>
@@ -3271,7 +3532,9 @@ class snapshot_store {
      *  @param[in] upper Upper bound, exclusive.
      *  @param[in] callback Callback handed each element about to be tombstoned. Must be
      *      @c noexcept.
-     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     *
+     *  @par Statuses:
+     *  - Any status a key's @c copy returns passes through unchanged.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -3292,7 +3555,9 @@ class snapshot_store {
      *      @c erase_range() includes.
      *  @param[in] callback Callback handed each element about to be tombstoned. Must be
      *      @c noexcept.
-     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     *
+     *  @par Statuses:
+     *  - Any status a key's @c copy returns passes through unchanged.
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
     status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
@@ -3311,7 +3576,9 @@ class snapshot_store {
      *      @c erase_range() excludes.
      *  @param[in] callback Callback handed each element about to be tombstoned. Must be
      *      @c noexcept.
-     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     *
+     *  @par Statuses:
+     *  - Any status a key's @c copy returns passes through unchanged.
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
     status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
@@ -3334,7 +3601,9 @@ class snapshot_store {
      *  @param[in] upper Upper bound, exclusive.
      *  @param[in] callback Callback invoked with (key const &, mapped &) per element. Must be
      *      @c noexcept.
-     *  @return Success, or an allocation failure that leaves the store exactly as it was.
+     *
+     *  @par Statuses:
+     *  - Any status the element's @c copy returns passes through unchanged.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -3361,7 +3630,7 @@ class snapshot_store {
      *
      *  @param[in] lower Lower bound, inclusive.
      *  @param[in] upper Upper bound, exclusive.
-     *  @param[inout] generator Random number generator, such as @c std::mt19937.
+     *  @param[in,out] generator Random number generator, such as @c std::mt19937.
      *  @param[in] callback Callback handed the drawn element. Must be @c noexcept. Never invoked
      *      when the window shows nothing.
      */
@@ -3395,8 +3664,8 @@ class snapshot_store {
      *
      *  @param[in] lower Lower bound, inclusive.
      *  @param[in] upper Upper bound, exclusive.
-     *  @param[inout] generator Random number generator, such as @c std::mt19937.
-     *  @param[inout] seen How many keys have been offered so far, which may span several calls.
+     *  @param[in,out] generator Random number generator, such as @c std::mt19937.
+     *  @param[in,out] seen How many keys have been offered so far, which may span several calls.
      *  @param[in] reservoir_capacity How many samples the buffer holds.
      *  @param[out] reservoir Random-access iterator to that buffer.
      */

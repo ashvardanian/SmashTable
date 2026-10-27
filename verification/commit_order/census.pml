@@ -11,18 +11,17 @@
  *  its own, which is the mark a pruning committer computes without landing a stamp.
  *
  *  @verify pass sc,rc11
- *  @verify fail sc,rc11 watermark_first=false: @c republish_mark_ reads the watermark before it
- *      scans the buckets; scanning first, it misses a reader that joined in between, while the
- *      watermark read that follows has already passed the stamp that reader was handed
- *  @verify fail rc11 take_read_modify_write=false: @c take_snapshot reads the watermark through a
- *      read-modify-write after it joins, which hands the join to every later read-modify-write of
- *      the watermark; with a plain acquire load, a commit landing after the reader took its stamp
- *      scans the buckets without seeing the join, and its mark passes the stamp the reader holds
+ *  @verify fail sc,rc11 watermark_first=false: scanning first, it misses a reader that joined
+ *      in between, while the watermark read that follows has already passed the stamp that
+ *      reader was handed
+ *  @verify fail rc11 take_read_modify_write=false: with a plain acquire load, a commit landing
+ *      after the reader took its stamp scans the buckets without seeing the join, and its mark
+ *      passes the stamp the reader holds
  */
 #define thread_count 3
 #define location_count 9
 #define history_depth 6
-#include "protocol.pml"
+#include <commit_order/protocol.pml>
 
 proctype committer(byte t) {
     byte scanned;

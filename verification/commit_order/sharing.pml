@@ -11,14 +11,14 @@
  *  still carries the claim it was shared from, so that claim's drain leaves the bucket occupied.
  *
  *  @verify pass sc,rc11,far
- *  @verify fail far share_order=order_relaxed: @c share_snapshot posts the shared member with
- *      release; relaxed, far memory lands it only after the claim it was shared from drained the
- *      bucket, and the mark that drain recomputes passes the shared snapshot
+ *  @verify fail far share_order=order_relaxed: relaxed, far memory lands it only after the
+ *      claim it was shared from drained the bucket, and the mark that drain recomputes passes
+ *      the shared snapshot
  */
 #define thread_count 3
 #define location_count 9
 #define history_depth 7
-#include "protocol.pml"
+#include <commit_order/protocol.pml>
 
 proctype committer(byte t) {
     byte scanned;

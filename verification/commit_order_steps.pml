@@ -5,62 +5,21 @@
  *  @brief @c basic_commit_order from `include/smashtable/shared.hpp` as inlines, shared by every
  *      model that publishes commits or counts readers.
  *
- *  Two halves stand here. The ring is what @c begin_commit draws a stamp from and @c end_commit
- *  lands it into, walking the watermark forward through the slots that already carry their stamp.
- *  The census is what @c take_snapshot, @c share_snapshot and @c retire_snapshot_ move a reader
- *  through: readers are counted per bucket rather than listed one by one, a bucket carries the
- *  watermark it was opened at as a floor for every member of it, and the mark is the least floor
- *  over the occupied buckets.
+ *  The ring is what @c begin_commit draws a stamp from and @c end_commit lands it into,
+ *  walking the watermark forward through the slots that already carry their stamp.
+ *  The census is what @c take_snapshot, @c share_snapshot and @c retire_snapshot_ move
+ *  a reader through. Include after <tt>weak_memory.pml</tt>, after <tt>monitor_wait.pml</tt>, and
+ *  after the model named its words and sized @c ring, which is @c ring_k. A model with
+ *  a census also sizes @c buckets, which is @c buckets_k.
  *
- *  Include after `weak_memory.pml`, whose accesses every step here is spelled in, after
- *  `monitor_wait.pml`, whose futex-style wait the ring-room wait in @c land_stamp parks on, and
- *  after the model named its words and sized @c ring, which is @c ring_k. The words every model
- *  defines:
- *  - @c commits, the counter @c begin_commit adds to, which is @c commits_;
- *  - @c published_stamp, the watermark, which is @c published_stamp_;
+ *  - @c commits, the counter @c begin_commit adds to, which is @c commits_.
+ *  - @c published_stamp, the watermark, which is @c published_stamp_.
  *  - @c landed_at of a slot in `0 .. ring - 1`, which is @c landed_ indexed by stamp.
- *
- *  A model with a census also sizes @c buckets, which is @c buckets_k, and defines:
- *  - @c head, the monotone bucket cursor, which is @c head_;
- *  - @c members of a bucket in `0 .. buckets - 1`, the tagged live count, which is @c snapshots_;
- *  - @c floors of a bucket in `0 .. buckets - 1`, the watermark each bucket was opened at.
- *
- *  A model with no census never expands the census inlines, so it names none of those words: its
- *  claim is the watermark's read-modify-write alone, and giving it back gives nothing back. One
- *  bucket is the head's own, so it has nowhere to rotate to and a reader handing over to the next
- *  pins the first one's floor for good; that is the configuration the `buckets_k >= 2` static
- *  assert refuses, and a model that wants to see it fail asks for it by name.
- *
- *  Every modelled access is its own step, since the step boundary is what the memory model orders.
- *  The purely local statement that reads an access's result shares that access's @c atomic instead
- *  of standing on a step of its own, so a thread offers the schedule one point per access rather
- *  than one point per line; nothing an access can observe moves across such a boundary.
- *
- *  Every inline uses the caller's scratch, and a caller declares what its own calls reach:
- *  @c draw_stamp uses @c seen; @c land_stamp uses @c seen, @c observed and @c moved;
- *  @c take_snapshot uses @c observed, @c opened and @c exchanged; @c retire_snapshot uses
- *  @c observed, @c exchanged and @c mark; @c republish_mark uses @c observed, @c opened, @c least,
- *  @c scanned and @c exchanged; @c share_snapshot uses none. The full set is
- *  `int seen, observed, opened, least, mark`, `byte scanned` and `bool exchanged, moved`.
- *
- *  The knobs, each set on the `@verify` lines of the scenarios whose assertions it breaks:
- *  - @c ring_check, the wait in @c end_commit before a ring slot is reused;
- *  - @c watermark_notify, the wake @c end_commit sends once its walk moved the watermark;
- *  - @c done_order, the order the landed mark is stored with;
- *  - @c advance_read_modify_write, the read-modify-write that reads the watermark before the walk;
- *  - @c walk_order, the order the walk loads each next slot's mark with;
- *  - @c take_read_modify_write, the read-modify-write @c take_snapshot reads the watermark through;
- *  - @c watermark_first, the watermark read before the buckets are scanned;
- *  - @c bucket_retag, a bucket shut to arrivals before its floor is stored;
- *  - @c head_watermark, the head bucket sealed against the watermark rather than the mark;
- *  - @c share_order, the order the shared member is posted with.
- *
- *  Left out: @c low_water_mark_, since a model acts on the mark it just computed, which is the
- *  freshest such a read can be, and the word is only ever raised with a maximum and only ever read
- *  as a lower bound; @c generation_ and @c next_generation, which date transactions rather than
- *  their visibility and order nothing here; @c await_published, whose wait on the watermark is the
- *  ring-room wait's shape on the same word and the same wake; and the @c solitary_k path, which has
- *  no second thread to order against.
+ *  - With a census, @c head, the monotone bucket cursor, which is @c head_.
+ *  - With a census, @c members of a bucket, the tagged live count, which is @c snapshots_.
+ *  - With a census, @c floors of a bucket, the watermark each bucket was opened at.
+ *  - Scratch: <tt>int seen, observed, opened, least, mark</tt>, <tt>byte scanned</tt>,
+ *    <tt>bool exchanged, moved</tt>.
  */
 #if ring < 1
 #error "ring is one or more"

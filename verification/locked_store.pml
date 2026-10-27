@@ -4,51 +4,39 @@
  *  @date September 11, 2026
  *  @brief @c locked_store: one shared mutex per call, and a reader inside it seeing a commit whole.
  *
- *  Every call in `include/smashtable/locked_store.hpp` takes the store's shared mutex exactly when
- *  it reaches the wrapped store, shared where it reads and exclusive where it writes, and a
- *  transaction's staged state lives outside the mutex.
+ *  Every call in <tt>include/smashtable/locked_store.hpp</tt> takes the store's shared mutex
+ *  exactly when it reaches the wrapped store, shared where it reads and exclusive where it
+ *  writes. Two writers and two readers. The first writer stages under the unique lock,
+ *  writing only the store-side reservation, then commits under a second unique lock; the
+ *  second commits straight away. This is the smallest model over the shared mutex, so the
+ *  tally of waiting writers and the lost wake-ups run here.
  *
- *  Two writers and two readers. The first writer stages under the unique lock, writing only the
- *  store-side reservation, then commits under a second unique lock; the second commits straight
- *  away. A commit reads the value and writes the next one with its stamp; each reader takes the
- *  shared lock and reads both.
- *
- *  Exclusion: no reader is inside while a writer is, and no writer while anyone else is.
- *
- *  A reader sees a commit whole, the value with its stamp, and never the reservation as a value:
- *  staging writes only the reservation. No commit is lost: once both writers are done, the value
- *  counts both commits.
- *
- *  This is the smallest model over the shared mutex, so the tally of waiting writers and the lost
- *  wake-ups run here; the models that layer a store protocol on the same mutex run its defaults.
+ *  - Exclusion: no reader is inside while a writer is, and no writer while anyone else is.
+ *  - A reader sees a commit whole, the value with its stamp, and never the reservation as a value.
+ *  - No commit is lost: once both writers are done, the value counts both commits.
  *
  *  @verify pass sc,rc11
  *  @verify pass sc,rc11 queued=true
- *  @verify fail rc11 unlock_order=order_relaxed: the unlock's release carries the commit's value
- *      and stamp to the next holder; relaxed, the next writer reads the value from before that
- *      commit and writes the same next value over it, and one commit is lost
- *  @verify fail rc11 lock_shared_order=order_relaxed: the shared lock's acquire takes in what the
- *      last holder released; relaxed, a reader inside its shared lock reads a commit's value
- *      without its stamp
- *  @verify fail rc11 lock_order=order_relaxed: the unique lock's acquire takes in what the last
- *      holder released; relaxed, the second writer reads the value from before the first writer's
- *      commit and writes the same next value over it, and one commit is lost
- *  @verify fail rc11 queued=true unlock_order=order_relaxed: a writer that took the lock through
- *      the tally still hands over through the unlock's release; relaxed, the next writer reads the
+ *  @verify fail rc11 unlock_order=order_relaxed: relaxed, the next writer reads the value from
+ *      before that commit and writes the same next value over it, and one commit is lost
+ *  @verify fail rc11 lock_shared_order=order_relaxed: relaxed, a reader inside its shared lock
+ *      reads a commit's value without its stamp
+ *  @verify fail rc11 lock_order=order_relaxed: relaxed, the second writer reads the value
+ *      from before the first writer's commit and writes the same next value over it, and one
+ *      commit is lost
+ *  @verify fail rc11 queued=true unlock_order=order_relaxed: relaxed, the next writer reads the
  *      value from before that commit, and one commit is lost
- *  @verify stuck sc recheck=false: a parked reader re-reads the word after arming, as the futex
- *      does under its lock; without it, the writer's unlock and wake land between the reader's
- *      refused attempt and its arming, and the reader sleeps through the handoff for good
- *  @verify stuck sc queued=true last_reader_notify=false: @c unlock_shared wakes the parked
- *      writers when the last reader leaves; without the wake, a writer parked behind the readers
- *      sleeps once they are gone, since nothing else writes the word
+ *  @verify stuck sc recheck=false: without it, the writer's unlock and wake land between the
+ *      reader's refused attempt and its arming, and the reader sleeps through the handoff for good
+ *  @verify stuck sc queued=true last_reader_notify=false: without the wake, a writer parked behind
+ *      the readers sleeps once they are gone, since nothing else writes the word
  */
 #define thread_count 4
 #define location_count 4
 #define history_depth 14
-#include "weak_memory.pml"
-#include "monitor_wait.pml"
-#include "spin_shared_mutex.pml"
+#include <weak_memory.pml>
+#include <monitor_wait.pml>
+#include <spin_shared_mutex.pml>
 
 /** The words: the mutex, the store's reservation of the key, and the value with its stamp. */
 #define mutex 0

@@ -206,9 +206,9 @@ struct hash_slots_count_t {
  *  and takes the hasher's return type as the @c offset_t that indexes slots.
  *
  *  Provides three views of a stored element:
- *  - @c value_t: mutable reference pair `mapping<key const&, mapped&>` for iteration.
- *  - @c value_const_t: immutable reference pair `mapping<key const&, mapped const&>` for lookups.
- *  - @c value_copy_t: owned pair `mapping<key, mapped>` for extraction.
+ *  - @c value_t: mutable reference pair <tt>mapping<key const&, mapped&></tt> for iteration.
+ *  - @c value_const_t: immutable reference pair <tt>mapping<key const&, mapped const&></tt> for lookups.
+ *  - @c value_copy_t: owned pair <tt>mapping<key, mapped></tt> for extraction.
  *
  *  @tparam value_type_ Key type for sets, or @c mapping<K,V> for maps. May be const-qualified.
  *  @tparam hasher_type_ Hash function object, must be callable with the key type.
@@ -558,7 +558,7 @@ constexpr hash_window_slots_t hash_window_slots(hash_bucket_head_t const &head, 
  *
  *  Skips empty and deleted slots outright through @c countr_zero, rather than walking every one.
  *
- *  @param[inout] slot Reference to a slot in the bucket. Its @c slot_ field is modified during
+ *  @param[in,out] slot Reference to a slot in the bucket. Its @c slot_ field is modified during
  *      iteration to point to each populated slot sequentially.
  *  @param[in] callback Functor invoked for each populated slot, receiving @c hash_slot_ref.
  *  @return Whether the bucket ran out or a halting callback stopped the walk first.

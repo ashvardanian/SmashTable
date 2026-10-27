@@ -5,26 +5,17 @@
  *  @brief Spin model of @c spin_shared_mutex_t from `include/smashtable/shared.hpp`, as one word:
  *      readers counted in the low bits, a writer's hold as one high bit.
  *
- *  The tally of waiting writers is fairness and changes nothing a model asserts, so it is left out
- *  by default. A lock is a bounded add with acquire, @c atomic_fetch_add_if_at_most, that writes
- *  nothing when it loses, then a wait on the word; an unlock is a posted clear with release. The
- *  knobs @c lock_order, @c lock_shared_order and @c unlock_order weaken the orders, for the model
- *  that includes this to show what each carries.
+ *  A lock is a bounded add with acquire, @c atomic_fetch_add_if_at_most, that writes nothing when
+ *  it loses, then a wait on the word; an unlock is a posted clear with release. A loser parks as
+ *  @c standard_waiting_policy_t parks once its spin is spent: the futex-style @c wait_on of
+ *  <tt>monitor_wait.pml</tt>, woken only where the code notifies, which is every @c unlock and the
+ *  @c unlock_shared that lets the last reader out.
  *
- *  A loser parks as @c standard_waiting_policy_t parks once its spin is spent: the futex-style
- *  @c wait_on of `monitor_wait.pml` on the value its failed attempt read, woken only where the code
- *  notifies, which is every @c unlock and the @c unlock_shared that lets the last reader out. That
- *  is the one policy that can lose a wake-up: a spin hint returns on its own by the
- *  @c waiting_policy contract, and a monitored or capped park wakes on more than a notify. A writer
- *  spinning without the tally never parks, so it polls the word instead.
- *
- *  @c queued spells the slow path: a writer whose first attempt lost joins a tally of waiting
- *  writers, which turns new readers away, parks until the holders are gone, and leaves the tally
- *  in the very write that takes the lock. The unlock posts the held bit off without reading the
- *  word, as the code does, which far memory lands later unless the order is a release.
- *
- *  Include after `weak_memory.pml` and `monitor_wait.pml`. Every inline here uses the caller's
- *  @c seen as its scratch.
+ *  - That is the one policy that can lose a wake-up.
+ *  - A writer spinning without the tally never parks, so it polls the word instead.
+ *  - @c queued spells the slow path: a writer whose first attempt lost joins a tally.
+ *  - Include after <tt>weak_memory.pml</tt> and <tt>monitor_wait.pml</tt>.
+ *  - Every inline here uses the caller's @c seen as its scratch.
  */
 
 /** The word's fields, as in the code: the held bit above a tally of waiting writers, two wide here,

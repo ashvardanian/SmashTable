@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=61", "wheel"]
-build-backend = "setuptools.build_meta"
+requires = ["scikit-build-core>=0.11"]
+build-backend = "scikit_build_core.build"
 
 [project]
 name = "smashtable"
-version = "1.0.0-rc.1"
+dynamic = ["version"]
 description = "Safer associative containers with DBMS-like transactions in Python"
 readme = "README.md"
 authors = [{ name = "Ash Vardanian" }]
@@ -24,8 +24,19 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 
-[tool.setuptools]
-packages = []
+[tool.scikit-build]
+build.targets = ["smashtable_python"]
+build-dir = "build_python/{wheel_tag}"
+install.components = ["smashtable_python"]
+wheel.packages = []
+
+[tool.scikit-build.cmake.define]
+SMASHTABLE_BUILD_PYTHON = "ON"
+
+[tool.scikit-build.metadata.version]
+input = "VERSION"
+provider = "scikit_build_core.metadata.regex"
+regex = "(?P<value>.+)"
 
 [project.urls]
 Homepage = "https://github.com/ashvardanian/SmashTable"
@@ -63,10 +74,16 @@ target-version = "py312"
 line-length = 120
 
 [tool.ruff.lint]
-extend-select = ["I", "TID"]
+extend-select = ["D", "I", "TID"]
 
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"!python/**" = ["D"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["smashtable"]

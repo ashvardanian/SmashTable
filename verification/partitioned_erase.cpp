@@ -6,25 +6,19 @@
  *      one stamp, spelled over @c std::atomic with an explicit order at every site.
  *
  *  An eraser holds both partitions for the whole span, draws one stamp through @c begin_commit,
- *  writes both tombstones under it and lands the stamp once through @c end_commit, which is what
- *  @c publish_every_part_ does for @c erase_range and its neighbours. A reader takes a claim and
- *  reads each partition under that partition's mutex; a watcher holds nothing and claims nothing,
- *  reading the watermark with acquire and the tombstones relaxed, which is what shows the one stamp
- *  rather than the mutual exclusion makes the window whole. The same scenario is
- *  `partitioned_erase.pml`.
- *
- *  No census, as in the model: nothing here prunes, so a claim is the stamp @c take_snapshot hands
- *  back and the buckets, the floors and the low-water mark are left out.
+ *  writes both tombstones under it and lands the stamp once through @c end_commit. A reader takes a
+ *  claim and reads each partition under that partition's mutex; a watcher holds nothing and claims
+ *  nothing, reading the watermark with acquire and the tombstones relaxed. No census, as in the
+ *  model. The same scenario is <tt>partitioned_erase.pml</tt>.
  *
  *  @verify pass sc,rc11,imm partitioned_erase
- *  @verify fail sc,rc11,imm partitioned_erase_one_stamp_false: @c publish_every_part_ publishes
- *      every staged partition under one stamp; with a stamp per partition, a reader drawing between
- *      two publications names the first partition's stamp and not the second's, and both observers
- *      see the window half erased, an interleaving that needs no reordering
+ *  @verify fail sc,rc11,imm partitioned_erase_one_stamp_false: with a stamp per partition, a reader
+ *      drawing between two publications names the first partition's stamp and not the second's, and
+ *      both observers see the window half erased
  */
 #include <atomic> // `std::atomic` - the mutexes, the tombstone stamps, the watermark and the ring
 
-#include "genmc.hpp"
+#include <genmc.hpp>
 
 /** The header's choices; each mutant entry changes one. */
 struct knobs_t {

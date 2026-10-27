@@ -98,8 +98,11 @@ class immutable_packed_array_view {
 
     /**
      *  @brief Reads the saved form at the front of @p bytes, which may sit at any alignment.
-     *  @return The view, or @c invalid_argument_k when @p bytes ends before the words its header
-     *      names, or the header holds a base or a width that @c value_t cannot.
+     *  @return The view.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k @p bytes ends before the words its header names, or the header
+     *    holds a base or a width that @c value_t cannot.
      */
     static expected<immutable_packed_array_view> make(std::span<std::byte const> bytes) noexcept {
         packed_array_header_t header;
@@ -193,11 +196,18 @@ class immutable_packed_array {
      *  @brief Builds the array of @p count values from @p base to @p maximum inclusive, pulled in
      *      order through @p fill, so no caller ever holds them all at once.
      *
-     *  @param[in] fill Answers `expected<std::span<value_t const>>` for a position, holding the
+     *  @param[in] count Number of values in the array.
+     *  @param[in] base Smallest value any of them may take.
+     *  @param[in] maximum Largest value any of them may take.
+     *  @param[in] fill Answers <tt>expected<std::span<value_t const>></tt> for a position, holding the
      *      values from that position on - at least one while any remain, possibly all of them.
-     *  @return The array, the first failure @p fill reports, @c invalid_argument_k when @p base
-     *      exceeds @p maximum or a value falls outside them or short of @p count, or
-     *      @c out_of_memory_heap_k.
+     *  @param[in] allocator The allocator instance to use.
+     *  @return The array.
+     *
+     *  @par Statuses:
+     *  - The first failure @p fill reports.
+     *  - @c invalid_argument_k @p base exceeds @p maximum or a value falls outside them or short of
+     *    @p count.
      */
     template <typename fill_type_>
     static expected<immutable_packed_array> make(std::size_t count, value_t base, value_t maximum, fill_type_ &&fill,
@@ -265,8 +275,10 @@ class immutable_packed_array {
     /**
      *  @brief Writes the saved form into the front of @p bytes, for
      *      @c immutable_packed_array_view to read in place.
-     *  @return @c success_k, or @c invalid_argument_k when @p bytes is shorter than
-     *      @c saved_bytes, in which case nothing is written.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k @p bytes is shorter than @c saved_bytes, in which case
+     *    nothing is written.
      */
     status_t save(std::span<std::byte> bytes) const noexcept {
         if (bytes.size() < saved_bytes()) return invalid_argument_k;

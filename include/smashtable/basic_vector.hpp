@@ -17,8 +17,8 @@
  *  @section basic_vector_element_type Element Type
  *
  *  - Nothrow move-constructible (required); nothrow default-constructible for @c resize()
- *  - For @c emplace_back(): Nothrow constructible OR provides `::make(...) → expected<T>`
- *  - For @c copy()/resize(): Nothrow copy-constructible OR provides `.copy() const → expected<T>`
+ *  - For @c emplace_back(): Nothrow constructible OR provides <tt>::make(...) → expected<T></tt>
+ *  - For @c copy()/resize(): Nothrow copy-constructible OR provides <tt>.copy() const → expected<T></tt>
  *
  *  @section basic_vector_allocator_type Allocator Type
  *
@@ -178,7 +178,9 @@ class basic_vector {
      *  @brief Reserves capacity for at least @p new_capacity elements. Grows by at least a
      *      doubling, so asking for one more slot at a time still amortizes to constant cost.
      *  @param[in] new_capacity The new capacity.
-     *  @return Success, or @c out_of_memory_heap_k if allocation fails or the request is invalid.
+     *
+     *  @par Statuses:
+     *  - @c out_of_memory_heap_k The byte count of @p new_capacity overflows the size type.
      */
     status_t reserve(std::size_t new_capacity) noexcept {
         if (new_capacity <= capacity_) return success_k;
@@ -228,7 +230,6 @@ class basic_vector {
      *      strategy if needed.
      *
      *  @param[in] value Element to append (moved into the vector).
-     *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      */
     status_t push_back(value_t &&value) noexcept {
         if (size_ >= capacity_) {
@@ -270,7 +271,6 @@ class basic_vector {
      *
      *  @param[in] position Index the new element takes, at most @c size().
      *  @param[in] value Element to insert (moved into the vector), never one of this vector's own.
-     *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      */
     status_t insert(std::size_t position, value_t &&value) noexcept {
         assert((&value < data_ || &value >= data_ + size_) && "insert cannot take an element of this very vector");
@@ -379,7 +379,6 @@ class basic_vector {
      *  @tparam args_types_ Types of arguments to forward to element constructor.
      *
      *  @param[in] args Arguments to forward to element constructor.
-     *  @return Success, or @c out_of_memory_heap_k if reallocation fails.
      *
      *  @note For types with potentially throwing constructors, provide a static @c .make() method
      *      returning @c expected<value_t> to enable exception-free construction.
@@ -432,7 +431,6 @@ class basic_vector {
      *  @brief Resizes the vector to @p new_size without constructing the new elements, so their
      *      first writer can be a kernel or a byte copy rather than the host.
      *  @param[in] new_size The new size.
-     *  @return Success, or @c out_of_memory_heap_k if reallocation fails, which changes nothing.
      */
     status_t resize(assume_uninitialized_t, std::size_t new_size) noexcept
         requires std::is_trivially_copyable_v<value_t>
@@ -516,12 +514,14 @@ class basic_vector {
 
     /**
      *  @brief Swaps contents with another vector.
-     *  @param[inout] other The vector to swap with.
-     *  @return Success, or @c invalid_argument_k if allocators are incompatible.
+     *  @param[in,out] other The vector to swap with.
      *
      *  @note If @c propagate_on_container_swap is false (e.g., @c std::allocator), allocators must
      *      compare equal. Attempting to swap vectors with unequal non-propagating allocators
      *      returns @c invalid_argument_k and leaves both vectors unchanged.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k Allocators are incompatible.
      */
     status_t swap(basic_vector &other) noexcept {
         // For non-propagating allocators, they must be equal (C++ standard requirement)

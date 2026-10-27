@@ -263,7 +263,7 @@ static char const doc_View_get[] =                                              
     "Value for a key inside this transaction, or default when the key is absent.\n"            //
     "\n"                                                                                       //
     "Reads this transaction's own uncommitted writes, and otherwise the state as of\n"         //
-    "when the transaction opened. It does NOT see writes another transaction has staged but\n" //
+    "when the transaction opened. It does not see writes another transaction has staged but\n" //
     "not committed, so a read is never dirty.\n"                                               //
     "\n"                                                                                       //
     "Repeating a read is not guaranteed to return the same value: a committed write\n"         //

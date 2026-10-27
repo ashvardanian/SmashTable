@@ -8,30 +8,13 @@
  *  The stamps @c begin_commit draws from @c commits_, the ring of marks @c end_commit lands into
  *  and walks the watermark through, the buckets @c take_snapshot joins and @c retire_snapshot_
  *  leaves, the member @c share_snapshot posts onto a claim that is still live, and the mark
- *  @c republish_mark_ computes from the watermark and the occupied buckets. Readers are counted per
- *  bucket here, never listed one by one, and a claim is a bucket index and a stamp.
+ *  @c republish_mark_ computes from the watermark and the occupied buckets. The commit order
+ *  carries no mutex at all, and three orderings stand in its place.
  *
- *  The commit order carries no mutex at all, and three orderings stand in its place: a reader
- *  counts its snapshot into a bucket before reading the watermark through a read-modify-write, a
- *  mark reads the watermark before it scans the buckets, and a landing commit reads the watermark
- *  through a read-modify-write before walking the ring. A bucket is also shut to arrivals before
- *  its floor is replaced, which keeps a floor from moving under a member, yet no mark can tell: an
- *  opener whose count missed a joiner read the watermark earlier in its modification order than
- *  that joiner did, so the floor it stores stays at or below the joiner's stamp.
- *
- *  The mark never passes a snapshot a live claim names, which @c record_mark checks every mark
- *  anyone computes against. Each scenario beside this file plays the fewest threads and the fewest
- *  commits its own assertions can fail under, since each of either multiplies what has to be
- *  explored. The ring and one version per committer are `commit_order_publication.pml`'s, whose
- *  words this census leaves no room for.
- *
- *  Left out of every scenario: the @c low_water_mark_ word, since each role acts on the mark it
- *  just computed, which is the freshest such a read can be, and the pruner reads the word without
- *  any lock, where a stale read is a lower mark that frees less and never a version a live claim
- *  names; and @c generation_, which dates transactions rather than their visibility.
+ *  - The mark never passes a snapshot a live claim names, which @c record_mark checks.
  */
-#include "../weak_memory.pml"
-#include "../monitor_wait.pml"
+#include <weak_memory.pml>
+#include <monitor_wait.pml>
 
 #define ring 2
 
@@ -51,7 +34,7 @@
 #error "buckets is one or more"
 #endif
 
-#include "../commit_order_steps.pml"
+#include <commit_order_steps.pml>
 
 byte finished;          // the commits that finished
 bool reader_settled;    // the reader holds a claim, so every mark recorded now is checked against it

@@ -608,13 +608,15 @@ class partitioned_store {
      *
      *  @param[in] seed_front Fills one partition's front with the key that partition contributes.
      *  @param[in] step Receives the partition index and the key, and says whether to carry on.
-     *  @return Success, or the first refusal a refill met - recording a validated read allocates,
-     *      so a walk can fail before the keys run out.
      *  @warning Every partition must already be held for the length of the walk, and @p step runs
      *      under all of them - so a step reaching back into this store deadlocks against a mutex
      *      that does not recurse.
      *
      *  What @p seed_front and @p step could not do is theirs to report, and neither answers here.
+     *
+     *  @par Statuses:
+     *  - Any status a key's @c copy or a partition's @c upper_bound returns passes through
+     *    unchanged, as recording a validated read allocates and a walk can fail early.
      */
     template <typename parts_type_, typename seed_type_, typename step_type_>
     static status_t walk_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
@@ -701,10 +703,13 @@ class partitioned_store {
     /**
      *  @brief Hands @p callback, in merged order, every member from the fronts @p seed_front opens
      *      up to @p upper, excluded, or to the last member where @p upper is @c unbounded.
-     *  @param[in] seed_front Opens one partition's front, as `seed_front(part, fill)`, and answers
+     *  @param[in] seed_front Opens one partition's front, as <tt>seed_front(part, fill)</tt>, and answers
      *      what that read reported.
-     *  @return The first refusal a seed, a lookup or the walk itself met.
      *  @warning Every partition must already be held, as @c walk_merged_ requires.
+     *
+     *  @par Statuses:
+     *  - Any status @p seed_front, a partition's @c find or the merged walk returns passes through
+     *    unchanged, the first one met.
      */
     template <typename parts_type_, typename seed_type_, typename upper_type_, typename callback_type_>
     static status_t range_merged_(comparator_t const &comparator, parts_type_ &parts, seed_type_ &&seed_front,
@@ -1934,6 +1939,7 @@ class partitioned_store {
 
         /**
          *  @brief Stages @p element only if its key is free, and says which branch was taken.
+         *  @param[in] element The element to insert.
          *  @param[in] callback_inserted Receives the element once staged.
          *  @param[in] callback_existing Receives the element present, which refused the insert.
          */
@@ -2360,7 +2366,10 @@ class partitioned_store {
      *  @brief Builds a store whose every partition shares one comparator and one hasher.
      *  @param[in] comparator The instance every comparison consults, within and across partitions.
      *  @param[in] hasher The instance that maps an identifier to its partition.
-     *  @return The store, or the status that refused to build one of its partitions.
+     *  @return The store.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c make returns passes through unchanged.
      */
     static expected<partitioned_store> make(comparator_t const &comparator, hash_t const &hasher) noexcept {
         expected<partitions_t> parts = new_parts(comparator);
@@ -2371,7 +2380,10 @@ class partitioned_store {
     /**
      *  @brief Builds a store whose every partition allocates through a copy of @p allocator.
      *  @param[in] allocator Copied once per partition, so a stateful one accounts for each apart.
-     *  @return The store, or the status that refused to build one of its partitions.
+     *  @return The store.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c make returns passes through unchanged.
      */
     template <typename allocator_type_>
         requires requires(allocator_type_ const &allocator) { inner_store_t::make(allocator); }
@@ -2383,8 +2395,13 @@ class partitioned_store {
 
     /**
      *  @brief Builds partitions sharing a comparator, a hasher and copies of one allocator.
+     *  @param[in] comparator Comparator shared by every partition.
+     *  @param[in] hasher Hasher routing a key to its partition.
      *  @param[in] allocator Copied once per partition, so a stateful one accounts for each apart.
-     *  @return The store, or the status that refused to build one of its partitions.
+     *  @return The store.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c make returns passes through unchanged.
      */
     template <typename allocator_type_>
         requires requires(comparator_t const &comparator, allocator_type_ const &allocator) {
@@ -2475,7 +2492,11 @@ class partitioned_store {
      *  @param[in] comparable Anything the inner store compares against, convertible to identifiers.
      *  @param[in] callback_found Receives the element that was removed.
      *  @param[in] callback_missing Fires when no such element existed.
-     *  @return @c key_not_found_k when absent, so the answer is available without a second probe.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k The element is absent, so the answer is available without a second
+     *    probe.
+     *  - Any other status the owning partition's @c erase returns passes through unchanged.
      */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
@@ -2796,11 +2817,13 @@ class partitioned_store {
 
     /**
      *  @brief Erases the half-open range from every partition.
-     *  @return Success or a refusal, which @c erase_range_policy_k scopes: over parts that publish
-     *      under a stamp the first refusal, having published nothing; over any other part the last
-     *      refusal, after every partition was attempted and an unreported subset erased.
      *
      *  Over parts in one order one stamp covers the window, so no reader sees it half-erased.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c erase_range returns passes through as @c erase_range_policy_k
+     *    scopes it: the first refusal where parts publish under a stamp, publishing nothing, and
+     *    elsewhere the last, after every partition was tried and an unreported subset erased.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -2819,8 +2842,10 @@ class partitioned_store {
 
     /**
      *  @brief Erases every element at or after @p lower from every partition.
-     *  @return Success or a refusal, which @c erase_from_policy_k scopes exactly as @c erase_range
-     *      scopes its own.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c erase_from returns passes through unchanged, scoped by the
+     *    policy @c erase_from_policy_k exactly as @c erase_range scopes its own.
      */
     template <typename lower_type_ = identifier_t, typename callback_type_ = no_op_t>
     status_t erase_from(lower_type_ &&lower, callback_type_ &&callback = {}) noexcept
@@ -2836,8 +2861,10 @@ class partitioned_store {
 
     /**
      *  @brief Erases every element before @p upper from every partition.
-     *  @return Success or a refusal, which @c erase_up_to_policy_k scopes exactly as @c erase_range
-     *      scopes its own.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c erase_up_to returns passes through unchanged, scoped by the
+     *    policy @c erase_up_to_policy_k exactly as @c erase_range scopes its own.
      */
     template <typename upper_type_ = identifier_t, typename callback_type_ = no_op_t>
     status_t erase_up_to(upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
@@ -2859,9 +2886,14 @@ class partitioned_store {
      *  them, so the window is revised as one write rather than sixteen; over parts in one order it
      *  also goes out under one stamp, so no reader sees it half revised.
      *
+     *  @param[in] lower Lower bound (inclusive).
+     *  @param[in] upper Upper bound (exclusive).
      *  @param[in] callback Invoked with (key const &, mapped &) per element. Must be @c noexcept.
-     *  @return Success or a refusal, which @c update_range_policy_k scopes exactly as
-     *      @c erase_range scopes its own. A partition whose own walk cannot fail always succeeds.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c update_range returns passes through unchanged, scoped by the
+     *    policy @c update_range_policy_k exactly as @c erase_range scopes its own. A partition
+     *    whose own walk cannot fail always succeeds.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
@@ -2926,8 +2958,11 @@ class partitioned_store {
 
     /**
      *  @brief Frees every version no reader can still reach, one partition at a time.
-     *  @return How many versions were reclaimed across all partitions, or why one of them refused.
-     *      A partition whose sweep cannot refuse always answers with a count.
+     *  @return How many versions were reclaimed across all partitions.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c vacuum returns passes through unchanged. A partition whose
+     *    sweep cannot refuse always answers with a count.
      */
     expected<std::size_t> vacuum() noexcept
         requires offers_vacuum<inner_store_t>
@@ -2949,7 +2984,10 @@ class partitioned_store {
     /**
      *  @brief Frees the unreachable versions of every key in [ @p lower, @p upper ), one partition
      *      at a time.
-     *  @return How many versions were reclaimed across all partitions, or why one of them refused.
+     *  @return How many versions were reclaimed across all partitions.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c vacuum returns passes through unchanged.
      */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t>
     expected<std::size_t> vacuum(lower_type_ &&lower, upper_type_ &&upper) noexcept
@@ -2976,6 +3014,8 @@ class partitioned_store {
      *  in the size. Every partition is held shared for the length of that merge, so the position is
      *  answered against one order rather than sixteen probes.
      *
+     *  @param[in] ordinal Zero-based position in merged order.
+     *  @param[in] callback_found Callback to receive a @c value_t const &. Must be @c noexcept.
      *  @param[in] callback_missing Fires when fewer elements are there. Must be @c noexcept.
      */
     template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
@@ -3002,6 +3042,8 @@ class partitioned_store {
     /**
      *  @brief Hands @p callback_found how many elements the store orders before @p comparable.
      *      Counted by the same merge @c select walks, so it costs the rank rather than a descent.
+     *  @param[in] comparable Any key comparable with stored entries.
+     *  @param[in] callback_found Callback to receive a @c std::size_t. Must be @c noexcept.
      *  @param[in] callback_missing Fires when @p comparable is not there at all. Must be
      *      @c noexcept.
      */
@@ -3079,8 +3121,9 @@ class partitioned_store {
      *  an open transaction referring to contents that are gone, and it would have to rebuild the
      *  comparator and allocator the partition was given.
      *
-     *  @return Success, or the refusal that stopped the walk - after which the partitions above the
-     *      refusing one still hold everything they held.
+     *  @par Statuses:
+     *  - Any status a partition's @c clear returns passes through unchanged and stops the walk,
+     *    after which the partitions above the refusing one still hold everything they held.
      */
     status_t clear() noexcept {
         return for_all<unique_lock_t, locking_policy_t::one_at_a_time_k, refusal_policy_t::stop_at_first_k>(
@@ -3089,8 +3132,10 @@ class partitioned_store {
 
     /**
      *  @brief Sizes every partition for its share of @p size, stopping where one refuses.
-     *  @return Success, or the refusal that stopped the walk - after which the partitions above the
-     *      refusing one are sized as they were.
+     *
+     *  @par Statuses:
+     *  - Any status a partition's @c reserve returns passes through unchanged and stops the walk,
+     *    after which the partitions above the refusing one are sized as they were.
      */
     status_t reserve(std::size_t size) noexcept {
         return for_all<unique_lock_t, locking_policy_t::one_at_a_time_k, refusal_policy_t::stop_at_first_k>(

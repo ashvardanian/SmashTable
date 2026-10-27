@@ -11,15 +11,14 @@
  *  `commit_order/sharing.pml` is where a shared member crosses threads.
  *
  *  @verify pass sc,rc11
- *  @verify fail sc,rc11 shared_claim=false: a stamp adopted from a live claim stays pinned once
- *      that claim retires, because the adopting transaction is counted in the same bucket before
- *      the reader leaves it; copying the stamp alone, the drain that follows lets the mark past it
+ *  @verify fail sc,rc11 shared_claim=false: copying the stamp alone, the drain that follows lets
+ *      the mark past it
  */
 #define committers 1
 #define thread_count 2
 #define location_count 9
 #define history_depth 7
-#include "protocol.pml"
+#include <snapshot_reader/protocol.pml>
 
 proctype committer(byte t) { commit(t) }
 

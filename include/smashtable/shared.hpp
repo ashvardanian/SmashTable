@@ -82,7 +82,7 @@
 /**
  *  @brief Whether the target is x86-64, AArch64 or 64-bit RISC-V, one always-defined flag apiece.
  *
- *  Each is 0 or 1 rather than defined or not, so a call site tests it with `if constexpr` and
+ *  Each is 0 or 1 rather than defined or not, so a call site tests it with <tt>if constexpr</tt> and
  *  the branch it drops is still compiled for syntax.
  */
 #if defined(__x86_64__) || defined(_M_X64)
@@ -189,7 +189,7 @@
 #define SMASHTABLE_TARGET_V128 0
 #endif
 
-/** GCC on RISC-V rejects `#pragma GCC target`, so RVV functions carry the attribute one by one. */
+/** GCC on RISC-V rejects <tt>\#pragma GCC target</tt>, so RVV functions carry the attribute one by one. */
 #if SMASHTABLE_TARGET_RVV && !defined(__clang__) && defined(__GNUC__)
 #define SMASHTABLE_RVV_ATTRIBUTE_ __attribute__((target("arch=+v")))
 #else
@@ -231,6 +231,13 @@ namespace ashvardanian::smashtable {
  *  The three conflicts have no @c errno between them: @c EBUSY and @c EAGAIN, the closest, are
  *  about a resource being held, while these are about what another transaction published. A retry
  *  loop reads them to decide whether retrying can help, which is what @c conflicted answers.
+ *
+ *  Statuses fall into five categories. Resources: @c out_of_memory_heap_k and @c input_output_k.
+ *  Input: @c invalid_argument_k. State: the three conflicts, @c operation_not_permitted_k,
+ *  @c operation_would_block_k, @c capacity_exhausted_k, @c key_already_exists_k and
+ *  @c key_not_found_k. Interruptions: none, as no verb is cancelled or deferred. Defects:
+ *  @c consistency_k and @c unknown_k. Any verb that allocates, binds a device or touches a file may
+ *  also return a Resources status. A verb's own block lists only what its contract adds.
  */
 enum class [[nodiscard]] status_t : int {
 
@@ -422,7 +429,7 @@ concept is_mapping = requires {
  *
  *  When @c SMASHTABLE_STRICT_CALLBACK_CHECKS is 1, these traits perform full compile-time
  *  validation using @c std::is_nothrow_invocable_v. This catches type errors early but prevents
- *  generic lambdas like `no_op_t {}` from compiling.
+ *  generic lambdas like <tt>no_op_t {}</tt> from compiling.
  *
  *  When it is 0, the default, traits always return true, allowing generic lambdas while still
  *  documenting the intent that callbacks should be noexcept.
@@ -448,7 +455,7 @@ inline constexpr bool is_safe_callback = true;
 /**
  *  @brief The allocator every container defaults to, over @c ::operator @c new asked not to throw.
  *
- *  @c std::allocator would serve, and costs `<memory>`, some fifty thousand preprocessed lines, in
+ *  @c std::allocator would serve, and costs <tt>\<memory\></tt>, some fifty thousand preprocessed lines, in
  *  headers that want nothing else from it. Exhaustion is reported by returning null, which is the
  *  shape every caller here already checks, rather than by an exception nothing would catch.
  */
@@ -582,8 +589,8 @@ template <typename first_type_, typename... rest_types_>
     return first;
 }
 
-/** A position a walk reads through, steps forward and compares to where it stops, as `*iterator`,
- *  `++iterator` and `first != last` - all a bulk write consuming its input once needs, spelled here
+/** A position a walk reads through, steps forward and compares to where it stops, as <tt>*iterator</tt>,
+ *  <tt>++iterator</tt> and <tt>first != last</tt> - all a bulk write consuming its input once needs, spelled here
  *  rather than in @c \<iterator\>. */
 template <typename iterator_type_>
 concept readable_iterator =
@@ -607,19 +614,19 @@ concept iterator_sentinel =
         { iterator != sentinel } -> std::convertible_to<bool>;
     };
 
-/** A position a walk writes @p value_type_ through and steps forward, as `*iterator = value`. */
+/** A position a walk writes @p value_type_ through and steps forward, as <tt>*iterator = value</tt>. */
 template <typename iterator_type_, typename value_type_>
 concept writable_iterator = requires(iterator_type_ iterator, value_type_ &&value) {
     *iterator = std::forward<value_type_>(value);
     ++iterator;
 };
 
-/** A position a reservoir writes @p value_type_ into by index, as `iterator[index] = value`. */
+/** A position a reservoir writes @p value_type_ into by index, as <tt>iterator[index] = value</tt>. */
 template <typename iterator_type_, typename value_type_>
 concept indexed_writable_iterator =
     requires(iterator_type_ iterator, std::size_t index, value_type_ const &value) { iterator[index] = value; };
 
-/** Steps @p iterator forward @p count positions, in one jump where it supports `+=`. */
+/** Steps @p iterator forward @p count positions, in one jump where it supports <tt>+=</tt>. */
 template <readable_iterator iterator_type_>
 constexpr void advance_iterator(iterator_type_ &iterator, std::size_t count) noexcept {
     if constexpr (requires { iterator += static_cast<std::ptrdiff_t>(count); })
@@ -834,7 +841,7 @@ concept promises_something = promises_about_the_range<type_> || promises_about_t
  *  status carried, including the move-only transaction types that have no empty state to sit in. A
  *  default-constructed @c expected reports @b failure, since there is nothing in it.
  *
- *  Decomposes as `auto [value, status]`, for value types that can be default-constructed to
+ *  Decomposes as <tt>auto [value, status]</tt>, for value types that can be default-constructed to
  *  hand something back on the failure path; see @c get.
  */
 template <typename value_type_>
@@ -905,7 +912,7 @@ class [[nodiscard]] expected {
     constexpr value_t const *operator->() const noexcept { return &outcome_; }
 
     /**
-     *  @brief Tuple protocol behind `auto [value, status]`, returning the value @b by value.
+     *  @brief Tuple protocol behind <tt>auto [value, status]</tt>, returning the value @b by value.
      *
      *  A reference would bind into storage that was never constructed when the status is a failure,
      *  which reads as garbage and trips no sanitizer, so the failure path default-constructs
@@ -973,7 +980,10 @@ concept has_make_method = requires(args_types_ &&...args) {
 
 /**
  *  @brief Copies @p object through its @c noexcept copy constructor, or its @c copy method.
- *  @return The copy on success, or the reason it could not be made.
+ *  @return The copy.
+ *
+ *  @par Statuses:
+ *  - Any status the @c copy method of @p object returns passes through unchanged.
  */
 template <typename object_type_>
 expected<object_type_> copy_safely(object_type_ const &object) noexcept {
@@ -1014,14 +1024,18 @@ concept duplication_can_refuse = !std::is_nothrow_copy_constructible_v<type_>;
 /**
  *  @brief Hands @p stage_one every element of [ @p first, @p last ), duplicated outside the target.
  *
+ *  @param[in] first Beginning of range to stage.
+ *  @param[in] last End of range to stage.
  *  @param[in] stage_one Receives one element by rvalue and reports where it landed. Must be
  *      @c noexcept.
- *  @return The first refusal from @p stage_one or duplication, else @c success_k for the range.
  *
  *  A range handing over lvalues duplicates through @c copy_safely, so an element refusing its own
  *  copy stops the batch with that reason rather than with the allocator's; a range handing over
  *  rvalues moves, which is what a move iterator asks for. Nothing here reaches the destination -
  *  what @p stage_one does with an element is where a batch decides whether it can still be undone.
+ *
+ *  @par Statuses:
+ *  - Any status an element's @c copy or @p stage_one returns passes through unchanged.
  */
 template <typename value_type_, readable_iterator input_iterator_type_, typename stage_one_type_>
 status_t stage_each(input_iterator_type_ first, input_iterator_type_ last, stage_one_type_ &&stage_one) noexcept {
@@ -1417,9 +1431,11 @@ template <typename versioned_type_>
 /**
  *  @brief Re-reads every watched identifier and reports whether any drifted since it was sampled.
  *  @param[in] watches The identifier-and-watch pairs a transaction accumulated.
- *  @param[in] resolve_latest Invoked as `resolve_latest(identifier, on_found, on_missing)`; must be
+ *  @param[in] resolve_latest Invoked as <tt>resolve_latest(identifier, on_found, on_missing)</tt>; must be
  *      @c noexcept.
- *  @return @c success_k, or @c read_conflict_k for the first watch that drifted.
+ *
+ *  @par Statuses:
+ *  - @c read_conflict_k A watch drifted since it was sampled.
  */
 template <typename watches_type_, typename resolver_type_>
 status_t validate_watches(watches_type_ const &watches, resolver_type_ &&resolve_latest) noexcept {
@@ -1801,10 +1817,10 @@ static_assert(cache_line_bytes_k >= 32 && (cache_line_bytes_k & (cache_line_byte
 /**
  *  @brief The bit intrinsics every container here counts slots with.
  *
- *  @warning These are aliases rather than direct calls to @c std because libstdc++'s `<bit>` is
+ *  @warning These are aliases rather than direct calls to @c std because libstdc++'s <tt>\<bit\></tt> is
  *      not usable from device code.
  *
- *  Its functions are @c constexpr, so `--expt-relaxed-constexpr` lets a kernel call them and they
+ *  Its functions are @c constexpr, so @c --expt-relaxed-constexpr lets a kernel call them and they
  *  compile without a diagnostic, but @c nvcc folds most of them against a zeroed argument: with
  *  CUDA 12.8 and GCC 14, @c std::popcount over 64 bits, @c std::countr_zero over either width and
  *  @c std::countl_zero over 64 bits each return the answer for an input of zero. Silently wrong
@@ -1946,8 +1962,7 @@ constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
 /**
  *  @brief An atomic reference offering the read-modify-writes the standard has no spelling for.
  *
- *  @tparam reference_type_ The reference being checked.
- *  @tparam value_type_ The word it owns.
+ *  Checks the reference @p reference_type_ over the word @p value_type_ it owns.
  *
  *  Two shapes matter here. A @b posted write is one whose result nobody reads, which a target with
  *  a no-return form can fire and never wait on. A @b bounded read-modify-write is one that writes
@@ -2159,7 +2174,7 @@ constexpr std::size_t roundup_to_pow2(std::size_t x) noexcept {
  *  @c min and @c max must be usable in a constant expression, because @c draw_below sizes its mask
  *  from their span at compile time. A generator whose bounds are only known at run time satisfies
  *  @c std::uniform_random_bit_generator and would still fail here, so this asks for what is used
- *  rather than deferring to the standard concept and pulling `<random>` into every unit.
+ *  rather than deferring to the standard concept and pulling <tt>\<random\></tt> into every unit.
  */
 template <typename generator_type_>
 concept uniform_random_bits = requires(generator_type_ &generator) {
@@ -2283,7 +2298,7 @@ struct binary_node_search {
  *  rank (position) of an element. Weight-balanced trees support these operations, while standard
  *  AVL trees do not.
  *
- *  @tparam tree_type_ The tree type to check.
+ *  Checks the tree type @p tree_type_.
  */
 template <typename tree_type_>
 concept supports_order_statistics =
@@ -2395,7 +2410,7 @@ concept key_addressable_collection =
  *  repeatedly asking for the exclusive successor of the last key it yielded.
  *
  *  @note A core's bounds are iterator-shaped, taking the sought key alone. The callback-shaped
- *      `lower_bound(key, found, missing)` belongs to the transactional adapter above it, which
+ *      <tt>lower_bound(key, found, missing)</tt> belongs to the transactional adapter above it, which
  *      can't hand out iterators because a version may be staged and invisible; don't conflate them.
  */
 template <typename collection_type_>
@@ -3072,10 +3087,10 @@ struct group_step {
 
 /**
  *  @brief Stages @p stage_changes into @p transaction and commits it, at most @p attempts times.
- *  @param[in] stage_changes Invoked as `stage_changes(transaction)` on every attempt; must be
+ *  @param[in,out] transaction The transaction to stage into and commit, reset on a failed try.
+ *  @param[in] attempts Most commits to try.
+ *  @param[in] stage_changes Invoked as <tt>stage_changes(transaction)</tt> on every attempt; must be
  *      @c noexcept.
- *  @return Success; the first failure that is not a conflict; or @c operation_would_block_k once
- *      every attempt met a conflict.
  *
  *  Every failed attempt is reset before the next is made or the failure is returned, so nothing it
  *  staged stays behind and a retry recomputes from the newest snapshot. What a conflict means and
@@ -3083,6 +3098,11 @@ struct group_step {
  *
  *  @warning A transaction opened at an older snapshot, such as one adopting a reader's, reads at
  *      the newest one from its second attempt on.
+ *
+ *  @par Statuses:
+ *  - @c operation_would_block_k Every attempt met a conflict, or @p attempts is zero.
+ *  - Any status but a conflict that @p stage_changes or @p transaction returns
+ *    passes through unchanged.
  */
 template <typename transaction_type_, typename stage_changes_type_>
 status_t commit_with_retries(transaction_type_ &transaction, std::size_t attempts,
@@ -3272,11 +3292,16 @@ class transaction_group {
     /**
      *  @brief Opens one transaction per store, or none at all.
      *
-     *  @return The group; @c invalid_argument_k when one store is named twice; or the first store's
-     *      own refusal, which leaves the transactions opened before it to their destructors.
+     *  @return The group.
      *
      *  A store named twice would take two participants over one snapshot, neither seeing the
      *  other's writes, so the later commit overwrites the earlier one and no conflict is reported.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k One store is named twice, or stores meant to share one order are
+     *    built into different orders.
+     *  - Any status a store in @p stores refuses its transaction with passes through unchanged, the
+     *    first in argument order winning, and every transaction opened goes to its destructor.
      */
     static expected<transaction_group> make(store_types_ &...stores) noexcept {
         std::array<void const *, participants_k> const addresses {static_cast<void const *>(&stores)...};
@@ -3315,7 +3340,7 @@ class transaction_group {
     }
 
     /** Every participant at once, in the order the caller named their stores, for binding with
-     *  `auto [a, b] =`. */
+     *  <tt>auto [a, b] =</tt>. */
     [[nodiscard]] auto participants() noexcept {
         return std::apply([](auto &...opened) noexcept { return std::tie(opened...); }, transactions_);
     }
@@ -3324,11 +3349,15 @@ class transaction_group {
      *  @brief Runs @p body over the participants, then stages and commits the group.
      *  @param[in] body Invoked as @c body(participants...), answering a @c status_t. Must be
      *      @c noexcept.
-     *  @return Success; whatever @p body refused; or the refusal the stage or the commit answered.
      *
      *  The three calls a group always makes in the same order, so a caller cannot forget the stage
      *  or leave a refused group staged: anything short of success resets every participant before
      *  returning; its sibling @c commit_with_retries takes a conflict as a reason to try again.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group was already staged.
+     *  - Any status @p body returns, or a participant refuses the stage or the commit with,
+     *    passes through unchanged.
      */
     template <typename body_type_>
     status_t commit_with(body_type_ &&body) noexcept {
@@ -3353,6 +3382,10 @@ class transaction_group {
      *
      *  A partial stage is never observable. The undo rolls the staged prefix back rather than
      *  resetting it, so the caller's pending writes survive and the group can be retried.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group is already staged.
+     *  - Any status a participant refuses its stage with passes through unchanged.
      */
     status_t stage() noexcept {
         if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -3392,9 +3425,6 @@ class transaction_group {
     /**
      *  @brief Publishes the participants, drawing each one's commit stamp.
      *
-     *  @return Success; whichever check turned a participant away; or @c operation_not_permitted_k
-     *      when the group is not staged.
-     *
      *  Where @c asks_before_writing_k, every participant is asked before any writes, so a refusal
      *  publishes nothing and the group stays staged, which is the one state @c rollback accepts. A
      *  participant may still be committed over between the two passes - what the split buys is that
@@ -3409,6 +3439,11 @@ class transaction_group {
      *  Where @c shares_one_order_k, the participants are asked first as well, and then written
      *  under one stamp drawn from the order they share, which the watermark covers only once the
      *  last of them has published.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group is not staged.
+     *  - Any status a participant refuses its validation or its commit
+     *    with passes through unchanged.
      */
     status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -3467,12 +3502,14 @@ class transaction_group {
     /**
      *  @brief Pulls every staged write back into its transaction, leaving the group retryable.
      *
-     *  @return Success; the refusal it stopped at; or @c operation_not_permitted_k when the group
-     *      is not staged.
-     *
      *  Only a rollback that reached every participant clears the staged flag. Clearing it after a
      *  refusal would advertise a group whose later participants are still staged, and the next
      *  @c stage would stage a second time over the first.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group is not staged.
+     *  - Any status a participant refuses its rollback with passes through unchanged, and the
+     *    rollback stops there.
      */
     status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -3700,11 +3737,15 @@ class dynamic_transaction_group {
      *      the one opened when @p store joined before.
      *
      *  @return The participant, which stays where it is until a commit succeeds, a @c reset, or the
-     *      group goes away; @c invalid_argument_k for a store built into another order;
-     *      @c operation_not_permitted_k while the group is staged; or what refused to open it.
+     *      group goes away.
      *
      *  Stage, commit, roll back and reset the participant through the group alone, which is what
      *  keeps it on the group's claim and under the group's stamp.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k @p store is built into another order.
+     *  - @c operation_not_permitted_k The group is staged.
+     *  - Any status @p store refuses the transaction with passes through unchanged.
      */
     template <typename store_type_>
     expected<typename store_type_::transaction_t *> join(store_type_ &store) noexcept {
@@ -3767,6 +3808,10 @@ class dynamic_transaction_group {
      *  Participants are staged ascending by store address. A partial stage is never observable: the
      *  undo rolls the staged prefix back rather than resetting it, so the caller's pending writes
      *  survive and the group can be retried.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group is already staged.
+     *  - Any status a participant refuses its stage with passes through unchanged.
      */
     status_t stage() noexcept {
         if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -3794,13 +3839,14 @@ class dynamic_transaction_group {
     /**
      *  @brief Publishes every participant under one stamp, then empties the group for new joins.
      *
-     *  @return Success; whichever check turned a participant away; or @c operation_not_permitted_k
-     *      when the group is not staged.
-     *
      *  Every participant is asked before any of them writes, so a refusal publishes nothing and
      *  leaves the group staged, which is the one state @c rollback accepts. A success destroys
      *  every participant, then moves the claim to a snapshot covering the stamp and draws a fresh
      *  generation. A group nobody joined commits without drawing a stamp.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group is not staged.
+     *  - Any status a participant refuses its validation with passes through unchanged.
      */
     status_t commit() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -3835,11 +3881,13 @@ class dynamic_transaction_group {
     /**
      *  @brief Pulls every staged write back into its transaction, leaving the group retryable.
      *
-     *  @return Success; the refusal it stopped at; or @c operation_not_permitted_k when the group
-     *      is not staged.
-     *
      *  Only a rollback that reached every participant clears the staged flag, so the next @c stage
      *  never stages a second time over a participant still staged.
+     *
+     *  @par Statuses:
+     *  - @c operation_not_permitted_k The group is not staged.
+     *  - Any status a participant refuses its rollback with passes through unchanged, and the
+     *    rollback stops there.
      */
     status_t rollback() noexcept {
         if (staging_ != staging_t::staged_k) return operation_not_permitted_k;
@@ -3871,10 +3919,10 @@ class dynamic_transaction_group {
 /**
  *  @brief What a spin loop asks of the policy deciding what its core does between attempts.
  *
- *  @tparam policy_type_ The policy being checked.
- *  @tparam watched_type_ The address of the word the loop retries over, owned through
- *      @c atomic_ref rather than as an atomic object. A monitored wait arms its line from it.
- *  @tparam value_type_ The bit pattern the loop last read out of that word.
+ *  Checks the policy @p policy_type_ waiting over @p watched_type_, the address of the word the
+ *  loop retries over, owned through @c atomic_ref rather than as an atomic object, holding
+ *  @p value_type_, the bit pattern the loop last read out of that word. A monitored wait arms its
+ *  line from the address.
  *
  *  One call takes the watched address, the value that was there, and how many attempts the loop has
  *  already spent, and it must come back on its own: a wait ending only on someone else's action
@@ -3892,10 +3940,9 @@ concept waiting_policy = requires(policy_type_ const &policy, watched_type_ &wat
 /**
  *  @brief A waiting policy that can also take a thread off its core until the watched word moves.
  *
- *  @tparam policy_type_ The policy being checked.
- *  @tparam watched_type_ The address of the word a parked thread blocks on, writable since the
- *      thread waking it is the one that stored to it.
- *  @tparam value_type_ The bit pattern that has to change before a parked thread is owed a wake.
+ *  Checks the policy @p policy_type_ parking on @p watched_type_, the address of the word a parked
+ *  thread blocks on, writable since the thread waking it is the one that stored to it, holding
+ *  @p value_type_, the bit pattern that has to change before a parked thread is owed a wake.
  *
  *  Asked only where a loop gives up on spinning, which is where a lock is held across user code and
  *  a burnt core costs more than a syscall. @c wait_until_changed may return spuriously, since every
@@ -4702,15 +4749,18 @@ class basic_commit_order {
     /**
      *  @brief Restarts an order nothing has drawn from yet at @p published, so the stamps this
      *      process draws continue above every stamp an earlier one made durable.
-     *  @return @c success_k; @c invalid_argument_k for a negative @p published or one that
-     *      leaves no stamp to draw; or @c operation_not_permitted_k once a generation or a stamp
-     *      has been drawn here, or while a snapshot is open. A refusal changes nothing.
      *
      *  Both counters, the watermark, the low-water mark and every bucket's floor start at
      *  @p published, so the next reader is answered there and the next commit draws above it.
      *
+     *  A refusal changes nothing.
+     *
      *  @warning Ordered against no other call, so it runs before a second thread can reach this
      *      order at all.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k @p published is negative or leaves no stamp to draw.
+     *  - @c operation_not_permitted_k A generation or stamp was drawn here, or a snapshot is open.
      */
     status_t resume(generation_t published) noexcept {
         if (published < 0 || published >= latest_snapshot_k) return invalid_argument_k;
@@ -4975,7 +5025,7 @@ expected<bool> is_disjoint(first_type_ &first, second_type_ &second) noexcept {
 
 namespace std {
 
-/** What `auto [value, status] = ...` looks up. The members live in a @c union, so the compiler
+/** What <tt>auto [value, status] = ...</tt> looks up. The members live in a @c union, so the compiler
  *  cannot decompose the class itself and the tuple protocol is the only route. */
 template <typename value_type_>
 struct tuple_size<::ashvardanian::smashtable::expected<value_type_>> : integral_constant<size_t, 2> {};

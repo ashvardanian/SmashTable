@@ -7,52 +7,29 @@
  *
  *  A commit draws its stamp through @c begin_commit outside the partition's mutex, joins its
  *  version to the key's run under it, lands the stamp through @c end_commit, and prunes the run
- *  under the mutex down to the low-water mark, read relaxed as @c prune_each_ reads it. Readers are
- *  counted per bucket, never listed one by one: @c take_snapshot joins the head bucket and then
- *  reads the watermark, @c share_snapshot counts a transaction in a live claim's bucket,
- *  @c retire_snapshot gives a member back, and @c republish_mark walks the watermark and the
- *  occupied floors into the low-water mark, which is what @c basic_commit_order does in
- *  @c shared.hpp. A claim is a bucket index and a stamp. The same scenarios are `reading.pml` and
- *  `adoption.pml`, and @c retention is the handover of `commit_order/retention.pml`, with the
- *  successor joining only after the commit is joined, so that no stale read of the head can
- *  excuse a missed rotation under weak memory.
- *
- *  One commit, as in the model. With two, @c open_next_bucket_ has two openers that can each store
- *  one bucket's floor with a plain relaxed store and no order between them, which is benign, since
- *  either mark was computed before any member of that bucket read its own stamp, but GenMC's
- *  in-place revisiting refuses unordered writes outright, so a second committer makes the client
- *  unrunnable rather than wrong. `watermark_first` is the knob that needs the second commit, and
- *  `reading.pml` carries it.
- *
- *  Left out, as in the model: @c generation_, which dates transactions and not their visibility.
- *
- *  Every mutant fails under `sc` as well, since each turns on an interleaving rather than a
- *  reordering.
+ *  under the mutex down to the low-water mark. The same scenarios are <tt>reading.pml</tt> and
+ *  <tt>adoption.pml</tt>, and @c retention is the handover of <tt>commit_order/retention.pml</tt>.
+ *  One commit, as in the model: GenMC's in-place revisiting refuses unordered writes outright, so a
+ *  second committer makes the client unrunnable rather than wrong.
  *
  *  @verify pass sc,rc11,imm reading
- *  @verify fail sc,rc11,imm reading_held_claim_false: the reader holds its claim until after its
- *      last read; giving it back before the reads, the commit's prune frees the version out from
- *      under the first of them
- *  @verify fail sc,rc11,imm reading_join_first_false: `take_snapshot` joins the bucket before it
- *      reads the watermark; reading the watermark first, a mark computed in that gap counts nobody
- *      while standing above the stamp the reader is handed
+ *  @verify fail sc,rc11,imm reading_held_claim_false: giving it back before the reads, the commit's
+ *      prune frees the version out from under the first of them
+ *  @verify fail sc,rc11,imm reading_join_first_false: reading the watermark first, a mark computed
+ *      in that gap counts nobody while standing above the stamp the reader is handed
  *  @verify pass sc,rc11,imm adoption
- *  @verify fail sc,rc11,imm adoption_shared_claim_false: the adopting transaction is counted in the
- *      reader's bucket before the reader leaves it; copying the stamp alone, the drain that follows
- *      lets the mark past it
- *  @verify fail sc,rc11,imm adoption_join_first_false: the adopted stamp is only as pinned as the
- *      claim it came from; with the watermark read before the bucket is joined, a mark computed in
- *      that gap passes it
+ *  @verify fail sc,rc11,imm adoption_shared_claim_false: copying the stamp alone, the drain that
+ *      follows lets the mark past it
+ *  @verify fail sc,rc11,imm adoption_join_first_false: with the watermark read before the bucket is
+ *      joined, a mark computed in that gap passes it
  *  @verify pass sc,rc11,imm retention
- *  @verify fail sc,rc11,imm retention_head_watermark_false: @c republish_mark_ seals the head
- *      bucket against the watermark; sealed against the mark it lowered first, which equals the
- *      floor of a head bucket holding the least one, the commit's landing never moves the head, the
- *      successor joins the first reader's bucket, and the low-water mark stays on that bucket's
- *      floor once the first reader is gone
+ *  @verify fail sc,rc11,imm retention_head_watermark_false: sealed against the mark it lowered
+ *      first, the commit's landing never moves the head, the successor joins the first reader's
+ *      bucket, and the low-water mark stays on that bucket's floor once the first reader is gone
  */
 #include <atomic> // `std::atomic` - the mutex, the stamp counter, the watermark, the ring and the census
 
-#include "genmc.hpp"
+#include <genmc.hpp>
 
 /** The header's choices; each mutant entry changes one. */
 struct knobs_t {

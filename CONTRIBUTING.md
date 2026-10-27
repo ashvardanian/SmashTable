@@ -88,7 +88,7 @@ Still, you need a virtual environment, and it's recommended to use `uv` to creat
 ```bash
 uv venv --python 3.14t                  # a free-threading build is the interesting one to test against
 source .venv/bin/activate               # to activate the virtual environment
-uv pip install setuptools wheel         # to pull the build tools
+uv pip install scikit-build-core        # to pull the build tools
 uv pip install --group test             # to pull the test tools
 uv pip install -e . --force-reinstall   # to build locally from source
 python -X faulthandler -m pytest -x     # how the CI runs it
@@ -264,9 +264,9 @@ What falls out of the difference:
 - Prose sits after the tags, below a blank line, and names the guarantee together with the scope it holds over.
   Write the scope in wherever a sibling path in the same file would make the sentence false — an isolation level, a partition, a phase of the commit.
 - `@param` only where a parameter carries a constraint the signature does not, such as a callback that must be `noexcept` or a bound that is exclusive.
-  It always carries a direction — `@param[in]`, `@param[out]` or `@param[inout]` — since the pre-commit hook rejects a bare one.
+  It always carries a direction — `@param[in]`, `@param[out]` or `@param[in,out]` — since the pre-commit hook rejects a bare one.
 - `@return` names what the answer means rather than its type.
-  `@retval` is unused here: a return with named outcomes is one `@return` sentence listing them.
+  `@retval` is unused here: a function that can fail lists the statuses its contract adds in a closing `@par Statuses:` block, while allocation and I/O failures, cancellation, deferral and defects are covered once by the categories in the `status_t` docblock.
 - `@warning` for the edge a caller can fall off, such as a lock held across a callback or a moved-from store whose open transactions land nowhere.
   `@note` for an aside a reader needs but can act on without alarm — the cost of a walk, what a callback answering `walk_control_t` may do, which isolation levels a sentence holds for.
 - `@tparam` for template parameters, `@p` to mention a parameter, `@c` for a type or method name, `@b` for bold and `@a` for italics.

@@ -6,30 +6,22 @@
  *      the key's version run behind it.
  *
  *  The reader takes a snapshot, reads the key twice at that stamp under the partition's shared
- *  lock, and gives its claim back after the second read. The claim it holds is what keeps the
- *  prune off the version it reads.
+ *  lock, and gives its claim back after the second read. One commit by default: two of them under
+ *  the views do not finish inside the memory this suite gives a model. @c bucket_retag is not
+ *  claimed here, because this model passes without it.
  *
- *  One commit by default: two of them under the views do not finish inside the memory this suite
- *  gives a model, and only the mark's ordering asks for the second one, which `committers=2`
- *  supplies under sequential consistency, since the shape it turns on is an interleaving rather
- *  than a reordering.
- *
- *  @c bucket_retag is not claimed here, because this model passes without it: its one joiner
- *  reads its stamp after joining, and a floor an opener stores before shutting the bucket was
- *  computed before that read, so it still bounds every member the bucket can take.
+ *  - The claim it holds is what keeps the prune off the version it reads.
  *
  *  @verify pass sc,rc11
  *  @verify pass sc committers=2
- *  @verify fail sc,rc11 held_claim=false: the reader holds its claim until after its last read;
- *      giving it back before the reads, the commit that prunes next frees the version out from
- *      under the first of them
- *  @verify fail sc,rc11 join_first=false: @c take_snapshot joins the bucket before it reads the
- *      watermark, the reader's half of the pair; reading the watermark first, a mark computed in
- *      that gap counts nobody while standing above the stamp the reader is handed
- *  @verify fail sc committers=2 watermark_first=false: @c republish_mark_ reads the watermark
- *      before it scans the buckets; scanning first, a reader joining after the scan is missed by
- *      it while the watermark read that follows, raised by the second commit inside that gap, has
- *      already passed the stamp that reader was handed
+ *  @verify fail sc,rc11 held_claim=false: giving it back before the reads, the commit that prunes
+ *      next frees the version out from under the first of them
+ *  @verify fail sc,rc11 join_first=false: reading the watermark first, a mark computed in that gap
+ *      counts nobody while standing above the stamp the reader is handed
+ *  @verify fail sc committers=2 watermark_first=false: scanning first, a reader joining after the
+ *      scan is missed by it while the watermark read that follows has already passed the stamp
+ *      that reader was handed. Two commits under the views do not finish inside the memory this
+ *      suite gives a model, and the shape it turns on is an interleaving rather than a reordering
  */
 #ifndef committers
 #define committers 1
@@ -37,7 +29,7 @@
 #define thread_count (committers + 1)
 #define location_count 9
 #define history_depth (4 * committers + 5)
-#include "protocol.pml"
+#include <snapshot_reader/protocol.pml>
 
 proctype committer(byte t) { commit(t) }
 

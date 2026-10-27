@@ -1,18 +1,20 @@
-# SmashTable is a header-only C++20 library, so CMake is here to build the tests and the example,
-# to export a `find_package` target, and to arm the repository's Git hooks. Use like:
+# SmashTable is a header-only C++20 library, so CMake is here to build the tests, the example and the
+# Python extension, to export a `find_package` target, and to arm the repository's Git hooks. Use like:
 #
-#   cmake -B build_release -D CMAKE_BUILD_TYPE=Release
+#   cmake -B build_release -D CMAKE_BUILD_TYPE=Release -D SMASHTABLE_BUILD_TEST=ON
 #   cmake --build build_release
 #   ctest --test-dir build_release --output-on-failure
 #
 # CMake options:
 #
 #   -D CMAKE_BUILD_TYPE=<Release|Debug|RelWithDebInfo>  (default: Release, as the main project)
-#   -D SMASHTABLE_BUILD_TEST=<ON|OFF>                   (default: ON as the main project, else OFF)
+#   -D SMASHTABLE_BUILD_TEST=<ON|OFF>                   (default: OFF, the presets switch it on)
 #   -D SMASHTABLE_INSTALL=<ON|OFF>                      (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_WERROR=<ON|OFF>                       (default: OFF)
-#   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: ON as the main project, else OFF)
+#   -D SMASHTABLE_BUILD_SANITIZERS=<off|address|thread> (default: off, address also arms UndefinedBehaviorSanitizer)
+#   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: OFF, the `cuda` preset switches it on)
 #   -D SMASHTABLE_BUILD_BENCH=<ON|OFF>                  (default: OFF; CTest never runs the benchmarks)
+#   -D SMASHTABLE_BUILD_PYTHON=<ON|OFF>                 (default: OFF, `scikit-build-core` switches it on)
 #   -D CMAKE_CUDA_ARCHITECTURES=<list>                  (default: native; name a list when building GPU-less)
 #
 # Targets:
@@ -38,10 +40,9 @@
 #   * smashtable_test_concurrent_cuda - the pinned lock-free table driven from kernels and from the
 #     host over one managed allocation. Built only where `nvcc` is visible, and skipping at runtime
 #     when no device is, so a GPU-less machine still configures and tests green.
-#
-# The Python extension is not built here: `setup.py` compiles the translation units under
-# `python/` directly, as a wheel build has no use for the test and install machinery below.
-cmake_minimum_required(VERSION 3.21)
+#   * smashtable_python - the CPython extension over the translation units under `python/`, which
+#     `scikit-build-core` builds and packages from `pyproject.toml`.
+cmake_minimum_required(VERSION 3.28)
 
 # Embedded debug information avoids depending on a running MSVC PDB server during probes.
 if (POLICY CMP0141)
@@ -67,10 +68,8 @@ project(
     HOMEPAGE_URL "https://github.com/ashvardanian/SmashTable"
 )
 
-set(SMASHTABLE_IS_MAIN_PROJECT ${PROJECT_IS_TOP_LEVEL})
-
 # Only steer global state when we own the build; a consumer's standard and output paths are theirs.
-if (SMASHTABLE_IS_MAIN_PROJECT)
+if (PROJECT_IS_TOP_LEVEL)
     set(CMAKE_CXX_STANDARD 20)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
@@ -88,7 +87,7 @@ include(GNUInstallDirs)
 # Enable the in-repo Git hooks. Git will not auto-run hooks shipped inside a clone (that would let any cloned repo
 # execute code), so point `core.hooksPath` at `.githooks` here - configuring the build arms the `pre-commit` checks.
 # Skipped when built as a subproject or without `.git` (tarball / export builds).
-if (SMASHTABLE_IS_MAIN_PROJECT AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
+if (PROJECT_IS_TOP_LEVEL AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.git")
     execute_process(
         COMMAND git config core.hooksPath .githooks
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
@@ -121,7 +120,10 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # GCC warns about the `#pragma region` markers Clang and GCC both ignore. `-Wshadow` is not here:
     # the two compilers disagree about what it means, and GCC counts a constructor parameter named after
     # the member it initializes, which is the idiom rather than a defect.
-    target_compile_options(smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wno-unknown-pragmas)
+    target_compile_options(
+        smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wno-unknown-pragmas
+                                      $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wdocumentation>
+    )
     if (SMASHTABLE_WERROR)
         target_compile_options(smashtable_warnings INTERFACE -Werror)
     endif ()
@@ -146,10 +148,31 @@ elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     target_compile_options(smashtable_warnings INTERFACE -ferror-limit=1)
 endif ()
 
+# Sanitizers instrument every target this directory builds, and never a parent project's own targets.
+set(SMASHTABLE_BUILD_SANITIZERS
+    "off"
+    CACHE STRING "Sanitizers for SmashTable's own targets: off, address with undefined, or thread"
+)
+set_property(CACHE SMASHTABLE_BUILD_SANITIZERS PROPERTY STRINGS off address thread)
+if (SMASHTABLE_BUILD_SANITIZERS STREQUAL "address" AND MSVC)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>")
+elseif (SMASHTABLE_BUILD_SANITIZERS STREQUAL "address")
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined;-fno-omit-frame-pointer>")
+    add_link_options("$<$<LINK_LANGUAGE:CXX>:-fsanitize=address,undefined>")
+elseif (SMASHTABLE_BUILD_SANITIZERS STREQUAL "thread" AND NOT MSVC)
+    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=thread;-fno-omit-frame-pointer>")
+    add_link_options("$<$<LINK_LANGUAGE:CXX>:-fsanitize=thread>")
+elseif (NOT SMASHTABLE_BUILD_SANITIZERS STREQUAL "off")
+    message(FATAL_ERROR "SMASHTABLE_BUILD_SANITIZERS is off, address or thread, the last with Clang or GCC, "
+                        "not '${SMASHTABLE_BUILD_SANITIZERS}'"
+    )
+endif ()
+
 # Tests and examples
-option(SMASHTABLE_BUILD_TEST "Build tests and examples" ${SMASHTABLE_IS_MAIN_PROJECT})
-option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" ${SMASHTABLE_IS_MAIN_PROJECT})
+option(SMASHTABLE_BUILD_TEST "Build tests and examples" OFF)
+option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" OFF)
 option(SMASHTABLE_BUILD_BENCH "Compile the native benchmarks, which CTest never runs" OFF)
+option(SMASHTABLE_BUILD_PYTHON "Compile the CPython extension; `scikit-build-core` switches it on" OFF)
 
 if (SMASHTABLE_BUILD_TEST)
     add_executable(smashtable_example example.cpp)
@@ -230,7 +253,35 @@ if (SMASHTABLE_BUILD_TEST)
     endif ()
 endif ()
 
-option(SMASHTABLE_INSTALL "Install headers and CMake package files" ${SMASHTABLE_IS_MAIN_PROJECT})
+# The `smashtable` extension module, installed at the wheel's root beside its stub and typing marker.
+if (SMASHTABLE_BUILD_PYTHON)
+    find_package(Python 3.12 REQUIRED COMPONENTS Interpreter Development.Module)
+    python_add_library(
+        smashtable_python
+        MODULE
+        WITH_SOABI
+        python/module.cpp
+        python/container.cpp
+        python/shared.cpp
+        python/store_ops_hashed.cpp
+        python/store_ops_sorted.cpp
+        python/transactions.cpp
+    )
+    set_target_properties(smashtable_python PROPERTIES OUTPUT_NAME smashtable CXX_VISIBILITY_PRESET hidden)
+    target_link_libraries(smashtable_python PRIVATE smashtable_header smashtable_warnings)
+    install(
+        TARGETS smashtable_python
+        DESTINATION .
+        COMPONENT smashtable_python
+    )
+    install(
+        FILES python/smashtable.pyi python/py.typed
+        DESTINATION .
+        COMPONENT smashtable_python
+    )
+endif ()
+
+option(SMASHTABLE_INSTALL "Install headers and CMake package files" ${PROJECT_IS_TOP_LEVEL})
 
 if (SMASHTABLE_INSTALL)
     # Installation

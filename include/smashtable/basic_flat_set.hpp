@@ -87,7 +87,7 @@ class basic_flat_set {
     basic_flat_set(basic_flat_set const &) = delete;
     basic_flat_set &operator=(basic_flat_set const &) = delete;
 
-    /** An empty set with room for @p capacity elements, or @c out_of_memory_heap_k. */
+    /** An empty set with room for @p capacity elements. */
     static expected<basic_flat_set> make(std::size_t capacity, comparator_t comparator = {},
                                          allocator_t allocator = {}) noexcept {
         expected<elements_t> made = elements_t::make(capacity, elements_allocator_t(allocator));
@@ -95,7 +95,12 @@ class basic_flat_set {
         return expected<basic_flat_set>(basic_flat_set(std::move(*made), std::move(comparator)), success_k);
     }
 
-    /** A deep copy, or the reason one could not be made. */
+    /**
+     *  @brief A deep copy.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
+     */
     expected<basic_flat_set> copy() const noexcept {
         auto copied = elements_.copy();
         if (!copied) return copied.status();
@@ -178,7 +183,13 @@ class basic_flat_set {
         return elements_.data() + offset;
     }
 
-    /** Copies out the element equivalent to @p wanted, or reports @c key_not_found_k. */
+    /**
+     *  @brief Copies out the element equivalent to @p wanted.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is equivalent to @p wanted.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_>
     expected<value_t> find_copy(comparable_type_ const &wanted) const noexcept {
         value_t const *const found = find(wanted);
@@ -186,7 +197,13 @@ class basic_flat_set {
         return copy_safely(*found);
     }
 
-    /** Copies out the first element not below @p wanted, or reports @c key_not_found_k. */
+    /**
+     *  @brief Copies out the first element not below @p wanted.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k Every element is below @p wanted.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_>
     expected<value_t> lower_bound_copy(comparable_type_ const &wanted) const noexcept {
         value_t const *const found = lower_bound(wanted);
@@ -194,7 +211,13 @@ class basic_flat_set {
         return copy_safely(*found);
     }
 
-    /** Copies out the first element above @p wanted, or reports @c key_not_found_k. */
+    /**
+     *  @brief Copies out the first element above @p wanted.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is above @p wanted.
+     *  - Any status the element's @c copy returns passes through unchanged.
+     */
     template <typename comparable_type_>
     expected<value_t> upper_bound_copy(comparable_type_ const &wanted) const noexcept {
         value_t const *const found = upper_bound(wanted);
@@ -216,7 +239,12 @@ class basic_flat_set {
 
 #pragma region Modifiers
 
-    /** Adds @p element, or answers @c key_already_exists_k and leaves the set alone. */
+    /**
+     *  @brief Adds @p element, or leaves the set alone.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k An equivalent element is here.
+     */
     status_t insert(value_t element) noexcept {
         std::size_t const offset = rank(element);
         if (offset < elements_.size() && !comparator_(element, elements_.data()[offset])) return key_already_exists_k;
@@ -235,10 +263,12 @@ class basic_flat_set {
 
     /**
      *  @brief Adds every element of [ @p first, @p last ) this set lacks, leaving incumbents alone.
-     *  @return @c success_k however many keys were already here, or the first refusal.
      *
      *  All-or-nothing over this set from the first element on: the staging set holds every element
      *  before the merge begins, and the merge makes its one allocation before it moves anything.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -252,10 +282,13 @@ class basic_flat_set {
 
     /**
      *  @brief Adds every element of [ @p first, @p last ), refusing the batch over any taken key.
-     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
      *
      *  All-or-nothing over this set from the first element on, a taken key included: the whole
      *  range is staged and checked before the merge absorbing it allocates anything.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key repeats inside the range or is already in this set.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -271,10 +304,12 @@ class basic_flat_set {
 
     /**
      *  @brief Writes every element of [ @p first, @p last ), replacing any equivalent element.
-     *  @return The first refusal from the build or the merge, or @c success_k for the whole range.
      *
      *  All-or-nothing over this set from the first element on; an element already here is
      *  overwritten by the merge, which moves rather than copies once its buffer is secured.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last) noexcept {
@@ -286,7 +321,12 @@ class basic_flat_set {
         return absorb<incumbent_policy_t::takes_the_newcomer_k>(staged);
     }
 
-    /** Removes the element equivalent to @p wanted, or answers @c key_not_found_k. */
+    /**
+     *  @brief Removes the element equivalent to @p wanted.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is equivalent to @p wanted.
+     */
     template <typename comparable_type_>
     status_t erase(comparable_type_ const &wanted) noexcept {
         std::size_t const offset = rank(wanted);
@@ -325,7 +365,11 @@ class basic_flat_set {
 
     /**
      *  @brief Fills @p staged with [ @p first, @p last ), duplicating every element not in it.
-     *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key repeats inside the range under @p policy_ refusing the
+     *    newcomer.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <incumbent_policy_t policy_, readable_iterator input_iterator_type_>
     static status_t stage_range_(basic_flat_set &staged, input_iterator_type_ first,
@@ -351,8 +395,6 @@ class basic_flat_set {
     /**
      *  @brief Merges @p staged into this set, which afterwards holds the union of the two.
      *  @tparam policy_ Which side keeps a key both sets hold.
-     *  @return @c out_of_memory_heap_k when the replacement array is refused, which happens before
-     *      any element moves, so this set is untouched either way.
      */
     template <incumbent_policy_t policy_>
     status_t absorb(basic_flat_set &staged) noexcept {

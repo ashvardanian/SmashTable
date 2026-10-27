@@ -11,16 +11,16 @@
  *  the key once.
  *
  *  @verify pass sc,rc11
- *  @verify fail rc11 lock_order=order_relaxed: the lock's @c fetch_or acquires the key the last
- *      holder wrote; relaxed, the second emplacer reads the populated slot's key before it was
- *      written, walks past its own key, and populates the next slot with it as well
+ *  @verify fail rc11 lock_order=order_relaxed: relaxed, the second emplacer reads the populated
+ *      slot's key before it was written, walks past its own key, and populates the next slot with
+ *      it as well
  */
 #define thread_count 4
 #define location_count 5
 #define history_depth 13
 #define slots 2
 #define key_of(t) 10
-#include "protocol.pml"
+#include <atomic_hash_table/protocol.pml>
 
 proctype emplacer(byte t) { emplace(t) }
 

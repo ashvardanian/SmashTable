@@ -40,13 +40,13 @@
  *  - @c join(): O(log n) concatenation of ordered disjoint trees, requiring all(this) < all(other).
  *
  *  @b Adaptive Merge Algorithms:
- *  - `merge(other)`: O(m log n) union that deallocates duplicates.
- *  - `merge(other, assume_unique_t)`: O(m log(n/m+1)) or O(m+n) for disjoint trees, choosing an
+ *  - <tt>merge(other)</tt>: O(m log n) union that deallocates duplicates.
+ *  - <tt>merge(other, assume_unique_t)</tt>: O(m log(n/m+1)) or O(m+n) for disjoint trees, choosing an
  *    O(log n) join, a split-based merge from Blelloch's "Just Join for Parallel Ordered Sets", or a
  *    Day-Stout-Warren spine merge by the trees' shapes.
  *
  *  @b Bulk Construction:
- *  - `insert(first, last, assume_sorted_t)`: O(n) perfect balancing from sorted ranges.
+ *  - <tt>insert(first, last, assume_sorted_t)</tt>: O(n) perfect balancing from sorted ranges.
  *
  *  @b Move-Only Type Support:
  *  - Compatible with @c std::move_iterator for bulk operations
@@ -57,12 +57,12 @@
  *  @section basic_avl_tree_entry_type Entry Type
  *
  *  - Nothrow default-constructible and nothrow move constructible/assignable (required)
- *  - For @c copy(): Nothrow copy-constructible OR provides `.copy() const → expected<T>`
+ *  - For @c copy(): Nothrow copy-constructible OR provides <tt>.copy() const → expected<T></tt>
  *
  *  @section basic_avl_tree_comparator_type Comparator Type
  *
- *  - Must define `bool operator()(entry_type const &, entry_type const &) const`
- *  - For heterogeneous lookups, define `using is_transparent = void;`
+ *  - Must define <tt>bool operator()(entry_type const &, entry_type const &) const</tt>
+ *  - For heterogeneous lookups, define <tt>using is_transparent = void;</tt>
  *
  *  @section basic_avl_tree_allocator_type Allocator Type
  *
@@ -111,8 +111,8 @@ namespace ashvardanian::smashtable {
  *  @tparam value_type_ Entry type stored in the tree, must be @c noexcept move-constructible.
  *
  *  @tparam comparator_type_ A comparator object overloading this call operator:
- *      `bool operator()(value_type_ const &, value_type_ const &) const`. For heterogeneous
- *      lookups, define `using is_transparent = void;` inside the comparator.
+ *      <tt>bool operator()(value_type_ const &, value_type_ const &) const</tt>. For heterogeneous
+ *      lookups, define <tt>using is_transparent = void;</tt> inside the comparator.
  */
 template <typename value_type_, typename comparator_type_>
 class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, comparator_type_>, comparator_type_> {
@@ -290,7 +290,8 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
 
     /**
      *  @brief Random samples a single node using reservoir sampling for uniform distribution.
-     *  @param[inout] generator Any STL-compatible random number generator.
+     *  @param[in] node Root of subtree.
+     *  @param[in,out] generator Any STL-compatible random number generator.
      *  @return Pointer to randomly selected node, or @c nullptr if tree is empty.
      *  @note Uses single-pass reservoir sampling for O(n) time with true uniform distribution.
      */
@@ -316,7 +317,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @param[in] low Lower bound.
      *  @param[in] high Upper bound.
      *  @param[in] comparator Comparator instance (may be stateful).
-     *  @param[inout] generator Any STL-compatible random number generator.
+     *  @param[in,out] generator Any STL-compatible random number generator.
      *  @param[in] predicate Predicate to filter nodes.
      *  @return NULL if nothing was found.
      *  @note Uses single-pass reservoir sampling for O(n) time with uniform distribution.
@@ -344,11 +345,12 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @param[in] node Root of the subtree to sample from.
      *  @param[in] low Lower bound for the range (inclusive).
      *  @param[in] high Upper bound for the range (exclusive).
-     *  @param[inout] generator Random number generator (e.g., @c std::mt19937).
+     *  @param[in,out] generator Random number generator (e.g., @c std::mt19937).
      *  @param[in] predicate Predicate to filter nodes.
-     *  @param[inout] seen Count of matching nodes processed (can span multiple calls).
+     *  @param[in,out] seen Count of matching nodes processed (can span multiple calls).
      *  @param[in] reservoir_capacity Maximum number of samples to collect.
      *  @param[out] reservoir Buffer the samples land in, written by index.
+     *  @param[in] comparator Comparator for element comparison.
      *  @note Uses Algorithm R (reservoir sampling) for uniform k-sample in single pass.
      */
     template <typename generator_type_, typename lower_type_, typename upper_type_, typename predicate_type_,
@@ -539,12 +541,15 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *
      *  @param[in] first Iterator to beginning of sorted range.
      *  @param[in] count Number of elements in range.
-     *  @param[inout] allocator Hands back a raw node, or @c nullptr when it cannot.
-     *  @return What was built and why the build stopped, which is @c success_k for the whole range.
+     *  @param[in,out] allocator Hands back a raw node, or @c nullptr when it cannot.
+     *  @return What was built.
      *
      *  @note Complexity: O(n) time, O(log n) recursion depth. Builds perfectly balanced tree by
      *      recursively picking middle element as root.
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <multipass_iterator iterator_type_, allocator_of<node_t> node_allocator_type_>
     static build_result_t build_from_sorted(iterator_type_ first, std::size_t count,
@@ -670,7 +675,9 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
 
     /**
      *  @brief Searches for a matching ancestor and extracts it out.
+     *  @param[in] node Root of subtree.
      *  @param[in] comparable Any key comparable with stored entries.
+     *  @param[in] comparator Comparator for element comparison.
      */
     template <typename comparable_type_>
     static extract_result_t extract(node_t *node, comparable_type_ &&comparable,
@@ -752,6 +759,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @param[in] left Left subtree (all elements < root).
      *  @param[in] root_node Root node to insert between subtrees.
      *  @param[in] right Right subtree (all elements > root).
+     *  @param[in] comparator Comparator for element comparison.
      *  @return The root of the joined tree.
      */
     static node_t *join_with_root(node_t *left, node_t *root_node, node_t *right,
@@ -837,6 +845,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *
      *  @param[in] node Root of the tree to split.
      *  @param[in] comparable Key to split at.
+     *  @param[in] comparator Comparator for element comparison.
      *  @return Contains left tree (< key) and right tree (>= key).
      */
     template <typename comparable_type_>
@@ -872,6 +881,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *
      *  @param[in] small Smaller tree to merge (will be consumed).
      *  @param[in] large Larger tree to merge into (will be consumed).
+     *  @param[in] comparator Comparator for element comparison.
      *  @return The root of the merged tree, holding every node from both inputs.
      *
      *  @note Both input trees are consumed, ownership transferred, balance kept throughout.
@@ -947,6 +957,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *
      *  @param[in] first_spine First sorted spine.
      *  @param[in] second_spine Second sorted spine.
+     *  @param[in] comparator Comparator for element comparison.
      *  @return The head of the merged spine.
      *
      *  @note O(n+m) time, O(1) space. Just like merging sorted linked lists.
@@ -1333,7 +1344,7 @@ class basic_avl_tree {
      *  Every node travels across by relinking, so nothing is allocated and nothing can be refused -
      *  which is what lets the callers promise all-or-nothing once their staging tree is built.
      *
-     *  @param[inout] other Tree to merge from. Will be empty after merge.
+     *  @param[in,out] other Tree to merge from. Will be empty after merge.
      *
      *  @note Unlike @c merge(), this UPDATES nodes with duplicate keys instead of skipping them.
      *  @note Complexity: O(m log n) where m = other.size(), n = this.size().
@@ -1392,7 +1403,9 @@ class basic_avl_tree {
      *  @brief Copies entry from source node into destination node.
      *  @param[in] source Source node to copy from.
      *  @param[in] destination Destination node with memory allocated but no constructed entry.
-     *  @return @c success_k when the copy completed, an error code otherwise.
+     *
+     *  @par Statuses:
+     *  - Any status the entry's @c copy returns passes through unchanged.
      */
     static status_t copy_entry_into_(node_t *source, node_t *destination) noexcept {
         auto entry_copy = copy_safely(source->payload);
@@ -1404,7 +1417,7 @@ class basic_avl_tree {
     /**
      *  @brief Recursively copies a subtree.
      *  @param[in] source Root of source subtree to copy.
-     *  @param[inout] allocator Allocator for node allocation.
+     *  @param[in,out] allocator Allocator for node allocation.
      *  @return The root of the copied subtree, or @c nullptr if a copy failed.
      */
     static node_t *copy_subtree_(node_t *source, allocator_t &allocator) noexcept {
@@ -1477,9 +1490,12 @@ class basic_avl_tree {
 
     /**
      *  @brief Creates a deep copy of the tree.
-     *  @return Copy of the tree, or error status on failure.
+     *  @return Copy of the tree.
      *  @note This operation may fail due to allocation errors during node duplication. The returned
      *      tree uses a copy of this tree's allocator.
+     *
+     *  @par Statuses:
+     *  - @c out_of_memory_heap_k An element refused its own copy.
      */
     expected<basic_avl_tree> copy() const noexcept {
         basic_avl_tree result {allocator_};
@@ -1647,7 +1663,11 @@ class basic_avl_tree {
      *      supported if comparator defines @c is_transparent.
      *
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @return Result with copied element if found, or failure status.
+     *  @return Result with copied element.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is equal to @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
      */
     template <typename comparable_type_>
     expected<value_t> find_copy(comparable_type_ &&comparable) const noexcept {
@@ -1660,7 +1680,11 @@ class basic_avl_tree {
      *  @brief Finds and returns a copy of the first element not less than (>=) @p comparable.
      *
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @return Result with copied element if found, or failure status.
+     *  @return Result with copied element.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k Every element is less than @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
      */
     template <typename comparable_type_>
     expected<value_t> lower_bound_copy(comparable_type_ &&comparable) const noexcept {
@@ -1673,7 +1697,11 @@ class basic_avl_tree {
      *  @brief Finds and returns a copy of the first element greater than (>) @p comparable.
      *
      *  @param[in] comparable Object comparable to @c value_t.
-     *  @return Result with copied element if found, or failure status.
+     *  @return Result with copied element.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k No element is greater than @p comparable.
+     *  - Any status the element's @c copy returns passes through unchanged.
      */
     template <typename comparable_type_>
     expected<value_t> upper_bound_copy(comparable_type_ &&comparable) const noexcept {
@@ -1832,7 +1860,7 @@ class basic_avl_tree {
      *
      *  @param[in] lower Lower bound of the range (inclusive).
      *  @param[in] upper Upper bound of the range (exclusive).
-     *  @param[inout] callback Callback invoked for each mutable element in range. Must be
+     *  @param[in,out] callback Callback invoked for each mutable element in range. Must be
      *      @c noexcept.
      *  @note A callback answering @c walk_control_t stops the walk where it says to.
      */
@@ -1929,7 +1957,10 @@ class basic_avl_tree {
      *      made for it.
      *
      *  @param[in] comparable Entry to insert (moved into the tree).
-     *  @return The position the key lives at, and whether it was made, matched, or refused.
+     *  @return The position the key lives at, and whether it was made or matched.
+     *
+     *  @par Statuses:
+     *  - @c refused_k The key is absent and the allocator refused its node, so nothing was stored.
      */
     template <typename comparable_type_>
     inserted_iterator_t insert_if_missing(comparable_type_ &&comparable) noexcept {
@@ -1961,12 +1992,15 @@ class basic_avl_tree {
      *  @brief Atomically inserts an entry only if the key doesn't exist. Fails with error if key
      *      exists. This is strict insert semantics - ensures key is new.
      *
-     *  A refusal carries only its reason: @c key_already_exists_k when an incumbent holds the key,
-     *  @c out_of_memory_heap_k when no node was available. Callers that want the incumbent's
-     *  position ask @c insert_if_missing() instead, which hands back both.
+     *  Callers that want the incumbent's position ask @c insert_if_missing() instead,
+     *  which hands back both.
      *
      *  @param[in] comparable Entry to insert, moved into the tree only when a node is made for it.
-     *  @return Iterator to the new element, or the reason there is none.
+     *  @return Iterator to the new element.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k An incumbent holds the key, or an inconsistent comparator matched
+     *    one while linking the node.
      */
     template <typename comparable_type_>
     expected<iterator> insert(comparable_type_ &&comparable) noexcept {
@@ -2003,11 +2037,14 @@ class basic_avl_tree {
     }
 
     /**
-     *  @brief Atomically inserts or updates an entry. Always succeeds (unless OOM). Overwrites
-     *      existing entry if key exists (upsert semantics).
+     *  @brief Atomically inserts or updates an entry. Overwrites existing entry
+     *      if key exists (upsert semantics).
      *
      *  @param[in] comparable Entry to upsert (moved into the tree).
      *  @return The node the entry now lives in, and whether it was made or matched.
+     *
+     *  @par Statuses:
+     *  - @c refused_k The key is absent and the allocator refused its node, so nothing was stored.
      */
     template <typename comparable_type_>
     upserted_node_t upsert(comparable_type_ &&comparable) noexcept {
@@ -2082,7 +2119,11 @@ class basic_avl_tree {
     /**
      *  @brief Fills @p staged with [ @p first, @p last ), copying each element outside this tree.
      *  @tparam tags_types_ @c assume_sorted_t builds the staging tree in one balanced O(n) pass.
-     *  @return The first refusal, naming its own cause, or @c success_k for the whole range.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key repeats inside an unsorted range under @p policy_ refusing
+     *    the newcomer.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <incumbent_policy_t policy_, readable_iterator input_iterator_type_, typename... tags_types_>
     static status_t stage_range_(basic_avl_tree &staged, input_iterator_type_ first, input_iterator_type_ last,
@@ -2122,7 +2163,7 @@ class basic_avl_tree {
      *
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
-     *  @return @c success_k however many keys were already here, or the first refusal.
+     *  @param[in] tags Markers promising something about the range, such as @c assume_sorted_t.
      *
      *  All-or-nothing over this tree from the first element on: a node the allocator refuses and an
      *  element refusing its own copy are both met while the staging tree is built, and the merge
@@ -2130,6 +2171,9 @@ class basic_avl_tree {
      *  overload skips one; @c insert refuses the whole batch over it instead.
      *
      *  @note Complexity: O(n log n) to build, or O(n) under @c assume_sorted_t, then O(merge).
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert_if_missing(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -2155,12 +2199,16 @@ class basic_avl_tree {
      *
      *  @param[in] first Beginning of range to insert.
      *  @param[in] last End of range to insert.
-     *  @return @c key_already_exists_k when any key is taken, or the first refusal from the build.
+     *  @param[in] tags Markers promising something about the range, such as @c assume_sorted_t.
      *
      *  All-or-nothing over this tree from the first element on, a taken key included: the whole
      *  range is staged and checked before the merge absorbing it relinks a single node.
      *
      *  @note Complexity: O(n log n) to build or O(n) under @c assume_sorted_t, plus O(m+n) checks.
+     *
+     *  @par Statuses:
+     *  - @c key_already_exists_k A key repeats inside an unsorted range or is already in this tree.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t insert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -2187,7 +2235,9 @@ class basic_avl_tree {
      *      construction, this tree is unchanged.
      *
      *  @param[in] ilist Initializer list of entries to insert.
-     *  @return First error encountered, or success if all elements inserted.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     status_t insert_if_missing(std::initializer_list<value_t> ilist) noexcept {
         return insert_if_missing(ilist.begin(), ilist.end());
@@ -2205,8 +2255,7 @@ class basic_avl_tree {
      *
      *  @param[in] first Beginning of range to upsert.
      *  @param[in] last End of range to upsert.
-     *  @tparam tags_types_ Optional tags to control insertion behavior.
-     *  @return Success if all elements processed, or @c out_of_memory_heap_k on OOM.
+     *  @param[in] tags Markers promising something about the range, such as @c assume_sorted_t.
      *
      *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
      *  @note With @c assume_unique_t : Range must have no duplicate keys with existing tree;
@@ -2218,6 +2267,9 @@ class basic_avl_tree {
      *  Complexity: with @c assume_sorted_t, O(n) build plus O(merge) time; without, O(n log n)
      *  build plus O(merge) time. With @c assume_unique_t, O(log n) to O(m+n) optimized merge that
      *  assumes no conflicts; without, O(m log n) upsert merge that updates duplicates.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -2248,7 +2300,9 @@ class basic_avl_tree {
      *  @brief Upserts elements from initializer list (insert or update semantics).
      *
      *  @param[in] ilist Initializer list of entries to upsert.
-     *  @return First error encountered, or success if all elements processed.
+     *
+     *  @par Statuses:
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     status_t upsert(std::initializer_list<value_t> ilist) noexcept { return upsert(ilist.begin(), ilist.end()); }
 
@@ -2263,9 +2317,7 @@ class basic_avl_tree {
      *
      *  @param[in] first Beginning of range to update.
      *  @param[in] last End of range to update.
-     *  @tparam tags_types_ Optional tags to control insertion behavior.
-     *  @return Success if all keys updated, @c out_of_memory_heap_k on OOM, or @c key_not_found_k
-     *      if any key doesn't exist.
+     *  @param[in] tags Markers promising something about the range, such as @c assume_sorted_t.
      *
      *  @note Complexity:
      *  - With @c assume_sorted_t : O(n) build + O(m+n) validation + O(m log n) update
@@ -2274,6 +2326,10 @@ class basic_avl_tree {
      *  @note With @c assume_sorted_t : Range must be sorted (ascending order).
      *  @note All-or-nothing on failure: if any key is missing, nothing is updated. Temporary tree
      *      is destroyed via RAII, this tree remains unchanged.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k A key of the range is absent from this tree.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     template <readable_iterator input_iterator_type_, typename... tags_types_>
     status_t update(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
@@ -2299,7 +2355,10 @@ class basic_avl_tree {
      *  @brief Updates elements from an initializer list (all keys must exist).
      *
      *  @param[in] ilist Initializer list of entries to update.
-     *  @return Success if all keys updated, or error if any key missing or OOM.
+     *
+     *  @par Statuses:
+     *  - @c key_not_found_k A key of the list is absent from this tree.
+     *  - Any status an element's @c copy returns passes through unchanged.
      */
     status_t update(std::initializer_list<value_t> ilist) noexcept { return update(ilist.begin(), ilist.end()); }
 
@@ -2334,9 +2393,10 @@ class basic_avl_tree {
      *  allocators (when @c propagate_on_container_swap is @c false), the allocators must be equal,
      *  otherwise @c invalid_argument_k is returned.
      *
-     *  @param[inout] other Tree to swap with.
-     *  @return @c success_k when the swap completed, or @c invalid_argument_k if allocators are
-     *      incompatible and non-propagating.
+     *  @param[in,out] other Tree to swap with.
+     *
+     *  @par Statuses:
+     *  - @c invalid_argument_k The allocators are unequal and do not propagate on swap.
      */
     status_t swap(basic_avl_tree &other) noexcept {
         // For non-propagating allocators, they must be equal (C++ standard requirement)
@@ -2432,10 +2492,9 @@ class basic_avl_tree {
      *      next iterator and a status code for error reporting.
      *
      *  @param[in] position Iterator to element to erase. Must be valid and dereferenceable.
-     *  @return Contains iterator to element following the erased element and operation status.
+     *  @return Contains iterator to element following the erased element.
      *
-     *  @note If @p position is end(), returns {end(), success} without modifying the tree. If erase
-     *      fails (e.g., tree corruption), returns {end(), error}.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      */
     erase_result_t erase(iterator position) noexcept {
         if (position == end()) return {end(), {success_k}};
@@ -2450,10 +2509,9 @@ class basic_avl_tree {
      *      the next iterator and a status code for error reporting.
      *
      *  @param[in] position Const iterator to element to erase. Must be valid and dereferenceable.
-     *  @return Contains iterator to element following the erased element and operation status.
+     *  @return Contains iterator to element following the erased element.
      *
-     *  @note If @p position is end(), returns {end(), success} without modifying the tree. If erase
-     *      fails (e.g., tree corruption), returns {end(), error}.
+     *  @note If @p position is end(), returns {end(), success} without modifying the tree.
      */
     erase_result_t erase(const_iterator position) noexcept {
         // Erasing through a const iterator is the STL contract: the position is const, this tree is not.
@@ -2467,8 +2525,7 @@ class basic_avl_tree {
      *
      *  @param[in] first Beginning of range to erase.
      *  @param[in] last End of range to erase (not erased).
-     *  @return Contains iterator equal to @p last and status of the operation. Returns first error
-     *      encountered, or success if all elements erased.
+     *  @return Contains iterator equal to @p last, or the one following the element it stopped at.
      */
     erase_result_t erase(iterator first, iterator last) noexcept {
         while (first != last) {
@@ -2486,8 +2543,7 @@ class basic_avl_tree {
      *
      *  @param[in] first Beginning of range to erase.
      *  @param[in] last End of range to erase (not erased).
-     *  @return Contains iterator equal to @p last and status of the operation. Returns first error
-     *      encountered, or success if all elements erased.
+     *  @return Contains iterator equal to @p last, or the one following the element it stopped at.
      */
     erase_result_t erase(const_iterator first, const_iterator last) noexcept {
         return erase(iterator(this, first.node_), iterator(this, last.node_));
@@ -2529,12 +2585,12 @@ class basic_avl_tree {
      *  @brief Merges another tree into this one, transferring all nodes. Elements with keys that
      *      already exist in this tree are deallocated (not kept in source).
      *
-     *  @param[inout] other Tree to merge from. Will be empty after merge.
+     *  @param[in,out] other Tree to merge from. Will be empty after merge.
      *
      *  @note Unlike @c std::set::merge(), nodes with duplicate keys are deallocated rather than
      *      remaining in the source container. This ensures no memory leaks in a noexcept context.
      *  @note Complexity: O(m log n) where m = other.size(), n = this.size(). For disjoint trees,
-     *      use `merge(other, assume_unique)` for faster O(m log(n/m+1)) or O(m+n).
+     *      use <tt>merge(other, assume_unique)</tt> for faster O(m log(n/m+1)) or O(m+n).
      */
     void merge(basic_avl_tree &other) noexcept {
         node_t::for_each_bottom_up(other.root_, [&](node_t *node) noexcept {
@@ -2555,8 +2611,9 @@ class basic_avl_tree {
      *  @brief Merges another tree into this one with optimized algorithm for disjoint trees.
      *      Precondition: Trees have no overlapping keys (disjoint).
      *
-     *  @param[inout] other Tree to merge from. Will be empty after merge.
-     *  @param[in] assume_unique_t Tag confirming the trees hold no duplicate keys.
+     *  The trailing tag argument confirms the trees hold no duplicate keys.
+     *
+     *  @param[in,out] other Tree to merge from. Will be empty after merge.
      *
      *  @note Complexity: O(m log(n/m + 1)) for unbalanced sizes, O(m+n) for similar sizes.
      *  @warning If precondition violated (duplicate keys exist), behavior is undefined.
@@ -2701,7 +2758,7 @@ class basic_avl_tree {
      *  @brief Joins this tree with another tree. Precondition: All elements in this tree < all
      *      elements in other tree. The other tree becomes empty after the join.
      *
-     *  @param[inout] other Tree to join with (must have all larger elements).
+     *  @param[in,out] other Tree to join with (must have all larger elements).
      *
      *  @note This operation is O(log n) and maintains AVL balance. If the precondition is violated,
      *      the resulting tree structure is undefined.

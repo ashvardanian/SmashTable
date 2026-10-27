@@ -5,45 +5,26 @@
  *  @brief A cursor of @c partitioned_store stepping past a store-wide write, and a commit over one
  *      partition beside them, from `include/smashtable/partitioned_store.hpp`.
  *
- *  The writer is @c publish_every_part_: every partition held exclusively by @c every_part_lock,
- *  one stamp drawn by @c begin_commit, a key inserted into the first partition and a version
- *  written into the second under it, the stamp landed by @c end_commit, every partition given back,
- *  and only then each partition's write count stepped with a release by @c note_written_, which
- *  @c for_all does the same way after an all-at-once hold. A flag the writer releases after the
- *  counts tells the cursor the write is over.
+ *  The writer is @c publish_every_part_: a key inserted into the first partition and a version
+ *  written into the second, every partition given back, and only then each partition's write count
+ *  stepped with a release by @c note_written_. A flag the writer releases after the counts tells
+ *  the cursor the write is over. The committer is a transaction over the second partition alone.
  *
- *  The cursor is @c ordered_cursor_t: its constructor reads each partition's count with acquire
- *  through @c epoch_seen_ and then that partition's front under its shared lock, which is
- *  @c seed_every_front_; it then acquires the flag, and @c next re-reads every front whose count
- *  moved since it was read, which is @c refresh_stale_fronts_, and hands over the least. The
- *  writer's key is the least of all, so a step taken after the cursor saw the flag owes that key.
- *  The writes insert and never erase, so the front handed over is still there and the probe that
- *  confirms it and refills behind it changes nothing this step hands over.
- *
- *  The committer is a transaction over the second partition alone: @c touched_parts_lock_t holds it
- *  from @c validate_for_commit through the write, the stamp drawn and landed in between, and its
- *  release steps the count before it unlocks. It validates the version the writer also writes, and
- *  nothing may move that version between its validation and its write. Both commits draw and land
- *  through the ring steps of `commit_order_steps.pml`, with no census, since nothing here reads at
- *  a snapshot; the second partition's lock serializes them, so the ring is walked in turn.
+ *  - A step taken after the cursor saw the flag owes the writer's key, the least of all.
+ *  - Nothing may move the version the committer validates between its validation and its write.
  *
  *  @verify pass sc,rc11
- *  @verify fail sc,rc11 note_written=false: @c publish_every_part_ steps every partition's write
- *      count once its hold is over; without the step, the cursor that read the first partition's
- *      front before the insert never re-reads it, and hands over the second-least key after the
- *      writer is done
+ *  @verify fail sc,rc11 note_written=false: without the step, the cursor that read the first
+ *      partition's front before the insert never re-reads it, and hands over the second-least key
+ *      after the writer is done
  *  @verify pass rc11 epoch_order=order_relaxed: the cursor reads a front under the partition's
- *      shared lock, whose read-modify-write reads the writer's unlock or a later write, so a cursor
- *      that read the stepped count reads the front after the insert, released by the step or not
+ *      shared lock, whose read-modify-write reads the writer's unlock or a later write
  *  @verify pass rc11 front_lock=false: the count is stepped with a release after the insert and
- *      read with acquire before the front, so a cursor that read the stepped count reads the front
- *      after the insert even without the lock
- *  @verify fail rc11 front_lock=false epoch_order=order_relaxed: the shared lock and the count's
- *      release each order the front read after the insert alone; with neither, the constructor
+ *      read with acquire before the front
+ *  @verify fail rc11 front_lock=false epoch_order=order_relaxed: with neither, the constructor
  *      reads the stepped count and a front from before the insert, and @c next re-reads nothing
- *  @verify fail sc,rc11 held_partitions=false: a commit holds every partition it reached from its
- *      validation through its write; giving the partition back between the two and taking it
- *      again, the writer writes the version the committer validated in the gap, and the commit
+ *  @verify fail sc,rc11 held_partitions=false: giving the partition back between the two and taking
+ *      it again, the writer writes the version the committer validated in the gap, and the commit
  *      lands over a write it never saw
  */
 #define partitions 2
@@ -51,9 +32,9 @@
 #define thread_count 3
 #define location_count 12
 #define history_depth 11
-#include "weak_memory.pml"
-#include "monitor_wait.pml"
-#include "spin_shared_mutex.pml"
+#include <weak_memory.pml>
+#include <monitor_wait.pml>
+#include <spin_shared_mutex.pml>
 
 /** The words: each partition's mutex, write count and keys, the version the committer validates,
  *  the writer's flag, then the order's stamp counter, watermark and ring of landed marks. */
@@ -88,7 +69,7 @@
 #define held_partitions true
 #endif
 
-#include "commit_order_steps.pml"
+#include <commit_order_steps.pml>
 
 /** One partition's keys read under its shared lock: the probe of @c seed_one_front_. */
 inline read_front(t, partition, contents) {

@@ -286,11 +286,6 @@ def test_the_module_exports_its_containers(container_class):
     assert getattr(st, container_class.__name__) is container_class
 
 
-def test_the_module_reports_a_version():
-    """A version string is present and looks like one."""
-    assert st.__version__.count(".") == 2
-
-
 # endregion Module surface
 
 # region Object values

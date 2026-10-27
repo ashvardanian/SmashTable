@@ -7,24 +7,12 @@
  *      populated or locked.
  *
  *  A slot is locked by driving both bits up with an acquire @c fetch_or, and released by an xor
- *  with release that lands the staged state; the counters are posted with release under it.
- *
- *  An emplacer locks each slot in turn: a populated one is compared, a deleted one skipped, a free
- *  one taken, its key written under the lock and the slot released as populated, with the populated
- *  count moved under the lock. The finder locks each slot and reads the key of a populated one; the
- *  eraser does the same and drives a match to deleted, moving both counters under the lock. The
- *  emplacer posts its count as a no-return add with release, as the code does. The eraser's two
- *  moves are spelled performed, since the module lands one post per thread at a time.
- *
- *  A loser of the slot lock re-reads the header until the slot reads unlocked, which covers every
- *  policy the lock takes: a @c waiting_policy returns on its own, whether it stalls, yields or
- *  waits on the line under a deadline, so none can lose a wake-up, and they differ only in how
- *  late a loser notices the slot is free.
- *
- *  Every scenario beside this file defines its shape, @c slots, the slots the probe walks, and
- *  @c key_of, the key each emplacer carries; the finder and the eraser look for the first one's.
+ *  with release that lands the staged state; the counters are posted with release under it. The
+ *  finder locks each slot and reads the key of a populated one; the eraser does the same and drives
+ *  a match to deleted, moving both counters under the lock. A loser of the slot lock re-reads the
+ *  header until the slot reads unlocked, which covers every policy the lock takes.
  */
-#include "../weak_memory.pml"
+#include <weak_memory.pml>
 
 /** The words: the header, one key per slot, and the two counters. */
 #define header 0

@@ -7,36 +7,19 @@
  *
  *  Every participant staged in ascending store address and the staged prefix unwound on a refusal;
  *  a commit that asks every participant before any of them writes, where the stores split their
- *  commit, and one that commits in turn where they do not; and a participant that holds its store's
- *  mutex from its validation to its publication, so nothing moves in between.
+ *  commit, and one that commits in turn where they do not; and a participant that holds its
+ *  store's mutex from its validation to its publication, so nothing moves in between. Two groups
+ *  and one writer.
  *
- *  Two groups and one writer. Each group watches one key per store while it stages, and publishes
- *  one key per store, which with @c groups_write is the key it watched there and the other group
- *  watches too; the writer commits over the watched key of the second store, under that store's
- *  unique lock, at any point. A group's stage may be refused at the second store, as an inner
- *  store may refuse it, and then unwinds the first. Its commit validates every watch, holding
- *  each store's lock as it goes, and publishes under those holds; a refusal gives every hold back
- *  at once, then the first group reads the store it validated first and drops the group, and the
- *  second rolls back under fresh locks. The two groups split the read and the rollback between
- *  them, since both on one group would overflow the history the one-stamp reader leaves room for.
- *
- *  Invariants:
- *  - no lost update: at every publication the watched key still holds what the group watched;
- *  - no hold outlives a refusal: a caller reading a store after a refused commit never waits on its
- *    own lock;
- *  - two groups holding across their phases never deadlock;
- *  - all or none: a group that returned success published every participant, and one that was
- *    refused published none, where the stores split their commit;
- *  - after a refused stage no store holds the group's staged mark.
- *
- *  Every scenario beside this file defines its shape, @c split_commit for stores that split their
- *  commit into a validation and a publication, @c shared_clock for stores on one
- *  @c basic_commit_order, and @c groups_write for groups whose publication writes the very key
- *  they watched, which the other group watches too.
+ *  - No lost update: at every publication the watched key still holds what the group watched.
+ *  - A caller reading a store after a refused commit never waits on its own lock.
+ *  - Two groups holding across their phases never deadlock.
+ *  - All or none, where the stores split their commit.
+ *  - After a refused stage no store holds the group's staged mark.
  */
-#include "../weak_memory.pml"
-#include "../monitor_wait.pml"
-#include "../spin_shared_mutex.pml"
+#include <weak_memory.pml>
+#include <monitor_wait.pml>
+#include <spin_shared_mutex.pml>
 
 #define stores 2
 
