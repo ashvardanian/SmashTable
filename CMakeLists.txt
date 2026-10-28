@@ -113,62 +113,7 @@ target_include_directories(
 
 target_compile_features(smashtable_header INTERFACE cxx_std_20)
 
-# Compiler warnings for tests/examples
-add_library(smashtable_warnings INTERFACE)
-
-option(SMASHTABLE_WERROR "Treat compiler warnings as errors" OFF)
-
-if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
-    # GCC warns about the `#pragma region` markers Clang and GCC both ignore. `-Wshadow` is not here:
-    # the two compilers disagree about what it means, and GCC counts a constructor parameter named after
-    # the member it initializes, which is the idiom rather than a defect.
-    target_compile_options(
-        smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wno-unknown-pragmas
-                                      $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wdocumentation>
-    )
-    if (SMASHTABLE_WERROR)
-        target_compile_options(smashtable_warnings INTERFACE -Werror)
-    endif ()
-elseif (MSVC)
-    # Without this branch MSVC compiles at its default warning level and `SMASHTABLE_WERROR` silently does nothing.
-    # `/permissive-` buys two-phase lookup, `/Zc:preprocessor` buys the `__VA_OPT__` the assertion macros are built
-    # on, and `/bigobj` is cheap insurance: the partitioned suite already emits 2k sections against a 64k ceiling.
-    target_compile_options(smashtable_warnings INTERFACE /W4 /permissive- /utf-8 /Zc:preprocessor /bigobj)
-    # C4324 fires on the over-alignment the alignment tests ask for on purpose. C4702 judges reachability per
-    # instantiation after inlining, so the dead arm of an `if constexpr` and the `return` past a test callback
-    # that asserts it can never fire both trip it; GCC and Clang judge the template and say nothing.
-    # C4456-C4459 are the shadowing family, left off here for the same reason `-Wshadow` is left off above.
-    target_compile_options(smashtable_warnings INTERFACE /wd4324 /wd4702 /wd4456 /wd4457 /wd4458 /wd4459)
-    if (SMASHTABLE_WERROR)
-        target_compile_options(smashtable_warnings INTERFACE /WX)
-    endif ()
-endif ()
-
-if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
-    target_compile_options(smashtable_warnings INTERFACE -fmax-errors=1)
-elseif (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    target_compile_options(smashtable_warnings INTERFACE -ferror-limit=1)
-endif ()
-
-# Sanitizers instrument every target this directory builds, and never a parent project's own targets.
-set(SMASHTABLE_BUILD_SANITIZERS
-    "off"
-    CACHE STRING "Sanitizers for SmashTable's own targets: off, address with undefined, or thread"
-)
-set_property(CACHE SMASHTABLE_BUILD_SANITIZERS PROPERTY STRINGS off address thread)
-if (SMASHTABLE_BUILD_SANITIZERS STREQUAL "address" AND MSVC)
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:/fsanitize=address>")
-elseif (SMASHTABLE_BUILD_SANITIZERS STREQUAL "address")
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=address,undefined;-fno-omit-frame-pointer>")
-    add_link_options("$<$<LINK_LANGUAGE:CXX>:-fsanitize=address,undefined>")
-elseif (SMASHTABLE_BUILD_SANITIZERS STREQUAL "thread" AND NOT MSVC)
-    add_compile_options("$<$<COMPILE_LANGUAGE:CXX>:-fsanitize=thread;-fno-omit-frame-pointer>")
-    add_link_options("$<$<LINK_LANGUAGE:CXX>:-fsanitize=thread>")
-elseif (NOT SMASHTABLE_BUILD_SANITIZERS STREQUAL "off")
-    message(FATAL_ERROR "SMASHTABLE_BUILD_SANITIZERS is off, address or thread, the last with Clang or GCC, "
-                        "not '${SMASHTABLE_BUILD_SANITIZERS}'"
-    )
-endif ()
+include(cmake/smashtable_flags.cmake)
 
 # Tests and examples
 option(SMASHTABLE_BUILD_TEST "Build tests and examples" OFF)
@@ -214,55 +159,7 @@ if (SMASHTABLE_BUILD_TEST)
         endforeach ()
     endif ()
 
-    # The CUDA leg is opt-out rather than opt-in, but only materializes where a device compiler exists.
-    # `check_language` finding one says nothing about a device being present, so the binary itself
-    # skips when `cudaGetDeviceCount` comes back empty - that is what keeps a GPU-less runner green.
-    include(CheckLanguage)
-    check_language(CUDA)
-    # `check_language` shadows a cached `CMAKE_CUDA_HOST_COMPILER` with its own result; drop it to see the cache again.
-    unset(CMAKE_CUDA_HOST_COMPILER)
-
-    if (SMASHTABLE_BUILD_CUDA AND CMAKE_CUDA_COMPILER)
-        # Decide the architectures before `enable_language(CUDA)`, which otherwise fills them in from
-        # the compiler's own default of `sm_52` - too old to assemble the scoped atomics the slot
-        # protocol is built on, so it fails in `ptxas` rather than at runtime. The default is the list every
-        # sibling library builds, so it needs no device; `native` suits anyone holding one.
-        set(SMASHTABLE_CUDA_ARCHITECTURES
-            "75-real;80-real;89-real;90a-real;100f-real;120f-real;80-virtual"
-            CACHE STRING "GPU architectures baked into the CUDA test"
-        )
-        if (CMAKE_VERSION VERSION_LESS 3.31 AND SMASHTABLE_CUDA_ARCHITECTURES MATCHES "1[0-9][0-9][af]")
-            message(FATAL_ERROR "Three-digit \"a\" and \"f\" CUDA codes need CMake 3.31, found ${CMAKE_VERSION}")
-        endif ()
-        set(CMAKE_CUDA_ARCHITECTURES "${SMASHTABLE_CUDA_ARCHITECTURES}")
-
-        enable_language(CUDA)
-        if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13)
-            message(FATAL_ERROR "SmashTable needs CUDA 13 or newer, found ${CMAKE_CUDA_COMPILER_VERSION}")
-        endif ()
-        set(CMAKE_CUDA_STANDARD 20)
-        set(CMAKE_CUDA_STANDARD_REQUIRED ON)
-
-        add_executable(smashtable_test_concurrent_cuda test/atomic_cuda.cu)
-        target_include_directories(smashtable_test_concurrent_cuda PRIVATE test/)
-        target_link_libraries(smashtable_test_concurrent_cuda PRIVATE smashtable::header)
-
-        # `--expt-relaxed-constexpr` is what makes the library's `constexpr` surface device-callable;
-        # without it every probe, lock and unlock is a host function a kernel may not call.
-        target_compile_options(
-            smashtable_test_concurrent_cuda PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:--expt-relaxed-constexpr>"
-        )
-        if (MSVC)
-            target_compile_options(
-                smashtable_test_concurrent_cuda PRIVATE "$<$<COMPILE_LANGUAGE:CUDA>:-Xcompiler=/Zc:preprocessor>"
-            )
-        endif ()
-        message(STATUS "smashtable: CUDA test enabled for ${CMAKE_CUDA_ARCHITECTURES}")
-    endif ()
-
-    if (TARGET smashtable_test_concurrent_cuda)
-        add_test(NAME test_atomic_cuda COMMAND smashtable_test_concurrent_cuda)
-    endif ()
+    include(cmake/smashtable_gpu.cmake)
 endif ()
 
 # The `smashtable` extension module, installed at the wheel's root beside its stub and typing marker.
@@ -293,49 +190,4 @@ if (SMASHTABLE_BUILD_PYTHON)
     )
 endif ()
 
-option(SMASHTABLE_INSTALL "Install headers and CMake package files" ${PROJECT_IS_TOP_LEVEL})
-
-if (SMASHTABLE_INSTALL)
-    # Installation
-    install(
-        DIRECTORY include/
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-        FILES_MATCHING
-        PATTERN "*.hpp"
-    )
-
-    install(
-        TARGETS smashtable_header
-        EXPORT smashtableTargets
-        INCLUDES
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}
-    )
-
-    install(
-        EXPORT smashtableTargets
-        FILE smashtableTargets.cmake
-        NAMESPACE smashtable::
-        DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/smashtable
-    )
-
-    # Package config for find_package(smashtable)
-    include(CMakePackageConfigHelpers)
-
-    write_basic_package_version_file(
-        "${CMAKE_CURRENT_BINARY_DIR}/smashtableConfigVersion.cmake"
-        VERSION ${PROJECT_VERSION}
-        COMPATIBILITY SameMajorVersion
-    )
-
-    configure_package_config_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/smashtableConfig.cmake.in"
-        "${CMAKE_CURRENT_BINARY_DIR}/smashtableConfig.cmake"
-        INSTALL_DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/smashtable
-        NO_CHECK_REQUIRED_COMPONENTS_MACRO
-    )
-
-    install(FILES "${CMAKE_CURRENT_BINARY_DIR}/smashtableConfig.cmake"
-                  "${CMAKE_CURRENT_BINARY_DIR}/smashtableConfigVersion.cmake"
-            DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/smashtable
-    )
-endif ()
+include(cmake/smashtable_install.cmake)
