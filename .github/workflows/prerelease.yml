@@ -164,26 +164,36 @@ jobs:
         run: ./build_${{ matrix.preset }}/smashtable_example
 
   # A hosted runner has no GPU, so this job proves the device code compiles and that the test's own
-  # skip path works - it reports no device and exits zero rather than failing. The architectures are
-  # named here rather than defaulted, since detecting them needs the very device the runner lacks.
+  # skip path works - it reports no device and exits zero rather than failing. The default architecture
+  # list needs no device to detect.
   test_cuda:
     name: Build CUDA Backend on Ubuntu
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
-    container: nvidia/cuda:13.0.1-devel-ubuntu24.04
+    container: nvidia/cuda:13.4.3-devel-ubuntu26.04
+    env:
+      CC: clang-22
+      CXX: clang++-22
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+      # The family codes like `100f` need CMake 3.31, and Ubuntu 24.04 ships 3.28.
       - name: Install Toolchain
-        run: apt-get update && apt-get install -y cmake ninja-build g++
+        run: |
+          apt-get update && apt-get install -y ninja-build g++ python3-pip curl gnupg
+          pip install --break-system-packages "cmake>=3.31"
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/resolute/ llvm-toolchain-resolute-22 main" \
+            > /etc/apt/sources.list.d/llvm.list
+          apt-get update && apt-get install -y clang-22
       - name: Log Toolchain
         run: |
           nvcc --version
           nvidia-smi || echo "no GPU on this runner, which is what the skip path is for"
 
       - name: Configure
-        run: cmake --preset cuda
+        run: cmake --preset cuda -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX" -D CMAKE_CUDA_HOST_COMPILER="$CXX"
       # Two jobs, not one per core: nvcc runs a host and a device pass over the same template-heavy
       # headers, and the pair is bounded by memory rather than by cores.
       - name: Build
@@ -191,6 +201,37 @@ jobs:
       - name: Test
         # Only the CUDA suite: the nine CPU tests here are the same ones the GCC 14 row just ran.
         run: ctest --preset cuda
+
+  # Each machine profile builds the tests and the CUDA test for one CPU and one GPU code; the Arm ones build natively
+  # on Arm runners, where the CUDA image also exists. Clang 22 compiles the host units, as GCC 13 predates Olympus.
+  build_machine_profile:
+    name: Build Machine Profile ${{ matrix.preset }}
+    needs: test_headers
+    runs-on: ${{ contains(fromJSON('["grace_hopper", "vera_rubin"]'), matrix.preset) && 'ubuntu-24.04-arm' || 'ubuntu-26.04' }}
+    timeout-minutes: 30
+    container: nvidia/cuda:13.4.3-devel-ubuntu26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [xeon4_hopper, xeon6_blackwell, grace_hopper, vera_rubin]
+    env:
+      CC: clang-22
+      CXX: clang++-22
+    steps:
+      - name: Install Toolchain
+        run: |
+          apt-get update && apt-get install -y ninja-build g++ git python3-pip curl gnupg
+          pip install --break-system-packages "cmake>=3.31"
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/resolute/ llvm-toolchain-resolute-22 main" \
+            > /etc/apt/sources.list.d/llvm.list
+          apt-get update && apt-get install -y clang-22
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }} -D CMAKE_C_COMPILER="$CC" -D CMAKE_CXX_COMPILER="$CXX" -D CMAKE_CUDA_HOST_COMPILER="$CXX"
+          cmake --build --preset ${{ matrix.preset }} --parallel 2
 
   test_32bit:
     name: Test on Linux 32-bit i386
@@ -240,6 +281,54 @@ jobs:
       - name: Test
         run: ctest --preset msvc2026_x64
 
+  test_windows_arm64:
+    name: Test on Windows ARM64 with MSVC
+    runs-on: windows-11-arm
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Configure
+        run: cmake --preset msvc2022_arm64
+      - name: Build
+        run: cmake --build --preset msvc2022_arm64 --parallel
+      - name: Test
+        run: ctest --preset msvc2022_arm64
+
+  # The NDK's own toolchain, compile only: no hosted runner executes Android binaries.
+  build_android:
+    name: Build for Android ARM64
+    needs: test_headers
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Configure
+        run: cmake --preset android_arm64
+      - name: Build
+        run: cmake --build --preset android_arm64 --parallel 2
+
+  # Compile only: the threaded suites need a shared memory the single-threaded module lacks.
+  build_wasm:
+    name: Build for WebAssembly with ${{ matrix.preset }}
+    needs: test_headers
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [wasm32_emscripten, wasm64_emscripten]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+      - name: Install Emscripten
+        uses: mymindstorm/setup-emsdk@v16
+      - name: Build
+        run: |
+          cmake --preset ${{ matrix.preset }}
+          cmake --build --preset ${{ matrix.preset }} --parallel 2
+
   test_python:
     name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
@@ -248,7 +337,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04, macos-15, windows-2025]
-        python-version: ["3.12", "3.13", "3.14", "3.14t"]
+        python-version: ["3.12", "3.13", "3.14", "3.14t", "3.15", "3.15t"]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -290,12 +379,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-26.04, macos-15]
-        python-version: ["312", "314t"]
+        python-version: ["312", "315t"]
     steps:
       - name: Checkout
         uses: actions/checkout@v7
       - name: Build Wheels
-        uses: pypa/cibuildwheel@v4.2.0
+        uses: pypa/cibuildwheel@v4.3.5
         env:
           # One entry per interpreter variant: a `cp314-*` glob stops before the `t`, so a flat
           # list silently ships zero free-threaded wheels while looking complete.

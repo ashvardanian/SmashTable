@@ -77,7 +77,7 @@ jobs:
       matrix:
         # One entry per interpreter variant. A `cp314-*` glob stops before the `t`, so a flat list
         # silently ships zero free-threaded wheels while looking complete.
-        python-version: ["312", "313", "314", "314t"]
+        python-version: ["312", "313", "314", "314t", "315", "315t"]
         os:
           [
             ubuntu-26.04,
@@ -86,16 +86,13 @@ jobs:
             windows-2025,
             windows-11-arm,
           ]
-        exclude:
-          # No free-threaded ARM64 interpreter ships for Windows, so the pair would build nothing.
-          - { os: windows-11-arm, python-version: "314t" }
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           ref: main
       - name: Build Wheels
-        uses: pypa/cibuildwheel@v4.2.0
+        uses: pypa/cibuildwheel@v4.3.5
         env:
           CIBW_BUILD: cp${{ matrix.python-version }}-*
           CIBW_ARCHS_WINDOWS: ${{ matrix.os == 'windows-11-arm' && 'ARM64' || 'AMD64 x86' }}

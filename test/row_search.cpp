@@ -252,7 +252,7 @@ void verify_layouts_of(std::mt19937_64 &generator) {
         row * fanout,
         row * fanout + 1,
         row * fanout * fanout / 3 + 7,
-        3000 + generator() % 9000,
+        static_cast<std::size_t>(3000 + generator() % 9000),
     };
     basic_vector<key_type_> keys;
     basic_vector<key_type_> wanted;

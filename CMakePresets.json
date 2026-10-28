@@ -70,12 +70,12 @@
     },
     {
       "name": "cuda",
-      "inherits": ["base", "gcc"],
-      "description": "Compiles the scoped-atomics test for Hopper and Blackwell; it skips at run time without a device.",
+      "inherits": ["base", "clang"],
+      "description": "Compiles the scoped-atomics test for every device family; it skips at run time without a device.",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "SMASHTABLE_BUILD_CUDA": "ON",
-        "CMAKE_CUDA_ARCHITECTURES": "90;100"
+        "CMAKE_CUDA_HOST_COMPILER": "clang++",
+        "SMASHTABLE_BUILD_CUDA": "ON"
       },
       "displayName": "CUDA - tests"
     },
@@ -91,6 +91,78 @@
       "inherits": "msvc2026_x64",
       "displayName": "Windows x64 - Visual Studio 2022",
       "generator": "Visual Studio 17 2022"
+    },
+    {
+      "name": "msvc2022_arm64",
+      "inherits": ["base", "windows"],
+      "generator": "Visual Studio 17 2022",
+      "architecture": "ARM64",
+      "displayName": "Windows ARM64 - Visual Studio 2022"
+    },
+    {
+      "name": "android_arm64",
+      "inherits": "base",
+      "displayName": "Android ARM64 through the NDK's own toolchain, compile only",
+      "toolchainFile": "$env{ANDROID_NDK_ROOT}/build/cmake/android.toolchain.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "ANDROID_ABI": "arm64-v8a", "ANDROID_PLATFORM": "android-24" }
+    },
+    {
+      "name": "wasm32_emscripten",
+      "inherits": "base",
+      "displayName": "WebAssembly through Emscripten, one thread, compile only",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": { "CMAKE_BUILD_TYPE": "Release", "EMSCRIPTEN_SYSTEM_PROCESSOR": "wasm32" }
+    },
+    {
+      "name": "wasm64_emscripten",
+      "inherits": "base",
+      "displayName": "WebAssembly through Emscripten, 64-bit with threads, compile only",
+      "description": "Emscripten's toolchain reads the width off the C flags as it loads, so both languages carry them.",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "EMSCRIPTEN_SYSTEM_PROCESSOR": "wasm64",
+        "CMAKE_C_FLAGS": "-pthread --target=wasm64",
+        "CMAKE_CXX_FLAGS": "-pthread --target=wasm64",
+        "CMAKE_EXE_LINKER_FLAGS": "-pthread --target=wasm64 -sALLOW_MEMORY_GROWTH"
+      }
+    },
+    {
+      "name": "machine",
+      "hidden": true,
+      "inherits": ["base", "clang"],
+      "description": "Tests and the CUDA test for one machine: its CPU and its one GPU code.",
+      "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_CUDA_HOST_COMPILER": "clang++",
+        "SMASHTABLE_BUILD_CUDA": "ON"
+      }
+    },
+    {
+      "name": "xeon4_hopper",
+      "inherits": "machine",
+      "displayName": "Xeon 4 with Hopper - compile only",
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-march=sapphirerapids", "SMASHTABLE_CUDA_ARCHITECTURES": "90a-real" }
+    },
+    {
+      "name": "xeon6_blackwell",
+      "inherits": "machine",
+      "displayName": "Xeon 6 with Blackwell - compile only",
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-march=graniterapids", "SMASHTABLE_CUDA_ARCHITECTURES": "100f-real" }
+    },
+    {
+      "name": "grace_hopper",
+      "inherits": "machine",
+      "displayName": "Grace with Hopper - compile only",
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-mcpu=neoverse-v2", "SMASHTABLE_CUDA_ARCHITECTURES": "90a-real" }
+    },
+    {
+      "name": "vera_rubin",
+      "inherits": "machine",
+      "displayName": "Vera with Rubin - compile only",
+      "description": "Olympus cores need Clang 22 or GCC 15, and CUDA 13.4 names no Rubin code, so it compiles 100f.",
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-mcpu=olympus", "SMASHTABLE_CUDA_ARCHITECTURES": "100f-real" }
     }
   ],
   "buildPresets": [
@@ -102,7 +174,15 @@
     { "name": "linux_i386", "configurePreset": "linux_i386" },
     { "name": "cuda", "configurePreset": "cuda" },
     { "name": "msvc2026_x64", "configurePreset": "msvc2026_x64", "configuration": "Release" },
-    { "name": "msvc2022_x64", "configurePreset": "msvc2022_x64", "configuration": "Release" }
+    { "name": "msvc2022_x64", "configurePreset": "msvc2022_x64", "configuration": "Release" },
+    { "name": "msvc2022_arm64", "configurePreset": "msvc2022_arm64", "configuration": "Release" },
+    { "name": "android_arm64", "configurePreset": "android_arm64" },
+    { "name": "wasm32_emscripten", "configurePreset": "wasm32_emscripten" },
+    { "name": "wasm64_emscripten", "configurePreset": "wasm64_emscripten" },
+    { "name": "xeon4_hopper", "configurePreset": "xeon4_hopper" },
+    { "name": "xeon6_blackwell", "configurePreset": "xeon6_blackwell" },
+    { "name": "grace_hopper", "configurePreset": "grace_hopper" },
+    { "name": "vera_rubin", "configurePreset": "vera_rubin" }
   ],
   "testPresets": [
     {
@@ -123,7 +203,8 @@
       "filter": { "include": { "name": "test_atomic_cuda" } }
     },
     { "name": "msvc2026_x64", "inherits": "base", "configurePreset": "msvc2026_x64", "configuration": "Release" },
-    { "name": "msvc2022_x64", "inherits": "base", "configurePreset": "msvc2022_x64", "configuration": "Release" }
+    { "name": "msvc2022_x64", "inherits": "base", "configurePreset": "msvc2022_x64", "configuration": "Release" },
+    { "name": "msvc2022_arm64", "inherits": "base", "configurePreset": "msvc2022_arm64", "configuration": "Release" }
   ],
   "workflowPresets": [
     {

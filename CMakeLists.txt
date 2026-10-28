@@ -15,7 +15,7 @@
 #   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: OFF, the `cuda` preset switches it on)
 #   -D SMASHTABLE_BUILD_BENCH=<ON|OFF>                  (default: OFF; CTest never runs the benchmarks)
 #   -D SMASHTABLE_BUILD_PYTHON=<ON|OFF>                 (default: OFF, `scikit-build-core` switches it on)
-#   -D CMAKE_CUDA_ARCHITECTURES=<list>                  (default: native; name a list when building GPU-less)
+#   -D SMASHTABLE_CUDA_ARCHITECTURES=<list>             (default: one cubin per device family plus a PTX tail)
 #
 # Targets:
 #
@@ -73,6 +73,8 @@ if (PROJECT_IS_TOP_LEVEL)
     set(CMAKE_CXX_STANDARD 20)
     set(CMAKE_CXX_STANDARD_REQUIRED ON)
     set(CMAKE_CXX_EXTENSIONS OFF)
+    # No target uses C++20 modules, and a Clang installed without `clang-scan-deps` would fail every C++ unit.
+    set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 
     # An unset build type means no optimization flags at all on single-config generators, which is a surprising default
@@ -217,17 +219,27 @@ if (SMASHTABLE_BUILD_TEST)
     # skips when `cudaGetDeviceCount` comes back empty - that is what keeps a GPU-less runner green.
     include(CheckLanguage)
     check_language(CUDA)
+    # `check_language` shadows a cached `CMAKE_CUDA_HOST_COMPILER` with its own result; drop it to see the cache again.
+    unset(CMAKE_CUDA_HOST_COMPILER)
 
     if (SMASHTABLE_BUILD_CUDA AND CMAKE_CUDA_COMPILER)
         # Decide the architectures before `enable_language(CUDA)`, which otherwise fills them in from
         # the compiler's own default of `sm_52` - too old to assemble the scoped atomics the slot
-        # protocol is built on, so it fails in `ptxas` rather than at runtime. `native` suits anyone
-        # holding a device; a builder without one, CI included, names its own list.
-        if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)
-            set(CMAKE_CUDA_ARCHITECTURES native)
+        # protocol is built on, so it fails in `ptxas` rather than at runtime. The default is the list every
+        # sibling library builds, so it needs no device; `native` suits anyone holding one.
+        set(SMASHTABLE_CUDA_ARCHITECTURES
+            "75-real;80-real;89-real;90a-real;100f-real;120f-real;80-virtual"
+            CACHE STRING "GPU architectures baked into the CUDA test"
+        )
+        if (CMAKE_VERSION VERSION_LESS 3.31 AND SMASHTABLE_CUDA_ARCHITECTURES MATCHES "1[0-9][0-9][af]")
+            message(FATAL_ERROR "Three-digit \"a\" and \"f\" CUDA codes need CMake 3.31, found ${CMAKE_VERSION}")
         endif ()
+        set(CMAKE_CUDA_ARCHITECTURES "${SMASHTABLE_CUDA_ARCHITECTURES}")
 
         enable_language(CUDA)
+        if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13)
+            message(FATAL_ERROR "SmashTable needs CUDA 13 or newer, found ${CMAKE_CUDA_COMPILER_VERSION}")
+        endif ()
         set(CMAKE_CUDA_STANDARD 20)
         set(CMAKE_CUDA_STANDARD_REQUIRED ON)
 

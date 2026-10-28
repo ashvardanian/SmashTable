@@ -24,10 +24,6 @@
 #define PY_SSIZE_T_CLEAN
 #include <Python.h>
 
-#if PY_VERSION_HEX < 0x030C0000
-#error "SmashTable requires CPython 3.12 or later, where per-interpreter GIL support is declarable"
-#endif
-
 #include <cassert> // `assert`
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::int64_t`

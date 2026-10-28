@@ -152,9 +152,9 @@ A name without it is a public contract, either a switch you may set or a value y
 | Family                       | Form                       | Example                     |
 | ---------------------------- | -------------------------- | --------------------------- |
 | ISA tier, backend, GPU layer | `SMASHTABLE_TARGET_<TIER>` | `SMASHTABLE_TARGET_HASWELL` |
-| Architecture fact            | `SMASHTABLE_ARCH_<ARCH>_`  | `SMASHTABLE_ARCH_X86_64_`   |
+| Architecture fact            | `SMASHTABLE_ARCH_<ARCH>_`  | `SMASHTABLE_ARCH_X8664_`    |
 
-Architectures are spelled `X86_64`, `X86_32`, `ARM64`, `RISCV64`, `PPC64`, `LOONGARCH64`, `S390X` and `WASM`.
+Architectures are spelled `X8664`, `X8632`, `ARM64`, `RISCV64`, `PPC64`, `LOONGARCH64`, `S390X` and `WASM`.
 Every name in these families is always defined, as 0 or 1, and tested with `#if`, never with `defined(...)`.
 
 Avoid obvious inline comments.

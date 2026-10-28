@@ -91,7 +91,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 
 /** Whether this build carries @p kit and the running processor and operating system can execute it.
  *  Probes the processor on every call, so ask once at open or construction and keep the answer. */
-#if SMASHTABLE_ARCH_X86_64_ && (defined(__GNUC__) || defined(__clang__))
+#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__))
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     __builtin_cpu_init();
     bool const runs_haswell = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("bmi") &&
@@ -107,7 +107,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     default: return false;
     }
 }
-#elif SMASHTABLE_ARCH_X86_64_ && defined(_MSC_VER)
+#elif SMASHTABLE_ARCH_X8664_ && defined(_MSC_VER)
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     int registers[4] = {0, 0, 0, 0};
     __cpuid(registers, 1);
@@ -128,10 +128,10 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     default: return false;
     }
 }
-#elif (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (defined(__linux__) || defined(__FreeBSD__))
+#elif (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     unsigned long capabilities = 0; // `AT_HWCAP` carries the same bits on both kernels
-#if defined(__FreeBSD__)
+#if SMASHTABLE_OS_FREEBSD_
     elf_aux_info(AT_HWCAP, &capabilities, sizeof(capabilities));
 #else
     capabilities = getauxval(AT_HWCAP);

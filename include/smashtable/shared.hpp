@@ -63,9 +63,9 @@
 #include <cuda/std/bit> // `cuda::std::popcount`, `cuda::std::countr_zero`
 #endif
 
-#define SMASHTABLE_VERSION_MAJOR 0
-#define SMASHTABLE_VERSION_MINOR 3
-#define SMASHTABLE_VERSION_PATCH 1
+#define SMASHTABLE_VERSION_MAJOR 1
+#define SMASHTABLE_VERSION_MINOR 0
+#define SMASHTABLE_VERSION_PATCH 0
 
 /**
  *  @brief Lets an empty member occupy no space, in the spelling the compiler at hand honours.
@@ -86,9 +86,9 @@
  *  the branch it drops is still compiled for syntax.
  */
 #if defined(__x86_64__) || defined(_M_X64)
-#define SMASHTABLE_ARCH_X86_64_ 1
+#define SMASHTABLE_ARCH_X8664_ 1
 #else
-#define SMASHTABLE_ARCH_X86_64_ 0
+#define SMASHTABLE_ARCH_X8664_ 0
 #endif
 
 #if defined(__aarch64__) || defined(_M_ARM64)
@@ -103,6 +103,18 @@
 #define SMASHTABLE_ARCH_RISCV64_ 0
 #endif
 
+#if defined(__linux__)
+#define SMASHTABLE_OS_LINUX_ 1
+#else
+#define SMASHTABLE_OS_LINUX_ 0
+#endif
+
+#if defined(__FreeBSD__)
+#define SMASHTABLE_OS_FREEBSD_ 1
+#else
+#define SMASHTABLE_OS_FREEBSD_ 0
+#endif
+
 /**
  *  @brief Whether this build carries each row-search kit, which the architecture, the compiler and
  *      any @c -D a caller set decide together.
@@ -111,24 +123,24 @@
  *  probes that separately, because a binary built for one machine is routinely run on another.
  */
 #if !defined(SMASHTABLE_TARGET_HASWELL)
-#if SMASHTABLE_ARCH_X86_64_ && !defined(__CUDACC__) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+#if SMASHTABLE_ARCH_X8664_ && !defined(__CUDACC__) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
 #define SMASHTABLE_TARGET_HASWELL 1
 #else
 #define SMASHTABLE_TARGET_HASWELL 0
 #endif
-#elif SMASHTABLE_TARGET_HASWELL && !SMASHTABLE_ARCH_X86_64_
+#elif SMASHTABLE_TARGET_HASWELL && !SMASHTABLE_ARCH_X8664_
 #undef SMASHTABLE_TARGET_HASWELL
 #define SMASHTABLE_TARGET_HASWELL 0
 #endif
 
 #if !defined(SMASHTABLE_TARGET_SKYLAKE)
-#if SMASHTABLE_ARCH_X86_64_ && !defined(__CUDACC__) && \
+#if SMASHTABLE_ARCH_X8664_ && !defined(__CUDACC__) && \
     (defined(__GNUC__) || defined(__clang__) || (defined(_MSC_VER) && _MSC_VER >= 1920))
 #define SMASHTABLE_TARGET_SKYLAKE 1
 #else
 #define SMASHTABLE_TARGET_SKYLAKE 0
 #endif
-#elif SMASHTABLE_TARGET_SKYLAKE && !SMASHTABLE_ARCH_X86_64_
+#elif SMASHTABLE_TARGET_SKYLAKE && !SMASHTABLE_ARCH_X8664_
 #undef SMASHTABLE_TARGET_SKYLAKE
 #define SMASHTABLE_TARGET_SKYLAKE 0
 #endif
@@ -199,7 +211,7 @@
 #if SMASHTABLE_TARGET_HASWELL || SMASHTABLE_TARGET_SKYLAKE
 #include <immintrin.h>
 #endif
-#if SMASHTABLE_ARCH_X86_64_ && defined(_MSC_VER)
+#if SMASHTABLE_ARCH_X8664_ && defined(_MSC_VER)
 #include <intrin.h> // `__cpuidex`, `_xgetbv`
 #endif
 #if SMASHTABLE_TARGET_NEON
@@ -214,7 +226,7 @@
 #if SMASHTABLE_TARGET_V128
 #include <wasm_simd128.h>
 #endif
-#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (defined(__linux__) || defined(__FreeBSD__))
+#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
 #include <sys/auxv.h> // `getauxval` on Linux, `elf_aux_info` on FreeBSD, `AT_HWCAP`
 #endif
 
