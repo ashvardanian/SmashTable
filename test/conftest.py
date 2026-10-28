@@ -6,7 +6,6 @@ Date: August 17, 2026
 """
 
 import concurrent.futures
-import platform
 import random
 import threading
 
@@ -19,7 +18,6 @@ import smashtable as st
 def pytest_report_header() -> list[str]:
     """What this run exercises, printed where pytest prints its own header."""
     return [
-        f"- Python: {platform.python_version()}",
         f"- Free-threaded: {str(free_threaded()).lower()}",
         f"- SmashTable: {st.__version__} from {st.__file__}",
         f"- Containers: {', '.join(exported_container_names())}",

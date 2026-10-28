@@ -8,19 +8,26 @@ check_language(CUDA)
 # `check_language` shadows a cached `CMAKE_CUDA_HOST_COMPILER` with its own result; drop it to see the cache again.
 unset(CMAKE_CUDA_HOST_COMPILER)
 
-if (SMASHTABLE_BUILD_CUDA AND CMAKE_CUDA_COMPILER)
+if (SMASHTABLE_CUDA_ARCH AND CMAKE_CUDA_COMPILER)
     # Decide the architectures before `enable_language(CUDA)`, which otherwise fills them in from
     # the compiler's own default of `sm_52` - too old to assemble the scoped atomics the slot
-    # protocol is built on, so it fails in `ptxas` rather than at runtime. The default is the list every
-    # sibling library builds, so it needs no device; `native` suits anyone holding one.
-    set(SMASHTABLE_CUDA_ARCHITECTURES
-        "75-real;80-real;89-real;90a-real;100f-real;120f-real;80-virtual"
-        CACHE STRING "GPU architectures baked into the CUDA test"
-    )
-    if (CMAKE_VERSION VERSION_LESS 3.31 AND SMASHTABLE_CUDA_ARCHITECTURES MATCHES "1[0-9][0-9][af]")
+    # protocol is built on, so it fails in `ptxas` rather than at runtime. `all` is the release set, PTX
+    # at `compute_75`, which every later GPU runs, so it needs no device; `native` suits anyone holding
+    # one, and it or a named code compiles as SASS alone.
+    if (SMASHTABLE_CUDA_ARCH STREQUAL "all")
+        set(CMAKE_CUDA_ARCHITECTURES 75-virtual)
+    elseif (SMASHTABLE_CUDA_ARCH STREQUAL "native")
+        set(CMAKE_CUDA_ARCHITECTURES native)
+    elseif (SMASHTABLE_CUDA_ARCH MATCHES "^[0-9]+[af]?$")
+        set(CMAKE_CUDA_ARCHITECTURES ${SMASHTABLE_CUDA_ARCH}-real)
+    else ()
+        message(
+            FATAL_ERROR "SMASHTABLE_CUDA_ARCH takes all, native or one code like 100f, not `${SMASHTABLE_CUDA_ARCH}`"
+        )
+    endif ()
+    if (CMAKE_VERSION VERSION_LESS 3.31 AND CMAKE_CUDA_ARCHITECTURES MATCHES "1[0-9][0-9][af]")
         message(FATAL_ERROR "Three-digit \"a\" and \"f\" CUDA codes need CMake 3.31, found ${CMAKE_VERSION}")
     endif ()
-    set(CMAKE_CUDA_ARCHITECTURES "${SMASHTABLE_CUDA_ARCHITECTURES}")
 
     enable_language(CUDA)
     if (CMAKE_CUDA_COMPILER_VERSION VERSION_LESS 13)

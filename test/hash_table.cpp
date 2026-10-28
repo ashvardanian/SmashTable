@@ -438,6 +438,17 @@ int main(int, char **arguments) {
     install_test_signal_handlers();
     print(probe_machine());
     print(settings);
+    // ctest hides passing output, so this one program reports the kits every test program shares
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4996) // `std::fopen` runs before any thread exists, so `fopen_s` buys nothing
+#endif
+    if (std::optional<std::string_view> const summary_path = env_text("GITHUB_STEP_SUMMARY"))
+        if (std::FILE *summary = std::fopen(summary_path->data(), "a"))
+            std::fputc('\n', summary), print(probe_machine(), summary), std::fclose(summary);
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
     test_tally_t tally;
 
     tally += run_test(settings, "unordered_ops.empty_container_operations", unordered_ops_empty_container_operations);

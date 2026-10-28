@@ -36,7 +36,12 @@
     {
       "name": "check",
       "inherits": ["base", "clang"],
-      "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo", "SMASHTABLE_WERROR": "ON" },
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_C_FLAGS_RELWITHDEBINFO": "-O0 -g0 -DNDEBUG",
+        "CMAKE_CXX_FLAGS_RELWITHDEBINFO": "-O0 -g0 -DNDEBUG",
+        "SMASHTABLE_WERROR": "ON"
+      },
       "displayName": "Clang with warnings as errors"
     },
     {
@@ -64,8 +69,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_C_FLAGS": "-m32",
-        "CMAKE_CXX_FLAGS": "-m32",
-        "SMASHTABLE_BUILD_CUDA": "OFF"
+        "CMAKE_CXX_FLAGS": "-m32"
       }
     },
     {
@@ -75,7 +79,7 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
         "CMAKE_CUDA_HOST_COMPILER": "clang++",
-        "SMASHTABLE_BUILD_CUDA": "ON"
+        "SMASHTABLE_CUDA_ARCH": "all"
       },
       "displayName": "CUDA - tests"
     },
@@ -131,38 +135,46 @@
       "name": "machine",
       "hidden": true,
       "inherits": ["base", "clang"],
-      "description": "Tests and the CUDA test for one machine: its CPU and its one GPU code.",
+      "description": "Libraries for one machine: its CPU floor, every kernel-library capability spelled as 1 or 0, and its one GPU code.",
       "condition": { "type": "equals", "lhs": "${hostSystemName}", "rhs": "Linux" },
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release",
-        "CMAKE_CUDA_HOST_COMPILER": "clang++",
-        "SMASHTABLE_BUILD_CUDA": "ON"
+        "CMAKE_CUDA_HOST_COMPILER": "clang++"
       }
     },
     {
       "name": "xeon4_hopper",
       "inherits": "machine",
       "displayName": "Xeon 4 with Hopper - compile only",
-      "cacheVariables": { "CMAKE_CXX_FLAGS": "-march=sapphirerapids", "SMASHTABLE_CUDA_ARCHITECTURES": "90a-real" }
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-march=sapphirerapids", "SMASHTABLE_CUDA_ARCH": "90a" }
     },
     {
       "name": "xeon6_blackwell",
       "inherits": "machine",
       "displayName": "Xeon 6 with Blackwell - compile only",
-      "cacheVariables": { "CMAKE_CXX_FLAGS": "-march=graniterapids", "SMASHTABLE_CUDA_ARCHITECTURES": "100f-real" }
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-march=graniterapids", "SMASHTABLE_CUDA_ARCH": "100f" }
     },
     {
       "name": "grace_hopper",
       "inherits": "machine",
       "displayName": "Grace with Hopper - compile only",
-      "cacheVariables": { "CMAKE_CXX_FLAGS": "-mcpu=neoverse-v2", "SMASHTABLE_CUDA_ARCHITECTURES": "90a-real" }
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-mcpu=grace", "SMASHTABLE_CUDA_ARCH": "90a" }
     },
     {
       "name": "vera_rubin",
       "inherits": "machine",
       "displayName": "Vera with Rubin - compile only",
       "description": "Olympus cores need Clang 22 or GCC 15, and CUDA 13.4 names no Rubin code, so it compiles 100f.",
-      "cacheVariables": { "CMAKE_CXX_FLAGS": "-mcpu=olympus", "SMASHTABLE_CUDA_ARCHITECTURES": "100f-real" }
+      "cacheVariables": { "CMAKE_CXX_FLAGS": "-mcpu=olympus", "SMASHTABLE_CUDA_ARCH": "100f" }
+    },
+    {
+      "name": "venice_mi450",
+      "inherits": "machine",
+      "displayName": "EPYC Venice with MI450 - compile only",
+      "description": "Clang 22 names no Zen 6 core, so it compiles at znver5 and spells the rows GCC 16's znver6 implies; gfx1250 covers MI450X and MI455X.",
+      "cacheVariables": {
+        "CMAKE_CXX_FLAGS": "-march=znver5"
+      }
     }
   ],
   "buildPresets": [
@@ -182,7 +194,8 @@
     { "name": "xeon4_hopper", "configurePreset": "xeon4_hopper" },
     { "name": "xeon6_blackwell", "configurePreset": "xeon6_blackwell" },
     { "name": "grace_hopper", "configurePreset": "grace_hopper" },
-    { "name": "vera_rubin", "configurePreset": "vera_rubin" }
+    { "name": "vera_rubin", "configurePreset": "vera_rubin" },
+    { "name": "venice_mi450", "configurePreset": "venice_mi450" }
   ],
   "testPresets": [
     {

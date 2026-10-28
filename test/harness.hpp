@@ -368,20 +368,20 @@ struct machine_t {
 inline machine_t probe_machine() noexcept { return {detect_row_kit()}; }
 
 /** Prints the version line, the kits compiled and runnable, and the kit dispatch picks. */
-inline void print([[maybe_unused]] machine_t const &machine) noexcept {
+inline void print([[maybe_unused]] machine_t const &machine, [[maybe_unused]] std::FILE *stream = stdout) noexcept {
 #if !defined(__CUDA_ARCH__)
-    auto const print_kits = [](char const *label, bool (*holds)(row_kit_t) noexcept) noexcept {
-        file_output_iterator_t output = std::format_to(file_output_iterator_t {stdout}, "- {}:", label);
+    auto const print_kits = [stream](char const *label, bool (*holds)(row_kit_t) noexcept) noexcept {
+        file_output_iterator_t output = std::format_to(file_output_iterator_t {stream}, "- {}:", label);
         char const *separator = " ";
         for (row_kit_t const kit : every_row_kit_k)
             if (holds(kit)) output = std::format_to(output, "{}{}", std::exchange(separator, ","), name_of(kit));
-        std::fputc('\n', stdout);
+        std::fputc('\n', stream);
     };
-    print_line(stdout, "SmashTable {}.{}.{}", SMASHTABLE_VERSION_MAJOR, SMASHTABLE_VERSION_MINOR,
+    print_line(stream, "SmashTable {}.{}.{}", SMASHTABLE_VERSION_MAJOR, SMASHTABLE_VERSION_MINOR,
                SMASHTABLE_VERSION_PATCH);
     print_kits("Compiled for", row_kit_compiled);
     print_kits("This machine", row_kit_supported);
-    print_line(stdout, "- Dispatches to: {}", name_of(machine.detected));
+    print_line(stream, "- Dispatches to: {}", name_of(machine.detected));
 #endif
 }
 

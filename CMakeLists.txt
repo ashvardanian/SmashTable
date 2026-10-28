@@ -12,10 +12,10 @@
 #   -D SMASHTABLE_INSTALL=<ON|OFF>                      (default: ON as the main project, else OFF)
 #   -D SMASHTABLE_WERROR=<ON|OFF>                       (default: OFF)
 #   -D SMASHTABLE_BUILD_SANITIZERS=<off|address|thread> (default: off, address also arms UndefinedBehaviorSanitizer)
-#   -D SMASHTABLE_BUILD_CUDA=<ON|OFF>                   (default: OFF, the `cuda` preset switches it on)
+#   -D SMASHTABLE_CUDA_ARCH=<code>                      (default: empty for no CUDA test, `all` for the release set,
+#                                                       `native`, or one code like `100f`)
 #   -D SMASHTABLE_BUILD_BENCH=<ON|OFF>                  (default: OFF; CTest never runs the benchmarks)
 #   -D SMASHTABLE_BUILD_PYTHON=<ON|OFF>                 (default: OFF, `scikit-build-core` switches it on)
-#   -D SMASHTABLE_CUDA_ARCHITECTURES=<list>             (default: one cubin per device family plus a PTX tail)
 #
 # Targets:
 #
@@ -55,7 +55,7 @@ endif ()
 # Leverage `ccache` where it is installed, which turns a rebuild of an unchanged translation unit into a
 # lookup. This tree compiles 16 of them, several taking tens of seconds, so the cache earns its keep.
 find_program(SMASHTABLE_CCACHE_PROGRAM ccache)
-if (SMASHTABLE_CCACHE_PROGRAM)
+if (SMASHTABLE_CCACHE_PROGRAM AND NOT CMAKE_C_COMPILER_LAUNCHER)
     set(CMAKE_C_COMPILER_LAUNCHER "${SMASHTABLE_CCACHE_PROGRAM}")
     set(CMAKE_CXX_COMPILER_LAUNCHER "${SMASHTABLE_CCACHE_PROGRAM}")
     message(STATUS "Using ccache: ${SMASHTABLE_CCACHE_PROGRAM}")
@@ -117,7 +117,10 @@ include(cmake/smashtable_flags.cmake)
 
 # Tests and examples
 option(SMASHTABLE_BUILD_TEST "Build tests and examples" OFF)
-option(SMASHTABLE_BUILD_CUDA "Build the CUDA test when a device compiler is visible" OFF)
+set(SMASHTABLE_CUDA_ARCH
+    ""
+    CACHE STRING "NVIDIA code the CUDA test builds for, where a device compiler is visible"
+)
 option(SMASHTABLE_BUILD_BENCH "Compile the native benchmarks, which CTest never runs" OFF)
 option(SMASHTABLE_BUILD_PYTHON "Compile the CPython extension; `scikit-build-core` switches it on" OFF)
 
