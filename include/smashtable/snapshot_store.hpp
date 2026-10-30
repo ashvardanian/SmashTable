@@ -719,6 +719,58 @@ class snapshot_store {
             return success_k;
         }
 
+        /** The writes a sorted build gathers, versioned, before the staging core is built. */
+        using sorted_changes_t =
+            basic_vector<versioned_t, typename std::allocator_traits<allocator_t>::template rebind_alloc<versioned_t>>;
+
+        /** Whether the staging core builds from a sorted range in one pass, as ordered ones do. */
+        static constexpr bool builds_sorted_changes_k =
+            ordered_core_k && requires(changes_t &changes, moving_pointer<versioned_t> version) {
+                changes.upsert(version, version, assume_sorted);
+            };
+
+        /**
+         *  @brief Builds the staged writes of [ @p first, @p last ) in one pass, none staged yet.
+         *
+         *  Every element is versioned and every key checked to ascend before the staging core or
+         *  the changed list is touched, and the build into the empty core adopts the tree it made,
+         *  so a refusal leaves both as they were.
+         */
+        template <typename input_iterator_type_, typename... tags_types_>
+        status_t stage_sorted_(input_iterator_type_ first, input_iterator_type_ last, tags_types_...) noexcept {
+            static_assert(
+                multipass_iterator<input_iterator_type_>,
+                "a sorted build counts its range before it walks it, which a single-pass range cannot answer");
+            using sorted_allocator_t = typename sorted_changes_t::allocator_type;
+            sorted_changes_t sorted {sorted_allocator_t(storage_shape_t::allocator_of(store_ref().entries_))};
+            if (status_t const reserved = sorted.reserve(distance_between(first, last)); failed(reserved))
+                return reserved;
+            status_t const versioned_all = stage_each<value_t>(first, last, [&](value_t &&candidate) noexcept {
+                versioned_t versioned(std::move(candidate));
+                versioned.presence = presence_t::present_k;
+                versioned.generation = generation_;
+                return sorted.push_back(assume_reserved, std::move(versioned));
+            });
+            if (failed(versioned_all)) return versioned_all;
+            auto const ordering = changes_.key_comp();
+            for (std::size_t index = 1; index < sorted.size(); ++index)
+                if (!ordering.per_key_compare(sorted[index - 1], sorted[index])) return invalid_argument_k;
+
+            std::size_t const listed = changed_identifiers_.size();
+            status_t status = changed_identifiers_.reserve(listed + sorted.size());
+            for (std::size_t index = 0; succeeded(status) && index != sorted.size(); ++index) {
+                auto identifier = copy_safely<identifier_t>(mapping_key_or_itself<value_t>(sorted[index].payload));
+                if (!identifier) status = identifier.status();
+                else status = changed_identifiers_.push_back(assume_reserved, std::move(*identifier));
+            }
+            if (succeeded(status))
+                status = changes_.upsert(moving_pointer<versioned_t> {sorted.begin()},
+                                         moving_pointer<versioned_t> {sorted.end()}, assume_sorted);
+            if (failed(status))
+                while (changed_identifiers_.size() != listed) changed_identifiers_.pop_back();
+            return status;
+        }
+
       public:
         /** Takes over @p other entirely, leaving it owning nothing. Written out rather than
          *  defaulted: a defaulted move would leave both objects pointing at the store, so the
@@ -816,6 +868,33 @@ class snapshot_store {
             versioned_t versioned(std::move(value));
             versioned.presence = presence_t::present_k;
             return stage_(std::move(*maybe_identifier), std::move(versioned));
+        }
+
+        /**
+         *  @brief Stages a write of every element of [ @p first, @p last ), present keys or not.
+         *  @tparam tags_types_ Promises about the range; @c assume_sorted_t on an ordered core,
+         *      while nothing is staged yet, builds the staged writes in one balanced O(n) pass, so
+         *      committing them into an empty store is O(n).
+         *
+         *  Under that promise the keys must strictly ascend, which is checked before anything is
+         *  staged, so a key out of order or repeated refuses the whole range and leaves the
+         *  transaction as it was. Any other range is staged element by element, where a refused
+         *  element leaves the ones before it staged for a @c rollback to drop.
+         *
+         *  @par Statuses:
+         *  - @c invalid_argument_k A key of a sorted build does not strictly ascend from the last.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any status an element's or a key's @c copy returns passes through unchanged.
+         */
+        template <readable_iterator input_iterator_type_, typename... tags_types_>
+        status_t upsert(input_iterator_type_ first, input_iterator_type_ last, tags_types_... tags) noexcept
+            requires(promises_about_the_range<tags_types_> && ...)
+        {
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+            if constexpr (builds_sorted_changes_k && contains_type<assume_sorted_t, tags_types_...>())
+                if (changes_.size() == 0) return stage_sorted_(first, last, tags...);
+            return stage_each<value_t>(first, last,
+                                       [this](value_t &&candidate) noexcept { return upsert(std::move(candidate)); });
         }
 
         /**

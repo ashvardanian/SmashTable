@@ -3102,6 +3102,98 @@ static void test_staged_transaction_unwinds_under_partition_locks(std::size_t ro
 
 #pragma endregion Pinned Reader Tests
 
+#pragma region Sorted Staging Tests
+
+/** Members @p first up to @p last, ascending, each mapped onto ten times its number. */
+template <typename member_type_>
+static std::vector<member_type_> ascending_members(trivial_id_t first, trivial_id_t last) {
+    std::vector<member_type_> members;
+    for (trivial_id_t identifier = first; identifier != last; ++identifier)
+        members.push_back(trivial_id_to_member<member_type_>(identifier, static_cast<int>(identifier) * 10));
+    return members;
+}
+
+/** Tests that a sorted range staged in one pass publishes what the same range staged element by
+ *  element does, overwriting a key published before it */
+template <typename store_type_>
+static void test_sorted_staging_equals_element_staging() {
+    using member_t = typename store_type_::value_type;
+    std::vector<member_t> const members = ascending_members<member_t>(0, 64);
+    store_type_ sorted_store, element_store;
+    commit_write(sorted_store, 5, 1);
+    commit_write(element_store, 5, 1);
+
+    auto sorted = sorted_store.transaction();
+    auto element = element_store.transaction();
+    st_verify_(sorted.has_value() && element.has_value());
+    st_verify_(sorted->upsert(members.begin(), members.end(), assume_sorted));
+    st_verify_(element->upsert(members.begin(), members.end()));
+    st_verify_eq_(sorted->changes_count(), element->changes_count());
+    st_verify_eq_(mapped_or_absent(*sorted, 5), 50);
+    for (auto *transaction : {&*sorted, &*element}) {
+        st_verify_(transaction->stage());
+        st_verify_(transaction->commit());
+    }
+    for (trivial_id_t identifier = 0; identifier != 64; ++identifier)
+        st_verify_eq_(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
+}
+
+/** Tests that a sorted range stages in a linear count of comparisons, where element staging
+ *  descends per key */
+static void test_sorted_staging_compares_linearly() {
+    using member_t = typename snapshot_ranked_map_t::value_type;
+    std::size_t const size = 4096;
+    std::vector<member_t> const members = ascending_members<member_t>(0, size);
+    snapshot_ranked_map_t store;
+    auto transaction = store.transaction();
+    st_verify_(transaction.has_value());
+    counting_call_tally_t::reset();
+    st_verify_(transaction->upsert(members.begin(), members.end(), assume_sorted));
+    // The ascent check compares each neighbouring pair, and the build itself compares nothing.
+    st_verify_le_(counting_call_tally_t::comparisons_count(), 2 * size);
+    st_verify_eq_(transaction->changes_count(), size);
+}
+
+/** Tests that partitions staged whole, one sorted bucket each, publish what element staging does */
+template <typename store_type_>
+static void test_sorted_partitions_equal_element_staging() {
+    using member_t = typename store_type_::value_type;
+    std::vector<member_t> const members = ascending_members<member_t>(0, 256);
+    store_type_ sorted_store, element_store;
+    std::vector<std::vector<member_t>> buckets(store_type_::partitions_k);
+    for (member_t const &member : members) buckets[sorted_store.partition_of(member)].push_back(member);
+
+    auto sorted = sorted_store.transaction();
+    st_verify_(sorted.has_value());
+    for (std::size_t index = 0; index != buckets.size(); ++index)
+        st_verify_(sorted->upsert_partition(index, buckets[index].begin(), buckets[index].end(), assume_sorted));
+    st_verify_(sorted->stage());
+    st_verify_(sorted->commit());
+    st_verify_(element_store.upsert(members.begin(), members.end()));
+    for (trivial_id_t identifier = 0; identifier != 256; ++identifier)
+        st_verify_eq_(mapped_or_absent(sorted_store, identifier), mapped_or_absent(element_store, identifier));
+}
+
+/** Tests that a range promised sorted that descends or repeats a key is refused, staging nothing */
+template <typename store_type_>
+static void test_sorted_staging_refuses_an_unsorted_range() {
+    using member_t = typename store_type_::value_type;
+    std::vector<member_t> descending = ascending_members<member_t>(0, 8);
+    std::reverse(descending.begin(), descending.end());
+    std::vector<member_t> repeated = ascending_members<member_t>(0, 8);
+    repeated.push_back(repeated.back());
+
+    store_type_ store;
+    auto transaction = store.transaction();
+    st_verify_(transaction.has_value());
+    for (std::vector<member_t> const *refused : {&descending, &repeated}) {
+        st_verify_eq_(transaction->upsert(refused->begin(), refused->end(), assume_sorted), invalid_argument_k);
+        st_verify_(!transaction->has_changes());
+    }
+}
+
+#pragma endregion Sorted Staging Tests
+
 } // namespace ashvardanian::smashtable::test
 
 using namespace ashvardanian::smashtable::test;
@@ -3507,6 +3599,18 @@ int main(int, char **arguments) {
                       []() { test_staged_transaction_unwinds_under_partition_locks<sharded_snapshot_map_t>(); });
     tally += run_test(settings, "unwind.staged_transaction_under_partition_locks.sharded_strict",
                       []() { test_staged_transaction_unwinds_under_partition_locks<sharded_strict_map_t>(); });
+
+    tally += run_test(settings, "sorted_staging.equals_element_staging.snapshot",
+                      test_sorted_staging_equals_element_staging<snapshot_avl_map_t>);
+    tally += run_test(settings, "sorted_staging.equals_element_staging.wb",
+                      test_sorted_staging_equals_element_staging<snapshot_wb_map_t>);
+    tally += run_test(settings, "sorted_staging.equals_element_staging.hash",
+                      test_sorted_staging_equals_element_staging<snapshot_hash_map_t>);
+    tally += run_test(settings, "sorted_staging.compares_linearly.ranked", test_sorted_staging_compares_linearly);
+    tally += run_test(settings, "sorted_staging.partitions_equal_element_staging.sharded_snapshot",
+                      test_sorted_partitions_equal_element_staging<sharded_snapshot_map_t>);
+    tally += run_test(settings, "sorted_staging.refuses_an_unsorted_range.snapshot",
+                      test_sorted_staging_refuses_an_unsorted_range<snapshot_avl_map_t>);
 
     return report_test_failures(settings, tally);
 }

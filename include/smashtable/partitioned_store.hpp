@@ -1904,6 +1904,38 @@ class partitioned_store {
             return partitions_[partition_index].upsert(std::move(element));
         }
 
+        /**
+         *  @brief Stages a write of every element of [ @p first, @p last ), each owned by partition
+         *      @p index, in that partition alone, whether or not the keys are there.
+         *  @tparam tags_types_ Promises about the range, which the partition reads:
+         *      @c assume_sorted_t lets one whose staging is still empty build it in one O(n) pass.
+         *
+         *  A writer buckets its rows by @c partition_of first; a row of another partition would be
+         *  filed where no lookup finds it, which a debug build asserts against. No lock is taken,
+         *  as @c upsert takes none.
+         *
+         *  @par Statuses:
+         *  - @c invalid_argument_k @p index names no partition, or the partition refuses the range
+         *    under its promise.
+         *  - @c operation_not_permitted_k The transaction is already staged.
+         *  - Any other status the partition's range @c upsert returns passes through unchanged.
+         */
+        template <readable_iterator input_iterator_type_, typename... tags_types_>
+        status_t upsert_partition(std::size_t index, input_iterator_type_ first, input_iterator_type_ last,
+                                  tags_types_... tags) noexcept
+            requires(promises_about_the_range<tags_types_> && ...) &&
+                    requires(inner_transaction_t &part) { part.upsert(first, last, tags...); }
+        {
+            settle_snapshot_();
+            if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
+            if (index >= partitions_k) return invalid_argument_k;
+            if constexpr (multipass_iterator<input_iterator_type_>)
+                for (input_iterator_type_ row = first; row != last; ++row)
+                    assert(store_->bucket_(*row) == index && "every row of a partition's range hashes into it");
+            touched_.mark(index);
+            return partitions_[index].upsert(first, last, tags...);
+        }
+
         /** Stages an erase, reporting @c key_not_found_k when this transaction reads no such key.
          *  The owning partition is held shared, because the staging now reads before it writes. */
         template <typename callback_found_type_ = no_op_t, typename callback_missing_type_ = no_op_t>
@@ -2507,6 +2539,12 @@ class partitioned_store {
         return partitions_[partition_index].erase(std::forward<comparable_type_>(comparable),
                                                   std::forward<callback_found_type_>(callback_found),
                                                   std::forward<callback_missing_type_>(callback_missing));
+    }
+
+    /** Which partition owns @p comparable, so a bulk writer buckets its rows by partition. */
+    template <typename comparable_type_ = identifier_t>
+    std::size_t partition_of(comparable_type_ const &comparable) const noexcept {
+        return bucket_(comparable);
     }
 
     template <readable_iterator elements_begin_type_,

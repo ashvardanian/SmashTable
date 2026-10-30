@@ -445,6 +445,7 @@ class basic_wb_node
      *  @param[in,out] allocator Hands back a raw node, or @c nullptr when it cannot.
      *  @return What was built.
      *  @warning An unsorted range builds a tree whose structure is undefined.
+     *  @note A range handing out rvalues, as a move iterator does, gives its elements up.
      *
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
@@ -459,7 +460,7 @@ class basic_wb_node
         advance_iterator(middle_iterator, middle);
 
         // Duplicated before a node is asked for, so an element refusing its own copy strands nothing.
-        expected<value_t> duplicated = copy_safely(*middle_iterator);
+        expected<value_t> duplicated = move_or_copy_safely(*middle_iterator);
         if (!duplicated) return {nullptr, duplicated.status()};
 
         node_t *root = allocator.allocate(1);

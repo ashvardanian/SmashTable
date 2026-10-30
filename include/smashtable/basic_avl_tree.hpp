@@ -78,8 +78,8 @@
 
 #include <concepts> // `std::predicate`, `std::strict_weak_order`
 #include <limits>   // `std::numeric_limits`
-#include <memory>  // `std::allocator`
-#include <utility> // `std::exchange`
+#include <memory>   // `std::allocator`
+#include <utility>  // `std::exchange`
 
 #include "smashtable/shared.hpp"
 
@@ -547,6 +547,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *  @note Complexity: O(n) time, O(log n) recursion depth. Builds perfectly balanced tree by
      *      recursively picking middle element as root.
      *  @warning If precondition violated (unsorted input), resulting tree has undefined structure.
+     *  @note A range handing out rvalues, as a move iterator does, gives its elements up.
      *
      *  @par Statuses:
      *  - Any status an element's @c copy returns passes through unchanged.
@@ -561,7 +562,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         advance_iterator(middle_iterator, middle);
 
         // Duplicated before a node is asked for, so an element refusing its own copy strands nothing.
-        expected<value_t> duplicated = copy_safely(*middle_iterator);
+        expected<value_t> duplicated = move_or_copy_safely(*middle_iterator);
         if (!duplicated) return {nullptr, duplicated.status()};
 
         node_t *root = allocator.allocate(1);

@@ -1010,6 +1010,22 @@ expected<object_type_> copy_safely(object_type_ const &object) noexcept {
 }
 
 /**
+ *  @brief Takes @p object over when it is an rvalue, as a move iterator hands one, and copies it
+ *      through @c copy_safely otherwise, so a sorted build moves what a caller gave up and copies
+ *      what it lent.
+ *
+ *  @par Statuses:
+ *  - Any status the @c copy method of @p object returns passes through unchanged.
+ */
+template <typename object_type_>
+expected<std::remove_cvref_t<object_type_>> move_or_copy_safely(object_type_ &&object) noexcept {
+    using owned_t = std::remove_cvref_t<object_type_>;
+    if constexpr (std::is_rvalue_reference_v<object_type_ &&>)
+        return expected<owned_t>(owned_t(std::move(object)), success_k);
+    else return copy_safely(object);
+}
+
+/**
  *  @brief Copies @p comparable into an owned @p identifier_type_: through @c copy_safely where it
  *      already is one, and by conversion where it is another type the store compares against.
  *
