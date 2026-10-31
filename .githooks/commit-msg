@@ -7,7 +7,9 @@
 #      behaviour; Make covers changes that touch only the build or the environment, never the
 #      sources; Docs covers documentation that drifted on its own, where a doc change that
 #      accompanies the code making it true belongs in that commit instead. Merge commits are
-#      exempt, since Git writes their subject.
+#      exempt, since Git writes their subject. A release is exactly `Release: vX.Y.Z` or
+#      `Release: vX.Y.Z-rc.N`, every staged version site must carry that version, and no other
+#      commit may change `VERSION`.
 #   2. No AI-assistant attribution: no `Co-authored-by` bot trailer, no "Generated with/by
 #      <assistant>", no assistant name, vendor URL, or robot emoji. Authorship is the human who
 #      committed.
@@ -30,7 +32,32 @@ failed=0
 case "$subject" in
 Merge*) ;;
 "fixup!"* | "squash!"*) ;;
+# Releases are cut by hand, so this check is all that stands between a typo and a published package.
+Release:*)
+    version=$(printf '%s\n' "$subject" | sed -nE 's/^Release: v([0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?)$/\1/p')
+    if [ -z "$version" ]; then
+        echo "commit-msg: a release subject is exactly 'Release: vX.Y.Z' or 'Release: vX.Y.Z-rc.N'."
+        echo "            Got: $subject"
+        failed=1
+    else
+        core=${version%%-*} stale=""
+        [ "$(git show :VERSION 2>/dev/null)" = "$version" ] || stale="$stale VERSION"
+        git show :pyproject.toml 2>/dev/null | grep -qxF "version = \"$version\"" || stale="$stale pyproject.toml"
+        git show :setup.py 2>/dev/null | grep -qF "version=\"$version\"," || stale="$stale setup.py"
+        git show :python/module.cpp 2>/dev/null | grep -qF "\"__version__\", \"$version\"" || stale="$stale python/module.cpp"
+        # CMake's `project(VERSION)` takes numbers only, so a candidate keeps its core there.
+        git show :CMakeLists.txt 2>/dev/null | grep -qE "^[[:space:]]+VERSION ${core//./\\.}$" || stale="$stale CMakeLists.txt"
+        if [ -n "$stale" ]; then
+            echo "commit-msg: these staged files don't carry $version:$stale"
+            failed=1
+        fi
+    fi
+    ;;
 *)
+    if git diff --cached --name-only | grep -qx VERSION; then
+        echo "commit-msg: VERSION only changes in a 'Release: vX.Y.Z' commit."
+        failed=1
+    fi
     # Capitalized, unless the summary opens with a code identifier - `update()`, `snake_case`,
     # `SortedMap` - which carries its own case and must not be title-cased into something that no
     # longer names the symbol. A backtick may precede it, since a symbol is quoted as one.
@@ -65,7 +92,7 @@ fi
 # Deliberately narrow. Vagueness is a judgement call and a regex approximating it would reject more
 # good titles than bad ones; these two shapes are mechanical enough to catch without arguing.
 case "$subject" in
-Merge* | "fixup!"* | "squash!"*) ;;
+Merge* | "fixup!"* | "squash!"* | Release:*) ;;
 *)
     if printf '%s\n' "$subject" | grep -qiE '\b(the way|as|like) [^,]+ (does|did|would|says)\b'; then
         echo "commit-msg: the subject compares to something else rather than naming what changed."

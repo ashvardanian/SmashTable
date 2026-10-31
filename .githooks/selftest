@@ -95,7 +95,8 @@ run_commit_msg() { # run_commit_msg <<< message
     local message_file="$scratch_root/message-$fixture_ordinal"
     fixture_ordinal=$((fixture_ordinal + 1))
     cat > "$message_file"
-    precommit_output=$("$hooks_dir/commit-msg" "$message_file" 2>&1)
+    # Inside the latest fixture, so the staged-file checks never read this repository's own index.
+    precommit_output=$(cd "${fixture_dir:-$scratch_root}" && "$hooks_dir/commit-msg" "$message_file" 2>&1)
     precommit_status=$?
 }
 
@@ -373,6 +374,42 @@ assert_message_accepts "prose that merely mentions generation" <<'FIXTURE'
 Improve: Keep a key's versions on its own chain
 
 A reserved slot already carries this generation, so the version replaces it.
+FIXTURE
+
+# Stages every version site a release commit must agree on.
+new_release_fixture() { # new_release_fixture <version> <setup.py version> <CMake version>
+    new_fixture VERSION <<< "$1"
+    printf 'version = "%s"\n' "$1" > "$fixture_dir/pyproject.toml"
+    printf 'setup(\n    version="%s",\n)\n' "$2" > "$fixture_dir/setup.py"
+    mkdir -p "$fixture_dir/python"
+    printf 'PyModule_AddStringConstant(module, "__version__", "%s");\n' "$1" > "$fixture_dir/python/module.cpp"
+    printf 'project(\n    smashtable\n    VERSION %s\n)\n' "$3" > "$fixture_dir/CMakeLists.txt"
+    git -C "$fixture_dir" add -A
+}
+
+new_release_fixture 0.3.3 0.3.3 0.3.3
+assert_message_accepts "release with every version site bumped" <<'FIXTURE'
+Release: v0.3.3
+FIXTURE
+
+new_release_fixture 1.0.0-rc.1 1.0.0-rc.1 1.0.0
+assert_message_accepts "candidate keeps the numeric core in CMake" <<'FIXTURE'
+Release: v1.0.0-rc.1
+FIXTURE
+
+new_release_fixture 0.3.3 0.3.2 0.3.3
+assert_message_rejects "release with a stale version site" "setup.py" <<'FIXTURE'
+Release: v0.3.3
+FIXTURE
+
+new_release_fixture 0.3.3 0.3.3 0.3.3
+assert_message_rejects "release subject without its tag" "exactly 'Release: vX.Y.Z'" <<'FIXTURE'
+Release: 0.3.3
+FIXTURE
+
+new_release_fixture 0.3.3 0.3.3 0.3.3
+assert_message_rejects "version bump outside a release" "VERSION only changes" <<'FIXTURE'
+Fix: Bump the version
 FIXTURE
 
 # endregion Commit-message fixtures

@@ -9,7 +9,6 @@ on:
     paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
 
 env:
-  GH_TOKEN: ${{ secrets.SEMANTIC_RELEASE_TOKEN }}
   PYTHONUTF8: 1
   PYTHONFAULTHANDLER: 1
 
@@ -24,27 +23,17 @@ concurrency:
 
 jobs:
 
-  versioning:
-    name: Update Version
-    runs-on: ubuntu-24.04
+  hooks:
+    name: Run Git Hooks
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           fetch-depth: 0
-          persist-credentials: false
-      - name: Run TinySemVer
-        uses: ashvardanian/tinysemver@v3
-        with:
-          verbose: "true"
-          version-file: "VERSION"
-          update-version-in: |
-            pyproject.toml:^version = "(\d+\.\d+\.\d+)"
-            setup.py:version="(\d+\.\d+\.\d+)"
-            CMakeLists.txt:VERSION (\d+\.\d+\.\d+)
-            python/module.cpp:"__version__", "(\d+\.\d+\.\d+)"
-          dry-run: "true"
+      - name: Run the Hooks Over New Commits
+        run: .github/scripts/check-commits.sh "${{ github.event.pull_request.base.sha || github.event.before }}"
 
   # Gates everything below. A header that compiles only after a sibling was included is a latent
   # break for any consumer who includes it alone, and for us on whichever wheel architecture
@@ -52,7 +41,8 @@ jobs:
   # disagree about what each header transitively pulls in.
   test_headers:
     name: Headers Compile Standalone (${{ matrix.compiler }})
-    runs-on: ubuntu-24.04
+    needs: hooks
+    runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
@@ -86,7 +76,7 @@ jobs:
   test_ubuntu:
     name: ${{ matrix.name }}
     needs: test_headers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -136,7 +126,7 @@ jobs:
   test_cuda:
     name: Ubuntu (CUDA)
     needs: test_headers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     env:
       CC: gcc-14
@@ -169,7 +159,7 @@ jobs:
   test_32bit:
     name: Linux 32-bit (i386)
     needs: test_headers
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -188,7 +178,7 @@ jobs:
 
   test_macos:
     name: macOS (AppleClang)
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - name: Checkout
@@ -221,7 +211,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15, windows-2025]
+        os: [ubuntu-26.04, macos-26, windows-2025]
         python-version: ["3.12", "3.13", "3.14", "3.14t"]
     steps:
       - name: Checkout
@@ -263,7 +253,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-24.04, macos-15]
+        os: [ubuntu-26.04, macos-26]
         python-version: ["312", "314t"]
     steps:
       - name: Checkout
