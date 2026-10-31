@@ -4,18 +4,17 @@
 #     .github/scripts/mint-release.sh 0.3.3          # stable
 #     .github/scripts/mint-release.sh 1.0.0-rc.1     # candidate, published as a prerelease
 set -euo pipefail
-version=$1 core=${1%%-*}
+export version=$1 core=${1%%-*}
 branch=$(git branch --show-current)
 previous=$(git describe --tags --abbrev=0)
 git diff --quiet HEAD || { echo "mint-release: commit or stash your changes first"; exit 1; }
 
 echo "$version" > VERSION
-sed -i -E "s/^version = \"[^\"]+\"/version = \"$version\"/" pyproject.toml
-sed -i -E "s/version=\"[^\"]+\",/version=\"$version\",/" setup.py
-sed -i -E "s/(\"__version__\", \")[^\"]+/\1$version/" python/module.cpp
-sed -i -E "s/^([[:space:]]+VERSION )[0-9.]+$/\1$core/" CMakeLists.txt
-# The body's `[skip ci]` spares pushes of this version-only commit; the published release still starts `release.yml`.
-git commit -am "Release: v$version" -m "[skip ci]" # commit-msg rejects it if any site was missed
+perl -pi -e 's/^version = "[^"]+"/version = "$ENV{version}"/' pyproject.toml
+perl -pi -e 's/version="[^"]+",/version="$ENV{version}",/' setup.py
+perl -pi -e 's/("__version__", ")[^"]+/$1$ENV{version}/' python/module.cpp
+perl -pi -e 's/^(\s+VERSION )[\d.]+$/$1$ENV{core}/' CMakeLists.txt
+git commit -am "Release: v$version" # commit-msg rejects it if any site was missed
 git tag -a "v$version" -m "Release: v$version"
 git push --atomic origin "$branch" "v$version"
 

@@ -1,11 +1,8 @@
 name: Pre-Release
 
 on:
-  push:
-    branches: ["main-dev"]
-    paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
   pull_request:
-    branches: ["main*"]
+    branches: ["main", "main-dev"]
     paths-ignore: ["**/*.md", "LICENSE", ".gitignore", "assets/**"]
 
 env:
@@ -15,11 +12,10 @@ env:
 permissions:
   contents: read
 
-# One group per source branch: `push` covers `main-dev` and a request covers every `main*` branch, so
-# `main-dev` with an open request is built once. Superseded request runs cancel; `main-dev` runs finish.
+# One group per source branch, so a new push to an open request cancels its superseded run.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}-${{ github.head_ref }}
+  cancel-in-progress: true
 
 jobs:
 
@@ -33,7 +29,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Run the Hooks Over New Commits
-        run: .github/scripts/check-commits.sh "${{ github.event.pull_request.base.sha || github.event.before }}"
+        run: .github/scripts/check-commits.sh "${{ github.event.pull_request.base.sha }}"
 
   # Gates everything below. A header that compiles only after a sibling was included is a latent
   # break for any consumer who includes it alone, and for us on whichever wheel architecture
@@ -126,7 +122,8 @@ jobs:
   test_cuda:
     name: Ubuntu (CUDA)
     needs: test_headers
-    runs-on: ubuntu-26.04
+    # NVIDIA's Ubuntu 26.04 repository starts at CUDA 13.3, so the pinned 12.9 toolkit needs 24.04.
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       CC: gcc-14
