@@ -14,7 +14,8 @@ sed -i -E "s/^version = \"[^\"]+\"/version = \"$version\"/" pyproject.toml
 sed -i -E "s/version=\"[^\"]+\",/version=\"$version\",/" setup.py
 sed -i -E "s/(\"__version__\", \")[^\"]+/\1$version/" python/module.cpp
 sed -i -E "s/^([[:space:]]+VERSION )[0-9.]+$/\1$core/" CMakeLists.txt
-git commit -am "Release: v$version" # commit-msg rejects it if any site was missed
+# The body's `[skip ci]` spares pushes of this version-only commit; the published release still starts `release.yml`.
+git commit -am "Release: v$version" -m "[skip ci]" # commit-msg rejects it if any site was missed
 git tag -a "v$version" -m "Release: v$version"
 git push --atomic origin "$branch" "v$version"
 
