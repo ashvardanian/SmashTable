@@ -2973,6 +2973,8 @@ static void test_window_writes_are_never_seen_half_applied(std::size_t rounds = 
         for (std::size_t round = 0; round != rounds; ++round) {
             if (round >= least_rounds_k && std::chrono::steady_clock::now() >= deadline) break;
             st_verify_(store.erase_range(trivial_key_t {0}, trivial_key_t {upper}));
+            while (saw_empty.load(std::memory_order_relaxed) == 0 && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::yield();
             commit_write_many(store, identifiers, int(round) + 2);
             st_verify_(store.update_range(trivial_key_t {0}, trivial_key_t {upper},
                                           [](trivial_key_t const &, int &mapped) noexcept { mapped += 1000; }));

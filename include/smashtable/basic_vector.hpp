@@ -667,4 +667,8 @@ class basic_vector {
 #pragma endregion Iterators
 };
 
+/** @c basic_vector under its usual allocator, the name products spell. */
+template <typename value_type_, allocator_of<value_type_> allocator_type_ = default_allocator<value_type_>>
+using vector = basic_vector<value_type_, allocator_type_>;
+
 } // namespace ashvardanian::smashtable

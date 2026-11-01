@@ -658,6 +658,11 @@ struct moving_pointer {
         ++position;
         return *this;
     }
+    constexpr moving_pointer &operator+=(std::ptrdiff_t count) noexcept {
+        position += count;
+        return *this;
+    }
+    constexpr std::ptrdiff_t operator-(moving_pointer const &other) const noexcept { return position - other.position; }
     constexpr bool operator==(moving_pointer const &) const noexcept = default;
 };
 

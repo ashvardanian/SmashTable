@@ -142,7 +142,7 @@ def test_every_literal_spells_what_the_parser_accepts(stub, alias, keyword, read
     spelled = next(
         {literal.value for literal in node.value.slice.elts}
         for node in stub.body
-        if isinstance(node, ast.Assign) and node.targets[0].id == alias
+        if isinstance(node, ast.TypeAlias) and node.name.id == alias
     )
     for name in spelled:
         arguments = {"key": "int"} | {keyword: name}

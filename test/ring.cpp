@@ -11,6 +11,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
+#include <limits>      // `std::numeric_limits`
 #include <random>      // `std::mt19937_64`
 #include <span>        // `std::span`
 #include <type_traits> // `std::true_type`
@@ -28,7 +29,10 @@ namespace ashvardanian::smashtable::test {
 /** Capacities are powers of two up to the limit, zero holds nothing, and a refusal is reported. */
 void ring_capacity_rules() {
     st_verify_eq_(basic_ring<int>::make(3).status(), status_t::invalid_argument_k);
-    st_verify_eq_(basic_ring<int>::make(basic_ring<int>::capacity_limit_k * 2).status(), status_t::invalid_argument_k);
+    // No power of two above the limit fits a 32-bit `std::size_t`, so there is nothing to refuse
+    if constexpr (basic_ring<int>::capacity_limit_k <= std::numeric_limits<std::size_t>::max() / 2)
+        st_verify_eq_(basic_ring<int>::make(basic_ring<int>::capacity_limit_k * 2).status(),
+                      status_t::invalid_argument_k);
     using refused_ring_t = basic_ring<int, refusing_allocator<int>>;
     st_verify_eq_(refused_ring_t::make(16).status(), status_t::out_of_memory_heap_k);
 
