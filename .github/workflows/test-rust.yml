@@ -1,0 +1,33 @@
+name: Test Rust
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  test_rust:
+    name: Test Rust Crate
+    runs-on: ubuntu-26.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v7
+      - name: Set Up Rust Toolchain
+        run: |
+          rustup update stable
+          rustup default stable
+      - name: Build Rust
+        run: cargo build
+      - name: Test Rust
+        run: cargo test
+      # `cargo package` only warns when it drops a target, so promote that.
+      - name: Package the Crate
+        run: |
+          set -euo pipefail
+          cargo package 2>&1 | tee package.log
+          if grep -q 'warning: ignoring' package.log; then
+            echo "::error::cargo package dropped a declared target - check the include list in Cargo.toml"
+            exit 1
+          fi

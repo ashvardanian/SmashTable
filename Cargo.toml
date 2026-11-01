@@ -1,6 +1,6 @@
 [package]
 name = "smashtable"
-description = "Associative containers with DBMS-like transactions, as C++20 headers for crates that build them through CMake"
+description = "Safer transactional associative in-memory collection types with vectorization"
 version = "1.0.0-rc.1"
 edition = "2021"
 authors = ["Ash Vardanian"]

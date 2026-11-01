@@ -814,3 +814,23 @@ Every `verify` line names a model, the verdict expected of it and the defines, s
 Most models carry deliberately broken variants — a dropped release, a lock held less long, a batch that writes before it staged — and the run fails if one of those __passes__, which is what keeps a model from going vacuous as the code moves under it.
 It needs `spin`; a `genmc` on the path also runs the two clients.
 
+## Citation
+
+If SmashTable helps your research or product, please cite it:
+
+```bibtex
+@software{Vardanian_SmashTable,
+  author = {Vardanian, Ash},
+  title = {{SmashTable: Safer Transactional Associative In-Memory Collection Types with Vectorization}},
+  doi = {10.5281/zenodo.22030408},
+  url = {https://github.com/ashvardanian/SmashTable},
+  license = {Apache-2.0}
+}
+```
+
+A machine-readable [`CITATION.cff`](CITATION.cff) is provided at the repository root.
+
+## License
+
+Licensed under the Apache License, Version 2.0.
+See `LICENSE` for details.

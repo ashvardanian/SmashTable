@@ -1,7 +1,5 @@
-.DS_Store
-
-# CMake build trees. The `build*` glob covers the documented `build_release` and `build_debug` as well as
-# whatever one-off name a sanitizer or cross-compile run picks.
+# Build trees and CMake
+# The glob covers `build_release`, `build_debug` and any one-off sanitizer or cross-compile tree
 build*/
 CMakeFiles
 cmake_install.cmake
@@ -10,52 +8,53 @@ Makefile
 _deps
 /lib/
 /bin/
+/Testing/
 
 # Per-developer preset overrides: toolchain paths that are true of one machine, not of the project
 CMakeUserPresets.json
 
-# Python build and distribution artifacts. `pip install -e .` drops the compiled extension in the repository
-# root, named after the interpreter that built it, so the extension suffixes are matched anywhere rather than
-# only under a build directory.
+# C and C++
+*.obj
+*.lib
+*.exe
+*.exp
+*.pdb
+*.ilk
+
+# Python
+# `pip install -e .` drops the compiled extension in the repository root, so suffixes match anywhere
 *.so
 *.pyd
 *.dylib
 *.whl
 *.egg-info
 .eggs/
-build/
 dist/
 wheelhouse/
-
-# Resolver output, not an input. A library declares its ranges in `pyproject.toml` and every consumer
-# resolves its own, so a committed lock would pin nothing but this checkout's dev environment.
-uv.lock
-# The same for the crate: it ships no binaries and CI never builds `--locked`.
-Cargo.lock
-
-# Interpreter and tooling caches
 __pycache__/
 *.py[cod]
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
 .venv/
+/.venv*/
+# Resolver output: a library declares ranges in `pyproject.toml` and every consumer resolves its own
+uv.lock
+
+# Rust
+target/
+# The same for the crate: it ships no binaries and CI never builds `--locked`
+Cargo.lock
 
 # Editors, assistants, language servers and tool caches
+/compile_commands.json
 .cache/
 .claude/
-/compile_commands.json
-target/
-
-# Windows compiler, build-runner, and local validation artifacts
 /.vs/
-/Testing/
-*.obj
-*.lib
-*.exp
-*.pdb
-*.ilk
-*.exe
+
+# macOS
+.DS_Store
+
+# Local scratch
 /.tmp/
 /tmp/
-/.venv*/

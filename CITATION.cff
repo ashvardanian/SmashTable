@@ -1,0 +1,24 @@
+cff-version: 1.2.0
+title: "SmashTable: Safer Transactional Associative In-Memory Collection Types with Vectorization"
+message: "If you use this software, please cite it as below."
+type: software
+license: Apache-2.0
+version: 1.0.0-rc.1
+repository-code: https://github.com/ashvardanian/SmashTable
+url: https://github.com/ashvardanian/SmashTable
+doi: 10.5281/zenodo.22030408
+abstract: >-
+  SmashTable makes one update span several containers safely: either every change lands or none
+  does, whether a competing writer or an exception interrupts it, and a commit spanning two or more
+  containers asks each for permission before the first one writes. Every store declares its
+  isolation level at compile time, the tests check that level against behaviour, and the commit
+  protocols are verified as Promela models and GenMC clients. Cores range from vectors, AVL,
+  weight-balanced and hash trees to immutable B-trees, S+ trees and Elias-Fano sets that search a
+  whole row per vectorized pass, and a pinned atomic hash table that also runs on GPUs, shipped as
+  header-only templates with Python and Rust bindings.
+
+authors:
+  - family-names: Vardanian
+    given-names: Ash
+    alias: ashvardanian
+    orcid: https://orcid.org/0000-0002-4882-1815

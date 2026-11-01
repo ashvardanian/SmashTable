@@ -54,7 +54,7 @@ A failed check prints the expression, file and line, then reports its test as fa
 Beneath each failure the binary prints a `rerun:` line with the seed and a filter that selects only the failing test:
 
 ```text
-  rerun: SMASHTABLE_SEED=42 SMASHTABLE_FILTER='^basic_ops.insertion_patterns$' build_debug/smashtable_test_wb_tree
+rerun: SMASHTABLE_SEED=42 SMASHTABLE_FILTER='^basic_ops.insertion_patterns$' build_debug/smashtable_test_wb_tree
 ```
 
 A check inside a `noexcept` callback or a spawned thread cannot leave its test, so it terminates the binary instead, as a crash does.
@@ -180,7 +180,7 @@ Should be written as:
 if constexpr (condition) one_expression(); // Short inline comment
 // Large, multi-line comment ...
 // continued here
-else another_expression(); 
+else another_expression();
 ```
 
 Please, avoid generic variable names that may lead to confusion when debugging, especially in algebraic data types that immediately spread across the repo.
@@ -272,7 +272,29 @@ What falls out of the difference:
 - `@tparam` for template parameters, `@p` to mention a parameter, `@c` for a type or method name, `@b` for bold and `@a` for italics.
   Backticks and Markdown emphasis print literally through Doxygen, and the hook rejects both inside a block.
 - `@see` for an external reference, `@sa` for one inside the repository, `@code` and `@endcode` around a multi-token snippet, and `@section` with an anchor before its title.
-- A tag's continuation lines indent 6 spaces; a body paragraph's sit unindented at ` *  `.
+- A tag's continuation lines indent 6 spaces; a body paragraph's sit unindented at `* `.
   A tag keeps whitespace on both sides — `[ @p lower, @p upper )` rather than `[@p lower, @p upper)` — and never glues to the character before it.
 - Document every member of a type or none of them, with a hovering `/** … */` and never a trailing `//!<` or a bare `//`.
   The shared explanation belongs in the type's own docblock, where one sentence covers what a column of markers would repeat.
+
+## Commits
+
+`.githooks/commit-msg` checks every message:
+
+- The title reads `<Verb>: <Summary>`, where the verb is one of `Add`, `Break`, `Chore`, `Docs`, `Fix`, `Improve` or `Make`.
+- The summary opens with a capital letter, unless it opens with a code identifier, which keeps its own case.
+- The title runs to at most 80 characters, and a body line to at most 100 columns, unless it holds a URL or is indented code.
+- The message carries no AI-assistant attribution, since authorship is the human who committed.
+
+Git's merge, `fixup!` and `squash!` titles are exempt from the title rules.
+A `Release: vX.Y.Z` title is exempt too, but its commit must stamp every version site, and no other commit may change `VERSION`.
+`.githooks/pre-commit` formats and judges the staged lines, and `.githooks/selftest` runs both hooks against their fixtures.
+On a pull request, `.github/scripts/check-commits.sh` replays `commit-msg` over every commit and runs `pre-commit` over the whole range.
+
+## Releases
+
+`.github/scripts/mint-release.sh X.Y.Z` cuts a release from a clean checkout of the branch it ships.
+It stamps every version site and commits `Release: vX.Y.Z`.
+`.github/scripts/check-release.sh` then checks that commit, even in a clone where `core.hooksPath` is unset, before the script tags it and pushes both.
+Then it publishes the GitHub release, marking `X.Y.Z-rc.N` candidates as prereleases.
+Publishing starts every `release-<binding>.yml` at once, and each runs `check-release.sh` before it builds anything, so each registry trusts only its own binding's file.

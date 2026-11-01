@@ -30,7 +30,6 @@ html_css_files = [
     "https://fonts.googleapis.com/css2?family=Poppins:wght@200;400;500&family=Red+Hat+Mono:wght@400;500&display=swap",
     "custom.css",
 ]
-html_baseurl = "https://ashvardanian.github.io/SmashTable/"
 pygments_dark_style = "github-dark"
 html_theme_options = {
     "source_repository": "https://github.com/ashvardanian/SmashTable/",
