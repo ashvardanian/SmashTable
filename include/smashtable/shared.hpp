@@ -54,6 +54,7 @@
 #include <concepts>    // `std::convertible_to`, `std::same_as`, `std::integral`, `std::unsigned_integral`
 #include <limits>      // `std::numeric_limits`
 #include <new>         // `::operator new`, `std::align_val_t`, `std::nothrow`
+#include <span>        // `std::span`
 #include <tuple>       // `std::tuple`
 #include <type_traits> // `std::is_nothrow_invocable_v`
 #include <utility>     // `std::move`, `std::index_sequence`
@@ -2002,6 +2003,9 @@ constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
  *  only while the result stays inside a bound, which a target with a conditional form decides in
  *  one instruction - and, where it refuses, without taking the line exclusively at all.
  *
+ *  A @b claim sets or clears one bit and answers whether it held, which @c lock @c bts or @c ldset
+ *  decides without a loop.
+ *
  *  Nothing here is a dependency: @c atomic_ref does not satisfy this, and every operation below
  *  falls back to the loop or the discarded result it replaces. ForkUnion ships references that do
  *  satisfy it, one per instruction set, so a caller already linking it passes one straight in.
@@ -2019,6 +2023,8 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
     reference.fetch_sub_if_at_least(value, value, memory_order_relaxed_k);
     reference.fetch_max(value, memory_order_relaxed_k);
     reference.fetch_min(value, memory_order_relaxed_k);
+    reference.fetch_test_and_set_bit(0u, memory_order_relaxed_k);
+    reference.fetch_test_and_reset_bit(0u, memory_order_relaxed_k);
 };
 
 /** Posts @p addend onto @p word without reading what was there. */
@@ -2152,6 +2158,51 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
                                                 memory_order_acquire_k)) {}
         return observed;
     }
+}
+
+/** Sets bit @p bit of @p word, below its width, and answers whether it was set before: a claim
+ *  exactly one of several racing callers wins. */
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
+[[nodiscard]] constexpr bool atomic_fetch_test_and_set_bit(integral_type_ &word, unsigned bit,
+                                                           order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        return reference.fetch_test_and_set_bit(bit, order);
+    else return (reference.fetch_or(static_cast<integral_type_>(integral_type_ {1} << bit), order) >> bit) & 1;
+}
+
+/** Clears bit @p bit of @p word, below its width, and answers whether it was set before. */
+template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
+[[nodiscard]] constexpr bool atomic_fetch_test_and_reset_bit(integral_type_ &word, unsigned bit,
+                                                             order_type_ order) noexcept {
+    atomic_reference_<integral_type_> reference(word);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        return reference.fetch_test_and_reset_bit(bit, order);
+    else return (reference.fetch_and(static_cast<integral_type_>(~(integral_type_ {1} << bit)), order) >> bit) & 1;
+}
+
+/**
+ *  @brief Claims a clear bit of @p words with an acquiring set, scanning words in order and each
+ *      word from its lowest clear bit.
+ *  @return The claimed bit's position across @p words, or the total bit count when none was clear.
+ *
+ *  A lost race marks only the bit it lost and tries the next clear one of the same word, so a word
+ *  costs one load and one claim per bit taken from under the caller. Bits released behind the scan
+ *  are not seen. Release a claim with @c atomic_post_clear_bits at release order.
+ */
+template <template <typename> class atomic_reference_ = atomic_ref, std::unsigned_integral word_type_>
+[[nodiscard]] constexpr std::size_t atomic_claim_first_clear_bit(std::span<word_type_> words) noexcept {
+    constexpr std::size_t word_bits_k = sizeof(word_type_) * CHAR_BIT;
+    for (std::size_t word_index = 0; word_index != words.size(); ++word_index) {
+        word_type_ observed = atomic_reference_<word_type_>(words[word_index]).load(memory_order_relaxed_k);
+        while (observed != std::numeric_limits<word_type_>::max()) {
+            unsigned const bit = static_cast<unsigned>(countr_zero(static_cast<word_type_>(~observed)));
+            if (!atomic_fetch_test_and_set_bit<atomic_reference_>(words[word_index], bit, memory_order_acquire_k))
+                return word_index * word_bits_k + bit;
+            observed |= static_cast<word_type_>(word_type_ {1} << bit);
+        }
+    }
+    return words.size() * word_bits_k;
 }
 
 #pragma endregion Extended Atomics

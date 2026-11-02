@@ -344,33 +344,12 @@ class basic_hash_table {
         offset_t offset = table.hasher_(wanted) & offset_mask;
         slot_t slot;
 
-        if constexpr (probes_windows_<comparable_key_type_>()) {
-            using word_t =
-                typename std::conditional_t<std::is_integral_v<key_t>, std::make_unsigned<std::remove_cv_t<key_t>>,
-                                            std::type_identity<std::remove_cv_t<key_t>>>::type;
-            constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
-            offset_t const windows_count = slots_count / mask_equal_width_k;
-            offset_t const entry = offset;
-            for (offset_t windows = 0; windows <= windows_count; ++windows) {
-                offset_t const window = offset & ~offset_t {mask_equal_width_k - 1};
-                hash_window_slots_t slots = hash_window_slots<mask_equal_width_k>(
-                    table.storage_.headers[window / hash_bucket_capacity_k], window, offset);
-                // The last step wraps onto the first window, already seen from the entry on.
-                if (windows == windows_count) slots.candidates &= (hash_bucket_mask_t {1} << (entry - window)) - 1;
-                if (slots.candidates) {
-                    std::span<word_t const, mask_equal_width_k> const keys(
-                        reinterpret_cast<word_t const *>(table.storage_.keys + window), mask_equal_width_k);
-                    hash_bucket_mask_t matched =
-                        row_kit_type_::mask_equal(keys, static_cast<word_t>(wanted)) & slots.candidates;
-                    for (; matched; matched &= matched - 1) {
-                        table.unsafe_retarget(slot, window + static_cast<offset_t>(countr_zero(matched)));
-                        if (hand_over(call, slot) == walk_control_t::halt_k) return;
-                    }
-                }
-                if (slots.ends_probe) return;
-                offset = (window + mask_equal_width_k) & offset_mask;
-            }
-        }
+        if constexpr (probes_windows_<comparable_key_type_>())
+            walk_hash_windows<row_kit_type_>(table.storage_.headers, table.storage_.keys, slots_count, offset, wanted,
+                                             [&](offset_t matched_slot) noexcept {
+                                                 table.unsafe_retarget(slot, matched_slot);
+                                                 return hand_over(call, slot);
+                                             });
         else
             for (offset_t probes = 0; probes != slots_count; ++probes, offset = (offset + 1) & offset_mask) {
                 table.unsafe_retarget(slot, offset);

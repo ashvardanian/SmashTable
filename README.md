@@ -13,9 +13,9 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 ## What's Inside
 
 ```bash
-  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring
+  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring · hash index · slot pool
   immutable_*        → built once, read forever     B-tree · S+ tree · Elias-Fano · packed array
-  atomic_*           → pinned, GPU-capable        hash
+  atomic_*           → pinned or lock-free        hash · intrusive stack
        ↑ ::adopt() moves one allocation between the two, no rehash, no copy
 
   *_store            → transactions over a core   monotonic · snapshot · reference
@@ -40,11 +40,14 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `basic_hash_table`          | …                       |  one thread   |      …       |         …         |
 | `basic_flat_set`            | …                       |  one thread   |      …       |         ✔         |
 | `basic_ring`                | …                       |  one thread   |      …       |         …         |
+| `basic_hash_index`          | …                       |  one thread   |      …       |         …         |
+| `basic_slot_pool`           | …                       |  one thread   |      …       |         …         |
 | `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
 | `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
 | `immutable_elias_fano`      | …                       |    none ¹⁰    |      …       |     `select`      |
 | `immutable_packed_array`    | …                       |    none ¹⁰    |      …       |         …         |
 | `atomic_hash_table`         | … ⁴                     |  per slot ⁴   |      …       |         …         |
+| `atomic_intrusive_stack`    | …                       |  any pusher   |      …       |         …         |
 | `monotonic_store`           | Monotonic Atomic View ⁶ |  one thread   |      ✔       |     inherits      |
 | `snapshot_store`            | Snapshot ⁷              |  one thread   |      ✔       |    inherits ²     |
 | `serializable_store`        | Serializable ⁸          |  one thread   |      ✔       |    inherits ²     |
@@ -467,7 +470,10 @@ Headers group as:
     ├─ basic_wb_tree<T, Comparator, Alloc>          # also `rank` and `select`
     ├─ basic_hash_table<T, Hash, Equals, Alloc>     # grows, iterates, rehashes
     ├─ basic_flat_set<T, Comparator, Kit, Alloc>    # sorted, one allocation, searched a row at a time
-    └─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
+    ├─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
+    ├─ basic_hash_index<T, Index, Hash, Alloc, Kit> # keys to record positions, capacity fixed, no tombstones
+    ├─ basic_slot_pool<T, Index, Alloc>             # records taken and vacated by index, handles that go stale
+    └─ intrusive_list<Index>                        # first-in first-out through the records' own `next`
 
   Immutable, built once and never written
     ├─ immutable_b_tree<T, KeysPerRow, Kit, Alloc>     # keys on every level
@@ -478,6 +484,8 @@ Headers group as:
   atomic_*              → Pinned core. Fixed capacity, atomic per slot, callback reads.
     └─ atomic_hash_table<T, Hash, Equals, Alloc>    # the one type that runs on a GPU
        ↑ ::adopt(std::move(growable).release())     ↓ ::adopt(std::move(pinned).release())
+
+  atomic_intrusive_stack<T, Ref>  → any thread pushes, one takes all, no capacity
 
   *_store               → 2-phase commit, watch and CAS.
     ├─ monotonic_store<Core>                        # one visible version per key
@@ -498,18 +506,19 @@ The shape that gets this wrong most often is a cache behind a `mutable` member, 
 Growth is the other half of the rule.
 A core that can grow repoints the regions every live slot reference and every node pointer has already cached, so a container a second thread can reach must either be pinned at a capacity nobody exceeds, or reached through a wrapper that excludes.
 
-|                                             | Reach for                                                | Wrap in                              |
-| :------------------------------------------ | :------------------------------------------------------- | :----------------------------------- |
-| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set`         | …                                    |
-| The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                       | …                                    |
-| The same, and keyed                         | `basic_hash_table`                                       | …                                    |
-| Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`              | …                                    |
-| Built once from sorted integers, compressed | `immutable_elias_fano`                                   | …                                    |
-| Built once from integers in a narrow band   | `immutable_packed_array`                                 | …                                    |
-| Many threads, capacity fixed up front       | `atomic_hash_table`                                      | …                                    |
-| Many threads, and the container still grows | any core above                                           | `locked_store` · `partitioned_store` |
-| Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store` | either wrapper                       |
-| One commit spanning several stores          | `transaction_group`                                      | inherits its participants'           |
+|                                             | Reach for                                                            | Wrap in                              |
+| :------------------------------------------ | :------------------------------------------------------------------- | :----------------------------------- |
+| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set` · `basic_slot_pool` | …                                    |
+| The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                                   | …                                    |
+| The same, and keyed                         | `basic_hash_table` · `basic_hash_index`                              | …                                    |
+| Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`                          | …                                    |
+| Built once from sorted integers, compressed | `immutable_elias_fano`                                               | …                                    |
+| Built once from integers in a narrow band   | `immutable_packed_array`                                             | …                                    |
+| Many threads, capacity fixed up front       | `atomic_hash_table`                                                  | …                                    |
+| Many producers, one consumer draining whole | `atomic_intrusive_stack`                                             | …                                    |
+| Many threads, and the container still grows | any core above                                                       | `locked_store` · `partitioned_store` |
+| Versions a reader can still name            | `monotonic_store` · `snapshot_store` · `reference_store`             | either wrapper                       |
+| One commit spanning several stores          | `transaction_group`                                                  | inherits its participants'           |
 
 Both wrappers take their mutex as a template parameter, and that mutex takes two of its own: the reference its word is owned through, and the policy a waiting core follows.
 The pinned table takes the same two directly, since its slot lock is the mutex it has.
@@ -749,6 +758,13 @@ Adding a per-bucket version counter would fix it and would cost half the slots p
 
 Order-dependent operations are absent by construction: there is no `range`, `erase_range`, `lower_bound` or `select`.
 
+> `smashtable/basic_hash_index.hpp`
+
+`basic_hash_index` is the same layout serving another job: a fixed-capacity map from 4-, 8- or 16-byte keys to the positions of records kept elsewhere, such as a slot pool's.
+Its keys sit in the keys region, so a probe compares a window of them without loading a record, and a key may repeat, since it is often a hash of something longer: `find` takes a check that reads the record behind each match, and `erase` names the exact position.
+A tombstone would make every later probe walk past the erased slot until a rehash, which a fixed-capacity index never runs, so an erase shifts the rest of its run back over the hole instead.
+Every key stays reachable from its home, the deletion bits stay zero, and capacity is at most half the slots, so a run always ends at a free one and a table under constant churn probes no further than a fresh one.
+
 ## Testing
 
 ```bash
@@ -804,7 +820,7 @@ pip install -e . --group test && pytest test/
 
 The protocols the wrappers promise are checked as models, not only exercised as code.
 `verification/` holds eight Promela models — the two-phase group commit, the partitioned commit under one stamp, the commit order, the slot lock, the locked store, the pinned reader, the partitioned window write and the staged batch — over shared includes spelling the shared mutex, its waiting policy and the memory models.
-Two of them run again as GenMC clients over `std::atomic` under RC11.
+Two of them run again as GenMC clients over `std::atomic` under RC11, and a third client checks the stack `atomic_intrusive_stack` drains whole.
 
 ```bash
 ./verification/check.sh
@@ -812,7 +828,7 @@ Two of them run again as GenMC clients over `std::atomic` under RC11.
 
 Every `verify` line names a model, the verdict expected of it and the defines, so a new variant is one line and the whole suite reads off the file.
 Most models carry deliberately broken variants — a dropped release, a lock held less long, a batch that writes before it staged — and the run fails if one of those __passes__, which is what keeps a model from going vacuous as the code moves under it.
-It needs `spin`; a `genmc` on the path also runs the two clients.
+It needs `spin`; a `genmc` on the path also runs the three clients.
 
 ## Citation
 

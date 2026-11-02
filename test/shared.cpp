@@ -16,6 +16,7 @@
 #include <functional>  // `std::equal_to`, `std::hash`, `std::less`
 #include <limits>      // `std::numeric_limits`
 #include <memory>      // `std::allocator`
+#include <span>        // `std::span`
 #include <string_view> // `std::string_view`
 #include <thread>      // `std::thread`
 #include <utility>     // `std::pair`
@@ -429,6 +430,9 @@ struct extended_ref_tallies {
 
     /** How many xors it posted, which is once per slot the pinned table lets go. */
     static inline std::atomic<std::size_t> posted_flips {0};
+
+    /** How many single bits it set or cleared and read back, once per claim attempt. */
+    static inline std::atomic<std::size_t> bit_claims {0};
 };
 
 /**
@@ -501,6 +505,16 @@ struct counting_extended_ref : extended_ref_tallies {
     void flip_bits(value_type_ bits, std::memory_order order) const noexcept {
         posted_flips.fetch_add(1, std::memory_order_relaxed);
         std::atomic_ref<value_type_>(*word).fetch_xor(bits, order);
+    }
+    [[nodiscard]] bool fetch_test_and_set_bit(unsigned bit, std::memory_order order) const noexcept {
+        bit_claims.fetch_add(1, std::memory_order_relaxed);
+        value_type_ const mask = static_cast<value_type_>(value_type_ {1} << bit);
+        return (std::atomic_ref<value_type_>(*word).fetch_or(mask, order) & mask) != 0;
+    }
+    [[nodiscard]] bool fetch_test_and_reset_bit(unsigned bit, std::memory_order order) const noexcept {
+        bit_claims.fetch_add(1, std::memory_order_relaxed);
+        value_type_ const mask = static_cast<value_type_>(value_type_ {1} << bit);
+        return (std::atomic_ref<value_type_>(*word).fetch_and(static_cast<value_type_>(~mask), order) & mask) != 0;
     }
 
     [[nodiscard]] value_type_ fetch_add_if_at_most(value_type_ addend, value_type_ limit,
@@ -591,6 +605,41 @@ static void extended_atomics_reach_the_pinned_table() {
     st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_flips.load(), std::size_t {3});
     st_verify_eq_(counting_extended_ref<std::uint64_t>::posted_writes.load(), std::size_t {3},
                   "an erase moves both counters by posted writes");
+}
+
+/** Eight threads claiming bits of four words until none is left each win distinct bits, all of them
+ *  between them, through the reference's own claim. */
+static void extended_atomics_claim_each_bit_once() {
+    constexpr std::size_t threads_count_k = 8;
+    constexpr std::size_t words_count_k = 4;
+    constexpr std::size_t bits_count_k = words_count_k * 64;
+    counting_extended_ref<std::uint64_t>::bit_claims.store(0);
+
+    std::array<std::uint64_t, words_count_k> words {};
+    std::array<std::atomic<std::size_t>, bits_count_k> winners {};
+    std::vector<std::thread> threads;
+    for (std::size_t thread = 0; thread != threads_count_k; ++thread)
+        threads.emplace_back([&]() noexcept {
+            for (;;) {
+                std::size_t const claimed =
+                    atomic_claim_first_clear_bit<counting_extended_ref>(std::span<std::uint64_t>(words));
+                if (claimed == bits_count_k) return;
+                winners[claimed].fetch_add(1, std::memory_order_relaxed);
+            }
+        });
+    for (std::thread &thread : threads) thread.join();
+
+    for (std::size_t bit = 0; bit != bits_count_k; ++bit) st_verify_eq_(winners[bit].load(), std::size_t {1});
+    for (std::uint64_t const word : words) st_verify_eq_(word, std::numeric_limits<std::uint64_t>::max());
+    st_verify_ge_(counting_extended_ref<std::uint64_t>::bit_claims.load(), bits_count_k,
+                  "every claim goes through the reference's own bit verb");
+
+    st_verify_eq_(atomic_fetch_test_and_reset_bit<counting_extended_ref>(words[1], 5u, memory_order_release_k), true);
+    st_verify_eq_(atomic_fetch_test_and_reset_bit<counting_extended_ref>(words[1], 5u, memory_order_release_k), false);
+    st_verify_eq_(atomic_claim_first_clear_bit<counting_extended_ref>(std::span<std::uint64_t>(words)),
+                  std::size_t {64 + 5}, "the one bit given back is the one claimed next");
+    st_verify_eq_(atomic_fetch_test_and_set_bit(words[2], 7u, memory_order_acquire_k), true,
+                  "the standard reference answers the same through its fallback");
 }
 
 /** The mutex asks the policy it was handed once per attempt, parking once the spin is spent. */
@@ -1635,6 +1684,7 @@ int main(int, char **arguments) {
 
     tally += run_test(settings, "extended_atomics.take_the_bounded_path", extended_atomics_take_the_bounded_path);
     tally += run_test(settings, "extended_atomics.reach_the_pinned_table", extended_atomics_reach_the_pinned_table);
+    tally += run_test(settings, "extended_atomics.claim_each_bit_once", extended_atomics_claim_each_bit_once);
     tally += run_test(settings, "waiting_policy.substitutes_in_the_mutex", waiting_policy_substitutes_in_the_mutex);
     tally +=
         run_test(settings, "waiting_policy.substitutes_in_the_slot_lock", waiting_policy_substitutes_in_the_slot_lock);

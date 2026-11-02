@@ -3,6 +3,7 @@
 Model checking for the protocols the stores promise, with [Spin](https://spinroot.com) models and [GenMC](https://github.com/MPI-SWS/genmc) clients.
 
 - `atomic_hash_table/`: the slot lock and unlock of `atomic_hash_table`, and the counters under it.
+- `atomic_intrusive_stack.cpp`: two pushers of `atomic_intrusive_stack`, one of them pushing a chain, and a taker draining as they go.
 - `commit_order/`: the census of `basic_commit_order`, the buckets readers join, the floors they carry, and the mark.
 - `commit_order_publication.pml`: the stamp ring and the watermark walk of `basic_commit_order`, with one version per committer.
 - `commit_order_steps.pml`: `basic_commit_order` as inlines, shared by every model that publishes commits or counts readers.
@@ -25,6 +26,7 @@ Model checking for the protocols the stores promise, with [Spin](https://spinroo
 - Two groups holding across their phases take the stores ascending, or they deadlock: [`transaction_group/`](transaction_group/).
 - A refused validation gives its hold straight back, and so do the stores asked before it: [`transaction_group/`](transaction_group/).
 - The atomic hash table counts a slot populated under the slot's lock, and its slot lock acquires: [`atomic_hash_table/`](atomic_hash_table/).
+- A push onto the intrusive stack lands with a releasing compare-exchange and a take with an acquiring exchange, or the taker meets a record whose payload and link it is not ordered after: [`atomic_intrusive_stack.cpp`](atomic_intrusive_stack.cpp).
 - A locked store's writers acquire its mutex and its readers acquire the shared side, and `unlock_shared` wakes parked writers only when the last reader leaves: [`locked_store.pml`](locked_store.pml).
 - The commit order stands on three orderings in place of a mutex: a reader joins a bucket and reads the watermark through a read-modify-write, a mark reads the watermark before scanning the buckets, and a landing commit reads the watermark through a read-modify-write before walking the ring: [`commit_order/`](commit_order/), [`commit_order_publication.pml`](commit_order_publication.pml).
 - `end_commit` wakes parked committers once its walk moves the watermark: [`commit_order_publication.pml`](commit_order_publication.pml).

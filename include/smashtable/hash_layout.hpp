@@ -45,6 +45,7 @@
 #include <atomic>      // `std::atomic_ref`
 #include <bit>         // `std::popcount`, `std::countr_zero`
 #include <limits>      // `std::numeric_limits`
+#include <span>        // `std::span`
 #include <type_traits> // `std::is_same`, `std::conditional_t`
 #include <utility>     // `std::declval`, `std::move`
 
@@ -551,6 +552,53 @@ constexpr hash_window_slots_t hash_window_slots(hash_bucket_head_t const &head, 
     hash_bucket_mask_t const freed = ~(populations | deletions) & from;
     hash_bucket_mask_t const before_free = freed ? (freed & (0u - freed)) - 1u : whole;
     return {populations & ~deletions & from & before_free, freed != 0};
+}
+
+/**
+ *  @brief Walks the probe run entered at slot @p entry a window at a time, handing @p on_match each
+ *      populated slot whose key equals @p wanted until it halts, as @c hand_over reads its answer.
+ *
+ *  Each window takes @c row_kit_type_::mask_equal_width_k keys starting at a multiple of that
+ *  width, compares them with one @c mask_equal, and masks the answer down to the live slots before
+ *  the first free one. A deleted slot hides keys behind it, so only a free one ends the walk, and
+ *  @p slots_count bounds it, so a full table ends it too.
+ *
+ *  @param[in] headers The headers region, indexed by bucket.
+ *  @param[in] keys The keys region, indexed by slot, every key a @c window_key.
+ *  @param[in] slots_count The slot count, a power of two, at least one window.
+ *  @param[in] entry The home slot of @p wanted, already masked to the table.
+ *  @param[in] on_match Receives the slot index of each match, in probe order.
+ */
+template <typename row_kit_type_, typename key_type_, typename offset_type_, typename on_match_type_>
+void walk_hash_windows(hash_bucket_head_t const *headers, key_type_ const *keys, offset_type_ slots_count,
+                       offset_type_ entry, std::type_identity_t<key_type_> const &wanted,
+                       on_match_type_ &&on_match) noexcept {
+    static_assert(window_key<key_type_>, "only 4-, 8- and 16-byte keys compare a window at a time");
+    using word_t = typename std::conditional_t<std::is_integral_v<key_type_>, std::make_unsigned<key_type_>,
+                                               std::type_identity<key_type_>>::type;
+    constexpr std::size_t mask_equal_width_k = row_kit_type_::mask_equal_width_k;
+    offset_type_ const offset_mask = slots_count - 1;
+    offset_type_ const windows_count = slots_count / mask_equal_width_k;
+    offset_type_ offset = entry;
+    for (offset_type_ windows = 0; windows <= windows_count; ++windows) {
+        offset_type_ const window = offset & ~offset_type_ {mask_equal_width_k - 1};
+        hash_window_slots_t slots =
+            hash_window_slots<mask_equal_width_k>(headers[window / hash_bucket_capacity_k], window, offset);
+        // The last step wraps onto the first window, already seen from the entry on.
+        if (windows == windows_count) slots.candidates &= (hash_bucket_mask_t {1} << (entry - window)) - 1;
+        if (slots.candidates) {
+            std::span<word_t const, mask_equal_width_k> const window_keys(
+                reinterpret_cast<word_t const *>(keys + window), mask_equal_width_k);
+            hash_bucket_mask_t matched =
+                row_kit_type_::mask_equal(window_keys, static_cast<word_t>(wanted)) & slots.candidates;
+            for (; matched; matched &= matched - 1)
+                if (hand_over(on_match, window + static_cast<offset_type_>(countr_zero(matched))) ==
+                    walk_control_t::halt_k)
+                    return;
+        }
+        if (slots.ends_probe) return;
+        offset = (window + mask_equal_width_k) & offset_mask;
+    }
 }
 
 /**
