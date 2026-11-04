@@ -233,6 +233,18 @@ void verify_kit_rows(test_context_t const &context, kit_type_) {
 
 #pragma region Layout Equivalence
 
+/** Saves @p tree into words, so the view reads it from a word boundary as a mapped file would, and
+ *  answers the view built over those bytes. */
+template <typename tree_type_>
+expected<typename tree_type_::view_t> save_and_view(tree_type_ const &tree, basic_vector<std::uint64_t> &words) {
+    st_verify_(words.resize(tree.saved_bytes() / sizeof(std::uint64_t) + 1));
+    std::span<std::byte> const bytes(reinterpret_cast<std::byte *>(words.data()), tree.saved_bytes());
+    st_verify_eq_(tree.save(bytes), success_k);
+    expected<typename tree_type_::view_t> view = tree_type_::view_t::make(std::span<std::byte const>(bytes));
+    if (view) st_verify_eq_(view->saved_bytes(), tree.saved_bytes());
+    return view;
+}
+
 template <typename kit_type_, typename key_type_, std::size_t keys_per_row_>
 void verify_layouts_of(std::mt19937_64 &generator) {
     using btree_t = immutable_b_tree<key_type_, keys_per_row_, kit_type_>;
@@ -256,6 +268,7 @@ void verify_layouts_of(std::mt19937_64 &generator) {
     };
     basic_vector<key_type_> keys;
     basic_vector<key_type_> wanted;
+    basic_vector<std::uint64_t> saved;
     for (key_shape_t const shape : key_shapes_k)
         for (std::size_t const size : sizes) {
             if (size > (std::size_t {1} << 20)) continue;
@@ -272,6 +285,9 @@ void verify_layouts_of(std::mt19937_64 &generator) {
             expected<splus_t> splus = splus_t::make(sorted);
             st_verify_(splus);
             verify_ordered_readonly(*splus, sorted, asked);
+            expected<typename splus_t::view_t> view = save_and_view(*splus, saved);
+            st_verify_(view);
+            verify_ordered_readonly(*view, sorted, asked);
         }
 
     // Out-of-order input is refused rather than built into a tree that answers wrongly.
@@ -387,6 +403,45 @@ void layouts_mapped_values() {
                                   immutable_splus_set<std::int64_t>>();
 }
 
+/** A saved map reads back every value beside its key in place, and a view refuses bytes that are
+ *  misaligned, truncated, or saved by a tree of another row width or element. */
+void layouts_saved_views() {
+    using map_t = immutable_splus_map<std::uint64_t, std::uint64_t>;
+    using pair_t = map_t::value_t;
+    basic_vector<pair_t> pairs;
+    for (std::uint64_t index = 0; index != 1000; ++index) st_verify_(pairs.push_back(pair_t {index * 3, index * 7}));
+    expected<map_t> map = map_t::make({pairs.data(), pairs.size()});
+    st_verify_(map);
+    basic_vector<std::uint64_t> words;
+    expected<map_t::view_t> view = save_and_view(*map, words);
+    st_verify_(view);
+    for (std::size_t rank = 0; rank != pairs.size(); ++rank) {
+        st_verify_eq_(view->select(rank), pairs[rank].key);
+        st_verify_eq_(view->mapped_at(rank), pairs[rank].mapped);
+    }
+    st_verify_eq_(view->find(pairs[500].key), 500u);
+    st_verify_eq_(view->find(1).status(), status_t::key_not_found_k);
+
+    std::span<std::byte const> const bytes(reinterpret_cast<std::byte const *>(words.data()), map->saved_bytes());
+    st_verify_eq_(map_t::view_t::make(bytes.first(bytes.size() - 1)).status(), status_t::invalid_argument_k);
+    st_verify_eq_(map_t::view_t::make(bytes.first(sizeof(splus_tree_header_t) - 1)).status(),
+                  status_t::invalid_argument_k);
+    st_verify_eq_(map_t::view_t::make(bytes.subspan(1)).status(), status_t::invalid_argument_k, "a misaligned start");
+    st_verify_eq_(immutable_splus_set<std::uint64_t>::view_t::make(bytes).status(), status_t::invalid_argument_k,
+                  "a set over a map's bytes");
+    st_verify_eq_((immutable_splus_tree_view<pair_t, 8>::make(bytes).status()), status_t::invalid_argument_k,
+                  "another row width");
+    std::span<std::byte> const short_bytes(reinterpret_cast<std::byte *>(words.data()), map->saved_bytes() - 1);
+    st_verify_eq_(map->save(short_bytes), status_t::invalid_argument_k);
+
+    expected<immutable_splus_set<std::uint32_t>> empty = immutable_splus_set<std::uint32_t>::make({});
+    st_verify_(empty);
+    expected<immutable_splus_set<std::uint32_t>::view_t> empty_view = save_and_view(*empty, words);
+    st_verify_(empty_view);
+    st_verify_(empty_view->empty());
+    st_verify_eq_(empty_view->rank(7u), 0u);
+}
+
 #pragma endregion Tests
 
 } // namespace ashvardanian::smashtable::test
@@ -418,6 +473,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "layouts.rvv_kit", layouts_rvv_kit);
     tally += run_test(settings, "layouts.v128_kit", layouts_v128_kit);
     tally += run_test(settings, "layouts.mapped_values", layouts_mapped_values);
+    tally += run_test(settings, "layouts.saved_views", layouts_saved_views);
 
     return report_test_failures(settings, tally);
 }

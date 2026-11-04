@@ -42,6 +42,7 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `basic_ring`                | …                       |  one thread   |      …       |         …         |
 | `basic_hash_index`          | …                       |  one thread   |      …       |         …         |
 | `basic_slot_pool`           | …                       |  one thread   |      …       |         …         |
+| `basic_chunked_slot_pool`   | …                       |  one thread   |      …       |         …         |
 | `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
 | `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
 | `immutable_elias_fano`      | …                       |    none ¹⁰    |      …       |     `select`      |
@@ -473,6 +474,7 @@ Headers group as:
     ├─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
     ├─ basic_hash_index<T, Index, Hash, Alloc, Kit> # keys to record positions, capacity fixed, no tombstones
     ├─ basic_slot_pool<T, Index, Alloc>             # records taken and vacated by index, handles that go stale
+    ├─ basic_chunked_slot_pool<T, Index, Alloc>     # the same in chunks that never move, read beside its growth
     └─ intrusive_list<Index>                        # first-in first-out through the records' own `next`
 
   Immutable, built once and never written
@@ -505,6 +507,7 @@ The shape that gets this wrong most often is a cache behind a `mutable` member, 
 
 Growth is the other half of the rule.
 A core that can grow repoints the regions every live slot reference and every node pointer has already cached, so a container a second thread can reach must either be pinned at a capacity nobody exceeds, or reached through a wrapper that excludes.
+`basic_chunked_slot_pool` is the one core whose growth repoints nothing: it adds chunks and never moves a record, so readers by index or handle need no claim while its one writer takes, vacates and grows.
 
 |                                             | Reach for                                                            | Wrap in                              |
 | :------------------------------------------ | :------------------------------------------------------------------- | :----------------------------------- |
@@ -514,6 +517,7 @@ A core that can grow repoints the regions every live slot reference and every no
 | Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`                          | …                                    |
 | Built once from sorted integers, compressed | `immutable_elias_fano`                                               | …                                    |
 | Built once from integers in a narrow band   | `immutable_packed_array`                                             | …                                    |
+| One writer growing, readers by index        | `basic_chunked_slot_pool`                                            | …                                    |
 | Many threads, capacity fixed up front       | `atomic_hash_table`                                                  | …                                    |
 | Many producers, one consumer draining whole | `atomic_intrusive_stack`                                             | …                                    |
 | Many threads, and the container still grows | any core above                                                       | `locked_store` · `partitioned_store` |
