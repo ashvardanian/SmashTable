@@ -33,6 +33,11 @@ struct watched_record_t {
     std::uint32_t generation {0};
 };
 
+/** A record wider than the default new alignment, as one holding cache-line-aligned words is. */
+struct alignas(64) over_aligned_record_t {
+    std::uint32_t generation {0};
+};
+
 /** A record linked one way. */
 struct singly_linked_record_t {
     std::uint32_t next {intrusive_list<>::absent_k};
@@ -204,6 +209,19 @@ void growing_pool_grows_without_moving() {
     st_verify_eq_(limited->capacity(), 4u);
 }
 
+/** Every chunk a growing pool adds keeps an over-aligned record on its alignment. */
+void growing_pool_over_aligned_records() {
+    using pool_t = basic_growing_pool<over_aligned_record_t>;
+    constexpr std::uint32_t limit = 100;
+    auto pool = pool_t::make(1, limit);
+    st_verify_(pool);
+    for (std::uint32_t expected = 0; expected != limit; ++expected) {
+        st_verify_eq_(pool->take(), expected);
+        st_verify_eq_(reinterpret_cast<std::uintptr_t>(&(*pool)[expected]) % alignof(over_aligned_record_t),
+                      std::uintptr_t {0});
+    }
+}
+
 /** A reader resolving handles taken earlier, holding no claim, keeps finding their records while
  *  the owner grows the chunked pool beside it. */
 void growing_pool_readers_beside_growth() {
@@ -274,6 +292,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "fixed_pool.records_live_with_the_pool", fixed_pool_records_live_with_the_pool);
     tally += run_test(settings, "growing_pool.grows_without_moving", growing_pool_grows_without_moving);
     tally += run_test(settings, "growing_pool.readers_beside_growth", growing_pool_readers_beside_growth);
+    tally += run_test(settings, "growing_pool.over_aligned_records", growing_pool_over_aligned_records);
     tally += run_test(settings, "intrusive_list.singly_linked", intrusive_list_singly_linked);
     tally += run_test(settings, "intrusive_list.doubly_linked", intrusive_list_doubly_linked);
 

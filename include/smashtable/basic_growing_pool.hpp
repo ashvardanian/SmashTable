@@ -86,8 +86,6 @@ class basic_growing_pool {
                   "basic_growing_pool requires allocators that propagate on move assignment");
     static_assert(std::is_nothrow_default_constructible_v<value_t>,
                   "basic_growing_pool builds every record with its chunk, in noexcept code");
-    static_assert(alignof(value_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
-                  "An over-aligned record is not accommodated by the default-aligned chunks");
 
     /** A forward walk over every record, taken or free, in index order. */
     template <typename pool_type_, typename record_type_>
@@ -132,6 +130,9 @@ class basic_growing_pool {
     };
 
   private:
+    /** Allocates the chunks, so an over-aligned record gets its alignment from the allocator. */
+    using records_allocator_t = typename std::allocator_traits<allocator_t>::template rebind_alloc<value_t>;
+
     /** More chunks than doubling from one record takes to reach @c absent_k. */
     static constexpr std::size_t chunks_capacity_k = std::numeric_limits<index_t>::digits + 1;
 
@@ -181,7 +182,7 @@ class basic_growing_pool {
     void free_chunk_(value_t *records, std::size_t count) noexcept {
         if constexpr (!std::is_trivially_destructible_v<value_t>)
             for (std::size_t offset = 0; offset != count; ++offset) records[offset].~value_t();
-        allocator_.deallocate(reinterpret_cast<std::byte *>(records), count * sizeof(value_t));
+        records_allocator_t(allocator_).deallocate(records, count);
     }
 
     /** Adds the next chunk, free, and a stack wide enough for every record, or refuses at the
@@ -190,9 +191,8 @@ class basic_growing_pool {
         if (capacity_ >= capacity_limit_ || chunks_count_ == chunks_capacity_k) return capacity_exhausted_k;
         std::size_t const count = chunk_held_(chunks_count_);
         std::size_t const grown = std::size_t(capacity_) + count;
-        std::byte *const memory = allocator_.allocate(count * sizeof(value_t));
-        if (!memory) return out_of_memory_heap_k;
-        value_t *const records = reinterpret_cast<value_t *>(memory);
+        value_t *const records = records_allocator_t(allocator_).allocate(count);
+        if (!records) return out_of_memory_heap_k;
         for (std::size_t offset = 0; offset != count; ++offset) new (records + offset) value_t();
         std::byte *const stack = allocator_.allocate(grown * sizeof(index_t));
         if (!stack) {
