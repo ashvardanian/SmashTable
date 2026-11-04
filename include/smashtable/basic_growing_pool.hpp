@@ -1,18 +1,18 @@
 /**
- *  @file include/smashtable/basic_chunked_slot_pool.hpp
+ *  @file include/smashtable/basic_growing_pool.hpp
  *  @author Ash Vardanian
  *  @date November 2, 2026
- *  @brief A slot pool growing in chunks that never move, whose records are read beside growth
+ *  @brief A pool of records growing in chunks that never move, whose records are read beside growth
  *      without a claim.
  *
- *  @section basic_chunked_slot_pool_layout Layout
+ *  @section basic_growing_pool_layout Layout
  *
  *  The records sit in chunks, each one allocation, and the free indices in a stack of their own.
  *  The table of chunks is inline in the pool and never moves. Every record is built when its chunk
  *  is allocated and lives as long as the pool: @c take hands out a record as its last holder left
  *  it, and @c vacate only returns the index.
  *
- *  @section basic_chunked_slot_pool_growth Growth
+ *  @section basic_growing_pool_growth Growth
  *
  *  A @c take finding no free record adds a chunk, up to the limit fixed at @c make. The first chunk
  *  holds @c 2^b records and every later chunk as many as all the chunks before it, so the record at
@@ -20,7 +20,7 @@
  *  is clipped to the limit. Records never move, so their addresses and generations stay; only the
  *  stack of free indices is reallocated, and only while it is empty.
  *
- *  @section basic_chunked_slot_pool_readers Readers
+ *  @section basic_growing_pool_readers Readers
  *
  *  @c take and @c vacate need one caller at a time, but @c at, @c operator[] and @c index_of may
  *  run beside them holding no claim. Growth builds every record of a chunk and then publishes its
@@ -28,9 +28,9 @@
  *  limit, so a reader either finds a chunk null and answers nothing or sees all of it. The capacity
  *  and the free indices belong to the caller holding the claim.
  *
- *  @section basic_chunked_slot_pool_generations Generations
+ *  @section basic_growing_pool_generations Generations
  *
- *  A record carrying an unsigned @c generation member gets handles, as in @c basic_slot_pool: an
+ *  A record carrying an unsigned @c generation member gets handles, as in @c basic_fixed_pool: an
  *  index and the generation it was taken at, which @c vacate steps, so a handle kept past its
  *  record's release resolves to nothing instead of to whoever took the record next.
  */
@@ -47,7 +47,7 @@
 #include <type_traits> // `std::is_nothrow_default_constructible_v`, `std::is_trivially_destructible_v`
 #include <utility>     // `std::exchange`, `std::move`
 
-#include "smashtable/basic_slot_pool.hpp" // `generation_tagged`
+#include "smashtable/basic_fixed_pool.hpp" // `generation_tagged`
 #include "smashtable/shared.hpp"
 
 namespace ashvardanian::smashtable {
@@ -63,7 +63,7 @@ namespace ashvardanian::smashtable {
  */
 template <typename value_type_, std::unsigned_integral index_type_ = std::uint32_t,
           allocator_of<std::byte> allocator_type_ = default_allocator_t>
-class basic_chunked_slot_pool {
+class basic_growing_pool {
   public:
     using value_t = value_type_;
     using index_t = index_type_;
@@ -83,9 +83,9 @@ class basic_chunked_slot_pool {
     static_assert(sizeof(handle_t) == 2 * sizeof(index_t), "a handle carries no padding");
 
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
-                  "basic_chunked_slot_pool requires allocators that propagate on move assignment");
+                  "basic_growing_pool requires allocators that propagate on move assignment");
     static_assert(std::is_nothrow_default_constructible_v<value_t>,
-                  "basic_chunked_slot_pool builds every record with its chunk, in noexcept code");
+                  "basic_growing_pool builds every record with its chunk, in noexcept code");
     static_assert(alignof(value_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
                   "An over-aligned record is not accommodated by the default-aligned chunks");
 
@@ -223,7 +223,7 @@ class basic_chunked_slot_pool {
         capacity_ = free_count_ = capacity_limit_ = first_chunk_ = chunks_count_ = 0;
     }
 
-    void steal_(basic_chunked_slot_pool &other) noexcept {
+    void steal_(basic_growing_pool &other) noexcept {
         for (std::size_t chunk = 0; chunk != chunks_capacity_k; ++chunk)
             chunks_[chunk] = std::exchange(other.chunks_[chunk], 0);
         free_indices_ = std::exchange(other.free_indices_, nullptr);
@@ -235,15 +235,13 @@ class basic_chunked_slot_pool {
     }
 
   public:
-    basic_chunked_slot_pool() noexcept = default;
-    explicit basic_chunked_slot_pool(allocator_t allocator) noexcept : allocator_(std::move(allocator)) {}
-    ~basic_chunked_slot_pool() noexcept { release_(); }
+    basic_growing_pool() noexcept = default;
+    explicit basic_growing_pool(allocator_t allocator) noexcept : allocator_(std::move(allocator)) {}
+    ~basic_growing_pool() noexcept { release_(); }
 
-    basic_chunked_slot_pool(basic_chunked_slot_pool &&other) noexcept : allocator_(std::move(other.allocator_)) {
-        steal_(other);
-    }
+    basic_growing_pool(basic_growing_pool &&other) noexcept : allocator_(std::move(other.allocator_)) { steal_(other); }
 
-    basic_chunked_slot_pool &operator=(basic_chunked_slot_pool &&other) noexcept {
+    basic_growing_pool &operator=(basic_growing_pool &&other) noexcept {
         if (this == &other) return *this;
         release_();
         allocator_ = std::move(other.allocator_);
@@ -251,8 +249,8 @@ class basic_chunked_slot_pool {
         return *this;
     }
 
-    basic_chunked_slot_pool(basic_chunked_slot_pool const &) = delete;
-    basic_chunked_slot_pool &operator=(basic_chunked_slot_pool const &) = delete;
+    basic_growing_pool(basic_growing_pool const &) = delete;
+    basic_growing_pool &operator=(basic_growing_pool const &) = delete;
 
     /**
      *  @brief A pool of at least @p capacity free records, rounded up to a power of two and
@@ -265,20 +263,20 @@ class basic_chunked_slot_pool {
      *    count in bytes.
      *  - @c out_of_memory_heap_k The allocator refused the first chunk.
      */
-    static expected<basic_chunked_slot_pool> make(std::size_t capacity, std::size_t capacity_limit,
-                                                  allocator_t allocator = {}) noexcept {
+    static expected<basic_growing_pool> make(std::size_t capacity, std::size_t capacity_limit,
+                                             allocator_t allocator = {}) noexcept {
         if (capacity_limit > capacity_max_k || capacity > capacity_limit ||
             capacity_limit > std::numeric_limits<std::size_t>::max() / sizeof(value_t))
             return invalid_argument_k;
-        basic_chunked_slot_pool pool(std::move(allocator));
-        if (capacity_limit == 0) return expected<basic_chunked_slot_pool>(std::move(pool), success_k);
+        basic_growing_pool pool(std::move(allocator));
+        if (capacity_limit == 0) return expected<basic_growing_pool>(std::move(pool), success_k);
         pool.first_chunk_ = static_cast<index_t>(std::bit_ceil(capacity == 0 ? std::size_t {1} : capacity));
         pool.capacity_limit_ = static_cast<index_t>(capacity_limit);
         if (status_t const grown = pool.grow_(); failed(grown)) {
             pool.first_chunk_ = pool.capacity_limit_ = 0;
             return grown;
         }
-        return expected<basic_chunked_slot_pool>(std::move(pool), success_k);
+        return expected<basic_growing_pool>(std::move(pool), success_k);
     }
 
     /** Records the pool holds now, taken or free, bookkeeping of whoever serializes @c take. */
@@ -294,11 +292,11 @@ class basic_chunked_slot_pool {
     [[nodiscard]] bool full() const noexcept { return free_count_ == 0 && capacity_ == capacity_limit_; }
 
     /** Every record, taken or free, in index order. */
-    [[nodiscard]] records_range<basic_chunked_slot_pool, value_t> records() noexcept {
-        return records_range<basic_chunked_slot_pool, value_t>(this);
+    [[nodiscard]] records_range<basic_growing_pool, value_t> records() noexcept {
+        return records_range<basic_growing_pool, value_t>(this);
     }
-    [[nodiscard]] records_range<basic_chunked_slot_pool const, value_t const> records() const noexcept {
-        return records_range<basic_chunked_slot_pool const, value_t const>(this);
+    [[nodiscard]] records_range<basic_growing_pool const, value_t const> records() const noexcept {
+        return records_range<basic_growing_pool const, value_t const>(this);
     }
 
     /** The record at @p index, taken or not, whose chunk must be published. */

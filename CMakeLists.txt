@@ -29,8 +29,8 @@
 #     `SMASHTABLE_FILTER`.
 #   * smashtable_test_hash_table - the unordered family, running the hash-specific suites of
 #     `test/unordered.hpp` instead, including the threaded ones.
-#   * smashtable_test_hash_index, _slot_pool, _intrusive_stack - the fixed-capacity index through every row kit the
-#     processor runs, the slot pool and the intrusive list over its records, and the stack several threads push onto.
+#   * smashtable_test_hash_index, _pools, _intrusive_stack - the fixed-capacity index through every row kit the
+#     processor runs, the fixed pool and the intrusive list over its records, and the stack several threads push onto.
 #   * smashtable_test_monotonic_hash - the transactional store over the open-addressed table,
 #     running only the point-access suites an unordered core can answer.
 #   * smashtable_test_row_search, _flat_set, _ring, _elias_fano - the ordered kits: every compiled row kit the
@@ -141,7 +141,7 @@ if (SMASHTABLE_BUILD_TEST)
               partitioned
               hash_table
               hash_index
-              slot_pool
+              pools
               intrusive_stack
               monotonic_hash
               snapshot_store

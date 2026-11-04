@@ -13,7 +13,7 @@ It needs no threads to be useful — the same guarantee that keeps two indexes c
 ## What's Inside
 
 ```bash
-  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring · hash index · slot pool
+  basic_*            → cores, single-threaded     vector · AVL · weight-balanced · hash · flat set · ring · hash index · fixed pool · growing pool
   immutable_*        → built once, read forever     B-tree · S+ tree · Elias-Fano · packed array
   atomic_*           → pinned or lock-free        hash · intrusive stack
        ↑ ::adopt() moves one allocation between the two, no rehash, no copy
@@ -41,8 +41,8 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `basic_flat_set`            | …                       |  one thread   |      …       |         ✔         |
 | `basic_ring`                | …                       |  one thread   |      …       |         …         |
 | `basic_hash_index`          | …                       |  one thread   |      …       |         …         |
-| `basic_slot_pool`           | …                       |  one thread   |      …       |         …         |
-| `basic_chunked_slot_pool`   | …                       |  one thread   |      …       |         …         |
+| `basic_fixed_pool`           | …                       |  one thread   |      …       |         …         |
+| `basic_growing_pool`   | …                       |  one thread   |      …       |         …         |
 | `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
 | `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
 | `immutable_elias_fano`      | …                       |    none ¹⁰    |      …       |     `select`      |
@@ -473,8 +473,8 @@ Headers group as:
     ├─ basic_flat_set<T, Comparator, Kit, Alloc>    # sorted, one allocation, searched a row at a time
     ├─ basic_ring<T, Alloc>                         # first-in first-out, capacity fixed at `make`
     ├─ basic_hash_index<T, Index, Hash, Alloc, Kit> # keys to record positions, capacity fixed, no tombstones
-    ├─ basic_slot_pool<T, Index, Alloc>             # records taken and vacated by index, handles that go stale
-    ├─ basic_chunked_slot_pool<T, Index, Alloc>     # the same in chunks that never move, read beside its growth
+    ├─ basic_fixed_pool<T, Index, Alloc>             # records taken and vacated by index, handles that go stale
+    ├─ basic_growing_pool<T, Index, Alloc>     # the same in chunks that never move, read beside its growth
     └─ intrusive_list<Index>                        # first-in first-out through the records' own `next`
 
   Immutable, built once and never written
@@ -507,17 +507,17 @@ The shape that gets this wrong most often is a cache behind a `mutable` member, 
 
 Growth is the other half of the rule.
 A core that can grow repoints the regions every live slot reference and every node pointer has already cached, so a container a second thread can reach must either be pinned at a capacity nobody exceeds, or reached through a wrapper that excludes.
-`basic_chunked_slot_pool` is the one core whose growth repoints nothing: it adds chunks and never moves a record, so readers by index or handle need no claim while its one writer takes, vacates and grows.
+`basic_growing_pool` is the one core whose growth repoints nothing: it adds chunks and never moves a record, so readers by index or handle need no claim while its one writer takes, vacates and grows.
 
 |                                             | Reach for                                                            | Wrap in                              |
 | :------------------------------------------ | :------------------------------------------------------------------- | :----------------------------------- |
-| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set` · `basic_slot_pool` | …                                    |
+| One thread, or many readers and no writer   | `basic_vector` · `basic_ring` · `basic_flat_set` · `basic_fixed_pool` | …                                    |
 | The same, and ordered                       | `basic_avl_tree` · `basic_wb_tree`                                   | …                                    |
 | The same, and keyed                         | `basic_hash_table` · `basic_hash_index`                              | …                                    |
 | Built once from sorted keys, read forever   | `immutable_b_tree` · `immutable_splus_tree`                          | …                                    |
 | Built once from sorted integers, compressed | `immutable_elias_fano`                                               | …                                    |
 | Built once from integers in a narrow band   | `immutable_packed_array`                                             | …                                    |
-| One writer growing, readers by index        | `basic_chunked_slot_pool`                                            | …                                    |
+| One writer growing, readers by index        | `basic_growing_pool`                                            | …                                    |
 | Many threads, capacity fixed up front       | `atomic_hash_table`                                                  | …                                    |
 | Many producers, one consumer draining whole | `atomic_intrusive_stack`                                             | …                                    |
 | Many threads, and the container still grows | any core above                                                       | `locked_store` · `partitioned_store` |
@@ -764,7 +764,7 @@ Order-dependent operations are absent by construction: there is no `range`, `era
 
 > `smashtable/basic_hash_index.hpp`
 
-`basic_hash_index` is the same layout serving another job: a fixed-capacity map from 4-, 8- or 16-byte keys to the positions of records kept elsewhere, such as a slot pool's.
+`basic_hash_index` is the same layout serving another job: a fixed-capacity map from 4-, 8- or 16-byte keys to the positions of records kept elsewhere, such as a fixed pool's.
 Its keys sit in the keys region, so a probe compares a window of them without loading a record, and a key may repeat, since it is often a hash of something longer: `find` takes a check that reads the record behind each match, and `erase` names the exact position.
 A tombstone would make every later probe walk past the erased slot until a rehash, which a fixed-capacity index never runs, so an erase shifts the rest of its run back over the hole instead.
 Every key stays reachable from its home, the deletion bits stay zero, and capacity is at most half the slots, so a run always ends at a free one and a table under constant churn probes no further than a fresh one.

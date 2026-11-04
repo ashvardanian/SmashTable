@@ -1,8 +1,8 @@
 /**
- *  @file test/slot_pool.cpp
+ *  @file test/pools.cpp
  *  @author Ash Vardanian
  *  @date November 2, 2026
- *  @brief Tests for @c basic_slot_pool, @c basic_chunked_slot_pool and @c intrusive_list: taking
+ *  @brief Tests for @c basic_fixed_pool, @c basic_growing_pool and @c intrusive_list: taking
  *      until refused, stale handles, record lifetimes, growth without moving, readers beside
  *      growth, and unlinking from either kind of linked record.
  */
@@ -16,8 +16,8 @@
 #include <thread>  // `std::thread`
 #include <utility> // `std::move`
 
-#include "smashtable/basic_chunked_slot_pool.hpp"
-#include "smashtable/basic_slot_pool.hpp"
+#include "smashtable/basic_growing_pool.hpp"
+#include "smashtable/basic_fixed_pool.hpp"
 #include "smashtable/intrusive_list.hpp"
 
 #include "fixtures.hpp"
@@ -46,10 +46,10 @@ struct doubly_linked_record_t {
 };
 
 static_assert(generation_tagged<watched_record_t, std::uint32_t> && !generation_tagged<std::uint64_t, std::uint32_t>);
-static_assert(sizeof(basic_slot_pool<watched_record_t>::handle_t) == 8, "a handle fits one event word");
+static_assert(sizeof(basic_fixed_pool<watched_record_t>::handle_t) == 8, "a handle fits one event word");
 static_assert(singly_linked_records<singly_linked_record_t[4], std::uint32_t> &&
               !doubly_linked_records<singly_linked_record_t[4], std::uint32_t>);
-static_assert(doubly_linked_records<basic_slot_pool<doubly_linked_record_t>, std::uint32_t>);
+static_assert(doubly_linked_records<basic_fixed_pool<doubly_linked_record_t>, std::uint32_t>);
 
 #pragma endregion Fixtures
 
@@ -89,10 +89,10 @@ void verify_list_unlinks(records_type_ &records) {
 
 /** Takes hand out ascending indices until refused, a vacated index comes back, and refusals are
  *  reported. */
-void slot_pool_take_until_refused() {
-    using pool_t = basic_slot_pool<std::uint64_t>;
+void fixed_pool_take_until_refused() {
+    using pool_t = basic_fixed_pool<std::uint64_t>;
     st_verify_eq_(pool_t::make(std::numeric_limits<std::uint32_t>::max()).status(), status_t::invalid_argument_k);
-    using refused_pool_t = basic_slot_pool<std::uint64_t, std::uint32_t, refusing_allocator<std::byte>>;
+    using refused_pool_t = basic_fixed_pool<std::uint64_t, std::uint32_t, refusing_allocator<std::byte>>;
     st_verify_eq_(refused_pool_t::make(4).status(), status_t::out_of_memory_heap_k);
 
     auto empty = pool_t::make(0);
@@ -113,8 +113,8 @@ void slot_pool_take_until_refused() {
 
 /** A handle resolves while its record is taken, and to nothing once it was vacated, even after
  *  the same index is taken again. */
-void slot_pool_stale_handle_resolves_to_nothing() {
-    using pool_t = basic_slot_pool<watched_record_t>;
+void fixed_pool_stale_handle_resolves_to_nothing() {
+    using pool_t = basic_fixed_pool<watched_record_t>;
     auto pool = pool_t::make(2);
     st_verify_(pool);
     std::uint32_t const taken = pool->take();
@@ -133,17 +133,17 @@ void slot_pool_stale_handle_resolves_to_nothing() {
 }
 
 /** Every record is built once at @c make and destroyed once with the pool, whatever is taken. */
-void slot_pool_records_live_with_the_pool() {
+void fixed_pool_records_live_with_the_pool() {
     counted_key_t::reset();
     {
-        auto pool = basic_slot_pool<counted_key_t>::make(6);
+        auto pool = basic_fixed_pool<counted_key_t>::make(6);
         st_verify_(pool);
         st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {6});
         std::uint32_t const taken = pool->take();
         (*pool)[taken].unique_id = 9;
         pool->vacate(taken);
         st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {6}, "taking and vacating builds nothing");
-        basic_slot_pool<counted_key_t> moved = std::move(*pool);
+        basic_fixed_pool<counted_key_t> moved = std::move(*pool);
         st_verify_eq_(moved[taken].unique_id, trivial_id_t {9});
         st_verify_eq_(counted_key_t::alive(), std::ptrdiff_t {6});
     }
@@ -152,8 +152,8 @@ void slot_pool_records_live_with_the_pool() {
 
 /** A chunked pool grows by doubling when a take finds none free, never moving a record, and a
  *  refused growth answers @c absent_k with every record and handle intact. */
-void chunked_slot_pool_grows_without_moving() {
-    using pool_t = basic_chunked_slot_pool<watched_record_t>;
+void growing_pool_grows_without_moving() {
+    using pool_t = basic_growing_pool<watched_record_t>;
     st_verify_eq_(pool_t::make(5, 4).status(), status_t::invalid_argument_k, "a limit below the capacity");
     st_verify_eq_(pool_t::make(0, pool_t::capacity_max_k + 1).status(), status_t::invalid_argument_k);
 
@@ -188,7 +188,7 @@ void chunked_slot_pool_grows_without_moving() {
     st_verify_eq_(pool->take(), 70u);
 
     allocation_ledger_t ledger;
-    using ledgered_t = basic_chunked_slot_pool<watched_record_t, std::uint32_t, stateful_allocator_t>;
+    using ledgered_t = basic_growing_pool<watched_record_t, std::uint32_t, stateful_allocator_t>;
     auto limited = ledgered_t::make(2, 64, stateful_allocator_t {ledger});
     st_verify_(limited);
     st_verify_eq_(limited->take(), 0u);
@@ -206,8 +206,8 @@ void chunked_slot_pool_grows_without_moving() {
 
 /** A reader resolving handles taken earlier, holding no claim, keeps finding their records while
  *  the owner grows the chunked pool beside it. */
-void chunked_slot_pool_readers_beside_growth() {
-    using pool_t = basic_chunked_slot_pool<watched_record_t>;
+void growing_pool_readers_beside_growth() {
+    using pool_t = basic_growing_pool<watched_record_t>;
     constexpr std::uint32_t limit = 1u << 14, early = 8;
     auto pool = pool_t::make(1, limit);
     st_verify_(pool);
@@ -248,9 +248,9 @@ void intrusive_list_singly_linked() {
     verify_list_unlinks(records);
 }
 
-/** Records with @c previous unlink in place, here kept in a slot pool. */
+/** Records with @c previous unlink in place, here kept in a fixed pool. */
 void intrusive_list_doubly_linked() {
-    auto records = basic_slot_pool<doubly_linked_record_t>::make(6);
+    auto records = basic_fixed_pool<doubly_linked_record_t>::make(6);
     st_verify_(records);
     verify_list_unlinks(*records);
 }
@@ -268,12 +268,12 @@ int main(int, char **arguments) {
     print(settings);
     test_tally_t tally;
 
-    tally += run_test(settings, "slot_pool.take_until_refused", slot_pool_take_until_refused);
+    tally += run_test(settings, "fixed_pool.take_until_refused", fixed_pool_take_until_refused);
     tally +=
-        run_test(settings, "slot_pool.stale_handle_resolves_to_nothing", slot_pool_stale_handle_resolves_to_nothing);
-    tally += run_test(settings, "slot_pool.records_live_with_the_pool", slot_pool_records_live_with_the_pool);
-    tally += run_test(settings, "chunked_slot_pool.grows_without_moving", chunked_slot_pool_grows_without_moving);
-    tally += run_test(settings, "chunked_slot_pool.readers_beside_growth", chunked_slot_pool_readers_beside_growth);
+        run_test(settings, "fixed_pool.stale_handle_resolves_to_nothing", fixed_pool_stale_handle_resolves_to_nothing);
+    tally += run_test(settings, "fixed_pool.records_live_with_the_pool", fixed_pool_records_live_with_the_pool);
+    tally += run_test(settings, "growing_pool.grows_without_moving", growing_pool_grows_without_moving);
+    tally += run_test(settings, "growing_pool.readers_beside_growth", growing_pool_readers_beside_growth);
     tally += run_test(settings, "intrusive_list.singly_linked", intrusive_list_singly_linked);
     tally += run_test(settings, "intrusive_list.doubly_linked", intrusive_list_doubly_linked);
 

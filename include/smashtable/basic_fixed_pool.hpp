@@ -1,16 +1,16 @@
 /**
- *  @file include/smashtable/basic_slot_pool.hpp
+ *  @file include/smashtable/basic_fixed_pool.hpp
  *  @author Ash Vardanian
  *  @date November 2, 2026
  *  @brief A fixed array of records with a stack of the free ones' indices, in one allocation.
  *
- *  @section basic_slot_pool_layout Layout
+ *  @section basic_fixed_pool_layout Layout
  *
  *  The records come first and the free indices follow from the next cache line, so the owner is a
  *  pointer and two counts. Every record is built at @c make and lives as long as the pool: @c take
  *  hands out a record as its last holder left it, and @c vacate only returns the index.
  *
- *  @section basic_slot_pool_generations Generations
+ *  @section basic_fixed_pool_generations Generations
  *
  *  A record carrying an unsigned @c generation member gets handles: an index and the generation it
  *  was taken at, which @c vacate steps, so a handle kept past its record's release resolves to
@@ -49,7 +49,7 @@ concept generation_tagged = requires(value_type_ &record) {
  */
 template <typename value_type_, std::unsigned_integral index_type_ = std::uint32_t,
           allocator_of<std::byte> allocator_type_ = default_allocator_t>
-class basic_slot_pool {
+class basic_fixed_pool {
   public:
     using value_t = value_type_;
     using index_t = index_type_;
@@ -66,9 +66,9 @@ class basic_slot_pool {
     static_assert(sizeof(handle_t) == 2 * sizeof(index_t), "a handle carries no padding");
 
     static_assert(std::allocator_traits<allocator_t>::propagate_on_container_move_assignment::value,
-                  "basic_slot_pool requires allocators that propagate on move assignment");
+                  "basic_fixed_pool requires allocators that propagate on move assignment");
     static_assert(std::is_nothrow_default_constructible_v<value_t>,
-                  "basic_slot_pool builds every record at make, in noexcept code");
+                  "basic_fixed_pool builds every record at make, in noexcept code");
     static_assert(alignof(value_t) <= __STDCPP_DEFAULT_NEW_ALIGNMENT__,
                   "An over-aligned record is not accommodated by the single default-aligned allocation");
 
@@ -103,15 +103,15 @@ class basic_slot_pool {
     }
 
   public:
-    basic_slot_pool() noexcept = default;
-    explicit basic_slot_pool(allocator_t allocator) noexcept : allocator_(std::move(allocator)) {}
-    ~basic_slot_pool() noexcept { release_(); }
+    basic_fixed_pool() noexcept = default;
+    explicit basic_fixed_pool(allocator_t allocator) noexcept : allocator_(std::move(allocator)) {}
+    ~basic_fixed_pool() noexcept { release_(); }
 
-    basic_slot_pool(basic_slot_pool &&other) noexcept
+    basic_fixed_pool(basic_fixed_pool &&other) noexcept
         : memory_(std::exchange(other.memory_, nullptr)), capacity_(std::exchange(other.capacity_, 0)),
           free_count_(std::exchange(other.free_count_, 0)), allocator_(std::move(other.allocator_)) {}
 
-    basic_slot_pool &operator=(basic_slot_pool &&other) noexcept {
+    basic_fixed_pool &operator=(basic_fixed_pool &&other) noexcept {
         if (this == &other) return *this;
         release_();
         memory_ = std::exchange(other.memory_, nullptr);
@@ -121,8 +121,8 @@ class basic_slot_pool {
         return *this;
     }
 
-    basic_slot_pool(basic_slot_pool const &) = delete;
-    basic_slot_pool &operator=(basic_slot_pool const &) = delete;
+    basic_fixed_pool(basic_fixed_pool const &) = delete;
+    basic_fixed_pool &operator=(basic_fixed_pool const &) = delete;
 
     /**
      *  @brief A pool of @p capacity default-constructed records, all of them free.
@@ -131,12 +131,12 @@ class basic_slot_pool {
      *  @par Statuses:
      *  - @c invalid_argument_k A capacity reaching @c absent_k, or too large to count in bytes.
      */
-    static expected<basic_slot_pool> make(std::size_t capacity, allocator_t allocator = {}) noexcept {
+    static expected<basic_fixed_pool> make(std::size_t capacity, allocator_t allocator = {}) noexcept {
         if (capacity >= absent_k || capacity > (std::numeric_limits<std::size_t>::max() - cache_line_bytes_k) /
                                                    (sizeof(value_t) + sizeof(index_t)))
             return invalid_argument_k;
-        basic_slot_pool pool(std::move(allocator));
-        if (capacity == 0) return expected<basic_slot_pool>(std::move(pool), success_k);
+        basic_fixed_pool pool(std::move(allocator));
+        if (capacity == 0) return expected<basic_fixed_pool>(std::move(pool), success_k);
         pool.memory_ = pool.allocator_.allocate(memory_bytes_(capacity));
         if (!pool.memory_) return out_of_memory_heap_k;
         pool.capacity_ = static_cast<index_t>(capacity);
@@ -146,7 +146,7 @@ class basic_slot_pool {
         index_t *const free_indices = pool.free_indices_();
         for (index_t slot = 0; slot != pool.capacity_; ++slot)
             free_indices[slot] = static_cast<index_t>(pool.capacity_ - 1 - slot);
-        return expected<basic_slot_pool>(std::move(pool), success_k);
+        return expected<basic_fixed_pool>(std::move(pool), success_k);
     }
 
     [[nodiscard]] std::size_t capacity() const noexcept { return capacity_; }
@@ -209,6 +209,6 @@ class basic_slot_pool {
     }
 };
 
-static_assert(sizeof(basic_slot_pool<std::uint64_t>) == 16, "a pointer and two 32-bit counts");
+static_assert(sizeof(basic_fixed_pool<std::uint64_t>) == 16, "a pointer and two 32-bit counts");
 
 } // namespace ashvardanian::smashtable
