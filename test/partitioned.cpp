@@ -341,6 +341,12 @@ static void sharded_concurrency_commit_spans_partitions() {
     test_commit_spans_partitions_matches_isolation<sharded_snapshot_map_t>();
 }
 
+/** A group over partitioned stores in no shared order, with and without stamps of their own. */
+static void sharded_concurrency_group_across_orders_commits_whole() {
+    test_group_across_orders_commits_whole<transactional_trivial_map_t, transactional_trivial_map_t>();
+    test_group_across_orders_commits_whole<sharded_snapshot_map_t, transactional_trivial_map_t>();
+}
+
 /**
  *  @brief Both sides of whether a sharded window read is validated at commit.
  *
@@ -1809,6 +1815,8 @@ int main(int, char **arguments) {
                       sharded_concurrency_commit_is_visible_to_what_opens_after_it);
     tally += run_test(settings, "sharded_concurrency.standard_mutex_substitutes",
                       sharded_concurrency_standard_mutex_substitutes);
+    tally += run_test(settings, "sharded_concurrency.group_across_orders_commits_whole",
+                      sharded_concurrency_group_across_orders_commits_whole);
     tally += run_test(settings, "sharded_concurrency.stage_unwinds_on_partial_failure",
                       sharded_concurrency_stage_unwinds_on_partial_failure);
     tally +=

@@ -25,6 +25,7 @@ Model checking for the protocols the stores promise, with [Spin](https://spinroo
 - `validate_for_commit` holds a locked store's mutex exclusively until the publication, the rollback or the reset that follows: [`transaction_group/`](transaction_group/).
 - Two groups holding across their phases take the stores ascending, or they deadlock: [`transaction_group/`](transaction_group/).
 - A refused validation gives its hold straight back, and so do the stores asked before it: [`transaction_group/`](transaction_group/).
+- A store reclaims what it published before giving its hold up, since taking it back while later stores are held deadlocks two groups: [`transaction_group/`](transaction_group/).
 - The atomic hash table counts a slot populated under the slot's lock, and its slot lock acquires: [`atomic_hash_table/`](atomic_hash_table/).
 - A push onto the intrusive stack lands with a releasing compare-exchange and a take with an acquiring exchange, or the taker meets a record whose payload and link it is not ordered after: [`atomic_intrusive_stack.cpp`](atomic_intrusive_stack.cpp).
 - A locked store's writers acquire its mutex and its readers acquire the shared side, and `unlock_shared` wakes parked writers only when the last reader leaves: [`locked_store.pml`](locked_store.pml).
@@ -37,8 +38,7 @@ Model checking for the protocols the stores promise, with [Spin](https://spinroo
 
 ## What is not covered
 
-- The in-turn commit of stores that do not split theirs is documented as a tear when a later participant refuses, and `whole_across_stores=true` is the assertion that shows it rather than a fix.
-- The stage's unwind discards each rollback's status, and the stage already returns the refusal that matters.
+- A caller's own store offering only `commit` tears a group when a later participant refuses, and `whole_across_stores=true` is the assertion that shows it; no store here reaches that path.
 - The trees, the vectors and the single-writer stores are documented one-thread cores, and their staged batch is checked by the C++ tests in `test/batch_atomicity.hpp`, not by a model.
 - The GenMC clients spell their mutexes as one exchanged word rather than `spin_shared_mutex_t`, whose shape `spin_shared_mutex.pml` already checks.
 - That `apply_each_` cannot refuse once `reserve_more` has returned rests on the growth threshold leaving a quarter of the slots free and on a bounded probe walking all of them, which is `hash_layout.hpp`'s property and has no model of its own.

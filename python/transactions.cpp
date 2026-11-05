@@ -5,8 +5,9 @@
  *  @brief @c Transaction and @c View - the update that spans several containers in one transaction.
  *
  *  The unit of atomicity is the group, not the store: a @c with block opens one participant per
- *  container, and the block either publishes every change or abandons every one. Publication walks
- *  the participants in turn, so the group is all-or-nothing against failure, not one instant.
+ *  container, and the block either publishes every change or abandons every one. Every participant
+ *  is asked before any writes, and publication then walks them in turn, so the group is
+ *  all-or-nothing against failure, not one instant.
  *
  *  @section transactions_alternatives Why the Participants Are Type-Erased
  *
@@ -612,11 +613,19 @@ static stage_entry_t transaction_stage_if_open(transaction_object_t *group, stat
         // transaction, which is what leaves a refused stage retryable; resetting would discard the
         // caller's pending writes along with them, so a retry after ConflictError would have nothing
         // left to commit. This is the shape `transaction_group::stage` uses.
-        if (failed(status))
+        if (failed(status)) {
+            status_t unwound = success_k;
             while (staged != 0) {
                 --staged;
-                [[maybe_unused]] status_t const unwound = group->parts[staged].rollback();
+                unwound = first_failure(unwound, group->parts[staged].rollback());
             }
+            // A rollback that failed lost a write, so there is nothing left to retry.
+            if (failed(unwound)) {
+                status = unwound;
+                for (auto &participant : group->parts) [[maybe_unused]]
+                    status_t const discarded = participant.reset();
+            }
+        }
         group->state = succeeded(status) ? staging_t::staged_k : staging_t::pending_k;
     });
     return entering;
@@ -689,17 +698,14 @@ static PyObject *Transaction_stage(PyObject *self, PyObject *) noexcept {
 static char const doc_commit[] =                                                          //
     "commit()\n"                                                                          //
     "\n"                                                                                  //
-    "Publish every staged change, one container at a time.\n"                             //
+    "Publish every staged change, or none of it.\n"                                       //
+    "\n"                                                                                  //
+    "Every container is asked before any of them writes, so a refusal publishes\n"        //
+    "nothing and leaves the group staged, to be retried or rolled back.\n"                //
     "\n"                                                                                  //
     "Not a snapshot across containers. Each is applied in turn, so a thread reading\n"    //
     "two of them while this runs may find one a step ahead of the other; a reader that\n" //
-    "needs the pair to agree should take its own transaction. Readers are never\n"        //
-    "blocked while this runs.\n"                                                          //
-    "\n"                                                                                  //
-    "A refusal before anything is published leaves the group staged, so it can still\n"   //
-    "be rolled back. A refusal after one container has published cannot be pulled\n"      //
-    "back, so the group stops calling itself staged and only reset() clears what the\n"   //
-    "rest still hold.\n"                                                                  //
+    "needs the pair to agree should take its own transaction.\n"                          //
     "\n"                                                                                  //
     "Raises:\n"                                                                           //
     "  StateError: If the transaction was not staged first.\n"                            //
@@ -718,33 +724,23 @@ static PyObject *Transaction_commit(PyObject *self, PyObject *) noexcept {
         // Every participant is asked whether it may publish before any of them does, so a refusal
         // leaves the group staged with nothing written and the caller may retry or roll back. A lone
         // participant is committed in one call instead: it has nothing to tear against, and its own
-        // store holds one lock across a whole commit where the split would drop it between the two
-        // phases. A participant that cannot be asked at all drops the group to the same path.
-        bool const asks_first = group->parts.size() > 1 &&
-                                std::all_of(group->parts.begin(), group->parts.end(),
-                                            [](participant_t const &part) noexcept { return part.splits_commit(); });
-        if (asks_first) {
+        // store holds one lock across a whole commit.
+        if (group->parts.size() == 1) status = group->parts[0].commit();
+        else {
+            // A dropped value's finalizer may enter a store the group still holds, so every ledger
+            // keeps its drops until the last hold is gone.
+            for (auto &participant : group->parts) participant.releases->lock_shared();
             std::size_t validated = 0;
             for (; validated != group->parts.size(); ++validated)
                 if (status = group->parts[validated].validate_for_commit(); failed(status)) break;
-            if (failed(status)) {
-                // No publication follows a refusal, so the earlier validations' holds go back now.
+            // No publication follows a refusal, so the earlier validations' holds go back now.
+            if (failed(status))
                 while (validated != 0) group->parts[--validated].release_validation();
-                return;
-            }
-            for (auto &participant : group->parts) participant.publish_under();
+            else
+                for (auto &participant : group->parts) participant.publish_under();
+            for (auto &participant : group->parts) participant.releases->unlock_shared();
         }
-        else
-            for (std::size_t position = 0; position != group->parts.size(); ++position) {
-                status = group->parts[position].commit();
-                if (failed(status)) {
-                    // What the earlier participants published cannot be pulled back, so the group
-                    // stops calling itself staged and leaves `reset` to discard what the rest hold.
-                    if (position != 0) group->state = staging_t::pending_k;
-                    return;
-                }
-            }
-        group->state = staging_t::pending_k;
+        if (succeeded(status)) group->state = staging_t::pending_k;
     });
 
     if (unstaged) {
@@ -853,7 +849,7 @@ static PyObject *Transaction_exit(PyObject *self, PyObject *const *args, Py_ssiz
     // Closed before the commit rather than after it. A staged group already refuses writes, so this
     // span and the commit's leave no gap between them - where closing afterwards left the group open
     // from the moment the commit returned until the handle caught up, and a write landing there was
-    // taken by a transaction nobody would commit again. It also leaves a torn commit with no view an
+    // taken by a transaction nobody would commit again. A refused commit also leaves no view an
     // escapee can still reach.
     run_over_values(group_mode(group), group->lock, [&]() noexcept { group->lifetime = group_lifetime_t::finished_k; });
 
@@ -878,7 +874,8 @@ static char const doc_Transaction[] =                                           
     "A transaction of containers staged together and then published in turn.\n"          //
     "\n"                                                                                 //
     "Either every store is published or none is: a body that raises resets each\n"       //
-    "participant, and a stage that one refuses unwinds the rest. Publication itself\n"   //
+    "participant, a stage that one refuses unwinds the rest, and a commit asks every\n"  //
+    "store before any of them writes. Publication itself\n"                              //
     "walks the containers in turn rather than moving them at one instant, so a thread\n" //
     "reading two of them while a commit runs may find one a step ahead - take a\n"       //
     "transaction of your own if the pair must agree. No transaction ever reads\n"        //

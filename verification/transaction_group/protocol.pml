@@ -7,9 +7,10 @@
  *
  *  Every participant staged in ascending store address and the staged prefix unwound on a refusal;
  *  a commit that asks every participant before any of them writes, where the stores split their
- *  commit, and one that commits in turn where they do not; and a participant that holds its
- *  store's mutex from its validation to its publication, so nothing moves in between. Two groups
- *  and one writer.
+ *  commit, and one that commits in turn where they do not, which no store here does and only a
+ *  caller's own store offering one-call commits can reach; and a participant that holds its store's
+ *  mutex from its validation to its publication, so nothing moves in between. A partition lock
+ *  behaves as that mutex does. Two groups and one writer.
  *
  *  - No lost update: at every publication the watched key still holds what the group watched.
  *  - A caller reading a store after a refused commit never waits on its own lock.
@@ -54,6 +55,9 @@
 #endif
 #ifndef whole_across_stores
 #define whole_across_stores false
+#endif
+#ifndef relock_to_reclaim
+#define relock_to_reclaim false
 #endif
 
 /** The store a group visits at a position: ascending, or with @c address_order off, the second
@@ -205,6 +209,12 @@ inline stage_and_commit(t) {
                 store(t, published_stamp, order_relaxed, drawn);
                 unlock(t, order_mutex)
             :: else -> unlock(t, mutex(reached))
+            fi;
+            // `prune_committed`, taken back after the publication gave the store up. A partitioned
+            // store reclaims before it lets go instead, for the sake of the stores still held.
+            if
+            :: relock_to_reclaim -> lock(t, mutex(reached)); unlock(t, mutex(reached))
+            :: else
             fi
         };
         // `end_commit`: the watermark moves once, after the last store, under the order's mutex

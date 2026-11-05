@@ -18,13 +18,17 @@
  *      group's read of a store it validated waits on its own lock for good, an invalid end state
  *  @verify fail sc prefix_rollback=false: without the unwind, the first store keeps the
  *      group's staged mark
+ *  @verify stuck sc relock_to_reclaim=true groups_write=false: a store taken back to reclaim while
+ *      a later one is still held waits on the other group, which waits on that later store
  */
 #define thread_count 3
 #define location_count 4
 #define history_depth 13
 #define split_commit true
 #define shared_clock false
+#ifndef groups_write
 #define groups_write true
+#endif
 #include <transaction_group/protocol.pml>
 
 proctype group(byte t) { stage_and_commit(t) }

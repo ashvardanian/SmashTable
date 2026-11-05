@@ -423,43 +423,6 @@ class partitioned_store {
         writing_part_lock_t &operator=(writing_part_lock_t const &) = delete;
     };
 
-    /**
-     *  @brief Holds exactly the partitions a transaction reached, ascending, until told to let go.
-     *
-     *  A commit spanning partitions has to ask all of them whether it may proceed before any of
-     *  them writes, or a refusal from the last one would be reported over writes the first one
-     *  already published. Ascending order is the same deadlock argument @c every_part_lock makes,
-     *  and holding a subset takes nothing from it: a thread only ever waits on an index above
-     *  everything it holds.
-     */
-    class touched_parts_lock_t {
-        mutexes_t *mutexes_;
-        epochs_t &epochs_;
-        touched_partitions_t const &touched_;
-
-      public:
-        touched_parts_lock_t(mutexes_t &mutexes, epochs_t &epochs, touched_partitions_t const &touched) noexcept
-            : mutexes_(&mutexes), epochs_(epochs), touched_(touched) {
-            for (marked_partition_t held = touched_.first_marked(); held.presence == marked_presence_t::one_marked_k;
-                 held = touched_.next_marked(held.index))
-                (*mutexes_)[held.index].lock();
-        }
-        ~touched_parts_lock_t() noexcept { release(); }
-        touched_parts_lock_t(touched_parts_lock_t const &) = delete;
-        touched_parts_lock_t &operator=(touched_parts_lock_t const &) = delete;
-
-        /** Gives every held partition back early, so the work after a commit runs unlocked. */
-        void release() noexcept {
-            if (!mutexes_) return;
-            for (marked_partition_t held = touched_.first_marked(); held.presence == marked_presence_t::one_marked_k;
-                 held = touched_.next_marked(held.index)) {
-                note_written_(epochs_[held.index].writes);
-                (*mutexes_)[held.index].unlock();
-            }
-            mutexes_ = nullptr;
-        }
-    };
-
     /** How long an all-partition walk holds the partitions it visits. */
     enum class locking_policy_t : std::uint8_t {
 
@@ -1425,87 +1388,6 @@ class partitioned_store {
             }
         }
 
-        /**
-         *  @brief Publishes every reached partition, having first learned that all of them may.
-         *
-         *  The engines behind this path stamp their own versions, so there is no shared order and
-         *  no one stamp to draw - but a partition can still refuse after its neighbours have
-         *  written, because each re-checks its watches as it commits. Asking all of them while
-         *  holding all of them is what keeps a refusal honest.
-         */
-        status_t commit_together_() noexcept
-            requires(!draws_from_a_shared_order<inner_store_t> && inner_transaction_splits_commit_k)
-        {
-            touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
-            if (status_t const refused = validate_reached_parts_(); failed(refused)) return refused;
-
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
-                partitions_[reached.index].publish_under();
-            held.release();
-
-            touched_.clear();
-            return success_k;
-        }
-
-        /**
-         *  @brief Publishes every reached partition under one stamp drawn for the whole commit.
-         *
-         *  The stamp is drawn before the first partition is written and the watermark is only moved
-         *  once the last one has been, so a reader either names the stamp and sees the whole
-         *  commit, or does not name it and sees none of it - whatever order the partitions were
-         *  written in, and however long the walk took. Where this transaction itself reads follows
-         *  in @c settle_snapshot_, not here.
-         *
-         *  Every reached partition is asked whether it may still commit before any of them writes,
-         *  and all of them are held while it happens. Asking and writing one partition at a time
-         *  cannot report a refusal honestly: a partition refusing after its neighbours have
-         *  published would leave the caller retrying a transaction half of which already landed. So
-         *  the walk either refuses having written nothing, and the transaction stays staged and
-         *  retryable, or it publishes every partition. Only the reached partitions are held,
-         *  ascending, which is the order every other multi-partition walk here takes them in.
-         */
-        status_t commit_under_one_stamp_() noexcept
-            requires draws_from_a_shared_order<inner_store_t>
-        {
-            order_t &order = *store_->order_;
-            touched_parts_lock_t held {store_->mutexes_, store_->epochs_, touched_};
-            if (status_t const refused = validate_reached_parts_(); failed(refused)) return refused;
-
-            typename order_t::commit_in_flight_t in_flight;
-            order.begin_commit(in_flight);
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
-                partitions_[reached.index].publish_under(in_flight.stamp());
-            order.end_commit(in_flight);
-            held.release();
-
-            // Held is released first on purpose: the wait blocks on another thread finishing its own
-            // publication, and a partition lock carried into it would block that thread in turn. What
-            // it costs is the tail of whatever older commit is still writing itself out, so it is a
-            // property of how much the commits overlap rather than a constant.
-            if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
-                order.await_published(in_flight.stamp());
-
-            // The claim on the old snapshot goes back at once, so a long-lived transaction committing
-            // in a loop stops pinning the very versions it is superseding. Where this transaction
-            // reads moves separately, in `settle_snapshot_`, once its own commit is whole - and every
-            // entry point below settles before it does anything, so nothing observes the gap.
-            [[maybe_unused]] generation_t const released = order.take_snapshot(claim_);
-            unsettled_stamp_ = static_cast<generation_t>(in_flight.stamp());
-            committed_stamp_ = unsettled_stamp_;
-
-            // Reclamation runs at the mark this transaction just moved to, so a version this commit
-            // superseded is freed rather than pinned by the claim it has already given up.
-            for (marked_partition_t reached = touched_.first_marked();
-                 reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index)) {
-                writing_part_lock_t lock {store_->mutexes_[reached.index], store_->epochs_[reached.index].writes};
-                partitions_[reached.index].prune_committed();
-            }
-            touched_.clear();
-            return success_k;
-        }
-
       public:
         transaction_t(partitioned_store &db, partition_transactions_t &&partition_transactions,
                       typename order_t::snapshot_claim_t &&claim = {}) noexcept
@@ -1562,20 +1444,76 @@ class partitioned_store {
         }
 
         /**
-         *  @brief Holds every reached partition and asks each whether it may commit, as one
-         *      participant of a group publishing several stores under one stamp.
+         *  @brief Holds every reached partition and asks each whether it may commit, before any
+         *      of them has written.
          *
-         *  An answer of success keeps the partitions held for @c publish_under or
-         *  @c release_validation, and a refusal gives them back, so the group's stamp is drawn only
-         *  once every participant holds everything it will publish under.
+         *  Asking and writing one partition at a time cannot report a refusal honestly: a partition
+         *  refusing after its neighbours published would leave the caller retrying a transaction
+         *  half of which already landed. So a refusal gives the partitions back having written
+         *  nothing and the transaction stays staged and retryable, while an answer of success keeps
+         *  them held for @c publish_under or @c release_validation. Only the reached partitions are
+         *  held, ascending, which is the order every other multi-partition walk here takes them in.
          */
         status_t validate_for_commit() noexcept
-            requires draws_from_a_shared_order<inner_store_t>
+            requires inner_transaction_splits_commit_k
         {
+            settle_snapshot_();
             hold_reached_parts_();
             status_t const refused = validate_reached_parts_();
             if (failed(refused)) release_reached_parts_();
             return refused;
+        }
+
+        /**
+         *  @brief Publishes every reached partition, drawing the stamp where they share an order,
+         *      and gives the partitions back.
+         *
+         *  The stamp is drawn before the first partition is written and the watermark is only moved
+         *  once the last one has been, so a reader either names the stamp and sees the whole
+         *  commit, or does not name it and sees none of it - whatever order the partitions were
+         *  written in, and however long the walk took. Where this transaction itself reads follows
+         *  in @c settle_snapshot_, not here.
+         *
+         *  @warning Only called after @c validate_for_commit answered success, with nothing since.
+         */
+        void publish_under() noexcept
+            requires inner_transaction_splits_commit_k
+        {
+            if constexpr (draws_from_a_shared_order<inner_store_t>) {
+                order_t &order = *store_->order_;
+                typename order_t::commit_in_flight_t in_flight;
+                order.begin_commit(in_flight);
+                for (marked_partition_t reached = touched_.first_marked();
+                     reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                    partitions_[reached.index].publish_under(in_flight.stamp());
+                order.end_commit(in_flight);
+
+                // The claim on the old snapshot goes back at once, so a long-lived transaction
+                // committing in a loop stops pinning the very versions it is superseding.
+                [[maybe_unused]] generation_t const released = order.take_snapshot(claim_);
+
+                // Reclaimed with the partitions still held: a group holds its later participants
+                // here, so taking one of these back would wait on a group waiting on those.
+                for (marked_partition_t reached = touched_.first_marked();
+                     reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                    partitions_[reached.index].prune_committed();
+                release_reached_parts_();
+
+                // Released first on purpose: what the wait costs is the tail of whatever older
+                // commit is still writing itself out, and no partition lock is carried into that.
+                if constexpr (at_least(isolation_k, isolation_t::strict_serializable_k))
+                    order.await_published(in_flight.stamp());
+                unsettled_stamp_ = static_cast<generation_t>(in_flight.stamp());
+                committed_stamp_ = unsettled_stamp_;
+            }
+            else {
+                for (marked_partition_t reached = touched_.first_marked();
+                     reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
+                    partitions_[reached.index].publish_under();
+                release_reached_parts_();
+            }
+            touched_.clear();
+            staging_ = staging_t::pending_k;
         }
 
         /** Publishes every reached partition under @p stamp, which the group drew, and gives the
@@ -1594,7 +1532,7 @@ class partitioned_store {
         /** Gives back what @c validate_for_commit kept, where another participant refused and
          *  nothing will publish. */
         void release_validation() noexcept
-            requires draws_from_a_shared_order<inner_store_t>
+            requires inner_transaction_splits_commit_k
         {
             for (marked_partition_t reached = touched_.first_marked();
                  reached.presence == marked_presence_t::one_marked_k; reached = touched_.next_marked(reached.index))
@@ -1676,7 +1614,9 @@ class partitioned_store {
          *
          *  A partial stage is never observable. Partitions are taken ascending, so a group racing
          *  for the same set meets this one in a consistent order; the undo walks the staged prefix
-         *  and rolls it back rather than resetting it, keeping the caller's writes for a retry.
+         *  and rolls it back rather than resetting it, keeping the caller's writes for a retry. A
+         *  rollback that fails has lost a write, so the whole transaction is reset and that status
+         *  is returned instead of the refusal.
          */
         status_t stage() noexcept {
             settle_snapshot_();
@@ -1694,10 +1634,15 @@ class partitioned_store {
                 return status;
             }
 
+            status_t unwound = success_k;
             for (marked_partition_t landed = staged.first_marked(); landed.presence == marked_presence_t::one_marked_k;
                  landed = staged.next_marked(landed.index)) {
                 writing_part_lock_t lock {store_->mutexes_[landed.index], store_->epochs_[landed.index].writes};
-                [[maybe_unused]] status_t const unwound = partitions_[landed.index].rollback();
+                unwound = first_failure(unwound, partitions_[landed.index].rollback());
+            }
+            if (failed(unwound)) {
+                [[maybe_unused]] status_t const discarded = reset();
+                return unwound;
             }
             return status;
         }
@@ -1711,12 +1656,9 @@ class partitioned_store {
          *  or each engine stamping its own versions.
          */
         status_t commit() noexcept {
-            settle_snapshot_();
-            status_t published = success_k;
-            if constexpr (draws_from_a_shared_order<inner_store_t>) published = commit_under_one_stamp_();
-            else published = commit_together_();
-            if (succeeded(published)) staging_ = staging_t::pending_k;
-            return published;
+            if (status_t const refused = validate_for_commit(); failed(refused)) return refused;
+            publish_under();
+            return success_k;
         }
 
         status_t watch(identifier_t const &id) noexcept {

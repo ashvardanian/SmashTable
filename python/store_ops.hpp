@@ -628,15 +628,11 @@ struct store_bridge {
         }
         built.transaction_stage = &transaction_lifecycle<&transaction_t::stage>;
         built.transaction_commit = &transaction_lifecycle<&transaction_t::commit>;
-        // Null where the engine decides and writes in one call, which is what a partitioned store does;
-        // the group reads the null and falls back to committing each participant in turn.
-        if constexpr (splits_its_commit<transaction_t>) {
-            built.transaction_validate = &transaction_lifecycle<&transaction_t::validate_for_commit>;
-            // Spelled out because the stamped overload shares the name, and only this one is wanted.
-            built.transaction_publish =
-                &transaction_lifecycle<static_cast<void (transaction_t::*)() noexcept>(&transaction_t::publish_under)>;
-            built.transaction_release_validation = &transaction_lifecycle<&transaction_t::release_validation>;
-        }
+        built.transaction_validate = &transaction_lifecycle<&transaction_t::validate_for_commit>;
+        // Spelled out because the stamped overload shares the name, and only this one is wanted.
+        built.transaction_publish =
+            &transaction_lifecycle<static_cast<void (transaction_t::*)() noexcept>(&transaction_t::publish_under)>;
+        built.transaction_release_validation = &transaction_lifecycle<&transaction_t::release_validation>;
         built.transaction_rollback = &transaction_lifecycle<&transaction_t::rollback>;
         built.transaction_reset = &transaction_lifecycle<&transaction_t::reset>;
         return built;

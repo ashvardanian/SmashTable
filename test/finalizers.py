@@ -83,11 +83,26 @@ def teardown(container, watcher_class):
 RELEASE_PATHS = (overwrite, delete_item, clear, delete_slice, handle_write, handle_delete, teardown)
 
 
+def group_write(sharing: str) -> None:
+    """A value dropped by the first participant publishing, whose finalizer reads the second."""
+    first = st.SortedMap(key=int, value="object", sharing=sharing)
+    second = st.SortedMap(key=int, value="object", sharing=sharing)
+    second[1] = None
+    seen: list[int] = []
+    first[1] = _watcher(second, seen)()
+    with st.transaction(first, second) as (first_view, second_view):
+        first_view[1] = None
+        second_view[1] = None
+    assert seen == [1], "the commit never dropped the value it displaced"
+
+
 def exercise_every_path() -> None:
     """Every release path against both sharing strategies. Hangs if a finalizer is run under a lock."""
     for sharing, path in itertools.product(("locked", "partitioned"), RELEASE_PATHS):
         container = st.SortedMap(key=int, value="object", sharing=sharing)
         path(container, _watcher(container, []))
+    for sharing in ("locked", "partitioned"):
+        group_write(sharing)
 
 
 # endregion The cases

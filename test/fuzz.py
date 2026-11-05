@@ -273,15 +273,16 @@ def test_a_random_group_publishes_all_of_itself_or_none(group_size, rng):
 )
 @pytest.mark.repeat(4)
 @pytest.mark.parametrize("isolation", isolation_levels, indirect=True)
+@pytest.mark.parametrize("sharing", sharing_modes)
 @pytest.mark.parametrize("key_type", [pytest.param("int", id="int")])
-def test_a_refused_group_commit_publishes_no_participant(isolation, keygen, rng):
+def test_a_refused_group_commit_publishes_no_participant(isolation, sharing, keygen, rng):
     """A commit refused over a watched key leaves every participant exactly as it was.
 
     Regression: a group used to publish the participants ahead of the refusing one and then seal
     itself, so the containers disagreed permanently and `rollback` refused to unwind what was left.
     """
-    left = make(st.SortedMap, "int", isolation=isolation)
-    right = make(st.SortedMap, "int", isolation=isolation)
+    left = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
+    right = make(st.SortedMap, "int", isolation=isolation, sharing=sharing)
     keys = keygen(6)
     for key in keys:
         left[key] = 0

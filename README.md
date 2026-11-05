@@ -2,7 +2,7 @@
 
 SmashTable makes __one update span several containers__.
 Either every change lands or none does: a group stages into every container or into none, and a commit spanning two or more of them asks each for permission before the first one writes.
-A partitioned container is the one that cannot be asked, so a group holding one publishes its participants in turn.
+Readers see one instant only when every store shares one commit order; otherwise the participants become visible in turn.
 It's implemented in __C++ 20__ as header-only templates, and exposed to __Python 3__ through the raw CPython API.
 
 Three `std::map`s cannot do this, and neither can three `dict`s.
@@ -91,7 +91,7 @@ by_name = st.SortedMap(key=str)   # name      → entity id
 with st.transaction(by_id, by_name) as (ids, names):
     ids[42] = "carol"
     names["carol"] = 42
-# both indexes became visible together
+# both indexes have changed
 ```
 
 Each container is a mapping in its own right, so the usual vocabulary works:
@@ -162,21 +162,17 @@ Separating the fallible phase from the applying phase is what lets independent t
 Between the two the participants take no more writes: `ids[43] = 'dave'` after `stage()` raises `StateError`, since staging already reserved and validated what the transaction would change.
 A read still answers.
 `commit` validates again and can still refuse, because a watched key may be committed over while the group sits staged.
-A group of two or more containers, none of them partitioned, is asked in full before any of them writes, so a refusal there publishes nothing and leaves the group staged and retryable.
-A lone participant commits in one call, having nothing to tear against, and so does a group holding a `sharing='partitioned'` container, where a refusal part-way leaves the participants before it published.
-A refusal by the first participant asked has published nothing and leaves the group staged, which is the state `rollback()` accepts.
-A refusal by any later one returns the group to open — the position decides that, not whether anything was published — and `reset()` rather than `rollback()` clears what the rest still hold.
-Inside a `with` block the exit discards that remainder itself, so `reset()` is the remedy on the manual `stage()` and `commit()` path.
-Even where every participant is asked first, one of them may be committed over between the two passes: what the split buys is that the second pass cannot refuse, not that nothing moves beneath it.
+A group of two or more containers is asked in full before any of them writes, so a refusal publishes nothing and leaves the group staged and retryable.
+A lone participant commits in one call, having nothing to tear against.
+Every participant keeps what it validated held until it publishes, so nothing moves between the two passes and the second cannot refuse.
 
 ### What It Guarantees, and What It Does Not
 
 - __A group stages in full or not at all.__
   A body that raises resets every participant.
   A stage that fails on one participant unwinds them all.
-- __A commit publishes in full or not at all, wherever every participant can be asked first.__
-  That is a group of two or more containers, none of them partitioned.
-  Elsewhere the participants publish in turn, and only a refusal by the first leaves the group staged — any later one returns it to open, where `reset()` and not `rollback()` clears the remainder.
+- __A commit publishes in full or not at all.__
+  Every participant is asked before any of them writes, and a refusal leaves the group staged, where `rollback()` or another `commit()` picks it up.
 - __Staged writes are invisible to everyone else__, including a transaction opened after the stage.
 - __A transaction reads its own writes, until it stages.__
   `view[k]` sees what `view[k] = v` put there; after `stage()` the write is in the store carrying no stamp, so it is invisible to everyone including its own transaction until `commit()`.
@@ -531,7 +527,7 @@ A deployment that knows its hardware names both: a reference whose conditional a
 One that does not pays nothing for the question.
 
 Transactions and thread-safety are two independent axes, not one ladder.
-A wrapper takes its mutex per __call__, not across a transaction: `stage` and `commit` each take it and drop it in between.
+A wrapper takes its mutex per __call__, not across a transaction: `stage` and `commit` each take it and drop it in between, and only a group holds it from its validation to its publication.
 What carries the inner store's level across that gap is the reservation staging made, since no other transaction can claim those keys until this one publishes or unwinds.
 A store in no order gives its reader no stamp to hold, so a monotonic reader spanning partitions can catch a commit half-applied and only [Read Committed](https://jepsen.io/consistency/models/read-committed) survives — but a snapshot reader answers at its own stamp, and every partition belongs to one order, so it keeps Snapshot across all sixteen.
 Every container publishes what it promises as `isolation_k`, so the level is checkable rather than folklore.

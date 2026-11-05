@@ -3503,6 +3503,8 @@ class transaction_group {
      *  @par Statuses:
      *  - @c operation_not_permitted_k The group is already staged.
      *  - Any status a participant refuses its stage with passes through unchanged.
+     *  - Any status a rollback of the staged prefix reports replaces the refusal, and the whole
+     *    group is reset, since that rollback lost a write.
      */
     status_t stage() noexcept {
         if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -3516,10 +3518,15 @@ class transaction_group {
         }
 
         if (failed(result)) {
+            status_t unwound = success_k;
             while (staged_count != 0) {
                 --staged_count;
-                [[maybe_unused]] status_t const unwound =
-                    visit_at_(order_[staged_count], group_step<group_phase_t::rollback_k> {});
+                unwound =
+                    first_failure(unwound, visit_at_(order_[staged_count], group_step<group_phase_t::rollback_k> {}));
+            }
+            if (failed(unwound)) {
+                [[maybe_unused]] status_t const discarded = reset();
+                return unwound;
             }
             return result;
         }
@@ -3929,6 +3936,8 @@ class dynamic_transaction_group {
      *  @par Statuses:
      *  - @c operation_not_permitted_k The group is already staged.
      *  - Any status a participant refuses its stage with passes through unchanged.
+     *  - Any status a rollback of the staged prefix reports replaces the refusal, and the whole
+     *    group is reset, since that rollback lost a write.
      */
     status_t stage() noexcept {
         if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -3941,10 +3950,15 @@ class dynamic_transaction_group {
         }
 
         if (failed(result)) {
+            status_t unwound = success_k;
             while (staged_count != 0) {
                 --staged_count;
-                [[maybe_unused]] status_t const unwound =
-                    visit_(joined_[staged_count], group_step<group_phase_t::rollback_k> {});
+                unwound =
+                    first_failure(unwound, visit_(joined_[staged_count], group_step<group_phase_t::rollback_k> {}));
+            }
+            if (failed(unwound)) {
+                [[maybe_unused]] status_t const discarded = reset();
+                return unwound;
             }
             return result;
         }

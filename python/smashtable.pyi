@@ -656,7 +656,8 @@ class Transaction:
     """A transaction of containers staged together and then published in turn.
 
     Either every store is published or none is: a body that raises resets each
-    participant, and a stage that one refuses unwinds the rest. Publication itself
+    participant, a stage that one refuses unwinds the rest, and a commit asks every
+    store before any of them writes. Publication itself
     walks the containers in turn rather than moving them at one instant, so a thread
     reading two of them while a commit runs may find one a step ahead - take a
     transaction of your own if the pair must agree. No transaction ever reads
@@ -697,17 +698,14 @@ class Transaction:
           StateError: If the transaction is not open - already staged, or finished.
         """
     def commit(self) -> None:
-        """Publish every staged change, one container at a time.
+        """Publish every staged change, or none of it.
+
+        Every container is asked before any of them writes, so a refusal publishes
+        nothing and leaves the group staged, to be retried or rolled back.
 
         Not a snapshot across containers. Each is applied in turn, so a thread reading
         two of them while this runs may find one a step ahead of the other; a reader that
-        needs the pair to agree should take its own transaction. Readers are never
-        blocked while this runs.
-
-        A refusal before anything is published leaves the group staged, so it can still
-        be rolled back. A refusal after one container has published cannot be pulled
-        back, so the group stops calling itself staged and only reset() clears what the
-        rest still hold.
+        needs the pair to agree should take its own transaction.
 
         Raises:
           StateError: If the transaction was not staged first.

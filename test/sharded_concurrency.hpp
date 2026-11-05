@@ -1057,5 +1057,59 @@ void test_group_commit_is_read_whole_across_stores(std::size_t rounds = 300) {
     st_verify_eq_(torn.load(), std::size_t {0}, "a group in one order is never read half applied");
 }
 
+/** Tests that a group over stores in no shared order refuses whole, and that groups racing over
+ *  one key neither deadlock on what each still holds nor land in different orders. */
+template <typename first_type_, typename second_type_>
+void test_group_across_orders_commits_whole(std::size_t rounds = 1000) {
+
+    using first_member_t = typename first_type_::value_type;
+    using second_member_t = typename second_type_::value_type;
+    static_assert(transaction_group<first_type_, second_type_>::asks_before_writing_k,
+                  "a partitioned store is asked before any participant writes");
+
+    // Members ascend in address, so the group validates the watched store last.
+    struct {
+        first_type_ first;
+        second_type_ second;
+    } stores;
+    st_verify_(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 0)));
+    {
+        auto group = make_transaction_group(stores.first, stores.second);
+        st_verify_(group);
+        st_verify_(group->template participant<0>().upsert(trivial_id_to_member<first_member_t>(1, 1)));
+        st_verify_(group->template participant<1>().watch(trivial_id_to_key<second_member_t>(0)));
+        st_verify_(group->stage());
+        st_verify_(stores.second.upsert(trivial_id_to_member<second_member_t>(0, 1)));
+        st_verify_(failed(group->commit()));
+        st_verify_eq_(stores.first.size(), std::size_t {0});
+        st_verify_eq_(group->staging(), staging_t::staged_k);
+        st_verify_(group->rollback());
+    }
+
+    std::vector<std::thread> threads;
+    threads.reserve(sharded_threads_count_k);
+    for (std::size_t thread_index = 0; thread_index != sharded_threads_count_k; ++thread_index)
+        threads.emplace_back([&, thread_index]() noexcept {
+            for (std::size_t round = 0; round != rounds; ++round) {
+                auto group = make_transaction_group(stores.first, stores.second);
+                if (!group) break;
+                std::size_t const value = 2 + round * sharded_threads_count_k + thread_index;
+                [[maybe_unused]] status_t const committed =
+                    group->commit_with([&](auto &first, auto &second) noexcept -> status_t {
+                        status_t status = first.upsert(trivial_id_to_member<first_member_t>(0, value));
+                        if (succeeded(status)) status = second.upsert(trivial_id_to_member<second_member_t>(0, value));
+                        return status;
+                    });
+            }
+        });
+    for (std::thread &thread : threads) thread.join();
+
+    auto first_reader = stores.first.transaction();
+    auto second_reader = stores.second.transaction();
+    st_verify_(first_reader && second_reader);
+    st_verify_eq_(read_every_key<first_member_t>(*first_reader, 1).first_value,
+                  read_every_key<second_member_t>(*second_reader, 1).first_value);
+}
+
 #pragma endregion Sharded Concurrency
 } // namespace ashvardanian::smashtable::test

@@ -961,6 +961,23 @@ static void transaction_group_reports_what_refused_to_open() {
     st_verify_eq_(both_refused.status(), capacity_exhausted_k);
 }
 
+/** A rollback failing inside a refused stage replaces the refusal and resets every participant. */
+static void transaction_group_failed_unwind_resets() {
+    using store_t = recording_store<>;
+    std::vector<recorded_call_t> log;
+    std::array<store_t, 2> stores {{{log, 0}, {log, 1}}};
+    stores[0].refusals.rollback = consistency_k;
+    stores[1].refusals.stage = write_conflict_k;
+
+    auto group_result = make_transaction_group(stores[0], stores[1]);
+    st_verify_(group_result);
+    auto &group = *group_result;
+    st_verify_eq_(group.stage(), consistency_k);
+    st_verify_eq_(group.staging(), staging_t::pending_k);
+    std::vector<std::size_t> const every {0, 1};
+    st_verify_(stores_visited(log, phase_t::reset_k) == every);
+}
+
 /** A commit that published nothing stays staged, and one that tore drops to pending. */
 static void transaction_group_torn_commit_stops_claiming_staged() {
     using store_t = recording_store<>;
@@ -1696,6 +1713,7 @@ int main(int, char **arguments) {
         run_test(settings, "transaction_group.refuses_a_duplicate_store", transaction_group_refuses_a_duplicate_store);
     tally += run_test(settings, "transaction_group.reports_what_refused_to_open",
                       transaction_group_reports_what_refused_to_open);
+    tally += run_test(settings, "transaction_group.failed_unwind_resets", transaction_group_failed_unwind_resets);
     tally += run_test(settings, "transaction_group.torn_commit_stops_claiming_staged",
                       transaction_group_torn_commit_stops_claiming_staged);
     tally += run_test(settings, "transaction_group.split_commit_publishes_nothing",

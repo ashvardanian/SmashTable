@@ -3,7 +3,8 @@
  *  @author Ash Vardanian
  *  @date September 11, 2026
  *  @brief Two groups over two stores that do not split their commit, so each participant validates
- *      and publishes on its own, one store at a time.
+ *      and publishes on its own, one store at a time. Every store here splits its commit, so only a
+ *      caller's own store offering nothing but @c commit lands on this path.
  *
  *  The in-turn branch validates and publishes under a lock it never drops, so there is no window
  *  for a lost update here.
@@ -12,7 +13,7 @@
  *
  *  @verify pass sc,rc11
  *  @verify fail sc whole_across_stores=true: a later participant's refusal tears a group that
- *      commits in turn, the tear the docs admit
+ *      commits in turn, which is why @c asks_before_writing_k needs every participant to split
  */
 #define thread_count 3
 #define location_count 4

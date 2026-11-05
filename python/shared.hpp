@@ -1002,10 +1002,6 @@ struct participant_t {
     void publish_under() noexcept { table->transaction_publish(*releases, transaction); }
     void release_validation() noexcept { table->transaction_release_validation(*releases, transaction); }
 
-    /** Whether this participant can be asked whether it may commit before any of them writes. A
-     *  store deciding and writing in one call leaves the pair null, and a group holding one falls
-     *  back to committing each participant in turn. */
-    [[nodiscard]] bool splits_commit() const noexcept { return table->transaction_validate != nullptr; }
     [[nodiscard]] status_t rollback() noexcept { return table->transaction_rollback(*releases, transaction); }
     [[nodiscard]] status_t reset() noexcept { return table->transaction_reset(*releases, transaction); }
 };
