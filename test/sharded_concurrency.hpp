@@ -69,8 +69,8 @@ inline constexpr std::size_t sharded_threads_count_k = 4;
  *  Both wrappers once carried a non-const @c range differing from its const twin only in taking the
  *  lock exclusively, while handing the callback a @c value_t const & either way. A non-const handle
  *  binds the non-const overload, so every reader through one serialized - on the sharded wrapper by
- *  taking all sixteen mutexes. Naming the specialization is the assertion: a second overload makes
- *  this address ambiguous, and a non-const one makes the type below wrong.
+ *  taking all sixteen mutexes. Binding the specialization is the assertion: it must convert to the
+ *  const signature and to no non-const one, beside the descending overload taking a fourth tag.
  */
 template <typename container_type_>
 void test_range_walk_takes_partitions_shared() {
@@ -80,11 +80,14 @@ void test_range_walk_takes_partitions_shared() {
     using probe_key_t = decltype(trivial_id_to_key<member_t>(0));
     using probe_callback_t = void (*)(typename container_t::value_t const &) noexcept;
 
-    [[maybe_unused]] auto const range_member = &container_t::template range<probe_key_t, probe_key_t, probe_callback_t>;
+    using const_range_t = status_t (container_t::*)(probe_key_t &&, probe_key_t &&, probe_callback_t &&) const noexcept;
+    using mutable_range_t = status_t (container_t::*)(probe_key_t &&, probe_key_t &&, probe_callback_t &&) noexcept;
+    [[maybe_unused]] const_range_t const range_member =
+        &container_t::template range<probe_key_t, probe_key_t, probe_callback_t>;
     static_assert(
-        std::is_same<decltype(range_member), status_t (container_t::*const)(probe_key_t &&, probe_key_t &&,
-                                                                            probe_callback_t &&) const noexcept>(),
-        "range must be a single const overload, so a non-const handle still reads under a shared lock");
+        !requires {
+            static_cast<mutable_range_t>(&container_t::template range<probe_key_t, probe_key_t, probe_callback_t>);
+        }, "range must be a single const overload, so a non-const handle still reads under a shared lock");
 }
 
 /**

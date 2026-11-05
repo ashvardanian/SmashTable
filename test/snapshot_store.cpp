@@ -17,6 +17,7 @@
 #include <algorithm> // `std::find`, `std::max_element`, `std::sort`, `std::next_permutation`
 #include <atomic>    // `std::atomic`
 #include <chrono>    // `std::chrono::steady_clock`
+#include <map>       // `std::map`
 #include <numeric>   // `std::iota`
 #include <optional>  // `std::optional`
 #include <random>    // `std::mt19937`
@@ -3104,6 +3105,381 @@ static void test_staged_transaction_unwinds_under_partition_locks(std::size_t ro
 
 #pragma endregion Pinned Reader Tests
 
+#pragma region Version Walk Tests
+
+/** One published version, as the commit log records it and a version walk hands it over. */
+struct logged_version_t {
+    trivial_id_t key {0};
+    generation_t stamp {0};
+    presence_t presence {presence_t::present_k};
+    int mapped {0};
+
+    friend bool operator==(logged_version_t const &, logged_version_t const &) noexcept = default;
+};
+
+/** What a store holds, key by key, so a replay of its history can be compared with the oracle. */
+using contents_t = std::map<trivial_id_t, int>;
+
+/** What @p store reads now, key by key. */
+template <typename store_type_>
+static contents_t contents_of(store_type_ const &store) {
+    contents_t contents;
+    st_verify_(store.for_each([&](auto const &member) noexcept { contents[member.key.unique_id] = member.mapped; }));
+    return contents;
+}
+
+/** Every version @p reader walks after @p stamp, halting after @p limit of them. */
+template <typename reader_type_>
+static std::vector<logged_version_t> versions_after(reader_type_ const &reader, generation_t stamp,
+                                                    std::size_t limit = std::numeric_limits<std::size_t>::max()) {
+    std::vector<logged_version_t> walked;
+    st_verify_(reader.for_each_version_after(stamp, [&](auto const &key, generation_t committed, presence_t presence,
+                                                        auto const &member) noexcept {
+        walked.push_back({key.unique_id, committed, presence, presence == presence_t::present_k ? member.mapped : 0});
+        return walked.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
+    }));
+    return walked;
+}
+
+/** Commits up to three distinct keys to @p store and the @p oracle alike, logging each version. */
+template <typename store_type_>
+static void commit_logged_round(store_type_ &store, fuzz_oracle_t &oracle, std::mt19937 &generator,
+                                std::vector<logged_version_t> &log) {
+    using member_t = typename store_type_::value_type;
+    auto writer = store.transaction();
+    st_verify_(writer.has_value());
+    std::vector<logged_version_t> written;
+    trivial_id_t const first = trivial_id_t(generator() % fuzz_keyspace_k);
+    std::size_t const count = 1 + generator() % 3;
+    for (std::size_t offset = 0; offset != count; ++offset) {
+        // Seven is coprime with the keyspace, so three steps never land on one key twice.
+        trivial_id_t const key = trivial_id_t((first + offset * 7) % fuzz_keyspace_k);
+        expected<bool> const present = oracle.contains(trivial_key_t {key});
+        st_verify_(present.has_value());
+        if (*present && generator() % 3 == 0) {
+            st_verify_(writer->erase(trivial_key_t {key}));
+            st_verify_(oracle.erase(trivial_key_t {key}));
+            written.push_back({key, 0, presence_t::erased_k, 0});
+            continue;
+        }
+        int const value = int(generator() % 1000);
+        st_verify_(writer->upsert(trivial_id_to_member<member_t>(key, value)));
+        st_verify_(oracle.upsert(trivial_id_to_member<member_t>(key, value)));
+        written.push_back({key, 0, presence_t::present_k, value});
+    }
+    st_verify_(stage_and_commit(*writer));
+    for (logged_version_t &version : written) version.stamp = writer->commit_stamp();
+    log.insert(log.end(), written.begin(), written.end());
+}
+
+/** Erases a window of @p store and the @p oracle alike under one stamp, logging each tombstone. */
+template <typename store_type_>
+static void erase_logged_window(store_type_ &store, fuzz_oracle_t &oracle, std::mt19937 &generator,
+                                std::vector<logged_version_t> &log) {
+    using member_t = typename store_type_::value_type;
+    trivial_id_t const lower = trivial_id_t(generator() % fuzz_keyspace_k);
+    trivial_id_t const upper = lower + trivial_id_t(generator() % 6);
+    std::vector<trivial_id_t> erased;
+    st_verify_(oracle.erase_range(trivial_key_t {lower}, trivial_key_t {upper},
+                                  [&](member_t const &member) noexcept { erased.push_back(member.key.unique_id); }));
+    st_verify_(store.erase_range(trivial_key_t {lower}, trivial_key_t {upper}, no_op_t {}));
+    for (trivial_id_t const key : erased)
+        log.push_back({key, store.order().published_stamp(), presence_t::erased_k, 0});
+}
+
+/** A reader pinning history, beside what the oracle held at its stamp. */
+template <typename reader_type_>
+struct logged_pin {
+    reader_type_ reader;
+    contents_t contents;
+};
+
+/**
+ *  @brief Checks each pin's version walk against the log, and its replay against the oracle.
+ *
+ *  The walk is taken through a fresh reader, so a pin's stamp is only the lower end of the window.
+ *  Replaying the walk onto what the oracle held at the pin's stamp must land on what it holds now.
+ */
+template <typename store_type_, typename pins_type_>
+static void verify_version_walks(store_type_ const &store, fuzz_oracle_t const &oracle, pins_type_ const &pins,
+                                 std::vector<logged_version_t> const &log) {
+    constexpr bool partitioned_k = requires { store_type_::partitions_k; };
+    auto const sort_by_key_and_stamp = [](std::vector<logged_version_t> &versions) {
+        std::sort(versions.begin(), versions.end(), [](logged_version_t const &first, logged_version_t const &second) {
+            return first.key != second.key ? first.key < second.key : first.stamp < second.stamp;
+        });
+    };
+    auto const now = store.reader();
+    contents_t const current = contents_of(oracle);
+    for (auto const &pin : pins) {
+        generation_t const pinned = pin.reader.snapshot();
+        st_verify_le_(store.low_water_mark(), pinned, "an open pin holds the mark at or below its stamp");
+
+        std::vector<logged_version_t> walked = versions_after(now, pinned);
+        std::vector<logged_version_t> expected;
+        for (logged_version_t const &version : log)
+            if (version.stamp > pinned && version.stamp <= now.snapshot()) expected.push_back(version);
+
+        std::vector<trivial_id_t> finished_keys;
+        for (std::size_t index = 1; index < walked.size(); ++index) {
+            logged_version_t const &previous = walked[index - 1], &current_version = walked[index];
+            if (previous.key == current_version.key) {
+                st_verify_lt_(previous.stamp, current_version.stamp, "a key's versions arrive oldest first");
+                continue;
+            }
+            finished_keys.push_back(previous.key);
+            st_verify_(
+                (std::find(finished_keys.begin(), finished_keys.end(), current_version.key) == finished_keys.end()) &&
+                "the versions of one key arrive together");
+            if constexpr (!partitioned_k)
+                st_verify_lt_(previous.key, current_version.key, "a single store walks its keys in order");
+        }
+
+        contents_t replayed = pin.contents;
+        for (logged_version_t const &version : walked)
+            if (version.presence == presence_t::present_k) replayed[version.key] = version.mapped;
+            else replayed.erase(version.key);
+        st_verify_((replayed == current) && "the history above a pin replays onto its contents as the oracle's now");
+
+        std::size_t const page = std::min<std::size_t>(walked.size(), 3);
+        std::vector<logged_version_t> const halted = versions_after(now, pinned, page);
+        st_verify_((page == 0 || std::equal(halted.begin(), halted.end(), walked.begin())) &&
+                   "a halted walk hands over a prefix of the whole one");
+        st_verify_eq_(halted.size(), page, "a walk stops where its callback says");
+
+        sort_by_key_and_stamp(walked);
+        sort_by_key_and_stamp(expected);
+        st_verify_((walked == expected) && "a walk hands over every logged version in its window, once");
+
+        // Through the pin itself from the oldest pin, so the window's upper end is the pin's stamp.
+        generation_t const oldest = pins.front().reader.snapshot();
+        std::vector<logged_version_t> through_the_pin = versions_after(pin.reader, oldest);
+        std::vector<logged_version_t> up_to_the_pin;
+        for (logged_version_t const &version : log)
+            if (version.stamp > oldest && version.stamp <= pinned) up_to_the_pin.push_back(version);
+        sort_by_key_and_stamp(through_the_pin);
+        sort_by_key_and_stamp(up_to_the_pin);
+        st_verify_((through_the_pin == up_to_the_pin) && "a walk ends at its own reader's stamp");
+    }
+}
+
+/** Tests that a version walk hands over every commit and removal above a pinned stamp, across pins
+ *  opening and closing, window erasures and sweeps. */
+template <typename store_type_>
+static void test_version_walk_matches_the_commit_log(test_context_t const &context, std::size_t rounds = 240) {
+    using reader_t = typename store_type_::reader_t;
+    constexpr std::size_t pins_k = 4;
+    std::mt19937 generator(mix_seed(context.seed, __func__));
+    store_type_ store;
+    fuzz_oracle_t oracle;
+    std::vector<logged_version_t> log;
+    std::vector<logged_pin<reader_t>> pins;
+
+    for (std::size_t round = 0; round != rounds; ++round) {
+        switch (generator() % 8) {
+        case 0:
+            if (pins.size() != pins_k) pins.push_back({store.reader(), contents_of(oracle)});
+            break;
+        case 1: {
+            if (!pins.empty()) pins.erase(pins.begin() + std::ptrdiff_t(generator() % pins.size()));
+            [[maybe_unused]] std::size_t const reclaimed = vacuumed(store);
+            break;
+        }
+        case 2: erase_logged_window(store, oracle, generator, log); break;
+        default: commit_logged_round(store, oracle, generator, log); break;
+        }
+        if (round % 16 == 15) verify_version_walks(store, oracle, pins, log);
+    }
+    verify_version_walks(store, oracle, pins, log);
+
+    // With every pin gone the mark passes the oldest stamp, which is how a caller learns that
+    // history below it may be gone.
+    generation_t const oldest = pins.empty() ? 0 : pins.front().reader.snapshot();
+    pins.clear();
+    commit_logged_round(store, oracle, generator, log);
+    [[maybe_unused]] std::size_t const reclaimed = vacuumed(store);
+    st_verify_eq_(store.low_water_mark(), store.order().published_stamp(), "nothing open, nothing pinned");
+    st_verify_gt_(store.low_water_mark(), oldest, "the mark moves past a released pin once commits follow it");
+}
+
+#pragma endregion Version Walk Tests
+
+#pragma region Descending Walk Tests
+
+/** A bound of a descending walk, where none stands for @c unbounded. */
+using descent_bound_t = std::optional<trivial_id_t>;
+
+/** The keys @p view hands over walking ( @p until, @p from ] greatest first, halting after
+ *  @p limit of them. */
+template <typename view_type_>
+static std::vector<trivial_id_t> keys_down(view_type_ const &view, descent_bound_t from, descent_bound_t until,
+                                           std::size_t limit = std::numeric_limits<std::size_t>::max()) {
+    std::vector<trivial_id_t> walked;
+    auto const step = [&](auto const &member) noexcept {
+        walked.push_back(member.key.unique_id);
+        return walked.size() == limit ? walk_control_t::halt_k : walk_control_t::resume_k;
+    };
+    if (from && until) st_verify_(view.range(trivial_key_t {*from}, trivial_key_t {*until}, step, descending));
+    else if (from) st_verify_(view.range(trivial_key_t {*from}, unbounded, step, descending));
+    else if (until) st_verify_(view.range(unbounded, trivial_key_t {*until}, step, descending));
+    else st_verify_(view.range(unbounded, unbounded, step, descending));
+    return walked;
+}
+
+/** Checks that @p view descends between each pair of @p bounds as @p ascending reads, reversed. */
+template <typename view_type_>
+static void verify_descents_reverse(view_type_ const &view, std::vector<trivial_id_t> const &ascending,
+                                    std::vector<descent_bound_t> const &bounds) {
+    std::vector<trivial_id_t> const reversed(ascending.rbegin(), ascending.rend());
+    for (descent_bound_t const from : bounds)
+        for (descent_bound_t const until : bounds) {
+            std::vector<trivial_id_t> expected;
+            for (trivial_id_t const key : reversed)
+                if ((!from || key <= *from) && (!until || key > *until)) expected.push_back(key);
+            st_verify_((keys_down(view, from, until) == expected) && "a descent reads the forward walk reversed");
+            std::size_t const page = std::min<std::size_t>(expected.size(), 3);
+            if (page == 0) continue;
+            st_verify_((std::vector<trivial_id_t>(expected.begin(), expected.begin() + std::ptrdiff_t(page)) ==
+                        keys_down(view, from, until, page)) &&
+                       "a descent stops where its callback says");
+        }
+}
+
+/** Tests that a descent between any bounds, the first and last keys and either open end included,
+ *  reads the forward walk reversed: inside a transaction with staged writes, through the store,
+ *  and through a reader at an older stamp. */
+template <typename store_type_>
+static void test_descending_range_reverses_the_forward_walk() {
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t keys_k = 24, spacing_k = 5;
+    constexpr trivial_id_t largest_k = std::numeric_limits<trivial_id_t>::max();
+    store_type_ store;
+    for (trivial_id_t index = 1; index <= keys_k; ++index) commit_write(store, index * spacing_k, int(index));
+    commit_write(store, largest_k, 0);
+    commit_erase(store, 3 * spacing_k);
+    std::vector<descent_bound_t> const bounds {
+        std::nullopt,  0,        spacing_k, spacing_k + 1, 10 * spacing_k, 10 * spacing_k + 2, keys_k * spacing_k,
+        largest_k - 1, largest_k};
+    auto const ascending_through = [](auto const &view) {
+        std::vector<trivial_id_t> ascending;
+        st_verify_(view.range_from(
+            trivial_key_t {0}, [&](member_t const &member) noexcept { ascending.push_back(member.key.unique_id); }));
+        return ascending;
+    };
+    {
+        auto writer = store.transaction();
+        st_verify_(writer.has_value());
+        st_verify_(writer->upsert(trivial_id_to_member<member_t>(2 * spacing_k + 1, -1)));
+        st_verify_(writer->upsert(trivial_id_to_member<member_t>(6 * spacing_k, -6)));
+        st_verify_(writer->upsert(trivial_id_to_member<member_t>(3 * spacing_k, -3)));
+        st_verify_(writer->erase(trivial_key_t {8 * spacing_k}));
+        st_verify_(writer->erase(trivial_key_t {largest_k}));
+        std::vector<trivial_id_t> const ascending = ascending_through(*writer);
+        st_verify_(std::find(ascending.begin(), ascending.end(), 8 * spacing_k) == ascending.end());
+        verify_descents_reverse(*writer, ascending, bounds);
+    }
+    if constexpr (offers_descending_range<store_type_>) {
+        auto fresh = store.transaction();
+        st_verify_(fresh.has_value());
+        std::vector<trivial_id_t> const newest = ascending_through(*fresh);
+        verify_descents_reverse(store, newest, bounds);
+    }
+    if constexpr (requires { store.reader(); }) {
+        auto const pinned = store.reader();
+        commit_write(store, 4 * spacing_k + 1, 1);
+        commit_erase(store, 5 * spacing_k);
+        commit_erase(store, largest_k);
+        auto adopted = store.transaction(pinned);
+        st_verify_(adopted.has_value());
+        std::vector<trivial_id_t> const at_the_stamp = ascending_through(*adopted);
+        st_verify_eq_(at_the_stamp.back(), largest_k, "the reader's stamp still reads the largest key");
+        verify_descents_reverse(pinned, at_the_stamp, bounds);
+    }
+}
+
+/** Tests that a descending page records the window from its stopping key up to its bound and
+ *  nothing below it, so only a commit inside the page refuses it. */
+template <typename store_type_>
+static void test_descending_page_records_what_it_handed_over() {
+    using member_t = typename store_type_::value_type;
+    constexpr trivial_id_t keys_k = 100, spacing_k = 10, page_k = 5;
+    constexpr trivial_id_t upper_k = 50 * spacing_k, stopped_k = upper_k - (page_k - 1) * spacing_k;
+    constexpr bool validated_k = at_least(store_type_::isolation_k, isolation_t::serializable_k);
+    struct probe_t {
+        trivial_id_t written;
+        status_t refusal;
+    };
+    trivial_id_t next_outside = keys_k * spacing_k * 2;
+
+    for (probe_t const probe :
+         {probe_t {stopped_k - 5, success_k}, probe_t {upper_k + 5, success_k},
+          probe_t {stopped_k + 5, status_t::phantom_conflict_k}, probe_t {upper_k, status_t::read_conflict_k}}) {
+        store_type_ store;
+        for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
+        auto paging = store.transaction();
+        st_verify_(paging.has_value());
+        std::size_t handed = 0;
+        trivial_id_t last = 0;
+        st_verify_(paging->range(
+            trivial_key_t {upper_k}, unbounded,
+            [&](member_t const &member) noexcept {
+                last = member.key.unique_id;
+                return ++handed == page_k ? walk_control_t::halt_k : walk_control_t::resume_k;
+            },
+            descending));
+        st_verify_eq_(last, stopped_k, "the page stops where its callback says");
+        commit_write(store, probe.written, -1);
+        st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+        st_verify_eq_(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+                      "only a commit inside the page, its bound included, refuses it from serializable up");
+    }
+
+    // A page from the top reaches past the largest key, so only a commit below its stop is outside.
+    constexpr trivial_id_t topmost_stop_k = (keys_k - page_k) * spacing_k;
+    for (probe_t const probe :
+         {probe_t {topmost_stop_k - 5, success_k}, probe_t {keys_k * spacing_k + 5, status_t::phantom_conflict_k}}) {
+        store_type_ store;
+        for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
+        auto paging = store.transaction();
+        st_verify_(paging.has_value());
+        std::size_t handed = 0;
+        trivial_id_t last = 0;
+        st_verify_(paging->range(
+            unbounded, unbounded,
+            [&](member_t const &member) noexcept {
+                last = member.key.unique_id;
+                return ++handed == page_k ? walk_control_t::halt_k : walk_control_t::resume_k;
+            },
+            descending));
+        st_verify_eq_(last, topmost_stop_k, "a page from the top stops where its callback says");
+        commit_write(store, probe.written, -1);
+        st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+        st_verify_eq_(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+                      "a commit above a page from the top is a phantom from serializable up");
+    }
+
+    // A walk that runs out at its lower bound depends on the bound itself, as no half-open window
+    // can stop short of it.
+    constexpr trivial_id_t until_k = upper_k - page_k * spacing_k;
+    for (probe_t const probe : {probe_t {until_k - 5, success_k}, probe_t {until_k, status_t::phantom_conflict_k}}) {
+        store_type_ store;
+        for (trivial_id_t index = 0; index != keys_k; ++index) commit_write(store, index * spacing_k, int(index));
+        auto paging = store.transaction();
+        st_verify_(paging.has_value());
+        std::size_t handed = 0;
+        st_verify_(paging->range(
+            trivial_key_t {upper_k}, trivial_key_t {until_k}, [&](member_t const &) noexcept { ++handed; },
+            descending));
+        st_verify_eq_(handed, std::size_t(page_k), "the window ( until, from ] holds the page");
+        commit_write(store, probe.written, -1);
+        st_verify_(paging->upsert(trivial_id_to_member<member_t>(next_outside++, 1)));
+        st_verify_eq_(stage_and_commit(*paging), validated_k ? probe.refusal : success_k,
+                      "a walk that ran out depends on its lower bound and nothing below it");
+    }
+}
+
+#pragma endregion Descending Walk Tests
+
 #pragma region Sorted Staging Tests
 
 /** Members @p first up to @p last, ascending, each mapped onto ten times its number. */
@@ -3587,6 +3963,38 @@ int main(int, char **arguments) {
                       test_page_ignores_commits_past_its_last_key<sharded_snapshot_map_t>);
     tally += run_test(settings, "pagination.ignores_commits_past_its_last_key.sharded_strict",
                       test_page_ignores_commits_past_its_last_key<sharded_strict_map_t>);
+
+    tally += run_test(settings, "version_walk.matches_the_commit_log.avl", [](test_context_t const &context) {
+        test_version_walk_matches_the_commit_log<snapshot_avl_map_t>(context);
+    });
+    tally += run_test(settings, "version_walk.matches_the_commit_log.wb", [](test_context_t const &context) {
+        test_version_walk_matches_the_commit_log<snapshot_wb_map_t>(context);
+    });
+    tally +=
+        run_test(settings, "version_walk.matches_the_commit_log.sharded_snapshot", [](test_context_t const &context) {
+            test_version_walk_matches_the_commit_log<sharded_snapshot_map_t>(context);
+        });
+
+    tally += run_test(settings, "descent.reverses_the_forward_walk.avl",
+                      test_descending_range_reverses_the_forward_walk<snapshot_avl_map_t>);
+    tally += run_test(settings, "descent.reverses_the_forward_walk.wb",
+                      test_descending_range_reverses_the_forward_walk<snapshot_wb_map_t>);
+    tally += run_test(settings, "descent.reverses_the_forward_walk.serializable",
+                      test_descending_range_reverses_the_forward_walk<serializable_avl_map_t>);
+    tally += run_test(settings, "descent.reverses_the_forward_walk.sharded_snapshot",
+                      test_descending_range_reverses_the_forward_walk<sharded_snapshot_map_t>);
+    tally += run_test(settings, "descent.reverses_the_forward_walk.locked_snapshot",
+                      test_descending_range_reverses_the_forward_walk<locked_snapshot_map_t>);
+    tally += run_test(settings, "descent.reverses_the_forward_walk.monotonic",
+                      test_descending_range_reverses_the_forward_walk<monotonic_avl_map_t>);
+    tally += run_test(settings, "descent.reverses_the_forward_walk.sharded_monotonic",
+                      test_descending_range_reverses_the_forward_walk<sharded_monotonic_map_t>);
+    tally += run_test(settings, "descent.page_records_what_it_handed_over.snapshot",
+                      test_descending_page_records_what_it_handed_over<snapshot_avl_map_t>);
+    tally += run_test(settings, "descent.page_records_what_it_handed_over.serializable",
+                      test_descending_page_records_what_it_handed_over<serializable_avl_map_t>);
+    tally += run_test(settings, "descent.page_records_what_it_handed_over.strict",
+                      test_descending_page_records_what_it_handed_over<strict_serializable_avl_map_t>);
 
     tally += run_test(settings, "window_writes.publish_under_one_stamp.sharded_snapshot",
                       test_window_writes_publish_under_one_stamp<sharded_snapshot_map_t>);

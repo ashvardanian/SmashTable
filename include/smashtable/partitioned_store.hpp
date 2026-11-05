@@ -733,6 +733,71 @@ class partitioned_store {
         return first_failure(reached, walked);
     }
 
+    /**
+     *  @brief Hands @p callback, in descending merged order, every member of ( @p until, @p from ].
+     *
+     *  A front per partition, as @c walk_merged_ keeps, holding the greatest key that partition has
+     *  left. Each front is filled through the partition's own descending @c range, which a refill
+     *  asks from the key just consumed, taking the first key strictly below it.
+     *
+     *  @warning Every partition must already be held, as @c walk_merged_ requires.
+     *
+     *  @par Statuses:
+     *  - Any status a key's @c copy, a partition's descending @c range or its @c find returns
+     *    passes through unchanged, the first one met.
+     */
+    template <typename parts_type_, typename from_type_, typename until_type_, typename callback_type_>
+    static status_t range_merged_down_(comparator_t const &comparator, parts_type_ &parts, from_type_ const &from,
+                                       until_type_ const &until, callback_type_ &callback) noexcept {
+        static_assert(identifier_survives_a_walk_k,
+                      "a merged walk remembers one key per partition, so the identifier must be copyable");
+
+        fronts_t fronts;
+        front_states_t states {};
+        status_t walked = success_k;
+        status_t kept = success_k;
+        auto const fill_front = [&](std::size_t partition_index, auto const &bound, auto const &admits) noexcept {
+            states[partition_index] = front_state_t::exhausted_k;
+            walked =
+                first_failure(walked, parts[partition_index].range(
+                                          bound, until,
+                                          [&](value_t const &element) noexcept {
+                                              if (!admits(mapping_key_or_itself<value_t>(element)))
+                                                  return walk_control_t::resume_k;
+                                              kept = first_failure(kept, take_front_(fronts[partition_index], element));
+                                              states[partition_index] = front_state_t::holds_a_key_k;
+                                              return walk_control_t::halt_k;
+                                          },
+                                          descending));
+        };
+        for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index)
+            fill_front(partition_index, from, [](identifier_t const &) noexcept { return true; });
+
+        while (succeeded(kept)) {
+            marked_partition_t largest;
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                if (states[partition_index] != front_state_t::holds_a_key_k) continue;
+                if (largest.presence == marked_presence_t::one_marked_k &&
+                    !comparator(fronts[largest.index], fronts[partition_index]))
+                    continue;
+                largest = {marked_presence_t::one_marked_k, partition_index};
+            }
+            if (largest.presence != marked_presence_t::one_marked_k) break;
+
+            walk_control_t control = walk_control_t::resume_k;
+            walked = first_failure(
+                walked,
+                parts[largest.index].find(
+                    fronts[largest.index],
+                    [&](value_t const &element) noexcept { control = hand_over(callback, element); }, no_op_t {}));
+            if (control == walk_control_t::halt_k) break;
+            identifier_t const consumed = std::move(fronts[largest.index]);
+            fill_front(largest.index, consumed,
+                       [&](identifier_t const &key) noexcept { return comparator(key, consumed); });
+        }
+        return first_failure(walked, kept);
+    }
+
   public:
     /**
      *  @brief A resumable walk of the merged order that holds no lock between its steps.
@@ -1068,6 +1133,56 @@ class partitioned_store {
                 store_->comparator_, parts,
                 [&](auto const &part, auto &&fill) noexcept { return part.lower_bound(lower, fill, no_op_t {}); },
                 unbounded, callback);
+        }
+
+        /**
+         *  @brief Hands @p callback every member of ( @p until, @p from ] at this reader's stamp,
+         *      greatest first, in merged order. Either bound may be @c unbounded.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         *  @warning Every partition is held shared for the walk, and @p callback runs under each.
+         */
+        template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                       descending_t) const noexcept
+            requires offers_descending_range<inner_store_t>
+        {
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            partitions_at_t const parts {store_->partitions_, snapshot_};
+            return range_merged_down_(store_->comparator_, parts, from, until, callback);
+        }
+
+        /**
+         *  @brief Hands @p callback every version still held that was committed above @p stamp
+         *      and at or below this reader's stamp, as a partition's own reader hands them over.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         *  @warning One partition at a time is held shared, and @p callback runs under it.
+         *
+         *  Partition by partition, and inside one by key and then by stamp, so the versions of one
+         *  key still arrive together, oldest first. Misses nothing while @p stamp is at or above
+         *  @c low_water_mark, as each partition's own walk does.
+         */
+        template <typename callback_type_ = no_op_t>
+        status_t for_each_version_after(generation_t stamp, callback_type_ &&callback) const noexcept
+            requires offers_range<inner_store_t>
+        {
+            static_assert(
+                is_safe_callback_for<callback_type_, identifier_t const &, generation_t, presence_t, value_t const &>,
+                "callback must be noexcept invocable with the key, the stamp, the presence and the value");
+            walk_control_t control = walk_control_t::resume_k;
+            status_t walked = success_k;
+            for (std::size_t partition_index = 0; partition_index != partitions_k; ++partition_index) {
+                shared_lock_t _ {store_->mutexes_[partition_index]};
+                walked = first_failure(
+                    walked, store_->partitions_[partition_index].reader_at(snapshot_).for_each_version_after(
+                                stamp, [&](identifier_t const &key, generation_t committed, presence_t presence,
+                                           value_t const &value) noexcept {
+                                    control = hand_over(callback, key, committed, presence, value);
+                                    return control;
+                                }));
+                if (control == walk_control_t::halt_k) break;
+            }
+            return walked;
         }
     };
 
@@ -1728,6 +1843,26 @@ class partitioned_store {
                 store_->comparator_, partitions_,
                 [&](auto const &part, auto &&fill) noexcept { return part.lower_bound(lower, fill, no_op_t {}); },
                 unbounded, callback);
+        }
+
+        /**
+         *  @brief Hands @p callback every member of ( @p until, @p from ], greatest first, in
+         *      merged order. Either bound may be @c unbounded, which runs to that end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to. From
+         *      @c serializable_k up each partition records the window its own descent read, down to
+         *      the front it last offered, so a commit just below the stopping key may still refuse.
+         *  @warning Every partition is held shared for the walk, as @c range holds them.
+         */
+        template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                       descending_t) const noexcept
+            requires transaction_offers_descending_range<inner_store_t>
+        {
+            settle_snapshot_();
+            if constexpr (records_what_it_reads<inner_store_t>) mark_every_part_();
+            every_part_lock<shared_lock_t> _ {store_->mutexes_};
+            return store_t::range_merged_down_(store_->comparator_, partitions_, from, until, callback);
         }
 
         /**
@@ -2854,6 +2989,22 @@ class partitioned_store {
     }
 
     /**
+     *  @brief Hands @p callback every member of ( @p until, @p from ] in one descending order, the
+     *      merge @c range runs, greatest first. Either bound may be @c unbounded.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     *  @warning Every partition is held shared for the length of the walk, as @c range holds them.
+     */
+    template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+              typename callback_type_ = no_op_t>
+    status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                   descending_t) const noexcept
+        requires offers_descending_range<inner_store_t>
+    {
+        every_part_lock<shared_lock_t> _ {mutexes_};
+        return range_merged_down_(comparator_, partitions_, from, until, callback);
+    }
+
+    /**
      *  @brief Erases the half-open range from every partition.
      *
      *  Over parts in one order one stamp covers the window, so no reader sees it half-erased.
@@ -3213,7 +3364,9 @@ class partitioned_store {
 
     /** The newest snapshot no open transaction sits below, which is what @c vacuum prunes to. The
      *  oldest of the partitions' answers, so no partition prunes past a reader another still
-     *  counts, which for partitions sharing one order is the single answer all of them give. */
+     *  counts, which for partitions sharing one order is the single answer all of them give.
+     *  Pruning frees no version committed above it, so a version walk from a stamp at or above
+     *  the mark misses nothing. */
     [[nodiscard]] generation_t low_water_mark() const noexcept
         requires offers_low_water_mark<inner_store_t>
     {

@@ -386,6 +386,7 @@ Transactional containers do not, because keeping an iterator valid across concur
 
 - `find()`, `lower_bound()` and `upper_bound()` return `status_t` and take two `noexcept` callbacks, for the found and missing cases.
 - `equal_range()` and `sample_one()` return `status_t` and take one callback, invoked per element in the answer.
+- `range(from, until, callback)` walks `[from, until)` smallest first, and `range(from, until, callback, st::descending)` walks `(until, from]` greatest first, taking `st::unbounded` for either end.
 - `sample_reservoir()` also returns `status_t`, but scatters into a random-access output iterator rather than a callback, taking the bounds, a generator, a running `seen` count and the reservoir capacity.
 - `find_copy()`, `lower_bound_copy()` and `upper_bound_copy()` return an `expected<value_t>` for callers that cannot use a callback.
 

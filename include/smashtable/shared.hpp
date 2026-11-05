@@ -817,11 +817,33 @@ struct assume_sorted_t {
 };
 inline constexpr assume_sorted_t assume_sorted {};
 
+/** Asks an ordered walk for its members greatest first. */
+struct descending_t {
+    explicit descending_t() = default;
+};
+inline constexpr descending_t descending {};
+
 /** Stands for the missing upper end of a range, so a walk bounded above runs to the last member. */
 struct unbounded_t {
     explicit unbounded_t() = default;
 };
 inline constexpr unbounded_t unbounded {};
+
+/** The first position of @p collection past @p upper, or its end where @p upper is @c unbounded. */
+template <typename collection_type_, typename upper_type_>
+[[nodiscard]] auto upper_bound_or_end(collection_type_ const &collection, upper_type_ const &upper) noexcept {
+    if constexpr (std::same_as<upper_type_, unbounded_t>) return collection.end();
+    else return collection.upper_bound(upper);
+}
+
+/** Whether @p key orders above @p until under @p less, which every key does where @p until is
+ *  @c unbounded, so a descending walk stops on the first key that does not. */
+template <typename less_type_, typename key_type_, typename until_type_>
+[[nodiscard]] constexpr bool above_until(less_type_ const &less, key_type_ const &key,
+                                         until_type_ const &until) noexcept {
+    if constexpr (std::same_as<until_type_, unbounded_t>) return true;
+    else return less(until, key);
+}
 
 /**
  *  @brief Compile-time check if a type appears in parameter pack.
@@ -1296,18 +1318,18 @@ enum class walk_control_t : bool {
  *  A callback answering @c walk_control_t is asked whether to carry on; one answering @c void is
  *  asking for everything. The difference is resolved where the walk runs rather than by a flag.
  */
-template <typename callback_type_, typename element_type_>
-constexpr bool halts_the_walk = requires(callback_type_ &callback, element_type_ element) {
-    { callback(element) } noexcept -> std::same_as<walk_control_t>;
+template <typename callback_type_, typename... args_types_>
+constexpr bool halts_the_walk = requires(callback_type_ &callback, args_types_... args) {
+    { callback(args...) } noexcept -> std::same_as<walk_control_t>;
 };
 
-/** Hands @p element to @p callback and answers whether the walk carries on. A callback that cannot
+/** Hands @p args to @p callback and answers whether the walk carries on. A callback that cannot
  *  say resumes it, so a walk asks here instead of branching on the shape. */
-template <typename callback_type_, typename element_type_>
-[[nodiscard]] constexpr walk_control_t hand_over(callback_type_ &&callback, element_type_ &&element) noexcept {
-    if constexpr (halts_the_walk<callback_type_, element_type_>) return callback(element);
+template <typename callback_type_, typename... args_types_>
+[[nodiscard]] constexpr walk_control_t hand_over(callback_type_ &&callback, args_types_ &&...args) noexcept {
+    if constexpr (halts_the_walk<callback_type_, args_types_...>) return callback(args...);
     else {
-        callback(element);
+        callback(args...);
         return walk_control_t::resume_k;
     }
 }
@@ -2557,6 +2579,11 @@ template <typename store_type_>
 concept offers_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
                                 no_op_t callback) { store.range(key, key, callback); };
 
+/** Whether the store walks a window greatest first. */
+template <typename store_type_>
+concept offers_descending_range = requires(store_type_ const &store, typename store_type_::identifier_t const &key,
+                                           no_op_t callback) { store.range(key, key, callback, descending); };
+
 /** Whether the store erases a half-open window of the keyspace. */
 template <typename store_type_>
 concept offers_erase_range = requires(store_type_ &store, typename store_type_::identifier_t const &key,
@@ -2771,6 +2798,12 @@ template <typename store_type_>
 concept transaction_offers_range =
     requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
              no_op_t callback) { transaction.range(key, key, callback); };
+
+/** Whether an open transaction walks a window greatest first. */
+template <typename store_type_>
+concept transaction_offers_descending_range =
+    requires(typename store_type_::transaction_t const &transaction, typename store_type_::identifier_t const &key,
+             no_op_t callback) { transaction.range(key, key, callback, descending); };
 
 /** Whether an open transaction answers the member at an ordinal. */
 template <typename store_type_>

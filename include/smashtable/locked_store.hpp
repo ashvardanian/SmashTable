@@ -347,6 +347,20 @@ class locked_store {
         }
 
         /**
+         *  @brief Hands @p callback every member of ( @p until, @p from ] greatest first.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
+        template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                       descending_t) const noexcept
+            requires transaction_offers_descending_range<inner_store_t>
+        {
+            shared_lock _ {store_->mutex_};
+            return inner_transaction_.range(from, until, std::forward<callback_type_>(callback), descending);
+        }
+
+        /**
          *  @brief Hands @p callback every member before @p upper, excluded, with no lower end.
          *  @note A callback answering @c walk_control_t stops the walk where it says to.
          */
@@ -1011,6 +1025,20 @@ class locked_store {
         shared_lock _ {mutex_};
         return inner_store_.range(std::forward<lower_type_>(lower), std::forward<upper_type_>(upper),
                                   std::forward<callback_type_>(callback));
+    }
+
+    /**
+     *  @brief Hands @p callback every member of ( @p until, @p from ] greatest first.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
+    template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+              typename callback_type_ = no_op_t>
+    status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                   descending_t) const noexcept
+        requires offers_descending_range<inner_store_t>
+    {
+        shared_lock _ {mutex_};
+        return inner_store_.range(from, until, std::forward<callback_type_>(callback), descending);
     }
 
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,

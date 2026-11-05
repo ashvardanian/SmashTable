@@ -470,6 +470,48 @@ class snapshot_store {
                               });
             return success_k;
         }
+
+        /**
+         *  @brief Hands @p callback every member in ( @p until, @p from ] at this reader's stamp,
+         *      greatest first. Either bound may be @c unbounded, which runs to that end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
+        template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                       descending_t) const noexcept
+            requires ordered_core_k
+        {
+            store_->walk_visible_keys_down_(upper_bound_or_end(store_->entries_, from), until, snapshot_,
+                                            [&](value_t const &value) noexcept { return hand_over(callback, value); });
+            return success_k;
+        }
+
+        /**
+         *  @brief Hands @p callback every version still held that was committed above @p stamp
+         *      and at or below this reader's stamp.
+         *  @param[in] callback Receives the key, the commit stamp, the presence, which is
+         *      @c presence_t::erased_k for a removal, and the stored value, of which a removal
+         *      keeps only the key. Must be @c noexcept.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         *
+         *  Ordered by key and then by stamp, so the versions of one key arrive together, oldest
+         *  first, a masked one beside the one masking it. Pruning frees no version committed above
+         *  @c low_water_mark, so the walk misses nothing while @p stamp is at or above the mark,
+         *  which a reader opened at @p stamp keeps true for as long as it stays open.
+         *  Costs a step over every version the store holds, and a pass over a key's run for each
+         *  version of it handed over.
+         */
+        template <typename callback_type_ = no_op_t>
+        status_t for_each_version_after(generation_t stamp, callback_type_ &&callback) const noexcept
+            requires ordered_core_k
+        {
+            static_assert(
+                is_safe_callback_for<callback_type_, identifier_t const &, generation_t, presence_t, value_t const &>,
+                "callback must be noexcept invocable with the key, the stamp, the presence and the value");
+            store_->for_each_version_between_(stamp, snapshot_, std::forward<callback_type_>(callback));
+            return success_k;
+        }
     };
 
 #pragma endregion Pinned Reader
@@ -1453,6 +1495,78 @@ class snapshot_store {
                     return record_stopped_walk_(upper, version.payload, access_t::from_the_lowest_k);
             }
             return record_window_read_(upper, upper, access_t::from_the_lowest_k);
+        }
+
+        /**
+         *  @brief Walks ( @p until, @p from ] at this snapshot, greatest first, including its own
+         *      staged writes. Either bound may be @c unbounded, which runs to that end.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to. From
+         *      @c serializable_k up the walk records the window from the key it stopped on up to
+         *      @p from, or down to @p until itself where it ran out, so a commit at @p until
+         *      refuses it too.
+         *
+         *  @par Statuses:
+         *  - Any status a key's @c copy returns while the read is recorded
+         *    passes through unchanged.
+         */
+        template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                       descending_t) const noexcept
+            requires ordered_core_k
+        {
+            store_t const &store = store_ref();
+            auto const ordering = changes_.key_comp();
+            auto staged_end = upper_bound_or_end(changes_, from);
+            entry_iterator_t committed_end = upper_bound_or_end(store.entries_, from);
+            versioned_t const *staged = nullptr;
+            versioned_t const *committed = nullptr;
+            while (true) {
+                if (!staged && staged_end != changes_.begin()) staged = &*--staged_end;
+                while (!committed && committed_end != store.entries_.begin()) {
+                    visible_cursor_t const run = store.visible_run_before_(committed_end, snapshot_);
+                    // Nothing committed above the bound is left, so the side is spent.
+                    if (!store.above_until_(*run.position_, until)) committed_end = store.entries_.begin();
+                    else {
+                        committed_end = run.position_;
+                        committed = run.standing_;
+                    }
+                }
+                if (!staged && !committed) break;
+
+                versioned_t const *chosen = nullptr;
+                if (staged && (!committed || !ordering.per_key_compare(*staged, *committed))) {
+                    // A staged write masks the committed version of its key, tombstone or not.
+                    if (committed && !ordering.per_key_compare(*committed, *staged)) committed = nullptr;
+                    chosen = std::exchange(staged, nullptr);
+                }
+                else chosen = std::exchange(committed, nullptr);
+                if (!store.above_until_(*chosen, until)) break;
+                if (chosen->presence != presence_t::present_k) continue;
+                if (hand_over(callback, chosen->payload) == walk_control_t::halt_k)
+                    return record_descent_(from, until, &mapping_key_or_itself<value_t>(chosen->payload));
+            }
+            return record_descent_(from, until, nullptr);
+        }
+
+        /** Records what a descent from @p from depended on: every key down to @p stopped, or down
+         *  to @p until itself where the walk ran out, since no half-open window spells ( @p until,
+         *  @p from ] exactly. */
+        template <typename from_type_, typename until_type_>
+        status_t record_descent_(from_type_ const &from, until_type_ const &until,
+                                 identifier_t const *stopped) const noexcept {
+            if constexpr (std::same_as<from_type_, unbounded_t>) {
+                if (stopped) return record_window_read_(*stopped, *stopped, access_t::to_the_highest_k);
+                if constexpr (std::same_as<until_type_, unbounded_t>) return record_whole_keyspace_read_();
+                else return record_window_read_(until, until, access_t::to_the_highest_k);
+            }
+            else {
+                status_t const read = record_read_(from);
+                if (stopped) return first_failure(record_window_read_(*stopped, from, access_t::none_k), read);
+                if constexpr (std::same_as<until_type_, unbounded_t>)
+                    return first_failure(record_window_read_(from, from, access_t::from_the_lowest_k), read);
+                else return first_failure(record_window_read_(until, from, access_t::none_k), read);
+            }
         }
 
         /**
@@ -2642,6 +2756,81 @@ class snapshot_store {
         }
     }
 
+    /** A cursor standing on the run that ends at @p finish, settled at @p snapshot, so a descending
+     *  walk resolves each run by the rule the ascending one does. */
+    [[nodiscard]] visible_cursor_t visible_run_before_(entry_iterator_t finish, generation_t snapshot) const noexcept
+        requires ordered_core_k
+    {
+        entry_iterator_t const first = entries_.begin();
+        entry_iterator_t run_begin = finish;
+        --run_begin;
+        versioned_t const &tail = *run_begin;
+        while (run_begin != first) {
+            entry_iterator_t previous = run_begin;
+            --previous;
+            if (!same_key_(*previous, tail)) break;
+            run_begin = previous;
+        }
+        return visible_cursor_t(*this, run_begin, snapshot);
+    }
+
+    /** Whether the run headed by @p head orders above @p until, which every run does where the
+     *  descent is @c unbounded. */
+    template <typename until_type_>
+    [[nodiscard]] bool above_until_(versioned_t const &head, until_type_ const &until) const noexcept {
+        if constexpr (std::same_as<until_type_, unbounded_t>) return true;
+        else return entries_.key_comp().per_key_compare(until, head);
+    }
+
+    /** Hands @p callback the value @p snapshot reads for each key ordered before @p finish and
+     *  above @p until, greatest first, until the callback halts. */
+    template <typename until_type_, typename callback_type_>
+    void walk_visible_keys_down_(entry_iterator_t finish, until_type_ const &until, generation_t snapshot,
+                                 callback_type_ &&callback) const noexcept
+        requires ordered_core_k
+    {
+        while (finish != entries_.begin()) {
+            visible_cursor_t const run = visible_run_before_(finish, snapshot);
+            if (!above_until_(*run.position_, until)) return;
+            finish = run.position_;
+            if (run.standing_ && callback(run.standing_->payload) == walk_control_t::halt_k) return;
+        }
+    }
+
+    /**
+     *  @brief Hands @p callback every version stamped in ( @p after, @p snapshot ], by key and then
+     *      by stamp, as <tt>callback(key, stamp, presence, value)</tt>.
+     *
+     *  A key's run sits by generation rather than by stamp, so each pass over it hands over the
+     *  least stamp above the one handed last.
+     */
+    template <typename callback_type_>
+    void for_each_version_between_(generation_t after, generation_t snapshot, callback_type_ &&callback) const noexcept
+        requires ordered_core_k
+    {
+        entry_iterator_t const finish = entries_.end();
+        for (entry_iterator_t run_begin = entries_.begin(); run_begin != finish;) {
+            versioned_t const &head = *run_begin;
+            entry_iterator_t run_end = run_begin;
+            while (run_end != finish && same_key_(*run_end, head)) ++run_end;
+            for (generation_t handed = after;;) {
+                versioned_t const *next = nullptr;
+                for (entry_iterator_t position = run_begin; position != run_end; ++position) {
+                    versioned_t const &version = *position;
+                    generation_t const stamp = stamp_of(version.committed);
+                    if (stamp <= handed || stamp > snapshot) continue;
+                    if (!next || stamp < stamp_of(next->committed)) next = &version;
+                }
+                if (!next) break;
+                handed = stamp_of(next->committed);
+                if (hand_over(callback, identifier_of(*next), stamp_of(next->committed), next->presence,
+                              next->payload) == walk_control_t::halt_k)
+                    return;
+            }
+            run_begin = run_end;
+        }
+    }
+
     /** A cursor settled on the first key at or after @p start that @p snapshot reads. */
     [[nodiscard]] visible_cursor_t visible_from_(entry_iterator_t start, generation_t snapshot) const noexcept
         requires ordered_core_k
@@ -3006,7 +3195,9 @@ class snapshot_store {
     /** The newest stamp a fully written commit left behind. */
     [[nodiscard]] generation_t published_stamp() const noexcept { return published_stamp_(); }
 
-    /** The newest snapshot no open transaction sits below, which is what @c vacuum prunes to. */
+    /** The newest snapshot no open transaction sits below, which is what @c vacuum prunes to. Only
+     *  ever raised, and pruning frees no version committed above it, so every version above a
+     *  stamp at or above the mark is still held. */
     [[nodiscard]] generation_t low_water_mark() const noexcept { return low_water_mark_(); }
 
     /** How many transactions currently hold a snapshot. */
@@ -3267,6 +3458,22 @@ class snapshot_store {
                       if (hand_over(callback, value) == walk_control_t::halt_k) return walk_control_t::halt_k;
                       return walk_control_t::resume_k;
                   });
+        return success_k;
+    }
+
+    /**
+     *  @brief Hands @p callback each member in ( @p until, @p from ] the newest commit shows,
+     *      greatest first. Either bound may be @c unbounded, which runs to that end.
+     *  @note A callback answering @c walk_control_t stops the walk where it says to.
+     */
+    template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+              typename callback_type_ = no_op_t>
+    status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                   descending_t) const noexcept
+        requires ordered_core_k
+    {
+        walk_visible_keys_down_(upper_bound_or_end(entries_, from), until, published_stamp_(),
+                                [&](value_t const &value) noexcept { return hand_over(callback, value); });
         return success_k;
     }
 

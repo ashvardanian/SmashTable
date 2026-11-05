@@ -733,6 +733,44 @@ class monotonic_store {
         }
 
         /**
+         *  @brief Hands @p callback every member of ( @p until, @p from ], greatest first, merging
+         *      the two sides as @c range does. Either bound may be @c unbounded.
+         *  @note A callback answering @c walk_control_t stops the walk where it says to.
+         */
+        template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+                  typename callback_type_ = no_op_t>
+        status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                       descending_t) const noexcept
+            requires ordered_collection<versioned_chains_t>
+        {
+            auto const &store = store_ref();
+            auto staged_cursor = upper_bound_or_end(changes_, from);
+            auto committed_cursor = upper_bound_or_end(store.entries_, from);
+            auto const less = changes_.key_comp();
+            versioned_t const *staged = nullptr;
+            versioned_t const *committed = nullptr;
+            for (;;) {
+                while (!staged && staged_cursor != changes_.begin())
+                    if ((--staged_cursor)->presence == presence_t::present_k) staged = &*staged_cursor;
+                // The committed side skips what `changes_` speaks for, so no key comes twice.
+                while (!committed && committed_cursor != store.entries_.begin()) {
+                    --committed_cursor;
+                    if (!above_until(less, *committed_cursor, until)) committed_cursor = store.entries_.begin();
+                    else if (!stages_(*committed_cursor)) committed = store_t::readable_version_(*committed_cursor);
+                }
+
+                if (!staged && !committed) break;
+                versioned_t const *chosen = nullptr;
+                if (!staged || (committed && less(staged->payload, committed->payload)))
+                    chosen = std::exchange(committed, nullptr);
+                else chosen = std::exchange(staged, nullptr);
+                if (!above_until(less, chosen->payload, until)) break;
+                if (hand_over(callback, chosen->payload) == walk_control_t::halt_k) break;
+            }
+            return success_k;
+        }
+
+        /**
          *  @brief Hands @p callback every member before @p upper, excluded, with no lower end.
          *
          *  The walk needs a key to start from and this level names no floor, so the lowest member
@@ -2374,6 +2412,24 @@ class monotonic_store {
                                 if (!readable) return walk_control_t::resume_k;
                                 return hand_over(callback, readable->payload);
                             });
+        return success_k;
+    }
+
+    /** Hands @p callback every visible member of ( @p until, @p from ], greatest first, or fewer
+     *  if it halts. Either bound may be @c unbounded, which runs to that end. */
+    template <typename from_type_ = identifier_t, typename until_type_ = identifier_t,
+              typename callback_type_ = no_op_t>
+    status_t range(from_type_ const &from, until_type_ const &until, callback_type_ &&callback,
+                   descending_t) const noexcept
+        requires ordered_collection<versioned_chains_t>
+    {
+        auto const less = entries_.key_comp();
+        for (auto cursor = upper_bound_or_end(entries_, from); cursor != entries_.begin();) {
+            --cursor;
+            if (!above_until(less, *cursor, until)) break;
+            versioned_t const *readable = readable_version_(*cursor);
+            if (readable && hand_over(callback, readable->payload) == walk_control_t::halt_k) break;
+        }
         return success_k;
     }
 
