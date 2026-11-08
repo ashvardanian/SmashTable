@@ -490,6 +490,7 @@ class snapshot_store {
         /**
          *  @brief Hands @p callback every version still held that was committed above @p stamp
          *      and at or below this reader's stamp.
+         *  @param[in] stamp The stamp the walk starts above.
          *  @param[in] callback Receives the key, the commit stamp, the presence, which is
          *      @c presence_t::erased_k for a removal, and the stored value, of which a removal
          *      keeps only the key. Must be @c noexcept.
@@ -516,6 +517,7 @@ class snapshot_store {
 
 #pragma endregion Pinned Reader
 
+    /** A transaction reading at one snapshot and publishing under one commit stamp. */
     class transaction_t {
         friend store_t;
         store_t *store_ {nullptr};
@@ -1091,6 +1093,7 @@ class snapshot_store {
             }
 
           public:
+            /** Default-constructs an empty @c merged_cursor_t. */
             merged_cursor_t() noexcept = default;
 
             /** Whether neither side has a readable key left. */

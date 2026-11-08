@@ -78,6 +78,8 @@ class locked_store {
     /** Whether the wrapped transaction decides and writes in two steps rather than one. */
     static constexpr bool inner_transaction_splits_commit_k = splits_its_commit<inner_transaction_t>;
 
+    /** A transaction over the wrapped store, taking the store's mutex for each call that
+     *  touches it. */
     class transaction_t {
         friend class locked_store;
 
@@ -104,6 +106,8 @@ class locked_store {
             : store_(&db), inner_transaction_(std::move(inner_transaction)) {}
         transaction_t(transaction_t &&) noexcept = default;
         transaction_t &operator=(transaction_t &&) noexcept = default;
+
+        /** The generation the wrapped transaction stages its writes under. */
         generation_t generation() const noexcept { return inner_transaction_.generation(); }
 
         /** The snapshot the wrapped transaction reads at, which is transaction-local. */
@@ -121,12 +125,17 @@ class locked_store {
             return inner_transaction_.commit_stamp();
         }
 
+        /** Records @p id, so a commit refuses if another transaction changed it, under
+         *  the shared lock. */
         status_t watch(identifier_t const &id) noexcept {
             shared_lock _ {store_->mutex_};
             return inner_transaction_.watch(id);
         }
 
+        /** Reserves room for @p size pending writes in the wrapped transaction. */
         status_t reserve(std::size_t size) noexcept { return inner_transaction_.reserve(size); }
+
+        /** Buffers an insert or overwrite of @p element in this transaction. */
         status_t upsert(value_t &&element) noexcept { return inner_transaction_.upsert(std::move(element)); }
 
         /** Stages an erase, reporting @c key_not_found_k when this transaction has no such key. */
@@ -173,26 +182,32 @@ class locked_store {
             return inner_transaction_.update(std::move(element));
         }
 
+        /** Validates and reserves every pending write under the exclusive lock. */
         status_t stage() noexcept {
             unique_lock _ {store_->mutex_};
             return inner_transaction_.stage();
         }
 
+        /** Discards every staged and pending write, under the lock a validation may still hold. */
         status_t reset() noexcept {
             unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.reset();
         }
 
+        /** Pulls staged writes back into the transaction, under the lock a validation
+         *  may still hold. */
         status_t rollback() noexcept {
             unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.rollback();
         }
 
+        /** Validates and publishes everything staged, under the exclusive lock. */
         status_t commit() noexcept {
             unique_lock<mutex_t> const _ = held_();
             return inner_transaction_.commit();
         }
 
+        /** Looks @p comparable up at this transaction's snapshot, under the shared lock. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -233,6 +248,8 @@ class locked_store {
                                                      std::forward<callback_missing_type_>(callback_missing));
         }
 
+        /** Finds the first key after @p comparable at this transaction's snapshot,
+         *  under the shared lock. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -664,11 +681,13 @@ class locked_store {
         adopt_order_of_(other);
     }
 
+    /** How many entries the store holds, read under the shared lock. */
     [[nodiscard]] std::size_t size() const noexcept {
         shared_lock _ {mutex_};
         return inner_store_.size();
     }
 
+    /** Whether the store holds no entries, read under the shared lock. */
     [[nodiscard]] bool empty() const noexcept {
         shared_lock _ {mutex_};
         return inner_store_.empty();
@@ -684,6 +703,7 @@ class locked_store {
         return locked_store {std::move(*inner_store)};
     }
 
+    /** Opens a transaction over the wrapped store. */
     expected<transaction_t> transaction() noexcept {
         unique_lock _ {mutex_};
         auto opened = inner_store_.transaction();
@@ -691,6 +711,7 @@ class locked_store {
         return transaction_t {*this, std::move(*opened)};
     }
 
+    /** Inserts or overwrites @p element in one locked write. */
     status_t upsert(value_t &&element) noexcept {
         unique_lock _ {mutex_};
         return inner_store_.upsert(std::forward<value_t>(element));
@@ -761,6 +782,7 @@ class locked_store {
         return inner_store_.update(std::move(element));
     }
 
+    /** Inserts or overwrites every element of a range in one locked write. */
     template <readable_iterator elements_begin_type_,
               iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
@@ -768,6 +790,7 @@ class locked_store {
         return inner_store_.upsert(begin, end);
     }
 
+    /** Looks @p comparable up, under the shared lock. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -805,6 +828,7 @@ class locked_store {
         return inner_store_.insert_if_missing(begin, end);
     }
 
+    /** Finds the first key not ordered before @p comparable, under the shared lock. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     status_t lower_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -844,6 +868,7 @@ class locked_store {
             : store_(&store), seed_(seed), limit_(limit) {}
 
       public:
+        /** Default-constructs an empty @c ordered_cursor_t. */
         ordered_cursor_t() noexcept = default;
 
         /** Whether the walk is over, which includes having passed the bound it was given. */
@@ -1001,6 +1026,7 @@ class locked_store {
         return result;
     }
 
+    /** Finds the first key after @p comparable, under the shared lock. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     status_t upper_bound(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1041,6 +1067,8 @@ class locked_store {
         return inner_store_.range(from, until, std::forward<callback_type_>(callback), descending);
     }
 
+    /** Erases the keys between @p lower and @p upper as the wrapped store bounds them, in
+     *  one locked write. */
     template <typename lower_type_ = identifier_t, typename upper_type_ = identifier_t,
               typename callback_type_ = no_op_t>
     status_t erase_range(lower_type_ &&lower, upper_type_ &&upper, callback_type_ &&callback = {}) noexcept
@@ -1165,16 +1193,19 @@ class locked_store {
                                  std::forward<callback_missing_type_>(callback_missing));
     }
 
+    /** Erases every entry, under the exclusive lock. */
     status_t clear() noexcept {
         unique_lock _ {mutex_};
         return inner_store_.clear();
     }
 
+    /** Reserves room for @p size entries in the wrapped store. */
     status_t reserve(std::size_t size) noexcept {
         unique_lock _ {mutex_};
         return inner_store_.reserve(size);
     }
 
+    /** Draws one entry between @p lower and @p upper with @p generator, under the shared lock. */
     template <typename lower_type_, typename upper_type_, typename generator_type_, typename callback_type_ = no_op_t>
     status_t sample_one(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator,
                         callback_type_ &&callback) const noexcept
@@ -1186,6 +1217,7 @@ class locked_store {
                                        std::forward<callback_type_>(callback));
     }
 
+    /** Samples entries between @p lower and @p upper into @p reservoir, under the shared lock. */
     template <typename lower_type_, typename upper_type_, typename generator_type_,
               indexed_writable_iterator<value_t> output_iterator_type_>
     status_t sample_reservoir(lower_type_ &&lower, upper_type_ &&upper, generator_type_ &&generator, std::size_t &seen,
@@ -1268,6 +1300,8 @@ class locked_store {
     /** The order the wrapped store is a member of, which is fixed at construction and needs no
      *  lock. */
     [[nodiscard]] order_t &order() noexcept { return *order_; }
+
+    /** The order this store draws stamps from, read-only. */
     [[nodiscard]] order_t const &order() const noexcept { return *order_; }
 
 #pragma endregion Sharded Membership

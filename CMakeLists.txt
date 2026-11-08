@@ -66,7 +66,7 @@ project(
     smashtable
     VERSION 1.0.0
     LANGUAGES CXX
-    DESCRIPTION "Safer associative containers with DBMS-like transactions in C++"
+    DESCRIPTION "Transactions across Associative Containers"
     HOMEPAGE_URL "https://github.com/ashvardanian/SmashTable"
 )
 

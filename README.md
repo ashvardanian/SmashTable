@@ -1,4 +1,9 @@
-# SmashTable
+# SmashTable: Transactions across Associative Containers
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://github.com/ashvardanian/ashvardanian/blob/master/repositories/SmashTable-v1-dark.jpg?raw=true">
+  <img alt="SmashTable banner" src="https://github.com/ashvardanian/ashvardanian/blob/master/repositories/SmashTable-v1.jpg?raw=true">
+</picture>
 
 SmashTable makes __one update span several containers__.
 Either every change lands or none does: a group stages into every container or into none, and a commit spanning two or more of them asks each for permission before the first one writes.
@@ -7,8 +12,6 @@ It's implemented in __C++ 20__ as header-only templates, and exposed to __Python
 
 Three `std::map`s cannot do this, and neither can three `dict`s.
 It needs no threads to be useful — the same guarantee that keeps two indexes consistent under contention is what keeps them consistent when an exception unwinds a loop halfway through.
-
-![SmashTable Thumbnail](https://github.com/ashvardanian/ashvardanian/blob/master/repositories/SmashTable.jpg?raw=true)
 
 ## What's Inside
 
@@ -41,8 +44,8 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 | `basic_flat_set`            | …                       |  one thread   |      …       |         ✔         |
 | `basic_ring`                | …                       |  one thread   |      …       |         …         |
 | `basic_hash_index`          | …                       |  one thread   |      …       |         …         |
-| `basic_fixed_pool`           | …                       |  one thread   |      …       |         …         |
-| `basic_growing_pool`   | …                       |  one thread   |      …       |         …         |
+| `basic_fixed_pool`          | …                       |  one thread   |      …       |         …         |
+| `basic_growing_pool`        | …                       |  one thread   |      …       |         …         |
 | `immutable_b_tree`          | …                       |    none ¹⁰    |      …       |         ✔         |
 | `immutable_splus_tree`      | …                       |    none ¹⁰    |      …       | `rank` · `select` |
 | `immutable_elias_fano`      | …                       |    none ¹⁰    |      …       |     `select`      |
@@ -72,7 +75,7 @@ Nesting the two wrappers is redundant rather than clever: every call would take 
 
 The ladder runs from [Read Committed](https://jepsen.io/consistency/models/read-committed) through [Monotonic Atomic View](https://jepsen.io/consistency/models/monotonic-atomic-view) and [Snapshot Isolation](https://jepsen.io/consistency/models/snapshot-isolation) to the two serializable rungs, and every level from Monotonic Atomic View upward is delivered by [multi-version concurrency control](https://en.wikipedia.org/wiki/Multiversion_concurrency_control): a key keeps one version per commit that touched it, a reader is answered from the newest version its own snapshot can name, and versions below the oldest live reader are reclaimed.
 
-## Python Quick Start
+## Quickstart
 
 ```bash
 pip install smashtable
@@ -166,7 +169,7 @@ A group of two or more containers is asked in full before any of them writes, so
 A lone participant commits in one call, having nothing to tear against.
 Every participant keeps what it validated held until it publishes, so nothing moves between the two passes and the second cannot refuse.
 
-### What It Guarantees, and What It Does Not
+### Guarantees & Limits
 
 - __A group stages in full or not at all.__
   A body that raises resets every participant.
@@ -183,7 +186,7 @@ Every participant keeps what it validated held until it publishes, so nothing mo
   `scan()` walks in key order and never yields a key twice or raises mid-walk, but a key inserted behind the cursor is missed.
   That is the container's own `scan`; the same call on a transaction participant records the window it read, so at `serializable` and above a key committed into that window refuses the commit rather than being silently missed.
 
-### Ordered and Unordered
+### Ordered & Unordered
 
 `SortedMap` and `SortedSet` keep their keys in order, which is what iteration, `scan` and slice erase rest on.
 `HashMap` and `HashSet` are the same stores over an open-addressed core, and offer point access only:
@@ -308,7 +311,7 @@ m[True] = 'one'   # TypeError: bool is not a valid key
 
 This is the one place the library is deliberately stricter than `dict`, which treats `1`, `1.0` and `True` as one key.
 
-## C++ Quick Start
+## C++ Usage
 
 ```cmake
 include(FetchContent)
@@ -386,7 +389,7 @@ Transactional containers do not, because keeping an iterator valid across concur
 - `sample_reservoir()` also returns `status_t`, but scatters into a random-access output iterator rather than a callback, taking the bounds, a generator, a running `seen` count and the reservoir capacity.
 - `find_copy()`, `lower_bound_copy()` and `upper_bound_copy()` return an `expected<value_t>` for callers that cannot use a callback.
 
-## Why The C++ Library
+## Why the C++ Library
 
 The standard library has loose ends around failure.
 `std::set::insert(first, last)` has no defined behaviour on partial failure, and in practice an allocation failure leaves some elements inserted and the rest not:
@@ -572,7 +575,7 @@ That is what pagination, percentiles and quantiles need, and it is the one thing
 
 Expect depth around 1.88 log₂(n) against AVL's 1.44, in exchange for O(1) amortized rotations per update.
 
-### Flat Sets and Rings
+### Flat Sets & Rings
 
 > `smashtable/basic_flat_set.hpp` · `smashtable/basic_ring.hpp`
 
@@ -584,7 +587,7 @@ It answers the same `ordered_collection` surface the trees do — bounds, ranges
 `basic_ring` is a first-in first-out queue over one allocation whose capacity is a power of two fixed at `make`, for batching and read-ahead.
 Two 32-bit counters of pushes and pops wrap together, so their difference is the size and a full ring is told from an empty one without a spare slot.
 
-### Immutable B and S+ Trees
+### Immutable B & S+ Trees
 
 > `smashtable/immutable_b_tree.hpp` · `smashtable/immutable_splus_tree.hpp` · `smashtable/row_layout.hpp` · `smashtable/row_search.hpp`
 
@@ -820,7 +823,7 @@ pip install -e . --group test && pytest test/
 ### Model Checking
 
 The protocols the wrappers promise are checked as models, not only exercised as code.
-`verification/` holds eight Promela models — the two-phase group commit, the partitioned commit under one stamp, the commit order, the slot lock, the locked store, the pinned reader, the partitioned window write and the staged batch — over shared includes spelling the shared mutex, its waiting policy and the memory models.
+`verification/` holds Promela models of the two-phase group commit, the commit under one stamp, the commit order, the slot lock, the locked store, the pinned reader and the partitioned window write, over shared includes spelling the shared mutex, its waiting policy and the memory models.
 Two of them run again as GenMC clients over `std::atomic` under RC11, and a third client checks the stack `atomic_intrusive_stack` drains whole.
 
 ```bash
@@ -838,14 +841,14 @@ If SmashTable helps your research or product, please cite it:
 ```bibtex
 @software{Vardanian_SmashTable,
   author = {Vardanian, Ash},
-  title = {{SmashTable: Safer Transactional Associative In-Memory Collection Types with Vectorization}},
+  title = {{SmashTable: Vectorized Associative Containers with Atomic Commits Spanning Several at Once}},
   doi = {10.5281/zenodo.22030408},
   url = {https://github.com/ashvardanian/SmashTable},
   license = {Apache-2.0}
 }
 ```
 
-A machine-readable [`CITATION.cff`](CITATION.cff) is provided at the repository root.
+A machine-readable [`CITATION.cff`](https://github.com/ashvardanian/SmashTable/blob/main/CITATION.cff) is provided at the repository root.
 
 ## License
 

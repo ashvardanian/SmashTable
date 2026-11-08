@@ -7,6 +7,25 @@ description a type checker or an editor ever sees. Requires Python 3.12, so the 
 Each closed set of names the constructors accept is a `Literal`, so a misspelling is a
 type error rather than the `ValueError` the parser raises at runtime.
 
+Each container wraps one C++ store, picked by its class and two constructor arguments:
+
+| Python                         | C++ core                         |
+| :----------------------------- | :------------------------------- |
+| `SortedMap`, `SortedSet`       | `basic_avl_tree`                 |
+| `HashMap`, `HashSet`           | `basic_hash_table`               |
+
+| `isolation=`              | C++ store over the core           |
+| :------------------------ | :-------------------------------- |
+| `"monotonic_atomic_view"` | `monotonic_store`                 |
+| `"snapshot"`              | `snapshot_store`                  |
+| `"serializable"`          | `serializable_store`              |
+| `"strict_serializable"`   | `strict_serializable_store`       |
+
+| `sharing=`      | C++ wrapper around the store |
+| :-------------- | :--------------------------- |
+| `"locked"`      | `locked_store`               |
+| `"partitioned"` | `partitioned_store`          |
+
 File: python/smashtable.pyi
 Author: Ash Vardanian
 Date: August 22, 2026

@@ -35,24 +35,26 @@
  *
  *  Beyond STL, provides high-performance set operations and advanced variants:
  *
- *  @b Split/Join Operations:
+ *  @subsection basic_avl_tree_split_join Split and Join
+ *
  *  - @c split(): O(log n) partition into two trees at arbitrary key
  *  - @c join(): O(log n) concatenation of ordered disjoint trees, requiring all(this) < all(other).
  *
- *  @b Adaptive Merge Algorithms:
+ *  @subsection basic_avl_tree_adaptive_merges Adaptive Merges
+ *
  *  - <tt>merge(other)</tt>: O(m log n) union that deallocates duplicates.
  *  - <tt>merge(other, assume_unique_t)</tt>: O(m log(n/m+1)) or O(m+n) for disjoint trees, choosing an
  *    O(log n) join, a split-based merge from Blelloch's "Just Join for Parallel Ordered Sets", or a
  *    Day-Stout-Warren spine merge by the trees' shapes.
  *
- *  @b Bulk Construction:
+ *  @subsection basic_avl_tree_bulk_construction Bulk Construction
+ *
  *  - <tt>insert(first, last, assume_sorted_t)</tt>: O(n) perfect balancing from sorted ranges.
  *
- *  @b Move-Only Type Support:
+ *  @subsection basic_avl_tree_move_only_types Move-Only Types
+ *
  *  - Compatible with @c std::move_iterator for bulk operations
  *  - @c emplace for in-place construction of move-only types
- *
- *  @section basic_avl_tree_requirements Requirements
  *
  *  @section basic_avl_tree_entry_type Entry Type
  *
@@ -1198,6 +1200,7 @@ class basic_avl_tree {
         iterator(basic_avl_tree const *tree, node_t *node) noexcept : tree_(tree), node_(node) {}
 
       public:
+        /** Default-constructs an empty @c iterator. */
         iterator() noexcept : tree_(nullptr), node_(nullptr) {}
 
         reference operator*() const noexcept { return node_->payload; }

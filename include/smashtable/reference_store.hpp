@@ -170,6 +170,8 @@ class reference_store {
     using changed_identifiers_vector_t = std::vector<identifier_t, changed_identifiers_allocator_t>;
 
   public:
+    /** A transaction that buffers writes, stages them invisibly and publishes them in one
+     *  commit. */
     class transaction_t {
 
         friend store_t;

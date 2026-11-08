@@ -235,7 +235,7 @@ void growing_pool_readers_beside_growth() {
         (*pool)[taken].descriptor = taken + 1;
         handle = pool->handle_of(taken);
     }
-    std::uint32_t done = 0;
+    std::uint32_t done = 0, reading = 0;
     std::size_t misses = 0, resolved = 0, probed = 0;
     std::thread reader([&]() noexcept {
         // Probing past the earlier handles reads records of chunks as they are published.
@@ -246,8 +246,11 @@ void growing_pool_readers_beside_growth() {
                 ++resolved;
             }
             probed += pool->at(pool_t::handle_t {probe, 0}) != nullptr;
+            atomic_store(reading, 1u);
         }
     });
+    // A loaded machine may start the reader only after the owner finished growing, so it waits.
+    while (!atomic_load(reading)) std::this_thread::yield();
     for (std::uint32_t index = early; index != limit; ++index) {
         std::uint32_t const taken = pool->take();
         (*pool)[taken].descriptor = taken + 1;

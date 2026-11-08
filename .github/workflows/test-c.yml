@@ -45,7 +45,7 @@ jobs:
           test -z "$failed"
 
   test_ubuntu_gcc:
-    name: Test on Ubuntu with GCC 14
+    name: Test on Ubuntu with GCC 15
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -53,7 +53,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-14
+        run: sudo apt-get update && sudo apt-get install -y g++-15
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -68,7 +68,7 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset release -D CMAKE_C_COMPILER=gcc-14 -D CMAKE_CXX_COMPILER=g++-14
+        run: cmake --preset release -D CMAKE_C_COMPILER=gcc-15 -D CMAKE_CXX_COMPILER=g++-15
       - name: Build
         run: cmake --build --preset release --parallel ${{ env.BUILD_JOBS }}
       - name: Test
@@ -109,7 +109,7 @@ jobs:
         run: ./build_release/smashtable_example
 
   test_ubuntu_asan:
-    name: Test ASan on Ubuntu with GCC 14
+    name: Test ASan on Ubuntu with GCC 15
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -117,7 +117,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-14
+        run: sudo apt-get update && sudo apt-get install -y g++-15
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -132,7 +132,7 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset asan -D CMAKE_C_COMPILER=gcc-14 -D CMAKE_CXX_COMPILER=g++-14
+        run: cmake --preset asan -D CMAKE_C_COMPILER=gcc-15 -D CMAKE_CXX_COMPILER=g++-15
       - name: Build
         run: cmake --build --preset asan --parallel ${{ env.BUILD_JOBS }}
       - name: Test
@@ -142,7 +142,7 @@ jobs:
 
   # The lock-free slot protocol is the only concurrent code in the tree, and its races hide from the other sanitizers.
   test_ubuntu_tsan:
-    name: Test TSan on Ubuntu with GCC 14
+    name: Test TSan on Ubuntu with GCC 15
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -150,7 +150,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-14
+        run: sudo apt-get update && sudo apt-get install -y g++-15
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -165,7 +165,7 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset tsan -D CMAKE_C_COMPILER=gcc-14 -D CMAKE_CXX_COMPILER=g++-14
+        run: cmake --preset tsan -D CMAKE_C_COMPILER=gcc-15 -D CMAKE_CXX_COMPILER=g++-15
       - name: Build
         run: cmake --build --preset tsan --parallel ${{ env.BUILD_JOBS }}
       - name: Test
@@ -207,7 +207,7 @@ jobs:
       - name: Build
         run: cmake --build --preset cuda --parallel 2
       - name: Test
-        # Only the CUDA suite: the nine CPU tests here are the same ones the GCC 14 row just ran.
+        # Only the CUDA suite: the nine CPU tests here are the same ones the GCC 15 row just ran.
         run: ctest --preset cuda
 
   # Each machine profile builds the tests and the CUDA test for one CPU and one GPU code; the Arm ones build natively
@@ -277,7 +277,7 @@ jobs:
 
   test_windows:
     name: Test on Windows with MSVC
-    runs-on: windows-2025
+    runs-on: windows-2025-vs2026
     timeout-minutes: 30
     steps:
       - name: Checkout Repository
@@ -297,11 +297,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Configure
-        run: cmake --preset msvc2022_arm64
+        run: cmake --preset msvc2026_arm64
       - name: Build
-        run: cmake --build --preset msvc2022_arm64 --parallel
+        run: cmake --build --preset msvc2026_arm64 --parallel
       - name: Test
-        run: ctest --preset msvc2022_arm64
+        run: ctest --preset msvc2026_arm64
 
   # The NDK's own toolchain, compile only: no hosted runner executes Android binaries.
   build_android:

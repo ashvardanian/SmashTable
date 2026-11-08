@@ -97,11 +97,17 @@
       "generator": "Visual Studio 17 2022"
     },
     {
-      "name": "msvc2022_arm64",
+      "name": "msvc2026_arm64",
       "inherits": ["base", "windows"],
-      "generator": "Visual Studio 17 2022",
+      "generator": "Visual Studio 18 2026",
       "architecture": "ARM64",
-      "displayName": "Windows ARM64 - Visual Studio 2022"
+      "displayName": "Windows ARM64 - Visual Studio 2026"
+    },
+    {
+      "name": "msvc2022_arm64",
+      "inherits": "msvc2026_arm64",
+      "displayName": "Windows ARM64 - Visual Studio 2022",
+      "generator": "Visual Studio 17 2022"
     },
     {
       "name": "android_arm64",
@@ -187,6 +193,7 @@
     { "name": "cuda", "configurePreset": "cuda" },
     { "name": "msvc2026_x64", "configurePreset": "msvc2026_x64", "configuration": "Release" },
     { "name": "msvc2022_x64", "configurePreset": "msvc2022_x64", "configuration": "Release" },
+    { "name": "msvc2026_arm64", "configurePreset": "msvc2026_arm64", "configuration": "Release" },
     { "name": "msvc2022_arm64", "configurePreset": "msvc2022_arm64", "configuration": "Release" },
     { "name": "android_arm64", "configurePreset": "android_arm64" },
     { "name": "wasm32_emscripten", "configurePreset": "wasm32_emscripten" },
@@ -217,6 +224,7 @@
     },
     { "name": "msvc2026_x64", "inherits": "base", "configurePreset": "msvc2026_x64", "configuration": "Release" },
     { "name": "msvc2022_x64", "inherits": "base", "configurePreset": "msvc2022_x64", "configuration": "Release" },
+    { "name": "msvc2026_arm64", "inherits": "base", "configurePreset": "msvc2026_arm64", "configuration": "Release" },
     { "name": "msvc2022_arm64", "inherits": "base", "configurePreset": "msvc2022_arm64", "configuration": "Release" }
   ],
   "workflowPresets": [

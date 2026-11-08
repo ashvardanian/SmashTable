@@ -791,12 +791,16 @@ copy_to_fn<element_type_> copy_to(element_type_ &element) noexcept {
  *  @see https://en.cppreference.com/w/cpp/thread/lock_tag_t
  */
 struct assume_reserved_t {
+
+    /** Explicit, so an empty brace list cannot stand in for the tag. */
     explicit assume_reserved_t() = default;
 };
 inline constexpr assume_reserved_t assume_reserved {};
 
 /** Tag to leave new elements unconstructed, for storage a kernel or a byte copy writes first. */
 struct assume_uninitialized_t {
+
+    /** Explicit, so an empty brace list cannot stand in for the tag. */
     explicit assume_uninitialized_t() = default;
 };
 inline constexpr assume_uninitialized_t assume_uninitialized {};
@@ -804,6 +808,8 @@ inline constexpr assume_uninitialized_t assume_uninitialized {};
 /** Tag to assume elements are unique, skip equality comparisons. Similar to Boost.Container's
  *  @c ordered_unique_range_t. */
 struct assume_unique_t {
+
+    /** Explicit, so an empty brace list cannot stand in for the tag. */
     explicit assume_unique_t() = default;
 };
 inline constexpr assume_unique_t assume_unique {};
@@ -813,18 +819,24 @@ inline constexpr assume_unique_t assume_unique {};
  *  @warning An unsorted range is undefined behaviour, not a refusal.
  */
 struct assume_sorted_t {
+
+    /** Explicit, so an empty brace list cannot stand in for the tag. */
     explicit assume_sorted_t() = default;
 };
 inline constexpr assume_sorted_t assume_sorted {};
 
 /** Asks an ordered walk for its members greatest first. */
 struct descending_t {
+
+    /** Explicit, so an empty brace list cannot stand in for the tag. */
     explicit descending_t() = default;
 };
 inline constexpr descending_t descending {};
 
 /** Stands for the missing upper end of a range, so a walk bounded above runs to the last member. */
 struct unbounded_t {
+
+    /** Explicit, so an empty brace list cannot stand in for the tag. */
     explicit unbounded_t() = default;
 };
 inline constexpr unbounded_t unbounded {};
@@ -4325,11 +4337,6 @@ class shared_lock {
     shared_lock &operator=(shared_lock const &) = delete;
 };
 
-template <typename mutex_type_>
-unique_lock(mutex_type_ &) -> unique_lock<mutex_type_>;
-template <typename mutex_type_>
-shared_lock(mutex_type_ &) -> shared_lock<mutex_type_>;
-
 #pragma endregion Shared Mutex
 
 #pragma region Commit Order
@@ -4535,6 +4542,7 @@ class basic_commit_order {
         generation_t stamp_ {0};
 
       public:
+        /** Default-constructs an empty @c commit_in_flight_t. */
         constexpr commit_in_flight_t() noexcept = default;
 
         /** The stamp every version of this commit is written under. */

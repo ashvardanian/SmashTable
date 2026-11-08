@@ -5,7 +5,7 @@ build-backend = "scikit_build_core.build"
 [project]
 name = "smashtable"
 dynamic = ["version"]
-description = "Safer transactional associative in-memory collection types with vectorization"
+description = "Transactions across Associative Containers"
 readme = "README.md"
 authors = [{ name = "Ash Vardanian" }]
 license = "Apache-2.0"

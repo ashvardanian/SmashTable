@@ -94,6 +94,7 @@ class immutable_packed_array_view {
         : words_(words), size_(count), base_(base), bits_(bits) {}
 
   public:
+    /** Default-constructs an empty @c immutable_packed_array_view. */
     constexpr immutable_packed_array_view() noexcept = default;
 
     /**

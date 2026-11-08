@@ -1772,6 +1772,7 @@ class basic_wb_tree {
         iterator(basic_wb_tree const *tree, node_t *node) noexcept : tree_(tree), node_(node) {}
 
       public:
+        /** Default-constructs an empty @c iterator. */
         iterator() noexcept : tree_(nullptr), node_(nullptr) {}
 
         reference operator*() const noexcept { return node_->payload; }

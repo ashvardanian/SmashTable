@@ -121,7 +121,9 @@ class basic_growing_pool {
         pool_type_ *pool_;
 
       public:
+        /** A range over every record @p pool holds. */
         explicit records_range(pool_type_ *pool) noexcept : pool_(pool) {}
+
         [[nodiscard]] records_walk<pool_type_, record_type_> begin() const noexcept { return {pool_, 0}; }
         [[nodiscard]] records_walk<pool_type_, record_type_> end() const noexcept {
             return {pool_, static_cast<index_t>(pool_->capacity())};

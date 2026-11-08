@@ -269,9 +269,12 @@ class partitioned_store {
 
         std::array<std::uint64_t, words_k> words {};
 
+        /** Marks @p partition_index as reached. */
         void mark(std::size_t partition_index) noexcept {
             words[partition_index / bits_per_word_k] |= std::uint64_t {1} << (partition_index % bits_per_word_k);
         }
+
+        /** Unmarks every partition. */
         void clear() noexcept { words.fill(0); }
 
         /** The lowest marked partition, when any of them is marked. */
@@ -866,6 +869,7 @@ class partitioned_store {
         }
 
       public:
+        /** Default-constructs an empty @c ordered_cursor_t. */
         ordered_cursor_t() noexcept = default;
 
         /** Whether every partition is spent, so the walk has nothing left to hand over. */
@@ -982,6 +986,7 @@ class partitioned_store {
         partitions_t const &partitions;
         generation_t stamp;
 
+        /** A reader of partition @p partition_index at the pinned stamp. */
         [[nodiscard]] auto operator[](std::size_t partition_index) const noexcept {
             return partitions[partition_index].reader_at(stamp);
         }
@@ -1149,6 +1154,8 @@ class partitioned_store {
         }
     };
 
+    /** A transaction spanning every partition, taking each partition's lock only for the
+     *  calls that reach it. */
     class transaction_t {
         friend class partitioned_store;
 
@@ -1572,6 +1579,7 @@ class partitioned_store {
             return status;
         }
 
+        /** Discards every staged and pending change, across every partition. */
         status_t reset() noexcept {
             settle_snapshot_();
             // A reset discards the staged writes along with everything else, so the guard on them goes too.
@@ -1661,6 +1669,7 @@ class partitioned_store {
             return success_k;
         }
 
+        /** Records @p id, so a commit refuses if another transaction changed it. */
         status_t watch(identifier_t const &id) noexcept {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -1670,6 +1679,7 @@ class partitioned_store {
             return partitions_[partition_index].watch(id);
         }
 
+        /** Looks @p comparable up in its partition, at this transaction's snapshot. */
         template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
                   typename callback_missing_type_ = no_op_t>
         status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,
@@ -1973,6 +1983,7 @@ class partitioned_store {
                 upper, callback);
         }
 
+        /** Buffers an insert or overwrite of @p element in its partition. */
         status_t upsert(value_t &&element) noexcept {
             settle_snapshot_();
             if (staging_ == staging_t::staged_k) return operation_not_permitted_k;
@@ -2456,6 +2467,7 @@ class partitioned_store {
         adopt_order_of_(other);
     }
 
+    /** How many entries the partitions hold together, read with every partition held shared. */
     [[nodiscard]] std::size_t size() const noexcept {
         std::size_t total = 0;
         every_part_lock<shared_lock_t> _ {mutexes_};
@@ -2463,8 +2475,10 @@ class partitioned_store {
         return total;
     }
 
+    /** Whether every partition is empty. */
     [[nodiscard]] bool empty() const noexcept { return size() == 0; }
 
+    /** Builds a store with every partition allocated, reporting a failed allocation as a status. */
     static expected<partitioned_store> make() noexcept {
         expected<partitions_t> parts = new_parts();
         if (!parts) return parts.status();
@@ -2583,12 +2597,15 @@ class partitioned_store {
     {
         return *order_;
     }
+
+    /** The order every partition draws stamps from, read-only. */
     [[nodiscard]] order_t const &order() const noexcept
         requires draws_from_a_shared_order<inner_store_t>
     {
         return *order_;
     }
 
+    /** Inserts or overwrites @p element in its partition, under that partition's lock. */
     status_t upsert(value_t &&element) noexcept {
         std::size_t partition_index = bucket_(element);
         writing_part_lock_t _ {mutexes_[partition_index], epochs_[partition_index].writes};
@@ -2624,6 +2641,7 @@ class partitioned_store {
         return bucket_(comparable);
     }
 
+    /** Inserts or overwrites every element of a range through one transaction. */
     template <readable_iterator elements_begin_type_,
               iterator_sentinel<elements_begin_type_> elements_end_type_ = elements_begin_type_>
     status_t upsert(elements_begin_type_ begin, elements_end_type_ end) noexcept {
@@ -2640,6 +2658,7 @@ class partitioned_store {
         return opened->commit();
     }
 
+    /** Looks @p comparable up in its partition, under that partition's shared lock. */
     template <typename comparable_type_ = identifier_t, typename callback_found_type_ = no_op_t,
               typename callback_missing_type_ = no_op_t>
     status_t find(comparable_type_ &&comparable, callback_found_type_ &&callback_found,

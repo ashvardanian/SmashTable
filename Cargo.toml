@@ -1,6 +1,6 @@
 [package]
 name = "smashtable"
-description = "Safer transactional associative in-memory collection types with vectorization"
+description = "Transactions across Associative Containers"
 version = "1.0.0-rc.1"
 edition = "2021"
 authors = ["Ash Vardanian"]

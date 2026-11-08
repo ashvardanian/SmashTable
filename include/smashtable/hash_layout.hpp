@@ -567,6 +567,7 @@ constexpr hash_window_slots_t hash_window_slots(hash_bucket_head_t const &head, 
  *  @param[in] keys The keys region, indexed by slot, every key a @c window_key.
  *  @param[in] slots_count The slot count, a power of two, at least one window.
  *  @param[in] entry The home slot of @p wanted, already masked to the table.
+ *  @param[in] wanted The key to find.
  *  @param[in] on_match Receives the slot index of each match, in probe order.
  */
 template <typename row_kit_type_, typename key_type_, typename offset_type_, typename on_match_type_>

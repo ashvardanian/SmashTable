@@ -214,6 +214,8 @@ class monotonic_store {
     using values_vector_t = basic_vector<value_t, values_allocator_t>;
 
   public:
+    /** A transaction that buffers writes, stages them invisibly and publishes them in one
+     *  commit. */
     class transaction_t {
 
         friend store_t;

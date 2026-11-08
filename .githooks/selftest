@@ -2885,7 +2885,6 @@ stage_release_fixture() { # stage_release_fixture <version> [<relative-path> <se
         mkdir -p python include/smashtable
         printf '%s\n' "$version" > VERSION
         printf '[package]\nname = "smashtable"\nversion = "%s"\n' "$version" > Cargo.toml
-        printf 'cff-version: 1.2.0\nversion: %s\n' "$version" > CITATION.cff
         printf 'PyModule_AddStringConstant(module, "__version__", "%s");\n' "$version" > python/module.cpp
         printf 'project(\n    smashtable\n    VERSION %s\n)\n' "$core" > CMakeLists.txt
         printf '#define SMASHTABLE_VERSION_MAJOR %s\n#define SMASHTABLE_VERSION_MINOR %s\n#define SMASHTABLE_VERSION_PATCH %s\n' \

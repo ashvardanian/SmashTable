@@ -141,6 +141,7 @@ class immutable_splus_tree_view {
         using value_type = key_t;
         using difference_type = std::ptrdiff_t;
 
+        /** Default-constructs an empty @c iterator. */
         iterator() noexcept = default;
 
         [[nodiscard]] key_t operator*() const noexcept { return tree_->select(rank_); }
@@ -164,6 +165,7 @@ class immutable_splus_tree_view {
         }
     };
 
+    /** Default-constructs an empty @c immutable_splus_tree_view. */
     constexpr immutable_splus_tree_view() noexcept = default;
 
     /**

@@ -90,8 +90,9 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 }
 
 /** Whether this build carries @p kit and the running processor and operating system can execute it.
- *  Probes the processor on every call, so ask once at open or construction and keep the answer. */
-#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__))
+ *  Probes the processor on every call, so ask once at open or construction and keep the answer.
+ *  A GPU device pass cannot probe the host processor, so there it answers @c serial_k alone. */
+#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__)) && !defined(__NVPTX__) && !defined(__AMDGPU__)
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     __builtin_cpu_init();
     bool const runs_haswell = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("bmi") &&
@@ -136,11 +137,14 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 #else
     capabilities = getauxval(AT_HWCAP);
 #endif
+    unsigned long const advanced_simd = 1ul << 1;              // `HWCAP_ASIMD` on AArch64
+    unsigned long const scalable_vectors = 1ul << 22;          // `HWCAP_SVE` on AArch64
+    unsigned long const vector_extension = 1ul << ('V' - 'A'); // `COMPAT_HWCAP_ISA_V` on RISC-V
     switch (kit) {
     case row_kit_t::serial_k: return true;
-    case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON && (capabilities & (1ul << 1)) != 0; // `HWCAP_ASIMD`
-    case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE && (capabilities & (1ul << 22)) != 0;  // `HWCAP_SVE`
-    case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV && (capabilities & (1ul << ('V' - 'A'))) != 0;
+    case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON && (capabilities & advanced_simd) != 0;
+    case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE && (capabilities & scalable_vectors) != 0;
+    case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV && (capabilities & vector_extension) != 0;
     default: return false;
     }
 }

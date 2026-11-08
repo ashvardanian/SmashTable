@@ -4,11 +4,13 @@ INPUT                  = ../include/smashtable
 RECURSIVE              = YES
 FILE_PATTERNS          = *.hpp
 EXTENSION_MAPPING      = cuh=C++
-EXCLUDE_SYMBOLS        = *_
+EXCLUDE_SYMBOLS        = *_ group_step first_only copy_to_fn placeholder_t no_op commit_in_flight_t
 ENABLE_PREPROCESSING   = YES
 MACRO_EXPANSION        = YES
 EXPAND_ONLY_PREDEF     = YES
-PREDEFINED             = SMASHTABLE_NO_UNIQUE_ADDRESS_=
+PREDEFINED             = SMASHTABLE_NO_UNIQUE_ADDRESS_= SMASHTABLE_TARGET_HASWELL=1 SMASHTABLE_TARGET_SKYLAKE=1 \
+                         SMASHTABLE_TARGET_ICELAKE=1 SMASHTABLE_TARGET_NEON=1 SMASHTABLE_TARGET_SVE=1 \
+                         SMASHTABLE_TARGET_RVV=1 SMASHTABLE_TARGET_V128=1 SMASHTABLE_RVV_ATTRIBUTE_=
 JAVADOC_AUTOBRIEF      = YES
 MARKDOWN_ID_STYLE      = GITHUB
 BUILTIN_STL_SUPPORT    = YES
@@ -18,6 +20,8 @@ EXTRACT_STATIC         = YES
 GENERATE_HTML          = NO
 GENERATE_LATEX         = NO
 GENERATE_XML           = YES
+XML_PROGRAMLISTING     = NO
+INPUT_FILTER           = "sed -E 's/^( [*]  )@(author|date) .*/\1/'"
 HAVE_DOT               = NO
 QUIET                  = YES
 WARN_IF_UNDOCUMENTED   = NO

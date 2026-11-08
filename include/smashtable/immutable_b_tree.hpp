@@ -115,6 +115,7 @@ class immutable_b_tree {
         using value_type = key_t;
         using difference_type = std::ptrdiff_t;
 
+        /** Default-constructs an empty @c iterator. */
         iterator() noexcept = default;
 
         [[nodiscard]] key_t operator*() const noexcept {

@@ -258,7 +258,7 @@ static PyModuleDef_Slot module_slots[] = {
 };
 
 static struct PyModuleDef smashtable_module = {
-    PyModuleDef_HEAD_INIT,  "smashtable",   "Safer associative stores with DBMS-like transactions in Python.",
+    PyModuleDef_HEAD_INIT,  "smashtable",   "Transactions across Associative Containers",
     sizeof(module_state_t), module_methods, module_slots,
     module_traverse,        module_clear,   nullptr,
 };
