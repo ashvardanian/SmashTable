@@ -6,7 +6,6 @@
  *      serial kit, and both layouts against a sorted array.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`

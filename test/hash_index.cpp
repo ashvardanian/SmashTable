@@ -6,7 +6,6 @@
  *      through every row kit, colliding homes, confirmed lookups and erasure past the table's end.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::byte`, `std::size_t`
 #include <cstdint> // `std::int32_t`, `std::uint32_t`, `std::uint64_t`

@@ -7,7 +7,6 @@
  *      refusals hold, and the space stays near the Elias-Fano bound.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`

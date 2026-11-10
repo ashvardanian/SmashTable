@@ -10,7 +10,7 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     # the two compilers disagree about what it means, and GCC counts a constructor parameter named after
     # the member it initializes, which is the idiom rather than a defect.
     target_compile_options(
-        smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wno-unknown-pragmas
+        smashtable_warnings INTERFACE -Wall -Wextra -pedantic -Wundef -Wno-unknown-pragmas
                                       $<$<CXX_COMPILER_ID:Clang,AppleClang>:-Wdocumentation>
     )
     if (SMASHTABLE_WERROR)

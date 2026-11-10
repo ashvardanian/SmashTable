@@ -42,17 +42,18 @@
 #include <type_traits>  // `std::is_void_v`
 #include <utility>      // `std::cmp_equal`, `std::cmp_less`, `std::exchange`
 
-#if defined(_WIN32)
+#include "smashtable/row_search.hpp" // `every_row_kit_k`, `row_kit_compiled`, `row_kit_supported`
+#include "smashtable/shared.hpp"     // `status_t`, `succeeded`, `name_of`
+
+#if SMASHTABLE_OS_WINDOWS_
 #include <io.h> // `_write`
 #else
 #include <unistd.h> // `write`, `STDERR_FILENO`
 #endif
-#if defined(__linux__) && defined(__GLIBC__)
+/*  Only glibc and Darwin ship `backtrace` in libc itself; FreeBSD and musl need another library. */
+#if (defined(__GLIBC__) || SMASHTABLE_OS_APPLE_) && __has_include(<execinfo.h>)
 #include <execinfo.h> // `backtrace`, `backtrace_symbols_fd`
 #endif
-
-#include <smashtable/row_search.hpp> // `every_row_kit_k`, `row_kit_compiled`, `row_kit_supported`
-#include <smashtable/shared.hpp>     // `status_t`, `succeeded`, `name_of`
 
 namespace ashvardanian::smashtable::test {
 
@@ -422,12 +423,12 @@ struct test_context_t {
  */
 inline void test_fatal_signal_handler(int signal_number) noexcept {
     constexpr std::string_view message = "\n*** Fatal signal - backtrace follows ***\n";
-#if defined(_WIN32)
+#if SMASHTABLE_OS_WINDOWS_
     [[maybe_unused]] auto const written = _write(2, message.data(), static_cast<unsigned>(message.size()));
 #else
     [[maybe_unused]] auto const written = ::write(STDERR_FILENO, message.data(), message.size());
 #endif
-#if defined(__linux__) && defined(__GLIBC__)
+#if (defined(__GLIBC__) || SMASHTABLE_OS_APPLE_) && __has_include(<execinfo.h>)
     void *frames[64];
     int const frames_count = backtrace(frames, sizeof(frames) / sizeof(frames[0]));
     // The `_fd` form writes without allocating, which is what makes it usable from a handler.

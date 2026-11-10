@@ -14,7 +14,6 @@
  *  level it asks about.
  */
 #undef NDEBUG // ! A test's oracle must stay live in every build
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 1
 
 #include <shared_mutex> // `std::shared_mutex`, to keep the substitution path covered
 

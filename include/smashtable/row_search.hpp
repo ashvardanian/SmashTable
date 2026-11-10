@@ -129,7 +129,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     default: return false;
     }
 }
-#elif (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
+#elif SMASHTABLE_HAS_AUXV_
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     unsigned long capabilities = 0; // `AT_HWCAP` carries the same bits on both kernels
 #if SMASHTABLE_OS_FREEBSD_

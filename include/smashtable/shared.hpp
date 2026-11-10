@@ -68,16 +68,12 @@
 #define SMASHTABLE_VERSION_MINOR 0
 #define SMASHTABLE_VERSION_PATCH 0
 
-/**
- *  @brief Lets an empty member occupy no space, in the spelling the compiler at hand honours.
- *
- *  MSVC ignores the standard attribute for ABI reasons and offers its own, while Clang rejects an
- *  unknown scoped attribute under @c -Werror - so neither spelling can simply be written twice.
- */
-#if defined(_MSC_VER)
-#define SMASHTABLE_NO_UNIQUE_ADDRESS_ [[msvc::no_unique_address]]
-#else
-#define SMASHTABLE_NO_UNIQUE_ADDRESS_ [[no_unique_address]]
+#pragma region Platform Identity
+
+/*  Derived once from the OS predefines, which no other file reads and no build sets. */
+#if defined(SMASHTABLE_OS_LINUX_) || defined(SMASHTABLE_OS_APPLE_) || defined(SMASHTABLE_OS_WINDOWS_) || \
+    defined(SMASHTABLE_OS_FREEBSD_) || defined(SMASHTABLE_OS_POSIX_)
+#error "SMASHTABLE_OS_*_ are identity, derived from the compiler; no build sets them"
 #endif
 
 /**
@@ -104,16 +100,81 @@
 #define SMASHTABLE_ARCH_RISCV64_ 0
 #endif
 
+/** Whether the target is IBM Z, whose cache lines are 256 bytes, as 1 or 0. */
+#if defined(__s390x__)
+#define SMASHTABLE_ARCH_S390X_ 1
+#else
+#define SMASHTABLE_ARCH_S390X_ 0
+#endif
+
+/** Whether the target is WebAssembly, Emscripten included, as 1 or 0. */
+#if defined(__wasm__) || defined(__EMSCRIPTEN__)
+#define SMASHTABLE_ARCH_WASM_ 1
+#else
+#define SMASHTABLE_ARCH_WASM_ 0
+#endif
+
+/** Whether the kernel is Linux, Android included, as 1 or 0. */
 #if defined(__linux__)
 #define SMASHTABLE_OS_LINUX_ 1
 #else
 #define SMASHTABLE_OS_LINUX_ 0
 #endif
 
+/** Whether the kernel is Darwin: macOS, iOS, tvOS, watchOS or visionOS, as 1 or 0. */
+#if defined(__APPLE__)
+#define SMASHTABLE_OS_APPLE_ 1
+#else
+#define SMASHTABLE_OS_APPLE_ 0
+#endif
+
+/** Whether the target is Windows, MinGW included and Cygwin not, as 1 or 0. */
+#if defined(_WIN32)
+#define SMASHTABLE_OS_WINDOWS_ 1
+#else
+#define SMASHTABLE_OS_WINDOWS_ 0
+#endif
+
+/** Whether the kernel is FreeBSD, as 1 or 0. */
 #if defined(__FreeBSD__)
 #define SMASHTABLE_OS_FREEBSD_ 1
 #else
 #define SMASHTABLE_OS_FREEBSD_ 0
+#endif
+
+/** Whether the POSIX interfaces exist: Linux, Darwin, FreeBSD or Cygwin, as 1 or 0. */
+#if SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_APPLE_ || SMASHTABLE_OS_FREEBSD_ || defined(__CYGWIN__)
+#define SMASHTABLE_OS_POSIX_ 1
+#else
+#define SMASHTABLE_OS_POSIX_ 0
+#endif
+
+/** Whether the kernel reports processor features through @c AT_HWCAP, as 1 or 0. */
+#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
+#define SMASHTABLE_HAS_AUXV_ 1
+#else
+#define SMASHTABLE_HAS_AUXV_ 0
+#endif
+
+#if SMASHTABLE_OS_LINUX_ + SMASHTABLE_OS_APPLE_ + SMASHTABLE_OS_WINDOWS_ + SMASHTABLE_OS_FREEBSD_ > 1
+#error "Two operating-system identities hold at once"
+#endif
+#if SMASHTABLE_OS_POSIX_ && SMASHTABLE_OS_WINDOWS_
+#error "POSIX and Windows identities hold at once"
+#endif
+
+#pragma endregion Platform Identity
+
+/**
+ *  @brief Lets an empty member occupy no space, in the spelling the compiler at hand honours.
+ *
+ *  MSVC ignores the standard attribute for ABI reasons and offers its own, while Clang rejects an
+ *  unknown scoped attribute under @c -Werror - so neither spelling can simply be written twice.
+ */
+#if defined(_MSC_VER)
+#define SMASHTABLE_NO_UNIQUE_ADDRESS_ [[msvc::no_unique_address]]
+#else
+#define SMASHTABLE_NO_UNIQUE_ADDRESS_ [[no_unique_address]]
 #endif
 
 /**
@@ -227,7 +288,7 @@
 #if SMASHTABLE_TARGET_V128
 #include <wasm_simd128.h>
 #endif
-#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
+#if SMASHTABLE_HAS_AUXV_
 #include <sys/auxv.h> // `getauxval` on Linux, `elf_aux_info` on FreeBSD, `AT_HWCAP`
 #endif
 
@@ -437,33 +498,17 @@ concept is_mapping = requires {
 };
 
 /**
- *  @brief Conditional callback validation traits controlled by
- *      @c SMASHTABLE_STRICT_CALLBACK_CHECKS.
+ *  @brief Whether a callback can be called with the given arguments without throwing.
  *
- *  When @c SMASHTABLE_STRICT_CALLBACK_CHECKS is 1, these traits perform full compile-time
- *  validation using @c std::is_nothrow_invocable_v. This catches type errors early but prevents
- *  generic lambdas like <tt>no_op_t {}</tt> from compiling.
- *
- *  When it is 0, the default, traits always return true, allowing generic lambdas while still
- *  documenting the intent that callbacks should be noexcept.
+ *  Every verb is @c noexcept, so a callback that throws would terminate the process; the verbs
+ *  assert these traits so that such a callback fails to compile instead.
  */
-#if !defined(SMASHTABLE_STRICT_CALLBACK_CHECKS)
-#define SMASHTABLE_STRICT_CALLBACK_CHECKS 0
-#endif
-
-#if SMASHTABLE_STRICT_CALLBACK_CHECKS
 template <typename callback_type_, typename... args_types_>
 inline constexpr bool is_safe_callback_for = std::is_nothrow_invocable_v<callback_type_ &, args_types_...>;
 
+/** Whether a callback can be called with no arguments without throwing. */
 template <typename callback_type_>
 inline constexpr bool is_safe_callback = std::is_nothrow_invocable_v<callback_type_ &>;
-#else
-template <typename callback_type_, typename... args_types_>
-inline constexpr bool is_safe_callback_for = true;
-
-template <typename callback_type_>
-inline constexpr bool is_safe_callback = true;
-#endif
 
 /**
  *  @brief The allocator every container defaults to, over @c ::operator @c new asked not to throw.
@@ -1869,9 +1914,9 @@ concept records_what_it_reads = at_least(store_type_::isolation_k, isolation_t::
  *  Apple silicon. s390x lines are 256 bytes, and wasm, with no coherence to protect, takes 64.
  */
 #if !defined(SMASHTABLE_DEFAULT_ALIGNMENT)
-#if defined(__s390x__)
+#if SMASHTABLE_ARCH_S390X_
 #define SMASHTABLE_DEFAULT_ALIGNMENT 256
-#elif defined(__wasm__) || defined(__EMSCRIPTEN__)
+#elif SMASHTABLE_ARCH_WASM_
 #define SMASHTABLE_DEFAULT_ALIGNMENT 64
 #else
 #define SMASHTABLE_DEFAULT_ALIGNMENT 128

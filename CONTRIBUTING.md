@@ -149,13 +149,18 @@ Every all-caps name starts with the full project name, `SMASHTABLE_`.
 A trailing `_` marks a name as internal: it may change in any release, and nothing outside this repository may define or test it.
 A name without it is a public contract, either a switch you may set or a value you may read.
 
-| Family                       | Form                       | Example                     |
-| ---------------------------- | -------------------------- | --------------------------- |
-| ISA tier, backend, GPU layer | `SMASHTABLE_TARGET_<TIER>` | `SMASHTABLE_TARGET_HASWELL` |
-| Architecture fact            | `SMASHTABLE_ARCH_<ARCH>_`  | `SMASHTABLE_ARCH_X8664_`    |
+| Family                       | Form                        | Example                     |
+| ---------------------------- | --------------------------- | --------------------------- |
+| ISA tier, backend, GPU layer | `SMASHTABLE_TARGET_<TIER>`  | `SMASHTABLE_TARGET_HASWELL` |
+| Architecture fact            | `SMASHTABLE_ARCH_<ARCH>_`   | `SMASHTABLE_ARCH_X8664_`    |
+| Operating-system fact        | `SMASHTABLE_OS_<OS>_`       | `SMASHTABLE_OS_LINUX_`      |
+| Platform fact                | `SMASHTABLE_HAS_<FEATURE>_` | `SMASHTABLE_HAS_AUXV_`      |
 
 Architectures are spelled `X8664`, `X8632`, `ARM64`, `RISCV64`, `PPC64`, `LOONGARCH64`, `S390X` and `WASM`.
-Every name in these families is always defined, as 0 or 1, and tested with `#if`, never with `defined(...)`.
+Every name in these families is always defined, as 0 or 1, and tested with `#if`.
+`defined(...)` appears only in a `!defined` default and in a guard that an `#error` follows.
+Only the Platform Identity region of `shared.hpp` reads operating-system predefines like `__linux__`.
+Compiler predefines like `__clang__`, `__GNUC__` and `_MSC_VER` are read raw where they matter.
 
 Avoid obvious inline comments.
 Prefer full words over abbreviations (e.g., `iterator` instead of `iter`, `element` instead of `elem`, `transaction` instead of `tx`, etc.).
