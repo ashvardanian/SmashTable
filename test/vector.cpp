@@ -9,7 +9,7 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `SIZE_MAX`
 
-#include <new>         // `::operator new`, `std::nothrow`
+#include <memory>      // `std::allocator` - the rounding allocator's storage
 #include <span>        // `std::span`
 #include <type_traits> // `std::true_type`, `std::is_convertible_v`, `std::is_trivially_copyable_v`
 #include <utility>     // `std::move`
@@ -103,7 +103,7 @@ struct recording_allocator {
     constexpr recording_allocator(recording_allocator<other_type_> const &) noexcept {}
 
     [[nodiscard]] value_type_ *allocate(std::size_t count) noexcept {
-        largest_request = larger_of(largest_request, count);
+        largest_request = max_of(largest_request, count);
         ++requests_count;
         return nullptr;
     }
@@ -180,6 +180,46 @@ static void vector_reserve_refuses_wrapping_capacity() {
     st_verify_eq_(heap_vector.capacity(), 8u);
     st_verify_(heap_vector.push_back(11));
     st_verify_eq_(heap_vector[0], 11);
+}
+
+/** An allocator whose @c allocate_at_least grants element counts rounded up to a multiple of 16. */
+template <typename value_type_>
+struct rounding_allocator {
+    using value_type = value_type_;
+    using propagate_on_container_move_assignment = std::true_type;
+
+    struct granted_t {
+        value_type_ *ptr;
+        std::size_t count;
+    };
+
+    rounding_allocator() noexcept = default;
+    template <typename other_type_>
+    rounding_allocator(rounding_allocator<other_type_> const &) noexcept {}
+
+    [[nodiscard]] value_type_ *allocate(std::size_t count) noexcept {
+        return std::allocator<value_type_> {}.allocate(count);
+    }
+    [[nodiscard]] granted_t allocate_at_least(std::size_t count) noexcept {
+        std::size_t const granted = (count + 15) / 16 * 16;
+        return {allocate(granted), granted};
+    }
+    void deallocate(value_type_ *pointer, std::size_t count) noexcept {
+        std::allocator<value_type_> {}.deallocate(pointer, count);
+    }
+    friend bool operator==(rounding_allocator const &, rounding_allocator const &) noexcept { return true; }
+};
+
+/** An allocator granting more than asked is kept in full. */
+static void vector_keeps_the_granted_capacity() {
+    basic_vector<int, rounding_allocator<int>> vector;
+    st_verify_(vector.push_back(int {1}));
+    st_verify_(vector.capacity() == 16u);
+    std::size_t const granted = vector.capacity();
+    for (std::size_t index = 1; index < granted; ++index) st_verify_(vector.push_back(int {2}));
+    st_verify_eq_(vector.capacity(), granted);
+    st_verify_(vector.push_back(int {3}));
+    st_verify_(vector.capacity() > granted);
 }
 
 /** Growth amortizes: appending one at a time must double rather than grow by one. */
@@ -549,6 +589,7 @@ int main(int, char **arguments) {
 
     tally += run_test(settings, "vector.emplace_back_through_make", vector_emplace_back_through_make);
     tally += run_test(settings, "vector.reserve_refuses_wrapping_capacity", vector_reserve_refuses_wrapping_capacity);
+    tally += run_test(settings, "vector.keeps_the_granted_capacity", vector_keeps_the_granted_capacity);
     tally += run_test(settings, "vector.growth_is_amortized", vector_growth_is_amortized);
     tally += run_test(settings, "vector.resize_rolls_back_elements", vector_resize_rolls_back_elements);
     tally += run_test(settings, "vector.resizes_without_constructing", vector_resizes_without_constructing);

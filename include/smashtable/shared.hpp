@@ -562,6 +562,25 @@ concept allocator_of = requires(allocator_type_ &allocator, value_type_ *pointer
     allocator.deallocate(pointer, count);
 };
 
+/** Back-ports C++23's @c std::allocation_result. */
+template <typename pointer_type_, typename size_type_ = std::size_t>
+struct allocation_result {
+    pointer_type_ ptr {nullptr};
+    size_type_ count {0};
+};
+
+/** Back-ports C++23's @c std::allocator_traits::allocate_at_least, which prefers the allocator's
+ *  own. */
+template <typename allocator_type_>
+constexpr allocation_result<typename allocator_type_::value_type *> allocate_at_least(allocator_type_ &allocator,
+                                                                                      std::size_t count) noexcept {
+    if constexpr (requires { allocator.allocate_at_least(count); }) {
+        auto const result = allocator.allocate_at_least(count);
+        return {result.ptr, result.count};
+    }
+    else return {allocator.allocate(count), count};
+}
+
 /**
  *  @brief Transparent ordering and equality, so a container needs no @c \<functional\>.
  *
@@ -803,10 +822,10 @@ struct no_entropy_t {
     using result_type = std::uint64_t;
 
     /** The lowest value a draw can take, which @c draw_below subtracts to normalise. */
-    static constexpr result_type min() noexcept { return 0; }
+    static constexpr result_type(min)() noexcept { return 0; }
 
     /** The highest value a draw can take, which @c draw_below spans to size its mask. */
-    static constexpr result_type max() noexcept { return ~result_type {0}; }
+    static constexpr result_type(max)() noexcept { return ~result_type {0}; }
 
     /** Draws nothing, since no concept using this ever runs the body it probes. */
     constexpr result_type operator()() noexcept { return 0; }
@@ -1304,7 +1323,7 @@ inline constexpr generation_t absent_generation_k = 0;
  *  be taken, and so falls out of @c visible_at without a second branch asking whether it is still
  *  staged. Zero would have made "not yet visible" compare as "visible since the beginning of time".
  */
-enum class commit_stamp_t : generation_t { uncommitted_k = std::numeric_limits<generation_t>::max() };
+enum class commit_stamp_t : generation_t { uncommitted_k = (std::numeric_limits<generation_t>::max)() };
 
 /** Whether a version stamped @p stamp is visible to a reader holding @p snapshot. */
 constexpr bool visible_at(commit_stamp_t stamp, generation_t snapshot) noexcept {
@@ -1313,7 +1332,7 @@ constexpr bool visible_at(commit_stamp_t stamp, generation_t snapshot) noexcept 
 
 /** The snapshot a reader that takes none holds: every stamp a commit can ever draw is at or below
  *  it, and only @c commit_stamp_t::uncommitted_k sits above. */
-inline constexpr generation_t latest_snapshot_k = std::numeric_limits<generation_t>::max() - 1;
+inline constexpr generation_t latest_snapshot_k = (std::numeric_limits<generation_t>::max)() - 1;
 
 /** Whether @p stamp was drawn at all, which is what a reader taking no snapshot asks. */
 constexpr bool visible_now(commit_stamp_t stamp) noexcept { return visible_at(stamp, latest_snapshot_k); }
@@ -2093,8 +2112,8 @@ constexpr void atomic_notify_all(integral_type_ &counter) noexcept {
  */
 template <typename reference_type_, typename value_type_>
 concept extended_atomic_ref = requires(reference_type_ reference, value_type_ value) {
-    reference.add(value, memory_order_relaxed_k);
-    reference.sub(value, memory_order_relaxed_k);
+    reference.store_add(value, memory_order_relaxed_k);
+    reference.store_sub(value, memory_order_relaxed_k);
     reference.set_bits(value, memory_order_relaxed_k);
     reference.clear_bits(value, memory_order_relaxed_k);
     reference.flip_bits(value, memory_order_relaxed_k);
@@ -2110,7 +2129,8 @@ concept extended_atomic_ref = requires(reference_type_ reference, value_type_ va
 template <template <typename> class atomic_reference_ = atomic_ref, std::integral integral_type_, typename order_type_>
 constexpr void atomic_post_add(integral_type_ &word, integral_type_ addend, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
-    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>) reference.add(addend, order);
+    if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
+        reference.store_add(addend, order);
     else reference.fetch_add(addend, order);
 }
 
@@ -2119,7 +2139,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::integra
 constexpr void atomic_post_sub(integral_type_ &word, integral_type_ subtrahend, order_type_ order) noexcept {
     atomic_reference_<integral_type_> reference(word);
     if constexpr (extended_atomic_ref<atomic_reference_<integral_type_>, integral_type_>)
-        reference.sub(subtrahend, order);
+        reference.store_sub(subtrahend, order);
     else reference.fetch_sub(subtrahend, order);
 }
 
@@ -2274,7 +2294,7 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::unsigne
     constexpr std::size_t word_bits_k = sizeof(word_type_) * CHAR_BIT;
     for (std::size_t word_index = 0; word_index != words.size(); ++word_index) {
         word_type_ observed = atomic_reference_<word_type_>(words[word_index]).load(memory_order_relaxed_k);
-        while (observed != std::numeric_limits<word_type_>::max()) {
+        while (observed != (std::numeric_limits<word_type_>::max)()) {
             unsigned const bit = static_cast<unsigned>(countr_zero(static_cast<word_type_>(~observed)));
             if (!atomic_fetch_test_and_set_bit<atomic_reference_>(words[word_index], bit, memory_order_acquire_k))
                 return word_index * word_bits_k + bit;
@@ -2288,22 +2308,21 @@ template <template <typename> class atomic_reference_ = atomic_ref, std::unsigne
 
 #pragma region Numeric Helpers
 
-/**
- *  @brief The larger of two values, and the smaller.
- *
- *  Spelled here rather than pulled from @c \<algorithm\>, which costs about ten thousand
- *  preprocessed lines for these two. It also sidesteps the Windows headers, which define @c min and
- *  @c max as function-like macros unless @c NOMINMAX is set, and would eat an unparenthesized
- *  @c std::max call.
- */
+/** The smaller of @p first and @p second; arithmetic only, so a caller's own @c min_of never
+ *  meets this one by argument-dependent lookup. Spelled here because @c \<algorithm\> costs about
+ *  ten thousand preprocessed lines, and the Windows headers' @c min and @c max macros would eat
+ *  its unparenthesized calls. */
 template <typename value_type_>
-constexpr value_type_ const &larger_of(value_type_ const &first, value_type_ const &second) noexcept {
-    return first < second ? second : first;
+    requires std::is_arithmetic_v<value_type_>
+constexpr value_type_ min_of(value_type_ first, value_type_ second) noexcept {
+    return second < first ? second : first;
 }
 
+/** The larger of @p first and @p second, the @c max twin of @ref min_of. */
 template <typename value_type_>
-constexpr value_type_ const &smaller_of(value_type_ const &first, value_type_ const &second) noexcept {
-    return second < first ? second : first;
+    requires std::is_arithmetic_v<value_type_>
+constexpr value_type_ max_of(value_type_ first, value_type_ second) noexcept {
+    return first < second ? second : first;
 }
 
 /** How many bits the size type holds here, which is not 64 everywhere. */
@@ -2343,9 +2362,9 @@ template <typename generator_type_>
 concept uniform_random_bits = requires(generator_type_ &generator) {
     typename generator_type_::result_type;
     { generator() } -> std::same_as<typename generator_type_::result_type>;
-    requires std::same_as<decltype(generator_type_::min()), typename generator_type_::result_type>;
-    requires std::same_as<decltype(generator_type_::max()), typename generator_type_::result_type>;
-    requires generator_type_::min() < generator_type_::max();
+    requires std::same_as<decltype((generator_type_::min)()), typename generator_type_::result_type>;
+    requires std::same_as<decltype((generator_type_::max)()), typename generator_type_::result_type>;
+    requires((generator_type_::min)() < (generator_type_::max)());
 };
 
 /**
@@ -2366,16 +2385,16 @@ constexpr std::size_t draw_below(generator_type_ &&generator, std::size_t bound)
     using generator_t = std::remove_reference_t<generator_type_>;
     if (bound <= 1) return 0;
 
-    constexpr std::size_t generator_span_k = static_cast<std::size_t>(generator_t::max() - generator_t::min());
+    constexpr std::size_t generator_span_k = static_cast<std::size_t>((generator_t::max)() - (generator_t::min)());
     constexpr std::size_t generator_bits_k = bits_to_hold(generator_span_k);
     std::size_t const mask = roundup_to_pow2(bound) - 1;
     std::size_t const wanted_bits = bits_to_hold(mask);
 
     while (true) {
-        std::size_t draw = static_cast<std::size_t>(generator() - generator_t::min());
+        std::size_t draw = static_cast<std::size_t>(generator() - (generator_t::min)());
         if constexpr (generator_bits_k < size_bits_k)
             for (std::size_t filled = generator_bits_k; filled < wanted_bits; filled += generator_bits_k)
-                draw = (draw << generator_bits_k) | static_cast<std::size_t>(generator() - generator_t::min());
+                draw = (draw << generator_bits_k) | static_cast<std::size_t>(generator() - (generator_t::min)());
         draw &= mask;
         if (draw < bound) return draw;
     }
@@ -3830,12 +3849,13 @@ class dynamic_transaction_group {
     status_t reserve_one_more_() noexcept {
         if (joined_count_ != joined_capacity_) return success_k;
         std::size_t const grown = joined_capacity_ == 0 ? 4 : joined_capacity_ * 2;
-        joined_t *const moved = joined_allocator_t {}.allocate(grown);
+        joined_allocator_t joined_allocator;
+        auto const [moved, granted] = allocate_at_least(joined_allocator, grown);
         if (!moved) return out_of_memory_heap_k;
         for (std::size_t position = 0; position != joined_count_; ++position) moved[position] = joined_[position];
         joined_allocator_t {}.deallocate(joined_, joined_capacity_);
         joined_ = moved;
-        joined_capacity_ = grown;
+        joined_capacity_ = granted;
         return success_k;
     }
 

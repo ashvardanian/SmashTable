@@ -164,7 +164,7 @@ constexpr void hash_mark_deleted(hash_bucket_head_t &head, hash_bucket_mask_t ma
 struct hash_slots_count_t {
 
     /** A count that no power of two covers, and which @c is_addressable therefore rejects. */
-    inline static constexpr std::size_t unrepresentable_k = std::numeric_limits<std::size_t>::max();
+    inline static constexpr std::size_t unrepresentable_k = (std::numeric_limits<std::size_t>::max)();
 
     std::size_t raw = 0;
 
@@ -180,14 +180,14 @@ struct hash_slots_count_t {
         std::size_t const needed_slots = (elements * 4ul) / 3ul;
         // We calculate the bucket index with AND masks, so it must be a power of two.
         std::size_t const rounded_slots = roundup_to_pow2(needed_slots);
-        raw = rounded_slots ? larger_of(rounded_slots, hash_bucket_capacity_k) : unrepresentable_k;
+        raw = rounded_slots ? max_of(rounded_slots, hash_bucket_capacity_k) : unrepresentable_k;
     }
 
     static constexpr hash_slots_count_t from_slots(std::size_t slots) noexcept {
         hash_slots_count_t result;
         if (slots == 0) return result;
         std::size_t const rounded_slots = roundup_to_pow2(slots);
-        result.raw = rounded_slots ? larger_of(rounded_slots, hash_bucket_capacity_k) : unrepresentable_k;
+        result.raw = rounded_slots ? max_of(rounded_slots, hash_bucket_capacity_k) : unrepresentable_k;
         return result;
     }
 
@@ -728,7 +728,7 @@ struct hash_storage {
         // The byte count is the second place a huge request wraps, and a wrapped one would allocate
         // a fraction of what the regions then address.
         std::size_t const buckets = slots.raw / hash_bucket_capacity_k;
-        if (buckets > std::numeric_limits<std::size_t>::max() / bytes_in_bucket_k) return result;
+        if (buckets > (std::numeric_limits<std::size_t>::max)() / bytes_in_bucket_k) return result;
 
         std::size_t const needed_bytes = memory_usage(slots);
         if (!needed_bytes) return result;

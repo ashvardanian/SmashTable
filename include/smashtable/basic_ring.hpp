@@ -205,7 +205,7 @@ class basic_ring {
     std::size_t push_many(std::span<value_t const> elements) noexcept
         requires std::is_nothrow_copy_constructible_v<value_t>
     {
-        std::size_t const accepted = smaller_of(elements.size(), free_space());
+        std::size_t const accepted = min_of(elements.size(), free_space());
         for (std::size_t index = 0; index < accepted; ++index) {
             new (&slot_(pushed_)) value_t(elements[index]);
             ++pushed_;
@@ -216,7 +216,7 @@ class basic_ring {
     /** Moves as many elements as @p destination holds out of the ring, oldest first, and returns
      *  how many. */
     std::size_t pop_many(std::span<value_t> destination) noexcept {
-        std::size_t const delivered = smaller_of(destination.size(), size());
+        std::size_t const delivered = min_of(destination.size(), size());
         for (std::size_t index = 0; index < delivered; ++index) {
             destination[index] = std::move(slot_(popped_));
             pop();

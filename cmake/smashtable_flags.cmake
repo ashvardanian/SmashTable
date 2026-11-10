@@ -18,9 +18,10 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
     endif ()
 elseif (MSVC)
     # Without this branch MSVC compiles at its default warning level and `SMASHTABLE_WERROR` silently does nothing.
-    # `/permissive-` buys two-phase lookup, `/Zc:preprocessor` buys the `__VA_OPT__` the assertion macros are built
-    # on, and `/bigobj` is cheap insurance: the partitioned suite already emits 2k sections against a 64k ceiling.
-    target_compile_options(smashtable_warnings INTERFACE /W4 /permissive- /utf-8 /Zc:preprocessor /bigobj)
+    # The conformance switches MSVC leaves off by default, which every other supported compiler behaves as.
+    target_compile_options(
+        smashtable_warnings INTERFACE /W4 /permissive- /Zc:preprocessor /Zc:__cplusplus /utf-8 /bigobj
+    )
     # C4324 fires on the over-alignment the alignment tests ask for on purpose. C4702 judges reachability per
     # instantiation after inlining, so the dead arm of an `if constexpr` and the `return` past a test callback
     # that asserts it can never fire both trip it; GCC and Clang judge the template and say nothing.

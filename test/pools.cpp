@@ -95,7 +95,7 @@ void verify_list_unlinks(records_type_ &records) {
  *  reported. */
 void fixed_pool_take_until_refused() {
     using pool_t = basic_fixed_pool<std::uint64_t>;
-    st_verify_eq_(pool_t::make(std::numeric_limits<std::uint32_t>::max()).status(), status_t::invalid_argument_k);
+    st_verify_eq_(pool_t::make((std::numeric_limits<std::uint32_t>::max)()).status(), status_t::invalid_argument_k);
     using refused_pool_t = basic_fixed_pool<std::uint64_t, std::uint32_t, refusing_allocator<std::byte>>;
     st_verify_eq_(refused_pool_t::make(4).status(), status_t::out_of_memory_heap_k);
 

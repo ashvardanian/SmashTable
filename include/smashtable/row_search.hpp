@@ -286,7 +286,7 @@ struct haswell_row_kit_t {
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
                                                  std::uint32_t wanted) noexcept {
-        __m256i const sign = _mm256_set1_epi32(std::numeric_limits<std::int32_t>::min());
+        __m256i const sign = _mm256_set1_epi32((std::numeric_limits<std::int32_t>::min)());
         __m256i const threshold = _mm256_xor_si256(_mm256_set1_epi32(static_cast<std::int32_t>(wanted)), sign);
         std::size_t below = 0;
         std::size_t offset = 0;
@@ -331,7 +331,7 @@ struct haswell_row_kit_t {
 
     template <std::size_t extent_>
     [[nodiscard]] static std::size_t count_below(std::span<key128_t const, extent_> keys, key128_t wanted) noexcept {
-        __m256i const sign = _mm256_set1_epi64x(std::numeric_limits<std::int64_t>::min());
+        __m256i const sign = _mm256_set1_epi64x((std::numeric_limits<std::int64_t>::min)());
         // Lanes run low to high, so a two-key load reads high, low, high, low.
         __m256i const threshold = _mm256_xor_si256(
             _mm256_set_epi64x(static_cast<std::int64_t>(wanted.low), static_cast<std::int64_t>(wanted.high),
@@ -357,7 +357,7 @@ struct haswell_row_kit_t {
                                                  std::span<std::uint64_t const, extent_> low_words,
                                                  key128_t wanted) noexcept {
         assert(high_words.size() == low_words.size() && "a split row has one low word per high word");
-        __m256i const sign = _mm256_set1_epi64x(std::numeric_limits<std::int64_t>::min());
+        __m256i const sign = _mm256_set1_epi64x((std::numeric_limits<std::int64_t>::min)());
         __m256i const high_threshold =
             _mm256_xor_si256(_mm256_set1_epi64x(static_cast<std::int64_t>(wanted.high)), sign);
         __m256i const low_threshold = _mm256_xor_si256(_mm256_set1_epi64x(static_cast<std::int64_t>(wanted.low)), sign);
@@ -561,7 +561,7 @@ struct skylake_row_kit_t {
                              static_cast<std::int64_t>(wanted.low), static_cast<std::int64_t>(wanted.high));
         std::size_t below = 0;
         for (std::size_t offset = 0; offset < keys.size(); offset += 4) {
-            __mmask8 const present = present_words_(2 * smaller_of<std::size_t>(keys.size() - offset, 4));
+            __mmask8 const present = present_words_(2 * min_of<std::size_t>(keys.size() - offset, 4));
             __m512i const loaded = _mm512_maskz_loadu_epi64(present, keys.data() + offset);
             unsigned const below_words = _mm512_mask_cmpgt_epu64_mask(present, threshold, loaded);
             unsigned const tied_words = _mm512_mask_cmpeq_epu64_mask(present, threshold, loaded);
@@ -1500,11 +1500,11 @@ template <typename key_type_>
     requires row_searchable_key<key_type_>
 [[nodiscard]] constexpr key_type_ successor_or_self(key_type_ key) noexcept {
     if constexpr (std::same_as<key_type_, key128_t>) {
-        if (key.low != std::numeric_limits<std::uint64_t>::max()) return key128_t {key.high, key.low + 1};
-        if (key.high != std::numeric_limits<std::uint64_t>::max()) return key128_t {key.high + 1, 0};
+        if (key.low != (std::numeric_limits<std::uint64_t>::max)()) return key128_t {key.high, key.low + 1};
+        if (key.high != (std::numeric_limits<std::uint64_t>::max)()) return key128_t {key.high + 1, 0};
         return key;
     }
-    else return key == std::numeric_limits<key_type_>::max() ? key : static_cast<key_type_>(key + 1);
+    else return key == (std::numeric_limits<key_type_>::max)() ? key : static_cast<key_type_>(key + 1);
 }
 
 /** How many of @p keys order at or below @p wanted; for a sorted row, the upper bound. */

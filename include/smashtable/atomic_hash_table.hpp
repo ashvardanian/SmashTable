@@ -195,7 +195,7 @@ class atomic_hash_table {
     constexpr bool empty() const noexcept { return size() == 0; }
 
     /** Slots this table will never exceed, since it cannot grow. */
-    constexpr offset_t capacity() const noexcept { return larger_of(storage_.growth_threshold, size()); }
+    constexpr offset_t capacity() const noexcept { return max_of(storage_.growth_threshold, size()); }
     constexpr offset_t slots_count() const noexcept { return storage_.slots_count; }
 
     /** Tombstones left by @c erase, which only ever grow while the table is pinned. Compaction

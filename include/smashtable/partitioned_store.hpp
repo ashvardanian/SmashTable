@@ -349,7 +349,7 @@ class partitioned_store {
     template <typename hashed_type_>
     static constexpr std::size_t partition_of_(hashed_type_ const hashed) noexcept {
         if constexpr (partitions_k == 1) return 0;
-        else return static_cast<std::size_t>(hashed / (std::numeric_limits<hashed_type_>::max() / partitions_k + 1));
+        else return static_cast<std::size_t>(hashed / ((std::numeric_limits<hashed_type_>::max)() / partitions_k + 1));
     }
 
     /**

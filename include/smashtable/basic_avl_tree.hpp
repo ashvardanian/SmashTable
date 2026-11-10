@@ -395,8 +395,8 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         y->parent = x;
 
         // Update heights
-        y->height = larger_of(get_height(y->left), get_height(y->right)) + 1;
-        x->height = larger_of(get_height(x->left), get_height(x->right)) + 1;
+        y->height = max_of(get_height(y->left), get_height(y->right)) + 1;
+        x->height = max_of(get_height(x->left), get_height(x->right)) + 1;
         return x;
     }
 
@@ -414,8 +414,8 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         x->parent = y;
 
         // Update heights
-        x->height = larger_of(get_height(x->left), get_height(x->right)) + 1;
-        y->height = larger_of(get_height(y->left), get_height(y->right)) + 1;
+        x->height = max_of(get_height(x->left), get_height(x->right)) + 1;
+        y->height = max_of(get_height(y->left), get_height(y->right)) + 1;
         return y;
     }
 
@@ -449,7 +449,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
     inline static node_t *rebalance_on_insert(node_t *node, comparable_type_ &&comparable,
                                               comparator_t const &comparator) noexcept {
         // Update height and check if branches aren't balanced
-        node->height = larger_of(get_height(node->left), get_height(node->right)) + 1;
+        node->height = max_of(get_height(node->left), get_height(node->right)) + 1;
         auto balance = get_balance(node);
 
         // Left Left Case
@@ -589,7 +589,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         if (failed(right.status)) return {root, right.status, 1 + left.count + right.count};
 
         // Set height (no balancing needed for perfectly balanced construction)
-        root->height = 1 + larger_of(get_height(root->left), get_height(root->right));
+        root->height = 1 + max_of(get_height(root->left), get_height(root->right));
         return {root, success_k, count};
     }
 
@@ -605,7 +605,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
     };
 
     static node_t *rebalance_after_extract(node_t *node) noexcept {
-        node->height = 1 + larger_of(get_height(node->left), get_height(node->right));
+        node->height = 1 + max_of(get_height(node->left), get_height(node->right));
         auto balance = get_balance(node);
 
         // Left Left Case
@@ -650,7 +650,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
             successor->right = subtree_result.root;
             if (successor->right) successor->right->parent = successor;
             successor->parent = node->parent;
-            successor->height = 1 + larger_of(get_height(successor->left), get_height(successor->right));
+            successor->height = 1 + max_of(get_height(successor->left), get_height(successor->right));
             // Detach the `node` from the descendants.
             node->left = node->right = node->parent = nullptr;
             node->height = 1;
@@ -736,7 +736,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
             return {extract_result.root, count};
         }
         else {
-            node->height = 1 + larger_of(get_height(node->left), get_height(node->right));
+            node->height = 1 + max_of(get_height(node->left), get_height(node->right));
             return {node, count + 1};
         }
     }
@@ -784,14 +784,14 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         if (left_height > right_height + 1) {
             left->right = join_with_root_(left->right, root_node, right, comparator);
             left->right->parent = left;
-            left->height = 1 + larger_of(get_height(left->left), get_height(left->right));
+            left->height = 1 + max_of(get_height(left->left), get_height(left->right));
             return rebalance_after_extract(left);
         }
 
         if (right_height > left_height + 1) {
             right->left = join_with_root_(left, root_node, right->left, comparator);
             right->left->parent = right;
-            right->height = 1 + larger_of(get_height(right->left), get_height(right->right));
+            right->height = 1 + max_of(get_height(right->left), get_height(right->right));
             return rebalance_after_extract(right);
         }
 
@@ -799,7 +799,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         if (left) left->parent = root_node;
         root_node->right = right;
         if (right) right->parent = root_node;
-        root_node->height = 1 + larger_of(left_height, right_height);
+        root_node->height = 1 + max_of(left_height, right_height);
         return root_node;
     }
 
@@ -823,14 +823,14 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
         if (left_height > right_height + 1) {
             left->right = join(left->right, right, comparator);
             if (left->right) left->right->parent = left;
-            left->height = 1 + larger_of(get_height(left->left), get_height(left->right));
+            left->height = 1 + max_of(get_height(left->left), get_height(left->right));
             return rebalance_after_extract(left);
         }
         // If right tree is taller, join with left subtree of right
         else if (right_height > left_height + 1) {
             right->left = join(left, right->left, comparator);
             if (right->left) right->left->parent = right;
-            right->height = 1 + larger_of(get_height(right->left), get_height(right->right));
+            right->height = 1 + max_of(get_height(right->left), get_height(right->right));
             return rebalance_after_extract(right);
         }
         // Heights are balanced, extract min from right and use as root
@@ -882,29 +882,29 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
      *      sizes: O(m log(n/m + 1)) where m <= n. Takes root of smaller tree, splits larger tree
      *      around it, recursively merges.
      *
-     *  @param[in] small Smaller tree to merge (will be consumed).
-     *  @param[in] large Larger tree to merge into (will be consumed).
+     *  @param[in] smaller Smaller tree to merge (will be consumed).
+     *  @param[in] larger Larger tree to merge into (will be consumed).
      *  @param[in] comparator Comparator for element comparison.
      *  @return The root of the merged tree, holding every node from both inputs.
      *
      *  @note Both input trees are consumed, ownership transferred, balance kept throughout.
      *  @sa Blelloch et al., "Just Join for Parallel Ordered Sets", 2016
      */
-    static node_t *merge_split_based(node_t *small, node_t *large, comparator_t const &comparator) noexcept {
-        if (!small) return large;
-        if (!large) return small;
+    static node_t *merge_split_based(node_t *smaller, node_t *larger, comparator_t const &comparator) noexcept {
+        if (!smaller) return larger;
+        if (!larger) return smaller;
 
         // Extract root of smaller tree as pivot
-        node_t *pivot = small;
-        node_t *small_left = pivot->left;
-        node_t *small_right = pivot->right;
+        node_t *pivot = smaller;
+        node_t *smaller_left = pivot->left;
+        node_t *smaller_right = pivot->right;
 
         // Split larger tree around pivot's key: O(log n)
-        auto split_result = split(large, pivot->payload, comparator);
+        auto split_result = split(larger, pivot->payload, comparator);
 
         // Recursively merge subtrees
-        node_t *merged_left = merge_split_based(small_left, split_result.left, comparator);
-        node_t *merged_right = merge_split_based(small_right, split_result.right, comparator);
+        node_t *merged_left = merge_split_based(smaller_left, split_result.left, comparator);
+        node_t *merged_right = merge_split_based(smaller_right, split_result.right, comparator);
 
         // Join with pivot as root: O(log height_diff)
         return join_with_root(merged_left, pivot, merged_right, comparator);
@@ -1034,7 +1034,7 @@ class basic_avl_node : public binary_node_search<basic_avl_node<value_type_, com
             if (left) left->parent = root;
             root->right = right;
             if (right) right->parent = root;
-            root->height = 1 + larger_of(get_height(left), get_height(right));
+            root->height = 1 + max_of(get_height(left), get_height(right));
             return root;
         };
 
@@ -2387,7 +2387,7 @@ class basic_avl_tree {
      *  @return Theoretical maximum size.
      */
     std::size_t max_size() const noexcept {
-        return smaller_of(allocator_.max_size(), std::numeric_limits<std::size_t>::max() / sizeof(node_t));
+        return min_of(allocator_.max_size(), (std::numeric_limits<std::size_t>::max)() / sizeof(node_t));
     }
 
     /**
@@ -2662,8 +2662,8 @@ class basic_avl_tree {
         }
 
         // Strategy 2: Adaptive selection between split-based and DSW
-        std::size_t min_size = smaller_of(size_, other.size_);
-        std::size_t max_size = larger_of(size_, other.size_);
+        std::size_t min_size = min_of(size_, other.size_);
+        std::size_t max_size = max_of(size_, other.size_);
 
         // Heuristic: Use DSW when both large and similar size
         constexpr std::size_t dsw_threshold_k = 10000;
@@ -2677,9 +2677,9 @@ class basic_avl_tree {
         }
         // Split-based for unbalanced sizes: O(m log(n/m+1))
         else {
-            node_t *small = (size_ < other.size_) ? root_ : other.root_;
-            node_t *large = (size_ < other.size_) ? other.root_ : root_;
-            root_ = node_t::merge_split_based(small, large, comparator_);
+            node_t *smaller = (size_ < other.size_) ? root_ : other.root_;
+            node_t *larger = (size_ < other.size_) ? other.root_ : root_;
+            root_ = node_t::merge_split_based(smaller, larger, comparator_);
             size_ += other.size_;
         }
 

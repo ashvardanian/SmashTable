@@ -472,7 +472,7 @@ class basic_hash_table {
     offset_t deleted_count() const noexcept { return storage_.deleted_count; }
 
     offset_t optimal_capacity() const noexcept { return storage_.growth_threshold; }
-    offset_t capacity() const noexcept { return larger_of(optimal_capacity(), size()); }
+    offset_t capacity() const noexcept { return max_of(optimal_capacity(), size()); }
 
     std::size_t size_bytes() const noexcept { return storage_.size_bytes(); }
 
@@ -492,7 +492,9 @@ class basic_hash_table {
      *  @brief STL-compatibility function.
      *  @see https://en.cppreference.com/w/cpp/container/unordered_map/max_bucket_count
      */
-    offset_t max_bucket_count() const noexcept { return std::numeric_limits<offset_t>::max() / hash_bucket_capacity_k; }
+    offset_t max_bucket_count() const noexcept {
+        return (std::numeric_limits<offset_t>::max)() / hash_bucket_capacity_k;
+    }
 
     /**
      *  @brief STL-compatibility function.

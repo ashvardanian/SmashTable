@@ -666,7 +666,7 @@ static generation_t oldest_open_snapshot(
     // A reader opens at or below the stamp it found, so the published one is the answer when none is open.
     generation_t oldest = store.published_stamp();
     for (auto const &reader : readers)
-        if (reader) oldest = smaller_of(oldest, reader->snapshot());
+        if (reader) oldest = min_of(oldest, reader->snapshot());
     return oldest;
 }
 
@@ -2700,7 +2700,7 @@ template <typename store_type_>
 static void test_reader_walks_from_a_bound_to_the_end() {
     using member_t = typename store_type_::value_type;
     constexpr trivial_id_t keys_k = 32, lower_k = 20;
-    constexpr trivial_id_t largest_k = std::numeric_limits<trivial_id_t>::max();
+    constexpr trivial_id_t largest_k = (std::numeric_limits<trivial_id_t>::max)();
     store_type_ store;
     for (trivial_id_t identifier = 0; identifier != keys_k; ++identifier) commit_write(store, identifier, 100);
     commit_write(store, largest_k, 100);
@@ -3130,7 +3130,7 @@ static contents_t contents_of(store_type_ const &store) {
 /** Every version @p reader walks after @p stamp, halting after @p limit of them. */
 template <typename reader_type_>
 static std::vector<logged_version_t> versions_after(reader_type_ const &reader, generation_t stamp,
-                                                    std::size_t limit = std::numeric_limits<std::size_t>::max()) {
+                                                    std::size_t limit = (std::numeric_limits<std::size_t>::max)()) {
     std::vector<logged_version_t> walked;
     st_verify_(reader.for_each_version_after(stamp, [&](auto const &key, generation_t committed, presence_t presence,
                                                         auto const &member) noexcept {
@@ -3240,7 +3240,7 @@ static void verify_version_walks(store_type_ const &store, fuzz_oracle_t const &
             else replayed.erase(version.key);
         st_verify_((replayed == current) && "the history above a pin replays onto its contents as the oracle's now");
 
-        std::size_t const page = std::min<std::size_t>(walked.size(), 3);
+        std::size_t const page = min_of<std::size_t>(walked.size(), 3);
         std::vector<logged_version_t> const halted = versions_after(now, pinned, page);
         st_verify_((page == 0 || std::equal(halted.begin(), halted.end(), walked.begin())) &&
                    "a halted walk hands over a prefix of the whole one");
@@ -3312,7 +3312,7 @@ using descent_bound_t = std::optional<trivial_id_t>;
  *  @p limit of them. */
 template <typename view_type_>
 static std::vector<trivial_id_t> keys_down(view_type_ const &view, descent_bound_t from, descent_bound_t until,
-                                           std::size_t limit = std::numeric_limits<std::size_t>::max()) {
+                                           std::size_t limit = (std::numeric_limits<std::size_t>::max)()) {
     std::vector<trivial_id_t> walked;
     auto const step = [&](auto const &member) noexcept {
         walked.push_back(member.key.unique_id);
@@ -3336,7 +3336,7 @@ static void verify_descents_reverse(view_type_ const &view, std::vector<trivial_
             for (trivial_id_t const key : reversed)
                 if ((!from || key <= *from) && (!until || key > *until)) expected.push_back(key);
             st_verify_((keys_down(view, from, until) == expected) && "a descent reads the forward walk reversed");
-            std::size_t const page = std::min<std::size_t>(expected.size(), 3);
+            std::size_t const page = min_of<std::size_t>(expected.size(), 3);
             if (page == 0) continue;
             st_verify_((std::vector<trivial_id_t>(expected.begin(), expected.begin() + std::ptrdiff_t(page)) ==
                         keys_down(view, from, until, page)) &&
@@ -3351,7 +3351,7 @@ template <typename store_type_>
 static void test_descending_range_reverses_the_forward_walk() {
     using member_t = typename store_type_::value_type;
     constexpr trivial_id_t keys_k = 24, spacing_k = 5;
-    constexpr trivial_id_t largest_k = std::numeric_limits<trivial_id_t>::max();
+    constexpr trivial_id_t largest_k = (std::numeric_limits<trivial_id_t>::max)();
     store_type_ store;
     for (trivial_id_t index = 1; index <= keys_k; ++index) commit_write(store, index * spacing_k, int(index));
     commit_write(store, largest_k, 0);

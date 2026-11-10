@@ -647,7 +647,7 @@ bool window_from_python(char const *called, PyObject *const *args, Py_ssize_t co
     }
     start = count > 0 ? args[0] : nullptr;
     stop = count > 1 ? args[1] : nullptr;
-    limit = std::numeric_limits<std::size_t>::max();
+    limit = (std::numeric_limits<std::size_t>::max)();
     if (!keywords) return true;
 
     Py_ssize_t const named = PyTuple_GET_SIZE(keywords);

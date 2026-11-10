@@ -42,7 +42,7 @@ struct intrusive_list {
     using index_t = index_type_;
 
     /** Ends a list and names no record. */
-    static constexpr index_t absent_k = std::numeric_limits<index_t>::max();
+    static constexpr index_t absent_k = (std::numeric_limits<index_t>::max)();
 
     /** The record @c pop answers next. */
     index_t oldest {absent_k};

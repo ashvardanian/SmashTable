@@ -252,7 +252,7 @@ class immutable_splus_tree_view {
 
     /** A walk from position @p ordinal, or @c end when there is no such position. */
     [[nodiscard]] iterator at_rank(std::size_t ordinal) const noexcept {
-        return iterator(this, smaller_of(ordinal, size_));
+        return iterator(this, min_of(ordinal, size_));
     }
 
     /** A walk from the first key not below @p wanted. */

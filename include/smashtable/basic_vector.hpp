@@ -192,10 +192,10 @@ class basic_vector {
         if (new_capacity > max_capacity) return out_of_memory_heap_k;
 
         std::size_t const doubled_capacity = capacity_ > max_capacity / 2 ? max_capacity : capacity_ * 2;
-        std::size_t const seeded_capacity = larger_of<std::size_t>(doubled_capacity, 4);
+        std::size_t const seeded_capacity = max_of<std::size_t>(doubled_capacity, 4);
         std::size_t const grown_capacity =
-            smaller_of<std::size_t>(larger_of<std::size_t>(new_capacity, seeded_capacity), max_capacity);
-        auto new_data = allocator_.allocate(grown_capacity);
+            min_of<std::size_t>(max_of<std::size_t>(new_capacity, seeded_capacity), max_capacity);
+        auto const [new_data, granted_capacity] = allocate_at_least(allocator_, grown_capacity);
         if (!new_data) return out_of_memory_heap_k;
 
         // Move existing elements to new storage
@@ -206,7 +206,7 @@ class basic_vector {
 
         if (data_) allocator_.deallocate(data_, capacity_);
         data_ = new_data;
-        capacity_ = grown_capacity;
+        capacity_ = granted_capacity;
         return success_k;
     }
 

@@ -54,7 +54,7 @@ class basic_hash_index {
     using allocator_t = allocator_type_;
 
     /** The position @c find answers when no key matches, which no record may occupy. */
-    static constexpr index_t absent_k = std::numeric_limits<index_t>::max();
+    static constexpr index_t absent_k = (std::numeric_limits<index_t>::max)();
 
   private:
     using storage_t = hash_storage<mapping<key_t, index_t>, hasher_t, allocator_t>;
@@ -115,7 +115,7 @@ class basic_hash_index {
      */
     static expected<basic_hash_index> make(std::size_t capacity, hasher_t hasher = {},
                                            allocator_t allocator = {}) noexcept {
-        if (capacity > std::numeric_limits<std::size_t>::max() / 2) return invalid_argument_k;
+        if (capacity > (std::numeric_limits<std::size_t>::max)() / 2) return invalid_argument_k;
         hash_slots_count_t const slots = hash_slots_count_t::from_slots(capacity * 2);
         if (!slots.is_addressable()) return invalid_argument_k;
         storage_t storage = storage_t::make(slots, std::move(allocator));

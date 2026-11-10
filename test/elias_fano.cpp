@@ -70,7 +70,8 @@ void elias_fano_edges() {
     st_verify_(empty->empty());
     st_verify_eq_(empty->size_bytes(), 0u);
 
-    for (std::uint64_t const value : {std::uint64_t(0), std::uint64_t(7), std::numeric_limits<std::uint64_t>::max()}) {
+    for (std::uint64_t const value :
+         {std::uint64_t(0), std::uint64_t(7), (std::numeric_limits<std::uint64_t>::max)()}) {
         std::uint64_t const values[1] = {value};
         auto single = sequence_t::make(std::span<std::uint64_t const>(values));
         st_verify_(single);
@@ -226,7 +227,7 @@ void packed_array_edges() {
     st_verify_eq_(empty_pulled->bits(), 0u);
     st_verify_eq_(empty_pulled->base(), 0u);
 
-    std::uint64_t const greatest = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const greatest = (std::numeric_limits<std::uint64_t>::max)();
     for (std::uint64_t const value : {std::uint64_t(0), std::uint64_t(7), greatest}) {
         std::uint64_t const values[1] = {value};
         auto single = packed_t::make(std::span<std::uint64_t const>(values));
@@ -282,7 +283,7 @@ void packed_array_edges() {
  *  and read back from bytes saved at any alignment. */
 void packed_array_random_widths(test_context_t const &context) {
     std::mt19937_64 generator(mix_seed(context.seed, __func__));
-    std::uint64_t const greatest = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const greatest = (std::numeric_limits<std::uint64_t>::max)();
     for (unsigned bits = 0; bits <= 64; ++bits)
         for (std::size_t const count :
              {std::size_t(1), std::size_t(2), std::size_t(63), std::size_t(64), std::size_t(65), std::size_t(1000)}) {

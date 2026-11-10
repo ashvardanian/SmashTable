@@ -64,7 +64,7 @@ enum class refusable_method_t : std::uint8_t {
 inline constexpr std::size_t refusable_methods_k = static_cast<std::size_t>(refusable_method_t::methods_count_k);
 
 /** The call index no call ever carries, as opposed to @c 0, which refuses the very first one. */
-inline constexpr std::size_t no_refusal_k = std::numeric_limits<std::size_t>::max();
+inline constexpr std::size_t no_refusal_k = (std::numeric_limits<std::size_t>::max)();
 
 /**
  *  @brief The standing instruction @c refusing_store consults, plus a tally of the calls it saw.

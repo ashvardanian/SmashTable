@@ -56,7 +56,7 @@ class basic_fixed_pool {
     using allocator_t = allocator_type_;
 
     /** What @c take answers when every record is taken. */
-    static constexpr index_t absent_k = std::numeric_limits<index_t>::max();
+    static constexpr index_t absent_k = (std::numeric_limits<index_t>::max)();
 
     /** A record's index and the generation it was taken at, for a tagged record only. */
     struct handle_t {
@@ -132,7 +132,7 @@ class basic_fixed_pool {
      *  - @c invalid_argument_k A capacity reaching @c absent_k, or too large to count in bytes.
      */
     static expected<basic_fixed_pool> make(std::size_t capacity, allocator_t allocator = {}) noexcept {
-        if (capacity >= absent_k || capacity > (std::numeric_limits<std::size_t>::max() - cache_line_bytes_k) /
+        if (capacity >= absent_k || capacity > ((std::numeric_limits<std::size_t>::max)() - cache_line_bytes_k) /
                                                    (sizeof(value_t) + sizeof(index_t)))
             return invalid_argument_k;
         basic_fixed_pool pool(std::move(allocator));

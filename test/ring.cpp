@@ -29,7 +29,7 @@ namespace ashvardanian::smashtable::test {
 void ring_capacity_rules() {
     st_verify_eq_(basic_ring<int>::make(3).status(), status_t::invalid_argument_k);
     // No power of two above the limit fits a 32-bit `std::size_t`, so there is nothing to refuse
-    if constexpr (basic_ring<int>::capacity_limit_k <= std::numeric_limits<std::size_t>::max() / 2)
+    if constexpr (basic_ring<int>::capacity_limit_k <= (std::numeric_limits<std::size_t>::max)() / 2)
         st_verify_eq_(basic_ring<int>::make(basic_ring<int>::capacity_limit_k * 2).status(),
                       status_t::invalid_argument_k);
     using refused_ring_t = basic_ring<int, refusing_allocator<int>>;

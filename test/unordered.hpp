@@ -840,9 +840,9 @@ void test_unordered_unrepresentable_capacity() {
 
     // The middle one is the nastiest: the load-factor multiplication wraps to exactly zero, which
     // the power-of-two rounding then reads as a request for the smallest table there is.
-    constexpr std::size_t past_the_load_factor_k = std::numeric_limits<std::size_t>::max() / 2;
+    constexpr std::size_t past_the_load_factor_k = (std::numeric_limits<std::size_t>::max)() / 2;
     constexpr std::size_t wrapping_to_nothing_k = std::size_t {1} << (std::numeric_limits<std::size_t>::digits - 2);
-    constexpr std::size_t past_every_power_of_two_k = std::numeric_limits<std::size_t>::max();
+    constexpr std::size_t past_every_power_of_two_k = (std::numeric_limits<std::size_t>::max)();
 
     for (std::size_t elements : {past_the_load_factor_k, wrapping_to_nothing_k, past_every_power_of_two_k}) {
         auto allocated = container_t::make(elements);

@@ -70,7 +70,7 @@ class basic_growing_pool {
     using allocator_t = allocator_type_;
 
     /** What @c take answers when every record is taken and no more may be added. */
-    static constexpr index_t absent_k = std::numeric_limits<index_t>::max();
+    static constexpr index_t absent_k = (std::numeric_limits<index_t>::max)();
 
     /** The most records a pool holds, every index but @c absent_k. */
     static constexpr std::size_t capacity_max_k = absent_k - 1;
@@ -268,7 +268,7 @@ class basic_growing_pool {
     static expected<basic_growing_pool> make(std::size_t capacity, std::size_t capacity_limit,
                                              allocator_t allocator = {}) noexcept {
         if (capacity_limit > capacity_max_k || capacity > capacity_limit ||
-            capacity_limit > std::numeric_limits<std::size_t>::max() / sizeof(value_t))
+            capacity_limit > (std::numeric_limits<std::size_t>::max)() / sizeof(value_t))
             return invalid_argument_k;
         basic_growing_pool pool(std::move(allocator));
         if (capacity_limit == 0) return expected<basic_growing_pool>(std::move(pool), success_k);

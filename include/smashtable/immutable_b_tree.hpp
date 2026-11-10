@@ -323,9 +323,8 @@ class immutable_b_tree {
             for (;; ++child) {
                 std::size_t const child_node = node * fanout_k + child + 1;
                 std::size_t const child_deepest_first = deepest_first + child * deepest_nodes;
-                std::size_t const deepest_present = child_deepest_first < nodes_count_
-                                                        ? smaller_of(nodes_count_ - child_deepest_first, deepest_nodes)
-                                                        : 0;
+                std::size_t const deepest_present =
+                    child_deepest_first < nodes_count_ ? min_of(nodes_count_ - child_deepest_first, deepest_nodes) : 0;
                 std::size_t const child_slots =
                     child_node < nodes_count_ ? deepest_nodes - 1 + deepest_present * keys_per_row_k : 0;
                 if (ordinal < child_slots) break;

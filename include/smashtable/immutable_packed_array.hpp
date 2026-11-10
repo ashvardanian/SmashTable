@@ -110,7 +110,7 @@ class immutable_packed_array_view {
         if (bytes.size() < sizeof(header)) return invalid_argument_k;
         std::memcpy(&header, bytes.data(), sizeof(header));
         std::uint64_t const widest = std::numeric_limits<value_t>::digits;
-        std::uint64_t const limit = std::numeric_limits<value_t>::max();
+        std::uint64_t const limit = (std::numeric_limits<value_t>::max)();
         if (header.bits > widest || header.base > limit) return invalid_argument_k;
         if (header.bits && (~std::uint64_t {0} >> (64 - header.bits)) > limit - header.base) return invalid_argument_k;
         if (header.count > size_max_k / 64) return invalid_argument_k;

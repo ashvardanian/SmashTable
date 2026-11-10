@@ -148,7 +148,7 @@ static void verify_through(test_context_t const &context, row_kit_t kit) {
 /** Capacity is fixed at @c make, zero accepts nothing, and refusals are reported. */
 static void hash_index_capacity_rules() {
     using index_t = basic_hash_index<std::uint64_t>;
-    st_verify_eq_(index_t::make(std::numeric_limits<std::size_t>::max()).status(), status_t::invalid_argument_k);
+    st_verify_eq_(index_t::make((std::numeric_limits<std::size_t>::max)()).status(), status_t::invalid_argument_k);
     using refused_index_t =
         basic_hash_index<std::uint64_t, std::uint32_t, default_hash_t, refusing_allocator<std::byte>>;
     st_verify_eq_(refused_index_t::make(16).status(), status_t::out_of_memory_heap_k);

@@ -21,7 +21,6 @@
 #include <cstdint> // `std::uintptr_t`
 #include <cstring> // `std::memcmp`
 
-#include <algorithm>   // `std::min`
 #include <atomic>      // `std::atomic`
 #include <compare>     // `std::strong_ordering`
 #include <exception>   // `std::exception`
@@ -172,7 +171,7 @@ struct heavy_key_t {
      *  folded into it.
      */
     static std::strong_ordering compare_bytes(std::string_view first, std::string_view second) noexcept {
-        std::size_t const shared = std::min(first.size(), second.size());
+        std::size_t const shared = min_of(first.size(), second.size());
         int const ordered = shared == 0 ? 0 : std::memcmp(first.data(), second.data(), shared);
         if (ordered != 0) return ordered <=> 0;
         return first.size() <=> second.size();
@@ -369,7 +368,7 @@ class guarded_payload_t {
 enum class budget_outcome_t : bool { granted_k, refused_k };
 
 /** The countdown that never runs out, as opposed to @c 0, which refuses the very next request. */
-inline constexpr std::size_t unlimited_budget_k = std::numeric_limits<std::size_t>::max();
+inline constexpr std::size_t unlimited_budget_k = (std::numeric_limits<std::size_t>::max)();
 
 /**
  *  @brief Countdown arming @c budgeted_key_t::copy, so a rollback or watch copy can fail on demand.
@@ -819,7 +818,7 @@ struct allocation_ledger_t {
     std::size_t largest_request_elements() const noexcept {
         std::size_t largest = 0;
         for (std::size_t index = 0; index != requests.size(); ++index)
-            largest = larger_of(largest, requests.data()[index].elements_count);
+            largest = max_of(largest, requests.data()[index].elements_count);
         return largest;
     }
 
@@ -1140,8 +1139,9 @@ void test_range_query_head_state(std::size_t size = 100) {
         auto max_key = trivial_id_to_key<member_t>(0);
         st_verify_(container.range(trivial_id_to_key<member_t>(index), trivial_id_to_key<member_t>(index + 10),
                                    [&](member_t const &member) noexcept {
-                                       min_key = std::min(min_key, mapping_key_or_itself<member_t>(member));
-                                       max_key = std::max(max_key, mapping_key_or_itself<member_t>(member));
+                                       auto const &key = mapping_key_or_itself<member_t>(member);
+                                       if (key < min_key) min_key = key;
+                                       if (max_key < key) max_key = key;
                                        count++;
                                    }));
         st_verify_eq_(count, 10, "a half-open ten-wide window over contiguous keys holds ten of them");

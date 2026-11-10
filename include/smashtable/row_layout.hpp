@@ -106,8 +106,8 @@ struct row_format {
      *  it. */
     static constexpr key_t padding_k = [] {
         if constexpr (keys_are_split_k)
-            return key_t {std::numeric_limits<std::uint64_t>::max(), std::numeric_limits<std::uint64_t>::max()};
-        else return std::numeric_limits<key_t>::max();
+            return key_t {(std::numeric_limits<std::uint64_t>::max)(), (std::numeric_limits<std::uint64_t>::max)()};
+        else return (std::numeric_limits<key_t>::max)();
     }();
 
     [[nodiscard]] static constexpr key_t key_at(word_t const *row, std::size_t index) noexcept {

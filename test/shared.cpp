@@ -466,11 +466,11 @@ struct counting_extended_ref : extended_ref_tallies {
         return std::atomic_ref<value_type_>(*word).compare_exchange_weak(expected, wanted, success, failure);
     }
 
-    void add(value_type_ addend, std::memory_order order) const noexcept {
+    void store_add(value_type_ addend, std::memory_order order) const noexcept {
         posted_writes.fetch_add(1, std::memory_order_relaxed);
         std::atomic_ref<value_type_>(*word).fetch_add(addend, order);
     }
-    void sub(value_type_ subtrahend, std::memory_order order) const noexcept {
+    void store_sub(value_type_ subtrahend, std::memory_order order) const noexcept {
         posted_writes.fetch_add(1, std::memory_order_relaxed);
         std::atomic_ref<value_type_>(*word).fetch_sub(subtrahend, order);
     }
@@ -630,7 +630,7 @@ static void extended_atomics_claim_each_bit_once() {
     for (std::thread &thread : threads) thread.join();
 
     for (std::size_t bit = 0; bit != bits_count_k; ++bit) st_verify_eq_(winners[bit].load(), std::size_t {1});
-    for (std::uint64_t const word : words) st_verify_eq_(word, std::numeric_limits<std::uint64_t>::max());
+    for (std::uint64_t const word : words) st_verify_eq_(word, (std::numeric_limits<std::uint64_t>::max)());
     st_verify_ge_(counting_extended_ref<std::uint64_t>::bit_claims.load(), bits_count_k,
                   "every claim goes through the reference's own bit verb");
 
@@ -1396,7 +1396,7 @@ static void commit_stamp_visibility_matrix() {
     // The sentinel sits past every snapshot a generation counter will ever hand out, which is the
     // whole reason it is the maximum rather than zero.
     for (generation_t const snapshot : snapshots_k) st_verify_(!visible_at(commit_stamp_t::uncommitted_k, snapshot));
-    st_verify_(!visible_at(commit_stamp_t::uncommitted_k, std::numeric_limits<generation_t>::max() - 1));
+    st_verify_(!visible_at(commit_stamp_t::uncommitted_k, (std::numeric_limits<generation_t>::max)() - 1));
 
     // Zero as a sentinel would have read as "visible since the beginning of time".
     st_verify_(visible_at(static_cast<commit_stamp_t>(generation_t {0}), 0));

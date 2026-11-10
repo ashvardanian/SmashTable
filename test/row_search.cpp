@@ -54,16 +54,16 @@ template <typename key_type_>
 [[nodiscard]] constexpr key_type_ predecessor_or_self(key_type_ key) noexcept {
     if constexpr (std::same_as<key_type_, key128_t>) {
         if (key.low != 0) return key128_t {key.high, key.low - 1};
-        if (key.high != 0) return key128_t {key.high - 1, std::numeric_limits<std::uint64_t>::max()};
+        if (key.high != 0) return key128_t {key.high - 1, (std::numeric_limits<std::uint64_t>::max)()};
         return key;
     }
-    else return key == std::numeric_limits<key_type_>::min() ? key : static_cast<key_type_>(key - 1);
+    else return key == (std::numeric_limits<key_type_>::min)() ? key : static_cast<key_type_>(key - 1);
 }
 
 /** Fills @p keys from @p shape: a tie sits in a 16-byte key's high word, repeats in an integer. */
 template <typename key_type_>
 void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &generator) {
-    std::uint64_t const all_ones = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const all_ones = (std::numeric_limits<std::uint64_t>::max)();
     std::uint64_t const tied_word = generator();
     std::uint64_t const boundary = sizeof(key_type_) == 4 ? std::uint64_t {1} << 31 : std::uint64_t {1} << 63;
     for (key_type_ &key : keys) {
@@ -88,14 +88,14 @@ void fill_keys(std::span<key_type_> keys, key_shape_t shape, std::mt19937_64 &ge
 /** Collects the keys worth asking about: extremes, the boundary, and the row's own neighbours. */
 template <typename key_type_>
 void collect_wanted(std::span<key_type_ const> keys, std::mt19937_64 &generator, basic_vector<key_type_> &wanted) {
-    std::uint64_t const all_ones = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const all_ones = (std::numeric_limits<std::uint64_t>::max)();
     std::uint64_t const boundary = std::uint64_t {1} << 63;
     wanted.clear();
     for (key_type_ const extreme :
          {key_from_words<key_type_>(0, 0), key_from_words<key_type_>(all_ones, all_ones),
           key_from_words<key_type_>(0, all_ones), key_from_words<key_type_>(all_ones, 0),
           key_from_words<key_type_>(boundary, boundary), key_from_words<key_type_>(0, 1u << 31),
-          std::numeric_limits<key_type_>::min(), std::numeric_limits<key_type_>::max()})
+          (std::numeric_limits<key_type_>::min)(), (std::numeric_limits<key_type_>::max)()})
         st_verify_(wanted.push_back(key_type_ {extreme}));
     std::size_t const stride = keys.size() / 24 + 1;
     for (std::size_t index = 0; index < keys.size(); index += stride) {
@@ -348,15 +348,15 @@ void row_search_serial_matches_definitions(test_context_t const &context) {
         st_verify_eq_(std::memcmp(round_trip, first_bytes, 16), 0);
     }
 
-    std::uint64_t const words[] = {0, 1, 5, 5, 9, std::numeric_limits<std::uint64_t>::max()};
+    std::uint64_t const words[] = {0, 1, 5, 5, 9, (std::numeric_limits<std::uint64_t>::max)()};
     std::span<std::uint64_t const> const row(words, 6);
     st_verify_eq_(serial_row_kit_t::count_below(row, std::uint64_t {5}), 2u);
     st_verify_eq_(count_not_above<serial_row_kit_t>(row, std::uint64_t {5}), 4u);
-    st_verify_eq_(count_not_above<serial_row_kit_t>(row, std::numeric_limits<std::uint64_t>::max()), 6u);
+    st_verify_eq_(count_not_above<serial_row_kit_t>(row, (std::numeric_limits<std::uint64_t>::max)()), 6u);
 
     // An integer identity parks in the low word and orders as its value.
     st_verify_((key128_t {0, 42} < key128_t {0, 43}));
-    st_verify_((key128_t {0, std::numeric_limits<std::uint64_t>::max()} < key128_t {1, 0}));
+    st_verify_((key128_t {0, (std::numeric_limits<std::uint64_t>::max)()} < key128_t {1, 0}));
 
     st_verify_eq_(keys_per_row<key128_t>(512u), 32u);
     st_verify_eq_(keys_per_row<key128_t>(4096u), 256u);

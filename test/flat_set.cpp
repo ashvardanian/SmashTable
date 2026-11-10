@@ -70,7 +70,7 @@ void verify_against_presence(set_type_ const &set, std::span<std::uint8_t const,
     for (std::size_t index = 0; index < domain_size_k; ++index) {
         value_t const element = element_at<value_t>(index);
         st_verify_eq_(set.rank(element), below);
-        st_verify_eq_(set.contains(element), present[index]);
+        st_verify_eq_(set.contains(element), present[index] != 0);
         if (present[index]) {
             st_verify_(same_element(set[listed], element));
             ++listed;
@@ -103,7 +103,7 @@ void verify_random_operations(std::mt19937_64 &generator) {
             break;
         default:
             value_type_ const *const found = set.find(element);
-            st_verify_eq_(found != nullptr, present[index]);
+            st_verify_eq_(found != nullptr, present[index] != 0);
             if (found) st_verify_(same_element(*found, element));
             break;
         }
