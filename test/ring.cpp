@@ -10,11 +10,10 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
-#include <limits>      // `std::numeric_limits`
-#include <random>      // `std::mt19937_64`
-#include <span>        // `std::span`
-#include <type_traits> // `std::true_type`
-#include <utility>     // `std::move`, `std::swap`
+#include <limits>  // `std::numeric_limits`
+#include <random>  // `std::mt19937_64`
+#include <span>    // `std::span`
+#include <utility> // `std::move`, `std::swap`
 
 #include <smashtable/basic_ring.hpp>
 

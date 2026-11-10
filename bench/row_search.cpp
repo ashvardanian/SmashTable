@@ -13,14 +13,13 @@
 #include <cstdint> // `std::uint64_t`
 #include <cstring> // `std::strcmp`
 
-#include <algorithm>   // `std::lower_bound`, `std::sort`
-#include <chrono>      // `std::chrono::steady_clock`
-#include <concepts>    // `std::same_as`
-#include <format>      // `std::format`
-#include <random>      // `std::mt19937_64`
-#include <span>        // `std::span`
-#include <string>      // `std::string`
-#include <string_view> // `std::string_view`
+#include <algorithm> // `std::lower_bound`, `std::sort`
+#include <chrono>    // `std::chrono::steady_clock`
+#include <concepts>  // `std::same_as`
+#include <format>    // `std::format`
+#include <random>    // `std::mt19937_64`
+#include <span>      // `std::span`
+#include <string>    // `std::string`
 
 #include <smashtable/basic_vector.hpp>
 #include <smashtable/row_search.hpp>

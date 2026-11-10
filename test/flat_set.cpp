@@ -10,9 +10,8 @@
 #include <cstddef> // `std::size_t`
 #include <cstdint> // `std::uint64_t`
 
-#include <random>      // `std::mt19937_64`
-#include <span>        // `std::span`
-#include <type_traits> // `std::true_type`
+#include <random> // `std::mt19937_64`
+#include <span>   // `std::span`
 
 #include <smashtable/basic_flat_set.hpp>
 

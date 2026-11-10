@@ -532,6 +532,18 @@ static PyObject *Map_setdefault(PyObject *self, PyObject *const *args, Py_ssize_
     return value_to_python(*winner);
 }
 
+/** Attribute presence: 1 when found, 0 when absent, and -1 with an exception set. */
+static int has_attribute(PyObject *object, char const *name) noexcept {
+    PyObject *attribute = PyObject_GetAttrString(object, name);
+    if (attribute) {
+        Py_DECREF(attribute);
+        return 1;
+    }
+    if (!PyErr_ExceptionMatches(PyExc_AttributeError)) return -1;
+    PyErr_Clear();
+    return 0;
+}
+
 static char const doc_map_update[] =                                               //
     "update(other, /)\n"                                                           //
     "\n"                                                                           //
@@ -551,7 +563,8 @@ static PyObject *Map_update(PyObject *self, PyObject *other) noexcept {
     module_state_t *state = state_of_type(self);
     if (!state) return nullptr;
 
-    bool const is_mapping = PyObject_HasAttrString(other, "keys");
+    int const is_mapping = has_attribute(other, "keys");
+    if (is_mapping < 0) return nullptr;
     PyObject *pairs = is_mapping ? PyMapping_Items(other) : Py_NewRef(other);
     if (!pairs) return nullptr;
     PyObject *fast = PySequence_Fast(pairs, "update() needs a mapping or an iterable of pairs");
@@ -808,7 +821,9 @@ static container_object_t *same_layout_set(PyObject *self, PyObject *other) noex
 }
 
 static PyObject *set_algebra(PyObject *self, PyObject *other, algebra_t operation) noexcept {
-    if (!PyObject_HasAttrString(other, "__contains__")) Py_RETURN_NOTIMPLEMENTED;
+    int const has_contains = has_attribute(other, "__contains__");
+    if (has_contains < 0) return nullptr;
+    if (!has_contains) Py_RETURN_NOTIMPLEMENTED;
 
     PyObject *result = set_like(self);
     if (!result) return nullptr;
@@ -1082,7 +1097,7 @@ static char const *class_name_of(PyObject *self) noexcept {
  *  @brief Renders the contents in order, which only an ordered container can do.
  *  @param[in] yields Pairs for a map, bare members for a set.
  */
-static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept {
+static PyObject *container_repr_contents(PyObject *self, cursor_yields_t yields) noexcept {
     auto *container = object_as<container_object_t>(self);
     Py_ssize_t const total = container_length(self);
 
@@ -1132,6 +1147,16 @@ static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept
                                    total - repr_limit_k)
             : PyUnicode_FromFormat("%s(key='%s', {%U})", class_name_of(self), container->ops->name, body);
     Py_DECREF(body);
+    return result;
+}
+
+/** Recursive containers elide their contents while keeping the outer representation. */
+static PyObject *container_repr(PyObject *self, cursor_yields_t yields) noexcept {
+    int const entered = Py_ReprEnter(self);
+    if (entered < 0) return nullptr;
+    if (entered > 0) return PyUnicode_FromString("...");
+    PyObject *result = container_repr_contents(self, yields);
+    Py_ReprLeave(self);
     return result;
 }
 
