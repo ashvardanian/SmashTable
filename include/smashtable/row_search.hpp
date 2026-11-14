@@ -30,7 +30,7 @@
 #include <cstddef> // `std::size_t`, `offsetof`
 #include <cstdint> // `std::uint32_t`, `std::uint64_t`, `std::int64_t`
 
-#include <bit>         // `std::popcount`
+#include <bit>         // `std::popcount`, `std::endian`
 #include <concepts>    // `std::same_as`
 #include <limits>      // `std::numeric_limits`
 #include <span>        // `std::span`
@@ -51,13 +51,14 @@ enum class row_kit_t : std::uint8_t {
     neon_k,
     sve_k,
     rvv_k,
+    powervsx_k,
     v128_k,
 };
 
 /** Every kit in enumerator order, for a benchmark or a log that walks them all. */
-inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t::haswell_k, row_kit_t::skylake_k,
-                                                row_kit_t::icelake_k, row_kit_t::neon_k,    row_kit_t::sve_k,
-                                                row_kit_t::rvv_k,     row_kit_t::v128_k};
+inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t::haswell_k,  row_kit_t::skylake_k,
+                                                row_kit_t::icelake_k, row_kit_t::neon_k,     row_kit_t::sve_k,
+                                                row_kit_t::rvv_k,     row_kit_t::powervsx_k, row_kit_t::v128_k};
 
 /** The enumerator's own name without its suffix, for a benchmark or a log. */
 [[nodiscard]] constexpr char const *name_of(row_kit_t kit) noexcept {
@@ -69,6 +70,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     case row_kit_t::neon_k: return "neon";
     case row_kit_t::sve_k: return "sve";
     case row_kit_t::rvv_k: return "rvv";
+    case row_kit_t::powervsx_k: return "powervsx";
     case row_kit_t::v128_k: return "v128";
     }
     return "unrecognized";
@@ -84,6 +86,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
     case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON;
     case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE;
     case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV;
+    case row_kit_t::powervsx_k: return SMASHTABLE_TARGET_POWERVSX;
     case row_kit_t::v128_k: return SMASHTABLE_TARGET_V128;
     }
     return false;
@@ -131,20 +134,24 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 }
 #elif SMASHTABLE_HAS_AUXV_
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
-    unsigned long capabilities = 0; // `AT_HWCAP` carries the same bits on both kernels
+    unsigned long capabilities = 0, extended_capabilities = 0; // `AT_HWCAP*` carry the same bits on both kernels
 #if SMASHTABLE_OS_FREEBSD_
     elf_aux_info(AT_HWCAP, &capabilities, sizeof(capabilities));
+    elf_aux_info(AT_HWCAP2, &extended_capabilities, sizeof(extended_capabilities));
 #else
     capabilities = getauxval(AT_HWCAP);
+    extended_capabilities = getauxval(AT_HWCAP2);
 #endif
     unsigned long const advanced_simd = 1ul << 1;              // `HWCAP_ASIMD` on AArch64
     unsigned long const scalable_vectors = 1ul << 22;          // `HWCAP_SVE` on AArch64
     unsigned long const vector_extension = 1ul << ('V' - 'A'); // `COMPAT_HWCAP_ISA_V` on RISC-V
+    unsigned long const isa_3_00 = 0x00800000ul;               // `PPC_FEATURE2_ARCH_3_00` in `AT_HWCAP2` on Power
     switch (kit) {
     case row_kit_t::serial_k: return true;
     case row_kit_t::neon_k: return SMASHTABLE_TARGET_NEON && (capabilities & advanced_simd) != 0;
     case row_kit_t::sve_k: return SMASHTABLE_TARGET_SVE && (capabilities & scalable_vectors) != 0;
     case row_kit_t::rvv_k: return SMASHTABLE_TARGET_RVV && (capabilities & vector_extension) != 0;
+    case row_kit_t::powervsx_k: return SMASHTABLE_TARGET_POWERVSX && (extended_capabilities & isa_3_00) != 0;
     default: return false;
     }
 }
@@ -165,7 +172,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 /** The newest kit this build carries and the processor can run, falling back to @c serial_k. */
 [[nodiscard]] inline row_kit_t detect_row_kit() noexcept {
     for (row_kit_t const kit : {row_kit_t::icelake_k, row_kit_t::skylake_k, row_kit_t::haswell_k, row_kit_t::sve_k,
-                                row_kit_t::neon_k, row_kit_t::rvv_k, row_kit_t::v128_k})
+                                row_kit_t::neon_k, row_kit_t::rvv_k, row_kit_t::powervsx_k, row_kit_t::v128_k})
         if (row_kit_supported(kit)) return kit;
     return row_kit_t::serial_k;
 }
@@ -1234,6 +1241,218 @@ struct rvv_row_kit_t {
 
 #pragma endregion RVV Kit
 
+#pragma region Power VSX Kit
+
+#if SMASHTABLE_TARGET_POWERVSX
+#if defined(__clang__)
+#pragma clang attribute push(__attribute__((target("power9-vector"))), apply_to = function)
+#elif defined(__GNUC__)
+#pragma GCC push_options
+#pragma GCC target("power9-vector")
+#endif
+
+/** POWER9 vectors over two 64-bit or four 32-bit keys per load, lanes in memory order. */
+struct powervsx_row_kit_t {
+    static constexpr row_kit_t kit_k = row_kit_t::powervsx_k;
+    static constexpr bool compiled_k = true;
+    static constexpr std::size_t mask_equal_width_k = 16;
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::uint32_t const, extent_> keys,
+                                                 std::uint32_t wanted) noexcept {
+        __vector unsigned int const threshold = vec_splats(static_cast<unsigned int>(wanted));
+        __vector unsigned int accumulated = vec_splats(0u);
+        std::size_t offset = 0;
+        for (; offset + 4 <= keys.size(); offset += 4)
+            accumulated =
+                vec_sub(accumulated, (__vector unsigned int)vec_cmplt(load_(keys.data() + offset), threshold));
+        return sum_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::int32_t const, extent_> keys,
+                                                 std::int32_t wanted) noexcept {
+        __vector signed int const threshold = vec_splats(static_cast<signed int>(wanted));
+        __vector unsigned int accumulated = vec_splats(0u);
+        std::size_t offset = 0;
+        for (; offset + 4 <= keys.size(); offset += 4)
+            accumulated =
+                vec_sub(accumulated, (__vector unsigned int)vec_cmplt(load_(keys.data() + offset), threshold));
+        return sum_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::uint64_t const, extent_> keys,
+                                                 std::uint64_t wanted) noexcept {
+        __vector unsigned long long const threshold = vec_splats(static_cast<unsigned long long>(wanted));
+        __vector unsigned long long accumulated = vec_splats(0ull);
+        std::size_t offset = 0;
+        for (; offset + 2 <= keys.size(); offset += 2)
+            accumulated =
+                vec_sub(accumulated, (__vector unsigned long long)vec_cmplt(load_(keys.data() + offset), threshold));
+        return sum_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::int64_t const, extent_> keys,
+                                                 std::int64_t wanted) noexcept {
+        __vector signed long long const threshold = vec_splats(static_cast<signed long long>(wanted));
+        __vector unsigned long long accumulated = vec_splats(0ull);
+        std::size_t offset = 0;
+        for (; offset + 2 <= keys.size(); offset += 2)
+            accumulated =
+                vec_sub(accumulated, (__vector unsigned long long)vec_cmplt(load_(keys.data() + offset), threshold));
+        return sum_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<key128_t const, extent_> keys, key128_t wanted) noexcept {
+        __vector unsigned long long const high_threshold = vec_splats(static_cast<unsigned long long>(wanted.high));
+        __vector unsigned long long const low_threshold = vec_splats(static_cast<unsigned long long>(wanted.low));
+        __vector unsigned long long accumulated = vec_splats(0ull);
+        std::size_t offset = 0;
+        for (; offset + 2 <= keys.size(); offset += 2) {
+            std::uint64_t const *const words =
+                static_cast<std::uint64_t const *>(static_cast<void const *>(keys.data() + offset));
+            __vector unsigned long long const first_key = load_(words);
+            __vector unsigned long long const second_key = load_(words + 2);
+            __vector unsigned long long const high = vec_mergeh(first_key, second_key);
+            __vector unsigned long long const high_tied = (__vector unsigned long long)vec_cmpeq(high, high_threshold);
+            __vector unsigned long long const low_below = vec_and(
+                high_tied, (__vector unsigned long long)vec_cmplt(vec_mergel(first_key, second_key), low_threshold));
+            accumulated =
+                vec_sub(accumulated, vec_or((__vector unsigned long long)vec_cmplt(high, high_threshold), low_below));
+        }
+        return sum_lanes_(accumulated) + serial_row_kit_t::count_below(keys.subspan(offset), wanted);
+    }
+
+    template <std::size_t extent_>
+    [[nodiscard]] static std::size_t count_below(std::span<std::uint64_t const, extent_> high_words,
+                                                 std::span<std::uint64_t const, extent_> low_words,
+                                                 key128_t wanted) noexcept {
+        assert(high_words.size() == low_words.size() && "a split row has one low word per high word");
+        __vector unsigned long long const high_threshold = vec_splats(static_cast<unsigned long long>(wanted.high));
+        __vector unsigned long long const low_threshold = vec_splats(static_cast<unsigned long long>(wanted.low));
+        std::size_t const whole = high_words.size() - high_words.size() % 2;
+        __vector unsigned long long accumulated = vec_splats(0ull);
+        __vector unsigned long long tied = vec_splats(0ull);
+        for (std::size_t offset = 0; offset < whole; offset += 2) {
+            __vector unsigned long long const high = load_(high_words.data() + offset);
+            accumulated = vec_sub(accumulated, (__vector unsigned long long)vec_cmplt(high, high_threshold));
+            tied = vec_or(tied, (__vector unsigned long long)vec_cmpeq(high, high_threshold));
+        }
+        // One branch per row, not per load, since a present key ties once at an unpredictable spot.
+        if (vec_any_ne(tied, vec_splats(0ull)))
+            for (std::size_t offset = 0; offset < whole; offset += 2) {
+                __vector unsigned long long const high_tied =
+                    (__vector unsigned long long)vec_cmpeq(load_(high_words.data() + offset), high_threshold);
+                __vector unsigned long long const low_below =
+                    (__vector unsigned long long)vec_cmplt(load_(low_words.data() + offset), low_threshold);
+                accumulated = vec_sub(accumulated, vec_and(high_tied, low_below));
+            }
+        return sum_lanes_(accumulated) +
+               serial_row_kit_t::count_below(high_words.subspan(whole), low_words.subspan(whole), wanted);
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint32_t const, mask_equal_width_k> keys,
+                                                  std::uint32_t wanted) noexcept {
+        __vector unsigned int const needle = vec_splats(static_cast<unsigned int>(wanted));
+        std::uint32_t const *const words = keys.data();
+        __vector unsigned short const low = vec_pack((__vector unsigned int)vec_cmpeq(load_(words), needle),
+                                                     (__vector unsigned int)vec_cmpeq(load_(words + 4), needle));
+        __vector unsigned short const high = vec_pack((__vector unsigned int)vec_cmpeq(load_(words + 8), needle),
+                                                      (__vector unsigned int)vec_cmpeq(load_(words + 12), needle));
+        return mask_of_lanes_(vec_pack(low, high));
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<std::uint64_t const, mask_equal_width_k> keys,
+                                                  std::uint64_t wanted) noexcept {
+        __vector unsigned long long const needle = vec_splats(static_cast<unsigned long long>(wanted));
+        __vector unsigned short halves[2];
+        for (std::size_t half = 0; half != 2; ++half) {
+            std::uint64_t const *const words = keys.data() + half * 8;
+            __vector unsigned int const low =
+                vec_pack((__vector unsigned long long)vec_cmpeq(load_(words), needle),
+                         (__vector unsigned long long)vec_cmpeq(load_(words + 2), needle));
+            __vector unsigned int const high =
+                vec_pack((__vector unsigned long long)vec_cmpeq(load_(words + 4), needle),
+                         (__vector unsigned long long)vec_cmpeq(load_(words + 6), needle));
+            halves[half] = vec_pack(low, high);
+        }
+        return mask_of_lanes_(vec_pack(halves[0], halves[1]));
+    }
+
+    [[nodiscard]] static std::uint32_t mask_equal(std::span<key128_t const, mask_equal_width_k> keys,
+                                                  key128_t wanted) noexcept {
+        __vector unsigned long long const high_needle = vec_splats(static_cast<unsigned long long>(wanted.high));
+        __vector unsigned long long const low_needle = vec_splats(static_cast<unsigned long long>(wanted.low));
+        __vector unsigned short halves[2];
+        for (std::size_t half = 0; half != 2; ++half) {
+            key128_t const *const pairs = keys.data() + half * 8;
+            __vector unsigned int const low =
+                vec_pack(equal_pair_(pairs, high_needle, low_needle), equal_pair_(pairs + 2, high_needle, low_needle));
+            __vector unsigned int const high = vec_pack(equal_pair_(pairs + 4, high_needle, low_needle),
+                                                        equal_pair_(pairs + 6, high_needle, low_needle));
+            halves[half] = vec_pack(low, high);
+        }
+        return mask_of_lanes_(vec_pack(halves[0], halves[1]));
+    }
+
+  private:
+    static __vector unsigned int load_(std::uint32_t const *words) noexcept { return vec_xl(0, words); }
+    static __vector signed int load_(std::int32_t const *words) noexcept { return vec_xl(0, words); }
+    static __vector unsigned long long load_(std::uint64_t const *words) noexcept {
+        return vec_xl(0, static_cast<unsigned long long const *>(static_cast<void const *>(words)));
+    }
+    static __vector signed long long load_(std::int64_t const *words) noexcept {
+        return vec_xl(0, static_cast<signed long long const *>(static_cast<void const *>(words)));
+    }
+
+    static std::size_t sum_lanes_(__vector unsigned int lanes) noexcept {
+        return static_cast<std::size_t>(vec_extract(lanes, 0)) + vec_extract(lanes, 1) + vec_extract(lanes, 2) +
+               vec_extract(lanes, 3);
+    }
+
+    static std::size_t sum_lanes_(__vector unsigned long long lanes) noexcept {
+        return static_cast<std::size_t>(vec_extract(lanes, 0) + vec_extract(lanes, 1));
+    }
+
+    /** Two adjacent 16-byte keys against a needle split in words, one all-ones lane per match. */
+    static __vector unsigned long long equal_pair_(key128_t const *pair, __vector unsigned long long high_needle,
+                                                   __vector unsigned long long low_needle) noexcept {
+        std::uint64_t const *const words = static_cast<std::uint64_t const *>(static_cast<void const *>(pair));
+        __vector unsigned long long const first_key = load_(words);
+        __vector unsigned long long const second_key = load_(words + 2);
+        return vec_and((__vector unsigned long long)vec_cmpeq(vec_mergeh(first_key, second_key), high_needle),
+                       (__vector unsigned long long)vec_cmpeq(vec_mergel(first_key, second_key), low_needle));
+    }
+
+    /** Packs sixteen all-ones or all-zeros byte lanes into 16 bits, the lowest-addressed in bit 0.
+     *  The gathered bits land in the doubleword the byte order names. */
+    static std::uint32_t mask_of_lanes_(__vector unsigned char lanes) noexcept {
+        __vector unsigned char const indices = {120, 112, 104, 96, 88, 80, 72, 64, 56, 48, 40, 32, 24, 16, 8, 0};
+        __vector unsigned long long const gathered = (__vector unsigned long long)vec_vbpermq(lanes, indices);
+        return static_cast<std::uint32_t>(vec_extract(gathered, std::endian::native == std::endian::big ? 0 : 1));
+    }
+};
+
+#if defined(__clang__)
+#pragma clang attribute pop
+#elif defined(__GNUC__)
+#pragma GCC pop_options
+#endif
+#else
+
+/** The kit this build cannot carry, kept so @c visit_row_kit stays one switch rather than a run of
+ *  preprocessor branches. */
+struct powervsx_row_kit_t {
+    static constexpr row_kit_t kit_k = row_kit_t::powervsx_k;
+    static constexpr bool compiled_k = false;
+};
+#endif
+
+#pragma endregion Power VSX Kit
+
 #pragma region V128 Kit
 
 #if SMASHTABLE_TARGET_V128
@@ -1448,6 +1667,8 @@ using native_row_kit_t = sve_row_kit_t;
 using native_row_kit_t = neon_row_kit_t;
 #elif SMASHTABLE_TARGET_RVV && defined(__riscv_v)
 using native_row_kit_t = rvv_row_kit_t;
+#elif SMASHTABLE_TARGET_POWERVSX && defined(__POWER9_VECTOR__)
+using native_row_kit_t = powervsx_row_kit_t;
 #elif SMASHTABLE_TARGET_V128
 using native_row_kit_t = v128_row_kit_t;
 #else
@@ -1482,6 +1703,9 @@ constexpr decltype(auto) visit_row_kit(row_kit_t kit, callback_type_ &&callback)
         break;
     case row_kit_t::rvv_k:
         if constexpr (rvv_row_kit_t::compiled_k) return callback(rvv_row_kit_t {});
+        break;
+    case row_kit_t::powervsx_k:
+        if constexpr (powervsx_row_kit_t::compiled_k) return callback(powervsx_row_kit_t {});
         break;
     case row_kit_t::v128_k:
         if constexpr (v128_row_kit_t::compiled_k) return callback(v128_row_kit_t {});

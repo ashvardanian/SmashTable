@@ -77,7 +77,7 @@
 #endif
 
 /**
- *  @brief Whether the target is x86-64, AArch64 or 64-bit RISC-V, one always-defined flag apiece.
+ *  @brief Whether the target is x86-64, AArch64, 64-bit RISC-V or 64-bit Power, one flag apiece.
  *
  *  Each is 0 or 1 rather than defined or not, so a call site tests it with <tt>if constexpr</tt> and
  *  the branch it drops is still compiled for syntax.
@@ -98,6 +98,12 @@
 #define SMASHTABLE_ARCH_RISCV64_ 1
 #else
 #define SMASHTABLE_ARCH_RISCV64_ 0
+#endif
+
+#if defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
+#define SMASHTABLE_ARCH_PPC64_ 1
+#else
+#define SMASHTABLE_ARCH_PPC64_ 0
 #endif
 
 /** Whether the target is IBM Z, whose cache lines are 256 bytes, as 1 or 0. */
@@ -149,8 +155,9 @@
 #define SMASHTABLE_OS_POSIX_ 0
 #endif
 
-/** Whether the kernel reports processor features through @c AT_HWCAP, as 1 or 0. */
-#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_) && (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
+/** Whether the kernel reports processor features in @c AT_HWCAP and @c AT_HWCAP2, as 1 or 0. */
+#if (SMASHTABLE_ARCH_ARM64_ || SMASHTABLE_ARCH_RISCV64_ || SMASHTABLE_ARCH_PPC64_) && \
+    (SMASHTABLE_OS_LINUX_ || SMASHTABLE_OS_FREEBSD_)
 #define SMASHTABLE_HAS_AUXV_ 1
 #else
 #define SMASHTABLE_HAS_AUXV_ 0
@@ -250,6 +257,19 @@
 #define SMASHTABLE_TARGET_RVV 0
 #endif
 
+/* GCC scopes POWER9 vectors per function; Clang's `altivec.h` needs VSX from the build flags. */
+#if !defined(SMASHTABLE_TARGET_POWERVSX)
+#if SMASHTABLE_ARCH_PPC64_ && !defined(__CUDACC__) && \
+    ((defined(__clang__) && defined(__POWER8_VECTOR__)) || (!defined(__clang__) && defined(__GNUC__)))
+#define SMASHTABLE_TARGET_POWERVSX 1
+#else
+#define SMASHTABLE_TARGET_POWERVSX 0
+#endif
+#elif SMASHTABLE_TARGET_POWERVSX && !SMASHTABLE_ARCH_PPC64_
+#undef SMASHTABLE_TARGET_POWERVSX
+#define SMASHTABLE_TARGET_POWERVSX 0
+#endif
+
 /* A WebAssembly module validates whole, so SIMD in any function needs it from every engine that
  * loads the module: the kit follows the build's own flag rather than a target attribute. */
 #if !defined(SMASHTABLE_TARGET_V128)
@@ -285,11 +305,21 @@
 #if SMASHTABLE_TARGET_RVV
 #include <riscv_vector.h>
 #endif
+#if SMASHTABLE_TARGET_POWERVSX
+#if !defined(__clang__)
+#pragma GCC push_options
+#pragma GCC target("power9-vector")
+#endif
+#include <altivec.h>
+#if !defined(__clang__)
+#pragma GCC pop_options
+#endif
+#endif
 #if SMASHTABLE_TARGET_V128
 #include <wasm_simd128.h>
 #endif
 #if SMASHTABLE_HAS_AUXV_
-#include <sys/auxv.h> // `getauxval` on Linux, `elf_aux_info` on FreeBSD, `AT_HWCAP`
+#include <sys/auxv.h> // `getauxval` on Linux, `elf_aux_info` on FreeBSD, `AT_HWCAP`, `AT_HWCAP2`
 #endif
 
 namespace ashvardanian::smashtable {

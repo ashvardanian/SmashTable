@@ -244,6 +244,7 @@ static void hash_index_icelake_kit(test_context_t const &context) { verify_throu
 static void hash_index_neon_kit(test_context_t const &context) { verify_through(context, row_kit_t::neon_k); }
 static void hash_index_sve_kit(test_context_t const &context) { verify_through(context, row_kit_t::sve_k); }
 static void hash_index_rvv_kit(test_context_t const &context) { verify_through(context, row_kit_t::rvv_k); }
+static void hash_index_powervsx_kit(test_context_t const &context) { verify_through(context, row_kit_t::powervsx_k); }
 static void hash_index_v128_kit(test_context_t const &context) { verify_through(context, row_kit_t::v128_k); }
 
 #pragma endregion Tests
@@ -270,6 +271,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "hash_index.neon_kit", hash_index_neon_kit);
     tally += run_test(settings, "hash_index.sve_kit", hash_index_sve_kit);
     tally += run_test(settings, "hash_index.rvv_kit", hash_index_rvv_kit);
+    tally += run_test(settings, "hash_index.powervsx_kit", hash_index_powervsx_kit);
     tally += run_test(settings, "hash_index.v128_kit", hash_index_v128_kit);
 
     return report_test_failures(settings, tally);

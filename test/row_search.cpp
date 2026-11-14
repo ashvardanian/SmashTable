@@ -381,6 +381,7 @@ void row_search_icelake_kit(test_context_t const &context) { verify_rows_through
 void row_search_neon_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::neon_k); }
 void row_search_sve_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::sve_k); }
 void row_search_rvv_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::rvv_k); }
+void row_search_powervsx_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::powervsx_k); }
 void row_search_v128_kit(test_context_t const &context) { verify_rows_through(context, row_kit_t::v128_k); }
 
 void layouts_serial_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::serial_k); }
@@ -390,6 +391,7 @@ void layouts_icelake_kit(test_context_t const &context) { verify_layouts_through
 void layouts_neon_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::neon_k); }
 void layouts_sve_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::sve_k); }
 void layouts_rvv_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::rvv_k); }
+void layouts_powervsx_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::powervsx_k); }
 void layouts_v128_kit(test_context_t const &context) { verify_layouts_through(context, row_kit_t::v128_k); }
 
 /** A map form answers its set twin's keys and returns the value each key arrived with. */
@@ -462,6 +464,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "row_search.neon_kit", row_search_neon_kit);
     tally += run_test(settings, "row_search.sve_kit", row_search_sve_kit);
     tally += run_test(settings, "row_search.rvv_kit", row_search_rvv_kit);
+    tally += run_test(settings, "row_search.powervsx_kit", row_search_powervsx_kit);
     tally += run_test(settings, "row_search.v128_kit", row_search_v128_kit);
     tally += run_test(settings, "layouts.serial_kit", layouts_serial_kit);
     tally += run_test(settings, "layouts.haswell_kit", layouts_haswell_kit);
@@ -470,6 +473,7 @@ int main(int, char **arguments) {
     tally += run_test(settings, "layouts.neon_kit", layouts_neon_kit);
     tally += run_test(settings, "layouts.sve_kit", layouts_sve_kit);
     tally += run_test(settings, "layouts.rvv_kit", layouts_rvv_kit);
+    tally += run_test(settings, "layouts.powervsx_kit", layouts_powervsx_kit);
     tally += run_test(settings, "layouts.v128_kit", layouts_v128_kit);
     tally += run_test(settings, "layouts.mapped_values", layouts_mapped_values);
     tally += run_test(settings, "layouts.saved_views", layouts_saved_views);
