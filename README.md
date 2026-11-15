@@ -769,6 +769,24 @@ Its keys sit in the keys region, so a probe compares a window of them without lo
 A tombstone would make every later probe walk past the erased slot until a rehash, which a fixed-capacity index never runs, so an erase shifts the rest of its run back over the hole instead.
 Every key stays reachable from its home, the deletion bits stay zero, and capacity is at most half the slots, so a run always ends at a free one and a table under constant churn probes no further than a fresh one.
 
+## Multiversioned and Monoversioned Builds
+
+SmashTable is header-only, so the binary that includes it picks one of two shapes.
+
+- __Multiversioned builds are for distributing to a diverse fleet.__
+  One binary serves every machine when it instantiates a container per row kit and picks among them at runtime with `row_kit_supported`.
+- __Monoversioned builds are for high-velocity environments of identical machines.__
+  They instantiate one row kit, the best that machine runs, so builds are much shorter and binaries much smaller.
+  Their floor is that machine's `-march`, so they run only on that kind of machine and its successors.
+- __The switches.__
+  The row kit a container takes by default, `native_row_kit_t`, follows the `-march` the binary compiles at.
+  The `xeon4_hopper`, `xeon6_blackwell`, `grace_hopper`, `vera_rubin` and `venice_mi450` presets set that floor for one machine each.
+
+SmashTable keeps its own names for the six words the kernel libraries dispatch by.
+It runs no __probe__, and its `SMASHTABLE_TARGET_*` macros are the __targets__, on wherever the architecture and the compiler build a kit.
+`native_row_kit_t` is the kit the compiler's predefined macros __imply__.
+`row_kit_compiled` answers __compiled__, and `row_kit_supported` answers __enabled__, a kit both compiled and __detected__ on the running processor, which it asks on every call.
+
 ## Testing
 
 ```bash
