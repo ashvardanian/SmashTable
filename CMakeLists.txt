@@ -107,6 +107,10 @@ endif ()
 add_library(smashtable_header INTERFACE)
 add_library(smashtable::header ALIAS smashtable_header)
 set_target_properties(smashtable_header PROPERTIES EXPORT_NAME header)
+# MSVC reads BOM-less UTF-8 in the system code page, so consumers of these Unicode-commented headers need `/utf-8`.
+target_compile_options(
+    smashtable_header INTERFACE "$<$<OR:$<COMPILE_LANG_AND_ID:C,MSVC>,$<COMPILE_LANG_AND_ID:CXX,MSVC>>:/utf-8>"
+)
 
 target_include_directories(
     smashtable_header INTERFACE $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
