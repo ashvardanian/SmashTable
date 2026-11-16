@@ -81,26 +81,35 @@
  *
  *  Each is 0 or 1 rather than defined or not, so a call site tests it with <tt>if constexpr</tt> and
  *  the branch it drops is still compiled for syntax.
+ *
+ *  NVCC and HIP-Clang predefine the host's architecture in their device passes too, so x86-64,
+ *  AArch64, RISC-V and Power also check @c __CUDA_ARCH__, @c __HIP_DEVICE_COMPILE__ and, for
+ *  symmetry, Metal's @c __METAL_VERSION__: a GPU pass compiles no CPU kit, and a
+ *  @c SMASHTABLE_TARGET_* set for the host turns off there.
  */
-#if defined(__x86_64__) || defined(_M_X64)
+#if (defined(__x86_64__) || defined(_M_X64)) && !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && \
+    !defined(__METAL_VERSION__)
 #define SMASHTABLE_ARCH_X8664_ 1
 #else
 #define SMASHTABLE_ARCH_X8664_ 0
 #endif
 
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if (defined(__aarch64__) || defined(_M_ARM64)) && !defined(__CUDA_ARCH__) && !defined(__HIP_DEVICE_COMPILE__) && \
+    !defined(__METAL_VERSION__)
 #define SMASHTABLE_ARCH_ARM64_ 1
 #else
 #define SMASHTABLE_ARCH_ARM64_ 0
 #endif
 
-#if defined(__riscv) && defined(__riscv_xlen) && __riscv_xlen == 64
+#if defined(__riscv) && defined(__riscv_xlen) && __riscv_xlen == 64 && !defined(__CUDA_ARCH__) && \
+    !defined(__HIP_DEVICE_COMPILE__) && !defined(__METAL_VERSION__)
 #define SMASHTABLE_ARCH_RISCV64_ 1
 #else
 #define SMASHTABLE_ARCH_RISCV64_ 0
 #endif
 
-#if defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)
+#if (defined(__powerpc64__) || defined(__ppc64__) || defined(_ARCH_PPC64)) && !defined(__CUDA_ARCH__) && \
+    !defined(__HIP_DEVICE_COMPILE__) && !defined(__METAL_VERSION__)
 #define SMASHTABLE_ARCH_PPC64_ 1
 #else
 #define SMASHTABLE_ARCH_PPC64_ 0
@@ -192,7 +201,7 @@
  *  probes that separately, because a binary built for one machine is routinely run on another.
  */
 #if !defined(SMASHTABLE_TARGET_HASWELL)
-#if SMASHTABLE_ARCH_X8664_ && !defined(__CUDACC__) && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
+#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__) || defined(_MSC_VER))
 #define SMASHTABLE_TARGET_HASWELL 1
 #else
 #define SMASHTABLE_TARGET_HASWELL 0
@@ -203,8 +212,7 @@
 #endif
 
 #if !defined(SMASHTABLE_TARGET_SKYLAKE)
-#if SMASHTABLE_ARCH_X8664_ && !defined(__CUDACC__) && \
-    (defined(__GNUC__) || defined(__clang__) || (defined(_MSC_VER) && _MSC_VER >= 1920))
+#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__) || (defined(_MSC_VER) && _MSC_VER >= 1920))
 #define SMASHTABLE_TARGET_SKYLAKE 1
 #else
 #define SMASHTABLE_TARGET_SKYLAKE 0
@@ -223,7 +231,7 @@
 #endif
 
 #if !defined(SMASHTABLE_TARGET_NEON)
-#if SMASHTABLE_ARCH_ARM64_ && !defined(__CUDACC__)
+#if SMASHTABLE_ARCH_ARM64_
 #define SMASHTABLE_TARGET_NEON 1
 #else
 #define SMASHTABLE_TARGET_NEON 0
@@ -233,20 +241,21 @@
 #define SMASHTABLE_TARGET_NEON 0
 #endif
 
+/* The SVE kit finishes on the NEON one, so it never outlives it. */
 #if !defined(SMASHTABLE_TARGET_SVE)
-#if SMASHTABLE_ARCH_ARM64_ && !defined(__CUDACC__) && !defined(_MSC_VER) && \
+#if SMASHTABLE_TARGET_NEON && !defined(_MSC_VER) && \
     ((defined(__clang__) && __clang_major__ >= 12) || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 11))
 #define SMASHTABLE_TARGET_SVE 1
 #else
 #define SMASHTABLE_TARGET_SVE 0
 #endif
-#elif SMASHTABLE_TARGET_SVE && !SMASHTABLE_ARCH_ARM64_
+#elif SMASHTABLE_TARGET_SVE && !SMASHTABLE_TARGET_NEON
 #undef SMASHTABLE_TARGET_SVE
 #define SMASHTABLE_TARGET_SVE 0
 #endif
 
 #if !defined(SMASHTABLE_TARGET_RVV)
-#if SMASHTABLE_ARCH_RISCV64_ && !defined(__CUDACC__) && \
+#if SMASHTABLE_ARCH_RISCV64_ && \
     ((defined(__clang__) && __clang_major__ >= 17) || (!defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 14))
 #define SMASHTABLE_TARGET_RVV 1
 #else
@@ -259,7 +268,7 @@
 
 /* GCC scopes POWER9 vectors per function; Clang's `altivec.h` needs VSX from the build flags. */
 #if !defined(SMASHTABLE_TARGET_POWERVSX)
-#if SMASHTABLE_ARCH_PPC64_ && !defined(__CUDACC__) && \
+#if SMASHTABLE_ARCH_PPC64_ && \
     ((defined(__clang__) && defined(__POWER8_VECTOR__)) || (!defined(__clang__) && defined(__GNUC__)))
 #define SMASHTABLE_TARGET_POWERVSX 1
 #else

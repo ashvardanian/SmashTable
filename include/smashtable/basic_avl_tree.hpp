@@ -77,6 +77,7 @@
 #pragma once
 #include <cassert> // `assert`
 #include <cstdint> // `std::uint64_t`
+#include <cstdlib> // `std::abs`
 
 #include <concepts> // `std::predicate`, `std::strict_weak_order`
 #include <limits>   // `std::numeric_limits`

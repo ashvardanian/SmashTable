@@ -95,7 +95,7 @@ inline constexpr row_kit_t every_row_kit_k[] = {row_kit_t::serial_k,  row_kit_t:
 /** Whether this build carries @p kit and the running processor and operating system can execute it.
  *  Probes the processor on every call, so ask once at open or construction and keep the answer.
  *  A GPU device pass cannot probe the host processor, so there it answers @c serial_k alone. */
-#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__)) && !defined(__NVPTX__) && !defined(__AMDGPU__)
+#if SMASHTABLE_ARCH_X8664_ && (defined(__GNUC__) || defined(__clang__))
 [[nodiscard]] inline bool row_kit_supported(row_kit_t kit) noexcept {
     __builtin_cpu_init();
     bool const runs_haswell = __builtin_cpu_supports("avx2") && __builtin_cpu_supports("bmi") &&
