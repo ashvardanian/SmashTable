@@ -12,14 +12,14 @@ jobs:
   # happens to order its includes differently. Two standard libraries, since libstdc++ and libc++
   # disagree about what each header transitively pulls in.
   test_headers:
-    name: Compile Headers Standalone with ${{ matrix.compiler }}
+    name: Compile Headers Standalone with ${{ matrix.package == 'clang-18' && 'the Clang 18 Floor' || matrix.compiler }}
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { compiler: g++-14, package: g++-14 }
+          - { compiler: g++-16, package: g++-16 }
           - { compiler: clang++-18, package: clang-18 }
     steps:
       - name: Checkout Repository
@@ -45,7 +45,7 @@ jobs:
           test -z "$failed"
 
   test_ubuntu_gcc:
-    name: Test on Ubuntu with GCC 15
+    name: Test on Ubuntu with GCC 16
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -53,7 +53,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-15
+        run: sudo apt-get update && sudo apt-get install -y g++-16
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -68,7 +68,7 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset release -D CMAKE_C_COMPILER=gcc-15 -D CMAKE_CXX_COMPILER=g++-15
+        run: cmake --preset release -D CMAKE_C_COMPILER=gcc-16 -D CMAKE_CXX_COMPILER=g++-16
       - name: Build
         run: cmake --build --preset release --parallel ${{ env.BUILD_JOBS }}
       - name: Test
@@ -77,7 +77,7 @@ jobs:
         run: ./build_release/smashtable_example
 
   test_ubuntu_clang:
-    name: Test on Ubuntu with Clang 18
+    name: Test on Ubuntu with Clang 23
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -85,7 +85,11 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y clang-18
+        run: |
+          curl -fsSL https://apt.llvm.org/llvm-snapshot.gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/llvm.gpg
+          echo "deb [signed-by=/usr/share/keyrings/llvm.gpg] http://apt.llvm.org/resolute/ llvm-toolchain-resolute-23 main" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list > /dev/null
+          sudo apt-get update && sudo apt-get install -y clang-23
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -100,7 +104,7 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset release -D CMAKE_C_COMPILER=clang-18 -D CMAKE_CXX_COMPILER=clang++-18
+        run: cmake --preset release -D CMAKE_C_COMPILER=clang-23 -D CMAKE_CXX_COMPILER=clang++-23
       - name: Build
         run: cmake --build --preset release --parallel ${{ env.BUILD_JOBS }}
       - name: Test
@@ -109,7 +113,7 @@ jobs:
         run: ./build_release/smashtable_example
 
   test_ubuntu_asan:
-    name: Test ASan on Ubuntu with GCC 15
+    name: Test ASan on Ubuntu with GCC 16
     needs: test_headers
     runs-on: ubuntu-26.04
     timeout-minutes: 20
@@ -117,7 +121,7 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
       - name: Install Toolchain
-        run: sudo apt-get update && sudo apt-get install -y g++-15
+        run: sudo apt-get update && sudo apt-get install -y g++-16
 
       # Heavy template instantiation is bounded by memory, not cores. One job per core on a small
       # runner gets a compiler killed by the OOM killer, which reports nothing itself.
@@ -132,7 +136,7 @@ jobs:
           echo "BUILD_JOBS=$jobs" >> "$GITHUB_ENV"
 
       - name: Configure
-        run: cmake --preset asan -D CMAKE_C_COMPILER=gcc-15 -D CMAKE_CXX_COMPILER=g++-15
+        run: cmake --preset asan -D CMAKE_C_COMPILER=gcc-16 -D CMAKE_CXX_COMPILER=g++-16
       - name: Build
         run: cmake --build --preset asan --parallel ${{ env.BUILD_JOBS }}
       - name: Test
@@ -340,33 +344,11 @@ jobs:
   verify_models:
     name: Check Promela Models and GenMC Clients
     runs-on: ubuntu-26.04
+    container: ghcr.io/ashvardanian/fatwheels:verify@sha256:c29899edae67fe85f0fa80ec3dfaa577a24e297cd4796c0fcdddda60a9010415
     timeout-minutes: 30
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v7
-      - name: Install Spin, Clang and GenMC Build Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y spin cmake clang-20 llvm-20-dev libffi-dev zlib1g-dev libedit-dev
-      - name: Checkout GenMC
-        uses: actions/checkout@v7
-        with:
-          repository: MPI-SWS/genmc
-          ref: 9f6c4c0772d0c42b325681581acc6a0f3eb9b5f7
-          path: genmc
-      - name: Restore GenMC Build
-        id: genmc
-        uses: actions/cache@v6
-        with:
-          path: genmc/build
-          key: genmc-9f6c4c0-clang-20
-      - name: Build GenMC
-        if: steps.genmc.outputs.cache-hit != 'true'
-        run: |
-          cmake -S genmc -B genmc/build -D CMAKE_BUILD_TYPE=Release -D CMAKE_C_COMPILER=clang-20 -D CMAKE_CXX_COMPILER=clang++-20 -D LLVM_DIR=/usr/lib/llvm-20/lib/cmake/llvm
-          cmake --build genmc/build --parallel
       - name: Check Models and Clients
         run: verification/check.sh
-        env:
-          GENMC: ${{ github.workspace }}/genmc/build/bin/genmc
-          GENMC_CLANG: clang++-20
+
